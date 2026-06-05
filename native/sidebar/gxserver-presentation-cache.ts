@@ -108,12 +108,17 @@ export function reorderPresentationProjectSessions(
 ): GxserverPresentationSnapshot {
   const sidebarOrderBySessionId = new Map<GxserverSessionId, number>();
   orderedSessionIds.forEach((sessionId, index) => {
-    sidebarOrderBySessionId.set(sessionId, index * 1000);
+    sidebarOrderBySessionId.set(sessionId, (index + 1) * 1000);
   });
   let didChange = false;
   /*
   CDXC:PinnedSessions 2026-06-02-20:11:
   Dragging pinned sessions posts an order against the synthetic project group while the visible sidebar renders from gxserver presentation. Apply the same explicit sidebar order to the local presentation cache first so the row moves immediately and then persists through gxserver.
+
+  CDXC:ManualSessionSorting 2026-06-05-12:30:
+  Manual session snapshots use the same local-first path for every project row.
+  Start saved rows at 1000 so future new sessions with sidebar order 0 appear
+  at the top of the manual list.
   */
   const sessions = presentation.sessions.map((session) => {
     if (session.projectId !== projectId) {
@@ -296,7 +301,19 @@ function createPresentationSessionSortKeyWithSidebarOrder(
   sidebarOrder: number,
 ): string {
   const activeRank = session.lifecycleState === "running" || session.lifecycleState === "sleeping" ? "0" : "1";
-  const pinRank = session.isPinned ? "0" : session.isFavorite ? "1" : "2";
+  const pinRank = session.isPinned
+    ? "0"
+    : session.sessionTag === "favorite" || session.isFavorite
+      ? "1"
+      : "2";
   const timestamp = session.lastActiveAt ?? session.updatedAt;
-  return `${activeRank}:${pinRank}:${String(sidebarOrder).padStart(12, "0")}:${timestamp}:${session.sessionId}`;
+  /*
+  CDXC:ManualSessionSorting 2026-06-05-12:30:
+  Local-first presentation reorders must update the same sidebar-order segment
+  for pinned and non-pinned sessions. gxserver owns the durable value, while
+  the sidebar cache mirrors it immediately so switching to Manual Sorting or
+  dragging rows does not wait for the next presentation delta. Put manual order
+  before active/pinned ranks so saved Manual Sorting order can be exact.
+  */
+  return `${String(sidebarOrder).padStart(12, "0")}:${activeRank}:${pinRank}:${timestamp}:${session.sessionId}`;
 }

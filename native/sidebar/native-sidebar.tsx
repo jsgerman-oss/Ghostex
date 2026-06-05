@@ -62,6 +62,7 @@ import {
   type SidebarRecentProject,
   type SidebarSessionGroup,
   type SidebarSessionItem,
+  type SidebarSessionTag,
   type SidebarTheme,
   type SidebarToExtensionMessage,
   type SidebarAgentHookStatusMessage,
@@ -131,6 +132,7 @@ import {
   setBrowserSessionFaviconDataUrlInSimpleWorkspace,
   setBrowserSessionUrlInSimpleWorkspace,
   setSessionFavoriteInSimpleWorkspace,
+  setSessionTagInSimpleWorkspace,
   setSessionLifecycleTimestampsInSimpleWorkspace,
   setSessionPinnedInSimpleWorkspace,
   setSessionPoppedOutInSimpleWorkspace,
@@ -294,6 +296,7 @@ import {
   upsertPresentationProject,
   upsertPresentationProjectGroup,
 } from "./gxserver-presentation-cache";
+import { shouldSubmitStagedGeneratedFirstPromptTitle } from "./first-prompt-title-submit";
 import type {
   GxserverAgentResumePlan,
   GxserverAgentSettings,
@@ -978,6 +981,8 @@ const PROJECTS_STORAGE_KEY = "ghostex-native-projects";
 const SCRATCH_PAD_STORAGE_KEY = "ghostex-native-scratch-pad";
 const PINNED_PROMPTS_STORAGE_KEY = "ghostex-native-pinned-prompts";
 const ACTIVE_SESSIONS_SORT_MODE_STORAGE_KEY = "ghostex-native-active-sessions-sort-mode";
+const ACTIVE_SESSIONS_MANUAL_SNAPSHOT_CAPTURED_STORAGE_KEY =
+  "ghostex-native-active-sessions-manual-snapshot-captured";
 const LEGACY_SIDEBAR_SIDE_STORAGE_KEY = "ghostex-native-sidebar-side";
 const GIT_PRIMARY_ACTION_STORAGE_KEY = "ghostex-native-git-primary-action";
 const GIT_CONFIRM_COMMIT_STORAGE_KEY = "ghostex-native-git-confirm-commit";
@@ -1138,6 +1143,7 @@ let storedAgents: StoredSidebarAgent[] = [];
 let storedAgentOrder: string[] = [];
 let agents: SidebarAgentButton[] = [];
 const gitWorkflowToastBySessionId = new Map<string, { title: string; toastId: string }>();
+const submittedFirstPromptGeneratedTitleEnterBySessionKey = new Set<string>();
 let gxserverDaemonToastPendingResolution = false;
 let projectCommandsByProjectId: ProjectSidebarCommandsStore = {};
 let storedCommands: StoredSidebarCommand[] = [];
@@ -1154,6 +1160,9 @@ let settings = readStoredSettings();
 let scratchPadContent = readScratchPadContent();
 let pinnedPrompts = readPinnedPrompts();
 let activeSessionsSortMode = readActiveSessionsSortMode();
+if (activeSessionsSortMode === "manual") {
+  localStorage.setItem(ACTIVE_SESSIONS_MANUAL_SNAPSHOT_CAPTURED_STORAGE_KEY, "true");
+}
 /*
 CDXC:GxserverPresentationSearch 2026-06-01-15:08:
 After the presentation hard cutover, native must not preload previous-session history from WK or shared native storage. Previous/history rows are requested from gxserver on demand and cached in memory only for the current interaction.
@@ -2608,6 +2617,7 @@ function applyGxserverPresentationSessionToNativePaneChrome(
   );
 
   let didChange = false;
+  const wasGeneratingFirstPromptTitle = terminalState?.firstPromptAutoRenameInProgress === true;
   if (terminalState) {
     const nextLifecycle = presentationLifecycleStateForSidebar(presentation.lifecycleState);
     if (terminalState.activity !== presentation.activity) {
@@ -2631,9 +2641,30 @@ function applyGxserverPresentationSessionToNativePaneChrome(
       /*
       CDXC:GxserverSessionTitle 2026-06-04-07:11:
       Presentation deltas carry the gxserver first-prompt title running state so macOS can clear the native overlay when generation applies, skips, or fails without reintroducing a sidebar-owned generation fallback.
+
+      CDXC:GxserverSessionTitle 2026-06-05-12:43:
+      When gxserver finishes a generated first-prompt title, it has staged `/rename <title>` as text only. The local macOS host must submit that staged command through sendTerminalEnter, not by writing carriage-return text, because agent prompt editors can treat typed CR as a newline instead of the Enter submit action.
       */
       terminalState.firstPromptAutoRenameInProgress = presentation.isGeneratingFirstPromptTitle;
       didChange = true;
+    }
+  }
+  if (
+    shouldSubmitStagedGeneratedFirstPromptTitle(wasGeneratingFirstPromptTitle, presentation) &&
+    localSession?.kind === "terminal"
+  ) {
+    const sessionKey = gxserverTitleProjectionKey(presentation.projectId, presentation.sessionId);
+    if (!submittedFirstPromptGeneratedTitleEnterBySessionKey.has(sessionKey)) {
+      submittedFirstPromptGeneratedTitleEnterBySessionKey.add(sessionKey);
+      window.setTimeout(() => {
+        postNative({
+          sessionId: nativeSessionIdForProjectSidebarSession(
+            presentation.projectId,
+            presentation.sessionId,
+          ),
+          type: "sendTerminalEnter",
+        });
+      }, AUTO_SUBMIT_STAGED_RENAME_DELAY_MS);
     }
   }
 
@@ -6613,7 +6644,7 @@ function persistGitPreferencesToGxserver(): void {
 function persistSessionSharedFlagsToGxserver(
   projectId: string,
   sessionId: string,
-  flags: { isFavorite?: boolean; isPinned?: boolean },
+  flags: { isFavorite?: boolean; isPinned?: boolean; sessionTag?: SidebarSessionTag | null },
 ): void {
   if (!gxserverStartupSnapshot || !sessionId.startsWith("G")) {
     return;
@@ -6621,6 +6652,9 @@ function persistSessionSharedFlagsToGxserver(
   /*
   CDXC:SessionState 2026-05-31-00:30:
   Session pin/favorite flags are user-visible shared state after the gxserver cutover. Keep local sidebar updates instant, then mirror canonical G-session flags into gxserver so restart, remote, and newly installed clients keep the same visible session organization.
+
+  CDXC:SessionTags 2026-06-05-12:30:
+  Session tags are the expanded Favorite replacement. Persist tag updates through the same local-first shared-session path, deriving legacy `isFavorite` only for the Favorite tag so non-favorite tags do not pollute favorite behavior.
   */
   void gxserverClient
     .rpc("/api/updateSession", {
@@ -6726,7 +6760,7 @@ function setNativeSessionFavoriteLocalFirst(
       ...panel,
       sessions: panel.sessions.map((candidate) =>
         candidate.sessionId === reference.sessionId
-          ? { ...candidate, isFavorite: favorite }
+          ? { ...candidate, isFavorite: favorite || undefined, sessionTag: favorite ? "favorite" : undefined }
           : candidate,
       ),
     }));
@@ -6734,14 +6768,64 @@ function setNativeSessionFavoriteLocalFirst(
     updateProjectWorkspace(
       reference.project.projectId,
       (workspace) =>
-        setSessionFavoriteInSimpleWorkspace(workspace, reference.sessionId, favorite).snapshot,
+        setSessionTagInSimpleWorkspace(
+          setSessionFavoriteInSimpleWorkspace(workspace, reference.sessionId, favorite).snapshot,
+          reference.sessionId,
+          favorite ? "favorite" : undefined,
+        ).snapshot,
     );
   }
   persistSessionSharedFlagsToGxserver(reference.project.projectId, reference.sessionId, {
     isFavorite: favorite,
+    sessionTag: favorite ? "favorite" : null,
   });
   appendSidebarRefreshDebugLog("nativeSidebar.sessionFavorite.localFirst", {
     favorite,
+    projectId: reference.project.projectId,
+    reason,
+    sessionId: reference.sessionId,
+  });
+  publish();
+}
+
+function setNativeSessionTagLocalFirst(
+  sessionId: string,
+  sessionTag: SidebarSessionTag | undefined,
+  reason: string,
+): void {
+  const reference = resolveSidebarSessionReference(sessionId);
+  const session = findTerminalSessionInProject(reference.project, reference.sessionId);
+  const isFavorite = sessionTag === "favorite";
+  /*
+  CDXC:SessionTags 2026-06-05-12:30:
+  Tag-as changes must update the sidebar immediately in macOS and then persist
+  the canonical gxserver sessionTag. Command-panel sessions live outside the
+  grouped workspace snapshot, so update both local containers with the same
+  Favorite-derived compatibility boolean.
+  */
+  if (session?.surface === "commands") {
+    updateProjectCommandsPanel(reference.project.projectId, (panel) => ({
+      ...panel,
+      sessions: panel.sessions.map((candidate) =>
+        candidate.sessionId === reference.sessionId
+          ? { ...candidate, isFavorite: isFavorite || undefined, sessionTag }
+          : candidate,
+      ),
+    }));
+  } else {
+    updateProjectWorkspace(
+      reference.project.projectId,
+      (workspace) =>
+        setSessionTagInSimpleWorkspace(workspace, reference.sessionId, sessionTag).snapshot,
+    );
+  }
+  persistSessionSharedFlagsToGxserver(reference.project.projectId, reference.sessionId, {
+    isFavorite,
+    sessionTag: sessionTag ?? null,
+  });
+  appendSidebarRefreshDebugLog("nativeSidebar.sessionTag.localFirst", {
+    hasTag: Boolean(sessionTag),
+    isFavorite,
     projectId: reference.project.projectId,
     reason,
     sessionId: reference.sessionId,
@@ -8281,9 +8365,103 @@ function readActiveSessionsSortMode(): SidebarActiveSessionsSortMode {
 }
 
 function toggleActiveSessionsSortMode(): void {
-  activeSessionsSortMode = activeSessionsSortMode === "manual" ? "lastActivity" : "manual";
+  setActiveSessionsSortMode(activeSessionsSortMode === "manual" ? "lastActivity" : "manual");
+}
+
+function setActiveSessionsSortMode(
+  sortMode: SidebarActiveSessionsSortMode,
+  manualSessionIdsByGroup?: Record<string, string[]>,
+): void {
+  /*
+  CDXC:ManualSessionSorting 2026-06-05-12:30:
+  The first switch from Last Active Sorting to Manual Sorting must snapshot the
+  currently visible row order so the list does not jump. Later switches reuse
+  the saved manual order, with new gxserver sessions naturally sorting above
+  previously ordered rows through their creation-time sidebar order.
+  */
+  if (
+    sortMode === "manual" &&
+    localStorage.getItem(ACTIVE_SESSIONS_MANUAL_SNAPSHOT_CAPTURED_STORAGE_KEY) !== "true"
+  ) {
+    persistManualSessionOrderSnapshot(manualSessionIdsByGroup);
+    localStorage.setItem(ACTIVE_SESSIONS_MANUAL_SNAPSHOT_CAPTURED_STORAGE_KEY, "true");
+  }
+  activeSessionsSortMode = sortMode;
   localStorage.setItem(ACTIVE_SESSIONS_SORT_MODE_STORAGE_KEY, activeSessionsSortMode);
   publish();
+}
+
+function persistManualSessionOrderSnapshot(
+  manualSessionIdsByGroup: Record<string, string[]> | undefined,
+): void {
+  if (!manualSessionIdsByGroup) {
+    return;
+  }
+  for (const [groupId, sessionIds] of Object.entries(manualSessionIdsByGroup)) {
+    persistManualSessionOrderSnapshotForGroup(groupId, sessionIds);
+  }
+}
+
+function persistManualSessionOrderSnapshotForGroup(
+  groupId: string,
+  sessionIds: readonly string[],
+): void {
+  if (groupId === COMBINED_CHATS_GROUP_ID) {
+    persistCombinedChatsSessionOrder(sessionIds, "manual-sort-snapshot");
+    return;
+  }
+  const groupReference = resolveSidebarGroupReference(groupId);
+  if (!groupReference.groupId) {
+    const combinedProjectId = parseCombinedProjectGroupId(groupId);
+    if (!combinedProjectId) {
+      return;
+    }
+    const gxserverSessionIds = sessionIds.flatMap((sessionId) => {
+      const reference = parseCombinedProjectSessionId(sessionId);
+      return reference?.projectId === combinedProjectId ? [reference.sessionId] : [];
+    });
+    setGxserverPresentationProjectSessionOrderLocally(
+      combinedProjectId,
+      gxserverSessionIds,
+      "manual-sort-snapshot",
+    );
+    persistProjectSessionSidebarOrderToGxserver(combinedProjectId, gxserverSessionIds);
+    return;
+  }
+  const resolvedGroupId = groupReference.groupId;
+  updateProjectWorkspace(
+    groupReference.project.projectId,
+    (workspace) =>
+      syncSessionOrderInSimpleWorkspace(workspace, resolvedGroupId, sessionIds).snapshot,
+  );
+}
+
+function persistCombinedChatsSessionOrder(
+  sessionIds: readonly string[],
+  reason: string,
+): boolean {
+  const sessionIdsByProjectId = new Map<string, GxserverSessionId[]>();
+  for (const sessionId of sessionIds) {
+    const reference = parseCombinedProjectSessionId(sessionId);
+    if (!reference) {
+      continue;
+    }
+    const projectSessionIds = sessionIdsByProjectId.get(reference.projectId) ?? [];
+    projectSessionIds.push(reference.sessionId as GxserverSessionId);
+    sessionIdsByProjectId.set(reference.projectId, projectSessionIds);
+  }
+  if (sessionIdsByProjectId.size === 0) {
+    return false;
+  }
+  for (const [projectId, projectSessionIds] of sessionIdsByProjectId) {
+    setGxserverPresentationProjectSessionOrderLocally(
+      projectId,
+      projectSessionIds,
+      reason,
+    );
+    persistProjectSessionSidebarOrderToGxserver(projectId, projectSessionIds);
+  }
+  return true;
 }
 
 function readSidebarSide(): SidebarSide {
@@ -11010,10 +11188,10 @@ function writePreviousSessions(nextSessions: readonly SidebarPreviousSessionItem
 }
 
 async function requestPreviousSessionsFromGxserver(input: {
-  favoritesOnly?: boolean;
   limit?: number;
   query?: string;
   requestId: string;
+  sessionTags?: SidebarSessionTag[];
 }): Promise<void> {
   try {
     const limit = input.limit ?? 80;
@@ -11022,14 +11200,13 @@ async function requestPreviousSessionsFromGxserver(input: {
       includePrevious: true,
       limit,
       query: input.query,
+      sessionTags: input.sessionTags,
     });
-    const localItems = response.results
-      .filter((result) => input.favoritesOnly !== true || result.isFavorite)
-      .map((result) => gxserverSearchResultToPreviousSessionItem(result));
+    const localItems = response.results.map((result) => gxserverSearchResultToPreviousSessionItem(result));
     const remoteItems = await requestRemotePreviousSessionsFromConnectedMachines({
-      favoritesOnly: input.favoritesOnly,
       limit,
       query: input.query,
+      sessionTags: input.sessionTags,
     });
     const items = [...localItems, ...remoteItems]
       .sort(comparePreviousSessionItemsByRecentActivity)
@@ -11078,6 +11255,7 @@ function gxserverSearchResultToPreviousSessionItem(
     isFavorite: result.isFavorite,
     isPinned: result.isPinned,
     kind: "terminal",
+    sessionTag: result.sessionTag,
     sessionId: result.sessionId,
     sessionPersistenceProvider: "zmx",
     title: result.title || title,
@@ -11100,6 +11278,7 @@ function gxserverSearchResultToPreviousSessionItem(
     isFocused: false,
     isGeneratedName: false,
     isPinned: result.isPinned,
+    sessionTag: result.sessionTag,
     isRestorable: true,
     isRunning: false,
     isVisible: false,
@@ -11122,9 +11301,9 @@ function gxserverSearchResultToPreviousSessionItem(
 }
 
 async function requestRemotePreviousSessionsFromConnectedMachines(input: {
-  favoritesOnly?: boolean;
   limit: number;
   query?: string;
+  sessionTags?: SidebarSessionTag[];
 }): Promise<SidebarPreviousSessionItem[]> {
   const machines = settings.remoteMachines.filter((machine) =>
     remotePresentationSnapshotsByMachineId.has(machine.id),
@@ -11141,11 +11320,11 @@ async function requestRemotePreviousSessionsFromConnectedMachines(input: {
               includePrevious: true,
               limit: input.limit,
               query: input.query,
+              sessionTags: input.sessionTags,
             },
           },
         ) as { result: GxserverPresentationSearchResponse };
         return response.result.results
-          .filter((result) => input.favoritesOnly !== true || result.isFavorite)
           .map((result) =>
             gxserverSearchResultToPreviousSessionItem(result, {
               historyIdPrefix: `remote-gxserver:${machine.id}`,
@@ -14051,7 +14230,7 @@ function setRemotePresentationSessionFlagsLocally(
   machineId: string,
   projectId: string,
   sessionId: string,
-  flags: { isFavorite?: boolean; isPinned?: boolean },
+  flags: { isFavorite?: boolean; isPinned?: boolean; sessionTag?: SidebarSessionTag | null },
   reason: string,
 ): void {
   const presentation = remotePresentationSnapshotsByMachineId.get(machineId);
@@ -14063,8 +14242,17 @@ function setRemotePresentationSessionFlagsLocally(
     if (session.projectId !== projectId || session.sessionId !== sessionId) {
       return session;
     }
-    const nextSession = { ...session, ...flags };
-    didChange = didChange || nextSession.isFavorite !== session.isFavorite || nextSession.isPinned !== session.isPinned;
+    const nextSession = {
+      ...session,
+      ...(flags.isFavorite !== undefined ? { isFavorite: flags.isFavorite } : {}),
+      ...(flags.isPinned !== undefined ? { isPinned: flags.isPinned } : {}),
+      ...(flags.sessionTag !== undefined ? { sessionTag: flags.sessionTag ?? undefined } : {}),
+    };
+    didChange =
+      didChange ||
+      nextSession.isFavorite !== session.isFavorite ||
+      nextSession.isPinned !== session.isPinned ||
+      nextSession.sessionTag !== session.sessionTag;
     return nextSession;
   });
   if (!didChange) {
@@ -14077,6 +14265,7 @@ function setRemotePresentationSessionFlagsLocally(
   appendSidebarRefreshDebugLog("nativeSidebar.remoteGxserver.sessionFlags.localFirst", {
     hasFavorite: flags.isFavorite !== undefined,
     hasPinned: flags.isPinned !== undefined,
+    hasTag: flags.sessionTag !== undefined,
     reason,
   });
   publish();
@@ -14387,6 +14576,7 @@ function createPresentationSidebarSession(
     row: Math.floor(index / GRID_COLUMN_COUNT),
     sessionId: createCombinedProjectSessionId(projectId, presentation.sessionId),
     sessionKind: presentation.kind === "agent" ? "terminal" : presentation.kind,
+    sessionTag: presentation.sessionTag,
     sessionNumber: String(index + 1),
     sessionPersistenceName: presentation.zmxName,
     sessionPersistenceProvider: "zmx",
@@ -32906,6 +33096,7 @@ async function updateRemotePresentationSession(
     isFavorite?: boolean;
     isPinned?: boolean;
     lifecycleState?: "running" | "sleeping" | "stopped";
+    sessionTag?: SidebarSessionTag | null;
     title?: string;
   },
   reason: string,
@@ -32923,7 +33114,7 @@ async function updateRemotePresentationSession(
       reason,
     );
   }
-  if (params.isFavorite !== undefined || params.isPinned !== undefined) {
+  if (params.isFavorite !== undefined || params.isPinned !== undefined || params.sessionTag !== undefined) {
     setRemotePresentationSessionFlagsLocally(
       target.machineId,
       target.projectId,
@@ -32931,6 +33122,7 @@ async function updateRemotePresentationSession(
       {
         ...(params.isFavorite !== undefined ? { isFavorite: params.isFavorite } : {}),
         ...(params.isPinned !== undefined ? { isPinned: params.isPinned } : {}),
+        ...(params.sessionTag !== undefined ? { sessionTag: params.sessionTag } : {}),
       },
       reason,
     );
@@ -32959,6 +33151,7 @@ async function updateRemotePresentationSession(
     const metadataParams = {
       ...(params.isFavorite !== undefined ? { isFavorite: params.isFavorite } : {}),
       ...(params.isPinned !== undefined ? { isPinned: params.isPinned } : {}),
+      ...(params.sessionTag !== undefined ? { sessionTag: params.sessionTag } : {}),
       ...(params.title !== undefined ? { title: params.title } : {}),
     };
     if (Object.keys(metadataParams).length > 0) {
@@ -33792,7 +33985,7 @@ function handleSidebarMessage(message: SidebarToExtensionMessage): void {
       if (parseRemotePresentationSessionId(message.sessionId)) {
         void updateRemotePresentationSession(
           message.sessionId,
-          { isFavorite: message.favorite },
+          { isFavorite: message.favorite, sessionTag: message.favorite ? "favorite" : null },
           "set-session-favorite",
         );
         return;
@@ -33801,6 +33994,24 @@ function handleSidebarMessage(message: SidebarToExtensionMessage): void {
         message.sessionId,
         message.favorite,
         "native-sidebar-set-session-favorite",
+      );
+      return;
+    case "setSessionTag":
+      if (parseRemotePresentationSessionId(message.sessionId)) {
+        void updateRemotePresentationSession(
+          message.sessionId,
+          {
+            isFavorite: message.sessionTag === "favorite",
+            sessionTag: message.sessionTag ?? null,
+          },
+          "set-session-tag",
+        );
+        return;
+      }
+      setNativeSessionTagLocalFirst(
+        message.sessionId,
+        message.sessionTag ?? undefined,
+        "native-sidebar-set-session-tag",
       );
       return;
     case "setSessionPinned":
@@ -33954,6 +34165,9 @@ function handleSidebarMessage(message: SidebarToExtensionMessage): void {
     case "toggleActiveSessionsSortMode":
       toggleActiveSessionsSortMode();
       return;
+    case "setActiveSessionsSortMode":
+      setActiveSessionsSortMode(message.sortMode, message.manualSessionIdsByGroup);
+      return;
     case "saveScratchPad":
       saveScratchPadContent(message.content);
       return;
@@ -33968,10 +34182,10 @@ function handleSidebarMessage(message: SidebarToExtensionMessage): void {
       return;
     case "requestPreviousSessions":
       void requestPreviousSessionsFromGxserver({
-        favoritesOnly: message.favoritesOnly,
         limit: message.limit,
         query: message.query,
         requestId: message.requestId,
+        sessionTags: message.sessionTags,
       });
       return;
     case "promptFindPreviousSession":
@@ -34280,6 +34494,12 @@ function handleSidebarMessage(message: SidebarToExtensionMessage): void {
     case "syncSessionOrder": {
       const groupReference = resolveSidebarGroupReference(message.groupId);
       if (!groupReference.groupId) {
+        if (message.groupId === COMBINED_CHATS_GROUP_ID) {
+          if (persistCombinedChatsSessionOrder(message.sessionIds, "syncSessionOrder")) {
+            publish();
+          }
+          return;
+        }
         const combinedProjectId = parseCombinedProjectGroupId(message.groupId);
         if (!combinedProjectId) {
           return;

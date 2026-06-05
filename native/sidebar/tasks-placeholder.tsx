@@ -344,6 +344,9 @@ function ProjectBoardApp() {
    * Lane headers should expose a hover/focus + action in place of the ticket count so users can create a ticket directly in that workflow status.
    * Beads creates issues in Todo first, so non-Todo lane creation must immediately update the new issue status before refreshing the board or starting work.
    *
+   * CDXC:ProjectBoardLaneHeader 2026-06-05-14:30:
+   * The lane header action slot should sit 4px in from the right edge, keep ticket counts right-aligned within that slot, and place the hover + action 3px farther right than the count alignment.
+   *
    * CDXC:ProjectBoard 2026-05-30-08:54:
    * Create & Start must launch the selected agent session from the created bead before optional label hydration or auto-title generation runs.
    * A generated title improves the board card later, but terminal creation and prompt submission must not wait on or be canceled by board refreshes or title generation failures.
@@ -3041,6 +3044,7 @@ styleElement.textContent = `
   .project-board-lane-header-action {
     height: 28px;
     justify-content: flex-end;
+    margin-right: 4px;
     position: relative;
     width: 28px;
   }
@@ -3051,14 +3055,17 @@ styleElement.textContent = `
   }
 
   .project-board-lane-count {
+    display: block;
+    min-width: 100%;
     opacity: 1;
+    text-align: right;
   }
 
   .project-board-lane-add {
     opacity: 0;
     pointer-events: none;
     position: absolute;
-    right: 0;
+    right: -3px;
     top: 0;
   }
 

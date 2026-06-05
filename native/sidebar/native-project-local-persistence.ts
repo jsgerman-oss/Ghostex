@@ -21,6 +21,9 @@ export function createLocalPersistableSessionRecord<T extends SessionRecord>(ses
 
   CDXC:DelayedSend 2026-06-02-19:07:
   Delayed Send timers are still macOS current-window behavior: gxserver can shape launch plans from delayed-send input, but live timer scheduling and restart re-arming remain in the native sidebar until a gxserver timer API exists. Keep `delayedSendDeadlineAt` as a local timer field, not shared session identity.
+
+  CDXC:SessionTags 2026-06-05-12:30:
+  Session tags are gxserver-owned shared metadata beside pinned/favorite state. Do not persist them in the macOS pane/layout cache for canonical G sessions, or stale localStorage could override the tag shown after gxserver presentation loads.
   */
   const sanitized: TerminalSessionRecord = {
     alias: DEFAULT_TERMINAL_SESSION_TITLE,

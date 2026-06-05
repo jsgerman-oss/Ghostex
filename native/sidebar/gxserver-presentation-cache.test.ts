@@ -204,8 +204,33 @@ describe("gxserver presentation cache reducer", () => {
 
     expect(next.groups[0]?.sessionIds).toEqual(["G2bbb", "G1aaa"]);
     expect(next.sessions.map((item) => [item.sessionId, item.sidebarOrder])).toEqual([
-      ["G2bbb", 0],
-      ["G1aaa", 1000],
+      ["G2bbb", 1000],
+      ["G1aaa", 2000],
     ]);
+  });
+
+  test("keeps unsnapshotted project sessions after saved manual order", () => {
+    const next = reorderPresentationProjectSessions(
+      snapshot({
+        groups: [
+          group({
+            sessionIds: [
+              "G1aaa" as GxserverSessionId,
+              "G2bbb" as GxserverSessionId,
+              "G3ccc" as GxserverSessionId,
+            ],
+          }),
+        ],
+        sessions: [
+          session("G1aaa", { sortKey: "0:2:z:2026-06-02T07:18:00.000Z:G1aaa" }),
+          session("G2bbb", { sortKey: "0:2:z:2026-06-02T07:18:00.000Z:G2bbb" }),
+          session("G3ccc", { sortKey: "z:0:2:2026-06-02T07:18:00.000Z:G3ccc" }),
+        ],
+      }),
+      "Pmain" as GxserverProjectId,
+      ["G2bbb" as GxserverSessionId, "G1aaa" as GxserverSessionId],
+    );
+
+    expect(next.groups[0]?.sessionIds).toEqual(["G2bbb", "G1aaa", "G3ccc"]);
   });
 });

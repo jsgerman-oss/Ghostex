@@ -170,7 +170,14 @@ type TitlebarResourceSession = {
   title: string;
 };
 
-type TitlebarTipIcon = "browser" | "command" | "moon" | "resources" | "search" | "warning";
+type TitlebarTipIcon =
+  | "browser"
+  | "command"
+  | "moon"
+  | "resources"
+  | "search"
+  | "sidebar"
+  | "warning";
 
 type TitlebarTip = {
   body: string;
@@ -377,6 +384,10 @@ const TITLEBAR_SPLIT_MENU_CENTER_OFFSET = -14;
  * Tips are authored in code, not by end users in the dropdown. Keep this array
  * as the ordered source of truth so adding, removing, or reordering tips is a
  * normal code edit while read state survives app updates by stable tip id.
+ *
+ * CDXC:TipsAndTricks 2026-06-05-12:39:
+ * The dropdown should teach users early that the sidebar is highly customizable.
+ * Keep this as the second built-in tip so it appears immediately after the command-palette pane-move hint for users who have not marked it read.
  */
 const TITLEBAR_TIPS: TitlebarTip[] = [
   {
@@ -384,6 +395,12 @@ const TITLEBAR_TIPS: TitlebarTip[] = [
     icon: "command",
     id: "command-palette-pane-moves",
     title: "Use Command Palette for pane moves",
+  },
+  {
+    body: "Open Settings to customize sidebar presets, visible details, agents, actions, project tools, and workspace open targets.",
+    icon: "sidebar",
+    id: "customize-sidebar-layout-and-tools",
+    title: "Customize the sidebar",
   },
   {
     body: "The Resources menu can sleep inactive terminal sessions while keeping them restorable in the sidebar.",
@@ -3275,6 +3292,8 @@ function getTitlebarTipIcon(icon: TitlebarTipIcon): ReactNode {
       return <IconDeviceDesktop aria-hidden="true" size={16} stroke={1.8} />;
     case "search":
       return <IconSearch aria-hidden="true" size={16} stroke={1.8} />;
+    case "sidebar":
+      return <IconLayoutSidebarLeftExpand aria-hidden="true" size={16} stroke={1.8} />;
     case "warning":
       return <IconAlertTriangle aria-hidden="true" size={16} stroke={1.8} />;
   }
