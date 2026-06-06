@@ -3143,8 +3143,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
       NativeT3CodePaneReproLog.append("nativeHost.codeServerRuntime.start.failed", [
         "cwd": command.cwd,
         "error": error.localizedDescription,
+        "level": "error",
+        "projectId": command.projectId ?? NSNull(),
       ])
       let sanitizedError = NativeLogPrivacy.sanitizeLogLine(error.localizedDescription)
+      /**
+       CDXC:EditorPanes 2026-06-06-23:50:
+       VS Code server launch failures should surface immediately in the app as a
+       toast and project-editor error, while the support log records the same
+       failure as an error-level diagnostic after privacy sanitization.
+      */
+      let failureMessage = sanitizedError.isEmpty ? "Unknown startup error." : sanitizedError
+      (window?.contentView as? ghostexRootView)?.postHostEvent(
+        .codeServerRuntimeStartFailed(projectId: command.projectId, message: failureMessage))
       Self.logger.error("Failed to start code-server runtime: \(sanitizedError)")
     }
   }
@@ -7237,8 +7248,18 @@ final class ghostexRootView: NSView {
       NativeT3CodePaneReproLog.append("nativeSidebar.codeServerRuntime.start.failed", [
         "cwd": command.cwd,
         "error": error.localizedDescription,
+        "level": "error",
+        "projectId": command.projectId ?? NSNull(),
       ])
       let sanitizedError = NativeLogPrivacy.sanitizeLogLine(error.localizedDescription)
+      /**
+       CDXC:EditorPanes 2026-06-06-23:50:
+       VS Code server launch failures should surface immediately in the app as a
+       toast and project-editor error, while the support log records the same
+       failure as an error-level diagnostic after privacy sanitization.
+       */
+      let failureMessage = sanitizedError.isEmpty ? "Unknown startup error." : sanitizedError
+      sendHostEvent(.codeServerRuntimeStartFailed(projectId: command.projectId, message: failureMessage))
       ghostexRootView.logger.error("Failed to start code-server runtime: \(sanitizedError)")
     }
   }

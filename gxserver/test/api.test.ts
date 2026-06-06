@@ -3119,7 +3119,21 @@ test("session mutations advance presentation revision without connected clients"
       token,
     });
     assert.equal(snapshotBeforeSession.status, 200);
-    const revisionBeforeSession = Number(snapshotBeforeSession.body.result.snapshot.revision);
+    const snapshotBeforeSessionBody = snapshotBeforeSession.body.result.snapshot;
+    /*
+    CDXC:GxserverPresentationProjects 2026-06-06-23:16:
+    Add Project must create a presentation project and empty active group before any terminal session exists. This is the daemon-side invariant that keeps 3.6-to-4.0 upgrades and post-startup project additions from rendering an empty sidebar while the project row already exists in SQLite.
+    */
+    assert.equal(
+      snapshotBeforeSessionBody.projects.some((project: Record<string, unknown>) => project.projectId === projectId),
+      true,
+    );
+    const projectGroupBeforeSession = snapshotBeforeSessionBody.groups.find(
+      (group: Record<string, unknown>) => group.projectId === projectId,
+    );
+    assert.equal(projectGroupBeforeSession?.["groupId"], `${projectId}:active`);
+    assert.deepEqual(projectGroupBeforeSession?.["sessionIds"], []);
+    const revisionBeforeSession = Number(snapshotBeforeSessionBody.revision);
 
     const createdSession = await requestJson(baseUrl, "/api/createAgentSession", {
       body: {

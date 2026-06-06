@@ -14,6 +14,8 @@ const distRoot = path.join(gxserverRoot, "dist");
 const defaultPackageDir = path.join(distRoot, "server-package");
 const defaultHomebrewDir = path.join(distRoot, "homebrew");
 const executableMode = 0o755;
+const appNativeNodeMajor = 22;
+const nativeRuntimeFileName = "native-runtime.json";
 
 const args = parseArgs(process.argv.slice(2));
 const packageDir = path.resolve(args.packageDir ?? defaultPackageDir);
@@ -50,10 +52,14 @@ await chmod(path.join(packageDir, "bin", "zehn"), executableMode);
 await writeFile(path.join(packageDir, "README.md"), serverReadme(), "utf8");
 
 if (args.includeNodeModules) {
-  await copyProductionNodeModules(packageDir);
-  if (args.nativeNode) {
-    await rebuildPackagedNativeModules(packageDir, args);
+  if (!args.nativeNode) {
+    throw new Error(
+      "--include-node-modules requires --native-node so app-bundled native modules can record the exact system Node ABI they were rebuilt for.",
+    );
   }
+  await copyProductionNodeModules(packageDir);
+  const nativeRuntime = await rebuildPackagedNativeModules(packageDir, args);
+  await writeNativeRuntime(packageDir, nativeRuntime);
 }
 
 await writeBuildIdentity(packageDir);
@@ -210,9 +216,18 @@ async function rebuildPackagedNativeModules(targetDir, options) {
   /*
   CDXC:GxserverPackaging 2026-06-01-16:22:
   The macOS app launches gxserver with a selected system Node, but the repository may be installed with a different Node ABI. Rebuild native production modules inside the staged app package and smoke-test SQLite there so app packaging does not mutate the repository's node_modules or ship an ABI mismatch.
+
+  CDXC:GxserverPackaging 2026-06-06-22:00:
+  Ghostex must not bundle Node for gxserver. App-bundled native modules therefore publish the Node major and NODE_MODULE_VERSION they were rebuilt against, and macOS startup must require a matching system Node instead of trying a different installed Node first.
   */
   const nodePath = path.resolve(options.nativeNode);
   await assertExecutableFile(nodePath, "Selected --native-node is not executable.");
+  const nativeRuntime = await readNativeRuntime(nodePath);
+  if (nativeRuntime.nodeMajor !== appNativeNodeMajor) {
+    throw new Error(
+      `App-bundled gxserver native modules must target Node.js ${appNativeNodeMajor} LTS, but --native-node is ${nativeRuntime.nodeVersion}. Install Node ${appNativeNodeMajor} with nodejs.org, nvm, mise, fnm, asdf, nodenv, Volta, or Homebrew, then pass --native-node to that Node ${appNativeNodeMajor} executable.`,
+    );
+  }
   const npmPath = await resolveNativeNpm(options.nativeNpm, nodePath);
   const betterSqliteRoot = path.join(targetDir, "node_modules", "better-sqlite3");
   await assertDirectory(betterSqliteRoot, "Packaged better-sqlite3 is missing from production node_modules.");
@@ -243,6 +258,43 @@ async function rebuildPackagedNativeModules(targetDir, options) {
   if (smoke.status !== 0) {
     throw new Error(`Packaged better-sqlite3 did not load under ${nodePath}:\n${smoke.stderr || smoke.stdout}`);
   }
+  return {
+    ...nativeRuntime,
+    nativeModules: ["better-sqlite3"],
+    nodeRequirement: `Node.js ${nativeRuntime.nodeMajor}.x with NODE_MODULE_VERSION ${nativeRuntime.nodeModuleVersion}`,
+  };
+}
+
+async function readNativeRuntime(nodePath) {
+  const probe = spawnSync(
+    nodePath,
+    [
+      "-p",
+      "JSON.stringify({nodeMajor: Number(process.versions.node.split('.')[0]), nodeModuleVersion: process.versions.modules, nodeVersion: process.version})",
+    ],
+    {
+      encoding: "utf8",
+      stdio: "pipe",
+    },
+  );
+  if (probe.status !== 0) {
+    throw new Error(`Could not read Node runtime identity from ${nodePath}:\n${probe.stderr || probe.stdout}`);
+  }
+  const parsed = JSON.parse(probe.stdout);
+  if (
+    !Number.isInteger(parsed.nodeMajor) ||
+    typeof parsed.nodeModuleVersion !== "string" ||
+    parsed.nodeModuleVersion.length === 0 ||
+    typeof parsed.nodeVersion !== "string" ||
+    parsed.nodeVersion.length === 0
+  ) {
+    throw new Error(`Node runtime identity from ${nodePath} is invalid.`);
+  }
+  return parsed;
+}
+
+async function writeNativeRuntime(sourceDir, nativeRuntime) {
+  await writeFile(path.join(sourceDir, nativeRuntimeFileName), `${JSON.stringify(nativeRuntime, null, 2)}\n`, "utf8");
 }
 
 async function assertExecutableFile(filePath, guidance) {

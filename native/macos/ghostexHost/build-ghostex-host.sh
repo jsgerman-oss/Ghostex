@@ -9,6 +9,7 @@ WEB_DIR="$SCRIPT_DIR/Web"
 GHOSTTY_ROOT="${GHOSTTY_ROOT:-}"
 ZMX_ROOT="${ZMX_ROOT:-$REPO_ROOT/zmx}"
 ZEHN_ROOT="${ZEHN_ROOT:-$REPO_ROOT/zehn}"
+GXSERVER_REQUIRED_NODE_MAJOR="22"
 GHOSTEX_MACOS_ARCH="${GHOSTEX_MACOS_ARCH:-$(uname -m)}"
 case "$GHOSTEX_MACOS_ARCH" in
 	arm64 | aarch64)
@@ -26,19 +27,40 @@ esac
 resolve_gxserver_node() {
 	local home
 	home="$HOME"
+	# CDXC:GxserverPackaging 2026-06-06-22:56: Node 22 can come from nodejs.org, nvm, mise, fnm, asdf, nodenv, Volta, or Homebrew. Release packaging should scan common direct install locations before failing so Homebrew is an example, not a requirement.
 	local candidates=(
+		"/opt/homebrew/opt/node@${GXSERVER_REQUIRED_NODE_MAJOR}/bin/node"
+		"/usr/local/opt/node@${GXSERVER_REQUIRED_NODE_MAJOR}/bin/node"
 		"/opt/homebrew/bin/node"
 		"/usr/local/bin/node"
+		"$home/.volta/bin/node"
 		"$home/.local/share/mise/shims/node"
-		"$home/.local/bin/node"
 		"$home/.asdf/shims/node"
+		"$home/.nodenv/shims/node"
+		"$home/.local/bin/node"
 	)
 	local candidate version major
+	for candidate in \
+		"$home"/.nvm/versions/node/v"${GXSERVER_REQUIRED_NODE_MAJOR}".*/bin/node \
+		"$home"/.nvm/current/bin/node \
+		"$home"/.local/share/mise/installs/node/"${GXSERVER_REQUIRED_NODE_MAJOR}".*/bin/node \
+		"$home"/.local/share/mise/installs/node/v"${GXSERVER_REQUIRED_NODE_MAJOR}".*/bin/node \
+		"$home"/.asdf/installs/nodejs/"${GXSERVER_REQUIRED_NODE_MAJOR}".*/bin/node \
+		"$home"/.nodenv/versions/"${GXSERVER_REQUIRED_NODE_MAJOR}".*/bin/node \
+		"$home"/.fnm/node-versions/"${GXSERVER_REQUIRED_NODE_MAJOR}".*/installation/bin/node \
+		"$home"/.fnm/node-versions/v"${GXSERVER_REQUIRED_NODE_MAJOR}".*/installation/bin/node \
+		"$home"/.local/share/fnm/node-versions/"${GXSERVER_REQUIRED_NODE_MAJOR}".*/installation/bin/node \
+		"$home"/.local/share/fnm/node-versions/v"${GXSERVER_REQUIRED_NODE_MAJOR}".*/installation/bin/node \
+		"$home"/Library/Application\ Support/fnm/node-versions/"${GXSERVER_REQUIRED_NODE_MAJOR}".*/installation/bin/node \
+		"$home"/Library/Application\ Support/fnm/node-versions/v"${GXSERVER_REQUIRED_NODE_MAJOR}".*/installation/bin/node \
+		"$home"/.volta/tools/image/node/"${GXSERVER_REQUIRED_NODE_MAJOR}".*/bin/node; do
+		candidates+=("$candidate")
+	done
 	for candidate in "${candidates[@]}"; do
 		if [[ -x "$candidate" ]]; then
 			version="$("$candidate" -p 'process.versions.node' 2>/dev/null || true)"
 			major="${version%%.*}"
-			if [[ "$major" =~ ^[0-9]+$ && "$major" -ge 22 ]]; then
+			if [[ "$major" =~ ^[0-9]+$ && "$major" -eq "$GXSERVER_REQUIRED_NODE_MAJOR" ]]; then
 				printf '%s\n' "$candidate"
 				return 0
 			fi
@@ -48,7 +70,7 @@ resolve_gxserver_node() {
 	if [[ -n "$candidate" ]]; then
 		version="$("$candidate" -p 'process.versions.node' 2>/dev/null || true)"
 		major="${version%%.*}"
-		if [[ "$major" =~ ^[0-9]+$ && "$major" -ge 22 ]]; then
+		if [[ "$major" =~ ^[0-9]+$ && "$major" -eq "$GXSERVER_REQUIRED_NODE_MAJOR" ]]; then
 			printf '%s\n' "$candidate"
 			return 0
 		fi
@@ -136,12 +158,21 @@ package_t3code_server() {
 }
 
 # CDXC:GxserverPackaging 2026-06-01-16:11: The packaged gxserver native modules must be built with the same system Node that GxserverClient will use at runtime. Rebuild better-sqlite3 through that Node/npm before staging app resources so local starts do not ship a Node-ABI mismatch into /Applications/Ghostex.app.
+#
+# CDXC:GxserverPackaging 2026-06-06-22:00: Ghostex should not bundle Node for gxserver, so app releases pin the prebuilt better-sqlite3 ABI to Node 22 LTS and require users to install a matching system Node instead of accepting whichever newer Node happens to be first on PATH.
 GXSERVER_NODE_BIN="${GXSERVER_NODE:-$(resolve_gxserver_node || true)}"
 if [[ -z "$GXSERVER_NODE_BIN" ]]; then
 	cat >&2 <<EOF
-Node.js 22 or newer is required to package gxserver for the macOS app.
+Node.js ${GXSERVER_REQUIRED_NODE_MAJOR} LTS is required to package gxserver for the macOS app.
 
-Install Node 22 LTS or newer from https://nodejs.org or with a system package manager such as Homebrew.
+Install Node ${GXSERVER_REQUIRED_NODE_MAJOR} LTS from https://nodejs.org/en/download or with nvm, mise, fnm, asdf, nodenv, Volta, or Homebrew.
+
+Examples:
+  nvm install ${GXSERVER_REQUIRED_NODE_MAJOR}
+  mise install node@${GXSERVER_REQUIRED_NODE_MAJOR}
+  brew install node@${GXSERVER_REQUIRED_NODE_MAJOR}
+
+If your Node manager stores runtimes somewhere custom, set GXSERVER_NODE to the Node ${GXSERVER_REQUIRED_NODE_MAJOR} executable.
 EOF
 	exit 1
 fi
@@ -155,6 +186,23 @@ if [[ -z "$GXSERVER_NPM_BIN" || ! -x "$GXSERVER_NPM_BIN" ]]; then
 	exit 1
 fi
 GXSERVER_NODE_VERSION="$("$GXSERVER_NODE_BIN" -p 'process.version')"
+GXSERVER_NODE_MAJOR="$("$GXSERVER_NODE_BIN" -p 'process.versions.node.split(".")[0]')"
+if [[ "$GXSERVER_NODE_MAJOR" != "$GXSERVER_REQUIRED_NODE_MAJOR" ]]; then
+	cat >&2 <<EOF
+Ghostex app gxserver packaging must use Node.js ${GXSERVER_REQUIRED_NODE_MAJOR} LTS so bundled native modules match the runtime users are asked to install.
+
+Selected Node:
+  $GXSERVER_NODE_BIN
+  $GXSERVER_NODE_VERSION
+
+Install a matching runtime or set GXSERVER_NODE explicitly:
+  nvm install ${GXSERVER_REQUIRED_NODE_MAJOR}
+  mise install node@${GXSERVER_REQUIRED_NODE_MAJOR}
+  brew install node@${GXSERVER_REQUIRED_NODE_MAJOR}
+  GXSERVER_NODE=/path/to/node-${GXSERVER_REQUIRED_NODE_MAJOR}/bin/node bun run start
+EOF
+	exit 1
+fi
 GXSERVER_NODE_MODULE_VERSION="$("$GXSERVER_NODE_BIN" -p 'process.versions.modules')"
 
 T3CODE_NODE_BIN="${T3CODE_NODE:-$(resolve_t3code_node || true)}"
@@ -489,37 +537,22 @@ cp "$REPO_ROOT"/media/sounds/*.mp3 "$WEB_DIR/sounds/"
 # Storybook imports some sidebar components as ES modules. Force the packaged
 # native bundle to IIFE so exported Storybook symbols never leave top-level
 # `export` syntax in /Applications/Ghostex.app and blank the app at startup.
-bun build "$REPO_ROOT/native/sidebar/native-sidebar.tsx" \
-	--target browser \
-	--format iife \
-	--asset-naming "[name].[ext]" \
-	--outdir "$WEB_DIR"
-bun build "$REPO_ROOT/native/sidebar/modal-host.tsx" \
-	--target browser \
-	--format iife \
-	--asset-naming "[name].[ext]" \
-	--outdir "$WEB_DIR"
 # CDXC:ReactTitlebar 2026-05-09-17:11: The macOS titlebar chrome is now a
 # React WKWebView bundle so future titlebar buttons and workspace dropdowns
 # share the same web UI/runtime rather than AppKit button implementations.
-bun build "$REPO_ROOT/native/sidebar/titlebar-host.tsx" \
-	--target browser \
-	--format iife \
-	--asset-naming "[name].[ext]" \
-	--outdir "$WEB_DIR"
 # CDXC:ModeSwitcher 2026-05-15-12:38: Bundle the tasks-backed Project mode as
 # a first-party React page so the titlebar switcher can open a placeholder
 # workarea surface without depending on remote assets or an external browser.
-bun build "$REPO_ROOT/native/sidebar/tasks-placeholder.tsx" \
-	--target browser \
-	--format iife \
-	--asset-naming "[name].[ext]" \
-	--outdir "$WEB_DIR"
-bun build "$REPO_ROOT/native/sidebar/pet-host.tsx" \
-	--target browser \
-	--format iife \
-	--asset-naming "[name].[ext]" \
-	--outdir "$WEB_DIR"
+# CDXC:ReactCompiler 2026-06-06-21:20: Build all native WKWebView React bundles
+# through the repository helper so React Compiler runs before Bun bundles and
+# the host still receives the same classic-script filenames it inlines below.
+bun "$REPO_ROOT/scripts/build-native-web-bundles.mjs" \
+	--outdir "$WEB_DIR" \
+	"$REPO_ROOT/native/sidebar/native-sidebar.tsx" \
+	"$REPO_ROOT/native/sidebar/modal-host.tsx" \
+	"$REPO_ROOT/native/sidebar/titlebar-host.tsx" \
+	"$REPO_ROOT/native/sidebar/tasks-placeholder.tsx" \
+	"$REPO_ROOT/native/sidebar/pet-host.tsx"
 
 WEB_DIR="$WEB_DIR" node <<'JS'
 const { existsSync, readFileSync, writeFileSync } = require("node:fs");

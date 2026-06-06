@@ -4,7 +4,7 @@ import {
   IconFolder,
   IconFolderOpen,
 } from "@tabler/icons-react";
-import { memo, useCallback, useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import type { SidebarGitChangedFile } from "../shared/sidebar-git";
 import {
   buildChangedFilesTree,
@@ -25,7 +25,7 @@ export type ChangedFilesTreeProps = {
   selectedPath?: string;
 };
 
-export const ChangedFilesTree = memo(function ChangedFilesTree({
+export function ChangedFilesTree({
   allDirectoriesExpanded = true,
   className,
   excludedPaths,
@@ -143,7 +143,7 @@ export const ChangedFilesTree = memo(function ChangedFilesTree({
       {treeNodes.map((node) => renderTreeNode(node, 0))}
     </div>
   );
-});
+}
 
 function DiffStat({ stat }: { stat: ChangedFilesTreeStat }) {
   return (

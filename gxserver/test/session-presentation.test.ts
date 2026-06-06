@@ -487,10 +487,19 @@ test("presentation snapshot applies stale spinner activity semantics", () => {
     wake: false,
   });
 
-  const staleSnapshot = projectGxserverPresentationSnapshot({
+  const oldBoundarySnapshot = projectGxserverPresentationSnapshot({
     generatedAt: "2026-06-01T12:00:04.000Z",
     projects: [project],
     revision: 2 as GxserverPresentationRevision,
+    sessions: [session],
+  });
+  assert.equal(oldBoundarySnapshot.sessions[0]?.activity, "working");
+  assert.equal(oldBoundarySnapshot.sessions[0]?.actions.acknowledgeAttention, false);
+
+  const staleSnapshot = projectGxserverPresentationSnapshot({
+    generatedAt: "2026-06-01T12:00:06.000Z",
+    projects: [project],
+    revision: 3 as GxserverPresentationRevision,
     sessions: [session],
   });
   assert.equal(staleSnapshot.sessions[0]?.activity, "attention");

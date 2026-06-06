@@ -49,9 +49,12 @@ export type NativeSidebarGxserverStatus = NativeSidebarGxserverBootstrap & {
   alwaysStart?: boolean;
   health?: GxserverServerHealthResponse;
   message?: string;
+  nodeModuleVersion?: string;
   nodePath?: string;
   nodeVersion?: string;
   ok?: boolean;
+  expectedNodeMajor?: number;
+  expectedNodeModuleVersion?: string;
   state?: string;
 };
 

@@ -137,6 +137,7 @@ test("log normalization redacts project/session names, paths, command text, urls
       projectId: "P3a91",
       sessionId: "G8v20",
       title: "Customer deploy",
+      titlePreview: "Customer deploy",
       worktreePath: "/Users/person/dev/private-project-feature",
     },
     error: "failed in /Users/person/dev/private-project with token=secret-token",
@@ -155,6 +156,7 @@ test("log normalization redacts project/session names, paths, command text, urls
   assert.equal(normalized.details?.comment, "[redacted]");
   assert.equal(normalized.details?.cwd, "[redacted:path]");
   assert.equal(normalized.details?.title, "[redacted]");
+  assert.equal(normalized.details?.titlePreview, "[redacted]");
   assert.equal(normalized.details?.worktreePath, "[redacted:path]");
   assert.deepEqual((normalized.details?.nested as Record<string, unknown>)?.url, {
     host: "example.test",

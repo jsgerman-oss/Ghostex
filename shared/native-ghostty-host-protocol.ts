@@ -181,9 +181,14 @@ export type NativeGhosttyHostCommand =
        * The runtime command carries the VS Code user-config link setting so the
        * native launcher can pass code-server's CLI flags before the editor
        * process starts instead of mutating the embedded VS Code UI later.
+       *
+       * CDXC:EditorPanes 2026-06-06-23:50:
+       * VS Code server startup failures must be tied back to the project editor
+       * row so the sidebar can show the real launch error and toast immediately.
        */
       cwd: string;
       linkVscodeUserConfig?: boolean;
+      projectId?: string;
       type: "startCodeServerRuntime";
       vscodeUserConfigDir?: string;
     }
@@ -559,6 +564,16 @@ export type NativeGhosttyHostEvent =
       projectId: string;
       status: "opening" | "running" | "error";
       type: "projectEditorLoadState";
+    }
+  | {
+      /**
+       * CDXC:EditorPanes 2026-06-06-23:50:
+       * Native reports code-server startup failures before browser navigation so
+       * the app can show a toast instead of waiting for the generic open timeout.
+       */
+      message: string;
+      projectId?: string;
+      type: "codeServerRuntimeStartFailed";
     }
   | {
       projectId: string;

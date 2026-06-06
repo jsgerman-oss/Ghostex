@@ -31,6 +31,9 @@ interface ZmxTitleObserverProcess {
 /*
 CDXC:ZmxTitleObservations 2026-06-01-10:17:
 zmx is the shared PTY owner for managed terminal sessions, so gxserver should consume coalesced zmx title observations instead of relying on per-client native title snapshots. The observer process feeds zmx's settled title stream back through the existing authenticated title-ingest API, keeping persistence/status rules centralized in gxserver.
+
+CDXC:ZmxTitleObservations 2026-06-06-23:21:
+Persistent zmx observer diagnostics must not include title previews, raw zmx output, response text, or stderr content. Use lengths, status codes, IDs, and booleans so Debugging Mode can diagnose watcher behavior without writing user-owned terminal titles or command output to support-bundle logs.
 */
 export class GxserverZmxTitleObserver {
   #closed = false;
@@ -117,7 +120,7 @@ export class GxserverZmxTitleObserver {
         details: {
           code,
           signal,
-          stderr: process.stderr || undefined,
+          stderrLength: process.stderr.length,
           zmxName,
         },
         event: this.#closed ? "zmxTitleObserver.stopped" : "zmxTitleObserver.exited",
@@ -168,7 +171,7 @@ export class GxserverZmxTitleObserver {
     const title = parseZmxTitleLine(line);
     if (!title) {
       await this.#options.logger.log({
-        details: { linePreview: line.slice(0, 120), zmxName: process.zmxName },
+        details: { lineLength: line.length, zmxName: process.zmxName },
         event: "zmxTitleObserver.invalidLine",
         level: "debug",
         projectId: process.projectId,
@@ -196,10 +199,11 @@ export class GxserverZmxTitleObserver {
         method: "POST",
       });
       if (!response.ok) {
+        const responseText = await response.text();
         await this.#options.logger.log({
           details: {
             responseStatus: response.status,
-            responseText: (await response.text()).slice(0, 240),
+            responseTextLength: responseText.length,
             zmxName: process.zmxName,
           },
           event: "zmxTitleObserver.ingestFailed",
@@ -214,7 +218,6 @@ export class GxserverZmxTitleObserver {
         details: {
           key,
           titleLength: title.length,
-          titlePreview: title.slice(0, 80),
           zmxName: process.zmxName,
         },
         event: "zmxTitleObserver.ingested",

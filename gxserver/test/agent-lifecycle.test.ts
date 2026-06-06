@@ -401,7 +401,36 @@ test("Codex spinner title working expires when the title frame is stuck", () => 
   assert.equal(sameFrameInsideWindow.activity, "working");
   assert.equal(sameFrameInsideWindow.lastTitleChangeAt, "2026-06-01T12:00:00.000Z");
 
-  const sameFrameAfterWindow = applyAgentActivityTransition({
+  const rapidChangedSpinnerFrame = applyAgentActivityTransition({
+    agentId: "codex",
+    event: "title",
+    nowIso: "2026-06-01T12:00:00.100Z",
+    nowMs: Date.parse("2026-06-01T12:00:00.100Z"),
+    previous: firstFrame,
+    title: "⠋ Skip migration issue 2 options",
+  });
+  assert.equal(rapidChangedSpinnerFrame.activity, "working");
+  assert.equal(rapidChangedSpinnerFrame.lastTitle, "⠋ Skip migration issue 2 options");
+  assert.equal(rapidChangedSpinnerFrame.lastTitleChangeAt, "2026-06-01T12:00:00.000Z");
+
+  /*
+  CDXC:SessionStatus 2026-06-06-23:07:
+  Same-semantic spinner frames should refresh the gxserver working window only
+  at the title heartbeat cadence. This preserves "still working" detection
+  while preventing native or zmx title storms from publishing every frame.
+  */
+  const heartbeatChangedSpinnerFrame = applyAgentActivityTransition({
+    agentId: "codex",
+    event: "title",
+    nowIso: "2026-06-01T12:00:02.100Z",
+    nowMs: Date.parse("2026-06-01T12:00:02.100Z"),
+    previous: rapidChangedSpinnerFrame,
+    title: "⠙ Skip migration issue 2 options",
+  });
+  assert.equal(heartbeatChangedSpinnerFrame.activity, "working");
+  assert.equal(heartbeatChangedSpinnerFrame.lastTitleChangeAt, "2026-06-01T12:00:02.100Z");
+
+  const sameFrameAfterOldWindow = applyAgentActivityTransition({
     agentId: "codex",
     event: "title",
     nowIso: "2026-06-01T12:00:03.025Z",
@@ -409,8 +438,26 @@ test("Codex spinner title working expires when the title frame is stuck", () => 
     previous: sameFrameInsideWindow,
     title: "⠏ Skip migration issue 2 options",
   });
-  assert.equal(sameFrameAfterWindow.activity, "attention");
-  assert.equal(sameFrameAfterWindow.workingSource, undefined);
+  assert.equal(sameFrameAfterOldWindow.activity, "working");
+  assert.equal(sameFrameAfterOldWindow.workingSource, "title");
+
+  /*
+  CDXC:SessionStatus 2026-06-06-23:26:
+  The old 3s stale boundary is too close to zmx's 2s coalesced heartbeat and
+  can show active sessions as attention between sparse title observations.
+  Keep the session working inside the 5s slow-spinner freshness window, then
+  expire a truly frozen title-derived working state after that window.
+  */
+  const sameFrameAfterFreshnessWindow = applyAgentActivityTransition({
+    agentId: "codex",
+    event: "title",
+    nowIso: "2026-06-01T12:00:05.025Z",
+    nowMs: Date.parse("2026-06-01T12:00:05.025Z"),
+    previous: sameFrameInsideWindow,
+    title: "⠏ Skip migration issue 2 options",
+  });
+  assert.equal(sameFrameAfterFreshnessWindow.activity, "attention");
+  assert.equal(sameFrameAfterFreshnessWindow.workingSource, undefined);
 
   const refreshedSpinnerFrame = applyAgentActivityTransition({
     agentId: "codex",
@@ -437,7 +484,7 @@ test("presentation activity expires stale title-derived working without expiring
       workingStartedAt: "2026-06-01T12:00:00.000Z",
     },
     { activity: "idle" },
-    Date.parse("2026-06-01T12:00:04.000Z"),
+    Date.parse("2026-06-01T12:00:06.000Z"),
   );
   assert.equal(titleDerived.activity, "attention");
 

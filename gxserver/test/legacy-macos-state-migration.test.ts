@@ -11,6 +11,7 @@ import {
 } from "../src/legacy-macos-state-migration.js";
 import { createGxserverLogger } from "../src/logger.js";
 import { getGxserverPaths } from "../src/paths.js";
+import { readGxserverPresentationSnapshot } from "../src/session-presentation/repository.js";
 import { initializeGxserverStorage, openGxserverDatabase } from "../src/storage.js";
 import type { GxserverProjectId, GxserverSessionId } from "../protocol/index.js";
 
@@ -153,6 +154,44 @@ test("first-run import migrates macOS sidebar projects, active and sleeping sess
       assert.equal(logEntries.some((entry) => entry.event.startsWith("legacy.agentDetection.")), true);
       assert.equal(logEntries.some((entry) => entry.event.startsWith("legacy.zmx.")), true);
       assert.equal(logEntries.some((entry) => entry.event === "migration.legacyMacosState.completed"), true);
+    } finally {
+      db.close();
+    }
+  });
+});
+
+test("first-run import projects hydrate gxserver presentation groups for existing 3.6 sidebars", async () => {
+  await withLegacyImportFixture(async (fixture) => {
+    /*
+    CDXC:GxserverMigration 2026-06-06-23:16:
+    Users upgrading from Ghostex 3.6 already have projects and sessions in the macOS sidebar snapshot. First 4.0 launch must project those imported DB projects into gxserver presentation groups immediately so the native sidebar never depends on a separately initialized `sidebar.groups` store.
+    */
+    const result = await runImport(fixture);
+
+    assert.equal(result.status.status, "completed");
+    assert.equal(result.status.projectsImported, 2);
+    assert.equal(result.status.sessionsImported, 4);
+
+    const db = openGxserverDatabase(fixture.paths);
+    try {
+      const repository = new GxserverDomainRepository(db, "S7k");
+      const projects = repository.listProjects();
+      const presentation = readGxserverPresentationSnapshot(db, "S7k", "2026-06-06T19:16:00.000Z");
+
+      assert.equal(presentation.projects.length, projects.length);
+      assert.equal(presentation.groups.length, projects.length);
+      for (const project of projects) {
+        const presentationProject = presentation.projects.find((candidate) => candidate.projectId === project.projectId);
+        const presentationGroup = presentation.groups.find((candidate) => candidate.projectId === project.projectId);
+        assert.equal(presentationProject?.projectId, project.projectId);
+        assert.deepEqual(presentationProject?.groupIds, [`${project.projectId}:active`]);
+        assert.equal(presentationGroup?.groupId, `${project.projectId}:active`);
+      }
+
+      const mainGroup = presentation.groups.find((group) => group.projectId === "P3a91");
+      const worktreeGroup = presentation.groups.find((group) => group.projectId === "P4b22");
+      assert.deepEqual([...(mainGroup?.sessionIds ?? [])].sort(), ["G1z99", "G2abc", "G8v20"].sort());
+      assert.deepEqual(worktreeGroup?.sessionIds, ["G3def"]);
     } finally {
       db.close();
     }

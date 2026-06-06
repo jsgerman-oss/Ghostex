@@ -23,6 +23,12 @@ import {
   createNativePaneOwnerSelectionKey,
   normalizeNativeLayoutSyncValue,
 } from "./native-layout-sync-key";
+import {
+  resolveNativeSessionTransitionFocusTarget,
+  type NativeGxserverSessionTransitionOrigin,
+  type NativeSessionTransitionFocusTarget,
+  type NativeSessionTransitionOriginSession,
+} from "./native-session-transition-focus";
 import { splitAgentPromptTextIntoLineChunks } from "./native-agent-prompt-text";
 import {
   DEFAULT_FIND_PREVIOUS_SESSION_PROMPT_TEMPLATE,
@@ -425,6 +431,7 @@ type NativeHostCommand =
   | {
       cwd: string;
       linkVscodeUserConfig?: boolean;
+      projectId?: string;
       type: "startCodeServerRuntime";
       vscodeUserConfigDir?: string;
     }
@@ -830,6 +837,11 @@ type NativeHostEvent =
       projectId: string;
       status: Exclude<ProjectEditorLoadStatus, "idle">;
       type: "projectEditorLoadState";
+    }
+  | {
+      message: string;
+      projectId?: string;
+      type: "codeServerRuntimeStartFailed";
     }
   | (ProjectBoardBridgeRequest & { type: "projectBoardRequest" })
   | { payloadJson: string; type: "osIntegrationStatus" }
@@ -1637,24 +1649,6 @@ type NativePaneState = "mounted" | "mounting" | "unmounted";
 type ProviderSessionState = "exists" | "missing" | "persistence-disabled" | "unknown";
 type ProviderSessionStateLookupOptions = {
   includeMountedNativeSession?: boolean;
-};
-type NativeSessionTransitionOriginSession = {
-  lifecycleState?: "running" | "sleeping" | "stopped" | "missing" | "unknown";
-  sessionId: string;
-};
-type NativeGxserverSessionTransitionOrigin =
-  | {
-      kind: "projectSessionList";
-      orderedSessions: NativeSessionTransitionOriginSession[];
-    }
-  | {
-      kind: "paneTabGroup";
-      orderedSessions: NativeSessionTransitionOriginSession[];
-    };
-type NativeSessionTransitionFocusTarget = {
-  projectId: string;
-  reason: "nextLiveProjectSession" | "nextPaneTab";
-  sessionId: string;
 };
 const providerSessionStateByProjectSessionId = new Map<
   string,
@@ -2911,6 +2905,11 @@ function handleGxserverStatusEvent(payloadJson: string): void {
     showGxserverStoppedToast(status.message);
     return;
   }
+  if (status.state === "nodeUnavailable" && status.message) {
+    stopGxserverPresentationSubscription("node-unavailable");
+    showGxserverNodeDependencyToast(status.message);
+    return;
+  }
   if (status.ok === false && status.message) {
     stopGxserverPresentationSubscription("failed");
     showGxserverFailureToast(status.message);
@@ -3411,6 +3410,7 @@ function createAppToastId(scope: string): string {
 }
 
 const GXSERVER_DAEMON_TOAST_ID = "toast-gxserver-daemon";
+const CODE_SERVER_RUNTIME_TOAST_ID = "toast-code-server-runtime";
 
 function showGxserverLoadingToast(description = "Checking local daemon status."): void {
   /*
@@ -3433,6 +3433,22 @@ function showGxserverFailureToast(message: string): void {
     action: {
       label: "Retry",
       sidebarMessage: { type: "retryGxserverStart" },
+    },
+    persistent: true,
+    toastId: GXSERVER_DAEMON_TOAST_ID,
+  });
+}
+
+function showGxserverNodeDependencyToast(message: string): void {
+  /*
+  CDXC:GxserverBootstrap 2026-06-06-22:00:
+  App startup must explain missing or ABI-mismatched user-installed Node before gxserver launches, because otherwise the bundled database module can crash the daemon and surface as misleading auth-token errors.
+  */
+  gxserverDaemonToastPendingResolution = true;
+  showAppToast("error", "Node.js 22 required", message, {
+    action: {
+      label: "Open Node.js",
+      sidebarMessage: { type: "openExternalUrl", url: "https://nodejs.org/en/download" },
     },
     persistent: true,
     toastId: GXSERVER_DAEMON_TOAST_ID,
@@ -14805,19 +14821,22 @@ function buildSidebarMessage(): SidebarHydrateMessage {
 }
 
 function summarizeSidebarRefreshProject(project = activeProject()): Record<string, unknown> {
-  const sessionIds = project.workspace.groups.flatMap((group) =>
-    group.snapshot.sessions.map((session) => session.sessionId),
+  const sessionCount = project.workspace.groups.reduce(
+    (total, group) => total + group.snapshot.sessions.length,
+    0,
   );
   return {
     activeGroupId: project.workspace.activeGroupId,
     activeProjectId,
-    focusedSessionIdsByGroup: Object.fromEntries(
-      project.workspace.groups.map((group) => [group.groupId, group.snapshot.focusedSessionId]),
+    focusedSessionGroupCount: project.workspace.groups.filter(
+      (group) => group.snapshot.focusedSessionId !== undefined,
+    ).length,
+    groupSessionCounts: Object.fromEntries(
+      project.workspace.groups.map((group) => [group.groupId, group.snapshot.sessions.length]),
     ),
     groupCount: project.workspace.groups.length,
     projectId: project.projectId,
-    sessionCount: sessionIds.length,
-    sessionIds,
+    sessionCount,
   };
 }
 
@@ -19475,6 +19494,24 @@ function syncSessionTitleFromNativeTerminalTitle(
   return true;
 }
 
+function shouldForwardNativeTerminalTitleImmediatelyToGxserver(
+  session: SessionRecord,
+  terminalState: NonNullable<ReturnType<typeof terminalStateById.get>>,
+): boolean {
+  /*
+  CDXC:SidebarPerformance 2026-06-06-23:07:
+  zmx-backed sessions already publish terminal titles through gxserver's coalesced zmx watcher. Do not also forward every native Ghostty title frame from the sidebar WKWebView, because spinner frames can arrive many times per second and turn into full hydrate publishes, gxserver writes, and WebKit memory growth.
+  */
+  if (
+    session.kind === "terminal" &&
+    terminalState.sessionPersistenceProvider === "zmx" &&
+    terminalState.sessionPersistenceName
+  ) {
+    return false;
+  }
+  return session.kind === "terminal";
+}
+
 function scheduleSettledTerminalTitleSync(sessionId: string, reason: string): void {
   const terminalState = terminalStateById.get(sessionId);
   const session = findSessionRecord(sessionId);
@@ -20887,91 +20924,6 @@ function createSessionTransitionOriginEntryFromSidebarSession(
     : { sessionId };
 }
 
-function resolveNativeSessionTransitionFocusTarget(
-  reference: ReturnType<typeof resolveSidebarSessionReference>,
-  action: "close" | "sleep",
-  origin: NativeGxserverSessionTransitionOrigin,
-): NativeSessionTransitionFocusTarget | undefined {
-  /*
-  CDXC:ProjectSidebarOwnership 2026-06-02-13:01:
-  Close/sleep focus is selected-tab and current-window layout behavior, so native computes it from the rendered sidebar or pane-tab order before calling gxserver for the shared lifecycle mutation. gxserver must not receive pane-tab order or return focus targets.
-  */
-  const orderedSessions = normalizeNativeSessionTransitionOrderedSessions(origin.orderedSessions);
-  const candidates =
-    origin.kind === "projectSessionList"
-      ? getForwardWrappedNativeTransitionCandidates(orderedSessions, reference.sessionId)
-      : getPaneTabNativeTransitionCandidates(orderedSessions, reference.sessionId);
-  for (const candidate of candidates) {
-    if (candidate.sessionId === reference.sessionId) {
-      continue;
-    }
-    if (origin.kind === "projectSessionList") {
-      if (!isNativeLiveProjectTransitionCandidate(reference, candidate.sessionId)) {
-        continue;
-      }
-      return {
-        projectId: reference.project.projectId,
-        reason: "nextLiveProjectSession",
-        sessionId: candidate.sessionId,
-      };
-    }
-    if (action === "sleep" && isNativeTransitionCandidateSleeping(reference.project, candidate)) {
-      continue;
-    }
-    return {
-      projectId: reference.project.projectId,
-      reason: "nextPaneTab",
-      sessionId: candidate.sessionId,
-    };
-  }
-  return undefined;
-}
-
-function normalizeNativeSessionTransitionOrderedSessions(
-  orderedSessions: NativeSessionTransitionOriginSession[],
-): NativeSessionTransitionOriginSession[] {
-  const result: NativeSessionTransitionOriginSession[] = [];
-  for (const entry of orderedSessions) {
-    const sessionId = entry.sessionId.trim();
-    if (!sessionId || result.some((candidate) => candidate.sessionId === sessionId)) {
-      continue;
-    }
-    result.push(entry.lifecycleState ? { lifecycleState: entry.lifecycleState, sessionId } : { sessionId });
-  }
-  return result;
-}
-
-function getForwardWrappedNativeTransitionCandidates(
-  orderedSessions: NativeSessionTransitionOriginSession[],
-  removedSessionId: string,
-): NativeSessionTransitionOriginSession[] {
-  const targetIndex = orderedSessions.findIndex((candidate) => candidate.sessionId === removedSessionId);
-  if (targetIndex < 0) {
-    return orderedSessions.filter((candidate) => candidate.sessionId !== removedSessionId);
-  }
-  return [
-    ...orderedSessions.slice(targetIndex + 1),
-    ...orderedSessions.slice(0, targetIndex),
-  ].filter((candidate) => candidate.sessionId !== removedSessionId);
-}
-
-function getPaneTabNativeTransitionCandidates(
-  orderedSessions: NativeSessionTransitionOriginSession[],
-  removedSessionId: string,
-): NativeSessionTransitionOriginSession[] {
-  const remainingSessions = orderedSessions.filter((candidate) => candidate.sessionId !== removedSessionId);
-  if (remainingSessions.length === 0) {
-    return [];
-  }
-  const removedIndex = orderedSessions.findIndex((candidate) => candidate.sessionId === removedSessionId);
-  if (removedIndex < 0) {
-    return remainingSessions;
-  }
-  const rightSessions = orderedSessions.slice(removedIndex + 1).filter((candidate) => candidate.sessionId !== removedSessionId);
-  const leftSessions = orderedSessions.slice(0, removedIndex).filter((candidate) => candidate.sessionId !== removedSessionId).reverse();
-  return [...rightSessions, ...leftSessions];
-}
-
 function isNativeLiveProjectTransitionCandidate(
   reference: ReturnType<typeof resolveSidebarSessionReference>,
   sessionId: string,
@@ -21070,11 +21022,17 @@ function applyGxserverSessionTransition(
   if (!orderedSessions.some((entry) => entry.sessionId === reference.sessionId)) {
     orderedSessions.push(createSessionTransitionOriginEntry(reference.sessionId));
   }
-  const focusTarget = resolveNativeSessionTransitionFocusTarget(
-    reference,
+  const focusTarget = resolveNativeSessionTransitionFocusTarget({
     action,
-    { kind: origin.kind, orderedSessions } as NativeGxserverSessionTransitionOrigin,
-  );
+    isLiveProjectCandidate: (sessionId) =>
+      isNativeLiveProjectTransitionCandidate(reference, sessionId),
+    isRemovedSessionFocused: isFocusedSidebarSession(reference.project, reference.sessionId),
+    isSleepingCandidate: (candidate) =>
+      isNativeTransitionCandidateSleeping(reference.project, candidate),
+    origin: { kind: origin.kind, orderedSessions } as NativeGxserverSessionTransitionOrigin,
+    projectId: reference.project.projectId,
+    removedSessionId: reference.sessionId,
+  });
 
   const useProviderTransition = shouldUseGxserverProviderTransition({
     localProvider,
@@ -27293,11 +27251,15 @@ async function addProject(
   }
 
   focusProject(projectId);
+  /*
+  CDXC:ProjectSidebarOwnership 2026-06-06-23:16:
+  Upgrading from 3.6 to 4.0 and adding projects after startup both require the project shell to render as soon as gxserver returns the canonical project. Publish the empty project group before first-terminal creation so a blocked or delayed zmx attach cannot make the sidebar look empty while the project already exists in gxserver.
+  */
+  publish();
   if (activeSnapshot().sessions.length === 0) {
     createTerminal(DEFAULT_TERMINAL_SESSION_TITLE);
     return;
   }
-  publish();
 }
 
 async function cloneRepositoryFromModal(
@@ -31906,6 +31868,7 @@ function wakeProjectEditorSurface(project: NativeProject, mode?: ProjectEditorSu
     postNative({
       cwd: project.path,
       linkVscodeUserConfig: settings.codeServerLinkVscodeUserConfig,
+      projectId: nativeEditorId,
       type: "startCodeServerRuntime",
       vscodeUserConfigDir: codeServerVscodeUserConfigDirectory(),
     });
@@ -35001,10 +34964,11 @@ function maybeLogGxserverPresentationTabReconciliation(input: {
   const missingWorkspaceNativeSessionIds = workspaceNativeSessionIds.filter(
     (sessionId) => !input.sidebarSessionsByNativeId.has(sessionId),
   );
+  const missingWorkspaceNativeSessionCount = missingWorkspaceNativeSessionIds.length;
   const hasPresentation = gxserverStartupSnapshot?.presentation !== undefined;
   const shouldLog =
     (!hasPresentation && (workspaceNativeSessionIds.length > 0 || commandNativeSessionIds.length > 0)) ||
-    missingWorkspaceNativeSessionIds.length > 0;
+    missingWorkspaceNativeSessionCount > 0;
   if (!shouldLog) {
     return;
   }
@@ -35013,8 +34977,8 @@ function maybeLogGxserverPresentationTabReconciliation(input: {
     commandNativeSessionCount: commandNativeSessionIds.length,
     forceLayout: input.forceLayout,
     hasPresentation,
-    missingWorkspaceNativeSessionIds,
-    revision: presentation?.revision,
+    missingWorkspaceNativeSessionCount,
+    sidebarProjectedNativeSessionCount: input.sidebarSessionsByNativeId.size,
     state: currentGxserverStatus.state,
     workspaceNativeSessionCount: workspaceNativeSessionIds.length,
   });
@@ -35024,7 +34988,10 @@ function maybeLogGxserverPresentationTabReconciliation(input: {
   lastGxserverPresentationTabReconciliationLogKey = logKey;
   /*
   CDXC:GxserverPresentationDiagnostics 2026-06-04-19:39:
-  When users see native Terminal/Agent tabs that are absent from the sidebar, support needs the exact ownership split: local AppKit tab inventory versus gxserver presentation-backed sidebar inventory. Log only IDs, counts, gxserver status, and visibility summaries, and de-duplicate identical states so routine publish/layout passes do not flood the debug log.
+  When users see native Terminal/Agent tabs that are absent from the sidebar, support needs the exact ownership split: local AppKit tab inventory versus gxserver presentation-backed sidebar inventory. Log only counts, gxserver status, and visibility summaries, and de-duplicate identical states so routine publish/layout passes do not flood the debug log.
+
+  CDXC:SidebarPerformance 2026-06-06-23:07:
+  Title-driven presentation revisions can change while the native/sidebar mismatch shape stays identical. Do not include revision numbers or missing-session arrays in the de-dupe key, otherwise one stuck mismatch turns every title heartbeat into another persistent refresh log line.
   */
   appendSidebarRefreshDebugLog("nativeSidebar.gxserver.presentationTabReconciliation.mismatch", {
     commandNativeSessionCount: commandNativeSessionIds.length,
@@ -35032,8 +34999,7 @@ function maybeLogGxserverPresentationTabReconciliation(input: {
     gxserverOk: currentGxserverStatus.ok === true,
     gxserverState: currentGxserverStatus.state ?? "unknown",
     hasPresentation,
-    missingWorkspaceNativeSessionCount: missingWorkspaceNativeSessionIds.length,
-    missingWorkspaceNativeSessionIds,
+    missingWorkspaceNativeSessionCount,
     presentationVisibility: summarizeGxserverPresentationVisibility(presentation),
     sidebarProjectedNativeSessionCount: input.sidebarSessionsByNativeId.size,
     workspaceNativeSessionCount: workspaceNativeSessionIds.length,
@@ -36338,6 +36304,22 @@ window.addEventListener("ghostex-native-host-event", (event) => {
     );
     return;
   }
+  if (hostEvent.type === "codeServerRuntimeStartFailed") {
+    /*
+    CDXC:EditorPanes 2026-06-06-23:50:
+    VS Code server startup failures need immediate visible feedback. Native
+    sends the launch failure before browser navigation can emit load state, so
+    update the project editor row when scoped and show an error toast instead
+    of waiting for the generic ten-second open timeout.
+    */
+    if (hostEvent.projectId) {
+      setProjectEditorLoadState(hostEvent.projectId, "error", hostEvent.message);
+    }
+    showAppToast("error", "VS Code server failed", hostEvent.message, {
+      toastId: CODE_SERVER_RUNTIME_TOAST_ID,
+    });
+    return;
+  }
   if (hostEvent.type === "projectEditorLoadState") {
     setProjectEditorLoadState(hostEvent.projectId, hostEvent.status, hostEvent.message);
     return;
@@ -36699,6 +36681,7 @@ window.addEventListener("ghostex-native-host-event", (event) => {
       const previousTerminalTitle = terminalState.terminalTitle;
       const knownAgentNameBeforeDetection = terminalState.agentName;
       const previousVisibleTerminalTitle = getVisibleTerminalTitle(previousTerminalTitle);
+      const session = findSessionRecord(sidebarSessionId);
       const didUpdateSessionPersistenceName =
         hostEvent.sessionPersistenceName !== undefined &&
         terminalState.sessionPersistenceName !== hostEvent.sessionPersistenceName;
@@ -36725,11 +36708,16 @@ window.addEventListener("ghostex-native-host-event", (event) => {
           terminalState.sessionPersistenceProvider,
         );
       }
-      const didSyncSessionTitle = syncSessionTitleFromNativeTerminalTitle(
-        sidebarSessionId,
-        hostEvent.title,
-        previousTerminalTitle,
-      );
+      if (
+        session &&
+        shouldForwardNativeTerminalTitleImmediatelyToGxserver(session, terminalState)
+      ) {
+        syncSessionTitleFromNativeTerminalTitle(
+          sidebarSessionId,
+          hostEvent.title,
+          previousTerminalTitle,
+        );
+      }
       scheduleSettledTerminalTitleSync(sidebarSessionId, "terminal-title-changed");
       /**
        * CDXC:AgentDetection 2026-04-29-09:16
@@ -36737,13 +36725,18 @@ window.addEventListener("ghostex-native-host-event", (event) => {
        * second. gxserver now owns semantic status for those titles; the local
        * event path only suppresses publishes when visible title metadata did
        * not change.
+       *
+       * CDXC:SidebarPerformance 2026-06-06-23:07:
+       * Forwarding a native title event to gxserver is not a local sidebar
+       * state change. Keep the no-op return independent from that async
+       * forwarding decision so spinner frames do not publish full hydrate
+       * payloads through the WK sidebar and modal host.
        */
       if (
         previousVisibleTerminalTitle === getVisibleTerminalTitle(hostEvent.title) &&
         previousActivity === terminalState.activity &&
         knownAgentNameBeforeDetection === terminalState.agentName &&
-        !didUpdateSessionPersistenceName &&
-        !didSyncSessionTitle
+        !didUpdateSessionPersistenceName
       ) {
         return;
       }

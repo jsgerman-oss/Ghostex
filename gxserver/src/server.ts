@@ -1820,19 +1820,22 @@ function runAgentTitleMetadataCheck(
     const repository = useLeadingRepository ? leadingRepository! : new GxserverDomainRepository(db!, runtime.metadata.serverId);
     const session = repository.getSession(input.projectId, input.sessionId);
     if (!session || (input.force !== true && !shouldCheckAgentMetadataTitle(session))) {
-      void runtime.logger.log({
-        details: {
-          edge: decision.edge,
-          reason: input.reason,
-          skippedReason: session ? "not-needed" : "session-missing",
-          suppressedCount: decision.suppressedCount,
-        },
-        event: "agentTitleMetadata.checkSkipped",
-        level: "debug",
-        projectId: input.projectId,
-        serverId: runtime.metadata.serverId,
-        sessionId: input.sessionId,
-      });
+      const skippedReason = session ? "not-needed" : "session-missing";
+      if (shouldLogAgentTitleMetadataCheckSkipped(input, decision, skippedReason)) {
+        void runtime.logger.log({
+          details: {
+            edge: decision.edge,
+            reason: input.reason,
+            skippedReason,
+            suppressedCount: decision.suppressedCount,
+          },
+          event: "agentTitleMetadata.checkSkipped",
+          level: "debug",
+          projectId: input.projectId,
+          serverId: runtime.metadata.serverId,
+          sessionId: input.sessionId,
+        });
+      }
       return session
         ? { changed: false, metadataTitleFound: false, reason: "metadata-check-not-needed", session }
         : undefined;
@@ -1847,21 +1850,23 @@ function runAgentTitleMetadataCheck(
       projectId: input.projectId,
       sessionId: input.sessionId,
     });
-    void runtime.logger.log({
-      details: {
-        changed: result.changed,
-        edge: decision.edge,
-        metadataTitleFound: result.metadataTitleFound,
-        reason: input.reason,
-        reconcileReason: result.reason,
-        suppressedCount: decision.suppressedCount,
-      },
-      event: "agentTitleMetadata.check",
-      level: "debug",
-      projectId: input.projectId,
-      serverId: runtime.metadata.serverId,
-      sessionId: input.sessionId,
-    });
+    if (shouldLogAgentTitleMetadataCheck(input, decision, result)) {
+      void runtime.logger.log({
+        details: {
+          changed: result.changed,
+          edge: decision.edge,
+          metadataTitleFound: result.metadataTitleFound,
+          reason: input.reason,
+          reconcileReason: result.reason,
+          suppressedCount: decision.suppressedCount,
+        },
+        event: "agentTitleMetadata.check",
+        level: "debug",
+        projectId: input.projectId,
+        serverId: runtime.metadata.serverId,
+        sessionId: input.sessionId,
+      });
+    }
     return result;
   } catch (error) {
     void runtime.logger.log({
@@ -1881,6 +1886,42 @@ function runAgentTitleMetadataCheck(
   } finally {
     db?.close();
   }
+}
+
+function shouldLogAgentTitleMetadataCheckSkipped(
+  input: { force?: boolean; reason: string },
+  decision: GxserverAgentTitleDebounceDecision,
+  skippedReason: "not-needed" | "session-missing",
+): boolean {
+  if (skippedReason === "session-missing" || input.force === true) {
+    return true;
+  }
+  if (!isPollingAgentTitleMetadataReason(input.reason)) {
+    return true;
+  }
+  return decision.suppressedCount >= 10;
+}
+
+function shouldLogAgentTitleMetadataCheck(
+  input: { force?: boolean; reason: string },
+  decision: GxserverAgentTitleDebounceDecision,
+  result: { changed: boolean; metadataTitleFound: boolean },
+): boolean {
+  /*
+  CDXC:GxserverLogs 2026-06-06-23:18:
+  Debugging Mode should keep actionable agent-title evidence without turning list-session polling into one JSONL line per session every few seconds. Persist metadata checks when they change title state, find metadata, are forced by a user/session mutation, or represent a large suppressed burst; skip unchanged polling checks.
+  */
+  if (result.changed || result.metadataTitleFound || input.force === true) {
+    return true;
+  }
+  if (!isPollingAgentTitleMetadataReason(input.reason)) {
+    return true;
+  }
+  return decision.suppressedCount >= 10;
+}
+
+function isPollingAgentTitleMetadataReason(reason: string): boolean {
+  return reason === "list-sessions" || reason === "read-project-status";
 }
 
 async function handleTypedOperationEndpoint(

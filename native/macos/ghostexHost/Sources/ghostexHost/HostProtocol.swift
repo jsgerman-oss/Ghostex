@@ -485,9 +485,14 @@ struct StartCodeServerRuntime: Decodable {
    CDXC:EditorPanes 2026-05-06-15:00
    The sidebar sends VS Code settings-link choices with the runtime command so
    the native launcher can pass code-server CLI flags before the process starts.
+
+   CDXC:EditorPanes 2026-06-06-23:50:
+   VS Code server startup failures must return to the sidebar immediately as a
+   project-scoped error and toast instead of waiting for the generic open timer.
    */
   let cwd: String
   let linkVscodeUserConfig: Bool?
+  let projectId: String?
   let vscodeUserConfigDir: String?
 }
 
@@ -1226,6 +1231,7 @@ enum HostEvent: Encodable {
   case projectEditorCompanionPaneHiddenChanged(projectId: String, hidden: Bool)
   case projectEditorTabSelected(projectId: String, url: String?)
   case projectEditorLoadState(projectId: String, status: String, message: String?)
+  case codeServerRuntimeStartFailed(projectId: String?, message: String)
   case projectBoardRequest(ProjectBoardBridgeRequest)
   case osIntegrationStatus(payloadJson: String)
   case sessionStatusIndicatorClicked(status: NativeSessionStatusIndicatorStatus)
@@ -1494,6 +1500,16 @@ enum HostEvent: Encodable {
       try container.encode(projectId, forKey: .projectId)
       try container.encode(status, forKey: .status)
       try container.encodeIfPresent(message, forKey: .message)
+    case .codeServerRuntimeStartFailed(let projectId, let message):
+      /**
+       CDXC:EditorPanes 2026-06-06-23:50:
+       A code-server process can fail before CEF navigation begins. Report that
+       native runtime failure separately so React can show an error toast and
+       avoid leaving users with only the delayed VS Code timeout row.
+       */
+      try container.encode("codeServerRuntimeStartFailed", forKey: .type)
+      try container.encodeIfPresent(projectId, forKey: .projectId)
+      try container.encode(message, forKey: .message)
     case .projectBoardRequest(let request):
       /**
        CDXC:ProjectBoard 2026-05-26-10:16:

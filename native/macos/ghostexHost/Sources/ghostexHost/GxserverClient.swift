@@ -5,9 +5,12 @@ struct GxserverClientStatus {
   let authToken: String?
   let health: [String: Any]?
   let message: String
+  let nodeModuleVersion: String?
   let nodePath: String?
   let nodeVersion: String?
   let ok: Bool
+  let expectedNodeMajor: Int?
+  let expectedNodeModuleVersion: String?
   let state: String
 
   init(
@@ -15,18 +18,24 @@ struct GxserverClientStatus {
     authToken: String?,
     health: [String: Any]?,
     message: String,
+    nodeModuleVersion: String? = nil,
     nodePath: String? = nil,
     nodeVersion: String? = nil,
     ok: Bool,
+    expectedNodeMajor: Int? = nil,
+    expectedNodeModuleVersion: String? = nil,
     state: String
   ) {
     self.alwaysStart = alwaysStart
     self.authToken = authToken
     self.health = health
     self.message = message
+    self.nodeModuleVersion = nodeModuleVersion
     self.nodePath = nodePath
     self.nodeVersion = nodeVersion
     self.ok = ok
+    self.expectedNodeMajor = expectedNodeMajor
+    self.expectedNodeModuleVersion = expectedNodeModuleVersion
     self.state = state
   }
 
@@ -46,11 +55,20 @@ struct GxserverClientStatus {
     if let health {
       payload["health"] = health
     }
+    if let nodeModuleVersion {
+      payload["nodeModuleVersion"] = nodeModuleVersion
+    }
     if let nodePath {
       payload["nodePath"] = nodePath
     }
     if let nodeVersion {
       payload["nodeVersion"] = nodeVersion
+    }
+    if let expectedNodeMajor {
+      payload["expectedNodeMajor"] = expectedNodeMajor
+    }
+    if let expectedNodeModuleVersion {
+      payload["expectedNodeModuleVersion"] = expectedNodeModuleVersion
     }
     return payload
   }
@@ -60,6 +78,20 @@ enum GxserverBuildIdentityReuseDecision: Equatable {
   case compatible
   case incompatible
   case unknownExpected
+}
+
+struct GxserverNativeNodeRuntime: Equatable {
+  let nativeModules: [String]
+  let nodeMajor: Int
+  let nodeModuleVersion: String
+  let nodeRequirement: String?
+  let nodeVersion: String?
+}
+
+enum GxserverNativeNodeRuntimeLoadResult: Equatable {
+  case invalid(String)
+  case loaded(GxserverNativeNodeRuntime)
+  case unavailable
 }
 
 final class GxserverClient {
@@ -82,6 +114,7 @@ final class GxserverClient {
   func startOrReuse(allowStart: Bool? = nil) async -> GxserverClientStatus {
     let shouldStart = allowStart ?? alwaysStartOnLaunch
     let expectedBuildIdentity = expectedBundledBuildIdentity()
+    let expectedNativeRuntimeLoadResult = expectedBundledNativeNodeRuntime()
     if let running = await authenticatedHealthStatus(expectedBuildIdentity: expectedBuildIdentity) {
       if !Self.reuseFailureRequiresRestart(running.state) {
         return running
@@ -106,16 +139,36 @@ final class GxserverClient {
       )
     }
 
-    let nodeResolution = resolveSystemNode()
-    if let nodeError = systemNodeDependencyError(resolution: nodeResolution) {
+    let expectedNativeRuntime: GxserverNativeNodeRuntime?
+    switch expectedNativeRuntimeLoadResult {
+    case .loaded(let runtime):
+      expectedNativeRuntime = runtime
+    case .unavailable:
+      expectedNativeRuntime = nil
+    case .invalid(let message):
+      return GxserverClientStatus(
+        alwaysStart: alwaysStartOnLaunch,
+        authToken: readAuthToken(),
+        health: nil,
+        message: message,
+        ok: false,
+        state: "nodeUnavailable"
+      )
+    }
+
+    let nodeResolution = resolveSystemNode(expectedRuntime: expectedNativeRuntime)
+    if let nodeError = systemNodeDependencyError(resolution: nodeResolution, expectedRuntime: expectedNativeRuntime) {
       return GxserverClientStatus(
         alwaysStart: alwaysStartOnLaunch,
         authToken: readAuthToken(),
         health: nil,
         message: nodeError,
+        nodeModuleVersion: nodeResolution.moduleVersion,
         nodePath: nodeResolution.path,
         nodeVersion: nodeResolution.version,
         ok: false,
+        expectedNodeMajor: expectedNativeRuntime?.nodeMajor,
+        expectedNodeModuleVersion: expectedNativeRuntime?.nodeModuleVersion,
         state: "nodeUnavailable"
       )
     }
@@ -127,9 +180,12 @@ final class GxserverClient {
         health: nil,
         message:
           "gxserver CLI build output is missing. Run `npm run build` in gxserver/ for development, or reinstall Ghostex so gxserver/dist/src/cli.js is present.",
+        nodeModuleVersion: nodeResolution.moduleVersion,
         nodePath: nodeResolution.path,
         nodeVersion: nodeResolution.version,
         ok: false,
+        expectedNodeMajor: expectedNativeRuntime?.nodeMajor,
+        expectedNodeModuleVersion: expectedNativeRuntime?.nodeModuleVersion,
         state: "missingGxserverCli"
       )
     }
@@ -140,9 +196,12 @@ final class GxserverClient {
         authToken: readAuthToken(),
         health: nil,
         message: launchError,
+        nodeModuleVersion: nodeResolution.moduleVersion,
         nodePath: nodeResolution.path,
         nodeVersion: nodeResolution.version,
         ok: false,
+        expectedNodeMajor: expectedNativeRuntime?.nodeMajor,
+        expectedNodeModuleVersion: expectedNativeRuntime?.nodeModuleVersion,
         state: "startFailed"
       )
     }
@@ -160,9 +219,12 @@ final class GxserverClient {
       authToken: readAuthToken(),
       health: nil,
       message: "gxserver launch completed, but authenticated health did not become ready on 127.0.0.1:58744.",
+      nodeModuleVersion: nodeResolution.moduleVersion,
       nodePath: nodeResolution.path,
       nodeVersion: nodeResolution.version,
       ok: false,
+      expectedNodeMajor: expectedNativeRuntime?.nodeMajor,
+      expectedNodeModuleVersion: expectedNativeRuntime?.nodeModuleVersion,
       state: "starting"
     )
   }
@@ -530,10 +592,7 @@ final class GxserverClient {
     guard let cliURL = resolveGxserverCliURL() else {
       return nil
     }
-    let packageRoot = cliURL
-      .deletingLastPathComponent()
-      .deletingLastPathComponent()
-      .deletingLastPathComponent()
+    let packageRoot = Self.gxserverPackageRoot(for: cliURL)
     let identityURL = packageRoot.appendingPathComponent("build-identity.json", isDirectory: false)
     if fileManager.fileExists(atPath: identityURL.path) {
       guard
@@ -558,28 +617,84 @@ final class GxserverClient {
     return "gxserver:\(version):source"
   }
 
+  private func expectedBundledNativeNodeRuntime() -> GxserverNativeNodeRuntimeLoadResult {
+    guard let cliURL = resolveGxserverCliURL() else {
+      return .unavailable
+    }
+    let packageRoot = Self.gxserverPackageRoot(for: cliURL)
+    let runtimeURL = packageRoot.appendingPathComponent("native-runtime.json", isDirectory: false)
+    if !fileManager.fileExists(atPath: runtimeURL.path) {
+      let bundledBetterSqliteURL = packageRoot
+        .appendingPathComponent("node_modules", isDirectory: true)
+        .appendingPathComponent("better-sqlite3", isDirectory: true)
+      if Self.isAppBundleResource(cliURL), fileManager.fileExists(atPath: bundledBetterSqliteURL.path) {
+        return .invalid(
+          "gxserver includes a bundled database module, but its Node runtime metadata is missing. Reinstall Ghostex so the app can verify the required system Node ABI before startup."
+        )
+      }
+      return .unavailable
+    }
+    guard
+      let data = try? Data(contentsOf: runtimeURL),
+      let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+      let nodeMajor = json["nodeMajor"] as? Int,
+      let nodeModuleVersion = json["nodeModuleVersion"] as? String,
+      !nodeModuleVersion.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    else {
+      return .invalid(
+        "gxserver Node runtime metadata is invalid. Reinstall Ghostex so the app can verify the required system Node ABI before startup."
+      )
+    }
+    let nativeModules = (json["nativeModules"] as? [String]) ?? []
+    if !nativeModules.contains("better-sqlite3") {
+      return .invalid(
+        "gxserver Node runtime metadata does not identify the bundled database module. Reinstall Ghostex so the app can verify the required system Node ABI before startup."
+      )
+    }
+    return .loaded(GxserverNativeNodeRuntime(
+      nativeModules: nativeModules,
+      nodeMajor: nodeMajor,
+      nodeModuleVersion: nodeModuleVersion,
+      nodeRequirement: json["nodeRequirement"] as? String,
+      nodeVersion: json["nodeVersion"] as? String
+    ))
+  }
+
+  private static func gxserverPackageRoot(for cliURL: URL) -> URL {
+    cliURL
+      .deletingLastPathComponent()
+      .deletingLastPathComponent()
+      .deletingLastPathComponent()
+  }
+
+  private static func isAppBundleResource(_ url: URL) -> Bool {
+    guard let resourceURL = Bundle.main.resourceURL else {
+      return false
+    }
+    let resourcePath = resourceURL.standardizedFileURL.path
+    let candidatePath = url.standardizedFileURL.path
+    return candidatePath == resourcePath || candidatePath.hasPrefix("\(resourcePath)/")
+  }
+
   private struct SystemNodeResolution {
+    let moduleVersion: String
     let path: String
     let source: String
     let version: String
   }
 
-  private func resolveSystemNode() -> SystemNodeResolution {
+  private func resolveSystemNode(expectedRuntime: GxserverNativeNodeRuntime?) -> SystemNodeResolution {
     let home = FileManager.default.homeDirectoryForCurrentUser.path
     var firstVersionedCandidate: SystemNodeResolution?
-    let candidates = [
-      (path: "/opt/homebrew/bin/node", source: "Homebrew Apple Silicon"),
-      (path: "/usr/local/bin/node", source: "Homebrew Intel/usr-local"),
-      (path: "\(home)/.local/share/mise/shims/node", source: "mise shim"),
-      (path: "\(home)/.local/bin/node", source: "user local bin"),
-      (path: "\(home)/.asdf/shims/node", source: "asdf shim"),
-    ]
+    let preferredMajor = expectedRuntime?.nodeMajor ?? Self.minimumNodeMajor
+    let candidates = systemNodeCandidates(home: home, preferredMajor: preferredMajor)
+    var seenPaths = Set<String>()
     for candidate in candidates where fileManager.isExecutableFile(atPath: candidate.path) {
-      let result = runProcess(executable: candidate.path, arguments: ["-v"], timeoutSeconds: 3)
-      let version = result.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
-      if result.exitCode == 0, let major = Self.nodeVersionMajor(version) {
-        let resolution = SystemNodeResolution(path: candidate.path, source: candidate.source, version: version)
-        if major >= Self.minimumNodeMajor {
+      guard seenPaths.insert(candidate.path).inserted else {
+        continue
+      }
+      if let resolution = probeSystemNode(path: candidate.path, source: candidate.source) {
+        if Self.nodeResolution(resolution, satisfies: expectedRuntime) {
           return resolution
         }
         if firstVersionedCandidate == nil {
@@ -598,14 +713,13 @@ final class GxserverClient {
       timeoutSeconds: 3
     )
     let envPath = envPathResult.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
-    let envVersion = envVersionResult.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
     if envPathResult.exitCode == 0,
       envVersionResult.exitCode == 0,
       !envPath.isEmpty,
-      let major = Self.nodeVersionMajor(envVersion)
+      seenPaths.insert(envPath).inserted,
+      let resolution = probeSystemNode(path: envPath, source: "PATH")
     {
-      let resolution = SystemNodeResolution(path: envPath, source: "PATH", version: envVersion)
-      if major >= Self.minimumNodeMajor {
+      if Self.nodeResolution(resolution, satisfies: expectedRuntime) {
         return resolution
       }
       if firstVersionedCandidate == nil {
@@ -615,18 +729,178 @@ final class GxserverClient {
     if let firstVersionedCandidate {
       return firstVersionedCandidate
     }
-    return SystemNodeResolution(path: "", source: "unresolved", version: "")
+    return SystemNodeResolution(moduleVersion: "", path: "", source: "unresolved", version: "")
   }
 
-  private func systemNodeDependencyError(resolution: SystemNodeResolution) -> String? {
+  private func systemNodeCandidates(home: String, preferredMajor: Int) -> [(path: String, source: String)] {
+    /*
+     CDXC:GxserverBootstrap 2026-06-06-22:56:
+     Users can satisfy the gxserver Node 22 runtime with nodejs.org, nvm, mise, fnm, asdf, nodenv, Volta, or Homebrew. macOS apps launched outside an interactive shell cannot rely on nvm/fnm shell hooks, so scan common direct install folders before using shims or PATH.
+     */
+    var candidates = [
+      (path: "/opt/homebrew/opt/node@\(preferredMajor)/bin/node", source: "Homebrew Apple Silicon node@\(preferredMajor)"),
+      (path: "/usr/local/opt/node@\(preferredMajor)/bin/node", source: "Homebrew Intel/usr-local node@\(preferredMajor)"),
+      (path: "/opt/homebrew/bin/node", source: "Homebrew Apple Silicon"),
+      (path: "/usr/local/bin/node", source: "Homebrew Intel/usr-local"),
+      (path: "\(home)/.local/bin/node", source: "user local bin"),
+    ]
+    candidates.append(contentsOf: versionedNodeCandidates(
+      root: "\(home)/.nvm/versions/node",
+      source: "nvm",
+      preferredMajor: preferredMajor,
+      relativeNodePath: "bin/node"
+    ))
+    candidates.append((path: "\(home)/.nvm/current/bin/node", source: "nvm current"))
+    candidates.append(contentsOf: versionedNodeCandidates(
+      root: "\(home)/.local/share/mise/installs/node",
+      source: "mise install",
+      preferredMajor: preferredMajor,
+      relativeNodePath: "bin/node"
+    ))
+    candidates.append(contentsOf: versionedNodeCandidates(
+      root: "\(home)/.asdf/installs/nodejs",
+      source: "asdf install",
+      preferredMajor: preferredMajor,
+      relativeNodePath: "bin/node"
+    ))
+    candidates.append(contentsOf: versionedNodeCandidates(
+      root: "\(home)/.nodenv/versions",
+      source: "nodenv install",
+      preferredMajor: preferredMajor,
+      relativeNodePath: "bin/node"
+    ))
+    for fnmRoot in [
+      "\(home)/.fnm/node-versions",
+      "\(home)/.local/share/fnm/node-versions",
+      "\(home)/Library/Application Support/fnm/node-versions",
+    ] {
+      candidates.append(contentsOf: versionedNodeCandidates(
+        root: fnmRoot,
+        source: "fnm install",
+        preferredMajor: preferredMajor,
+        relativeNodePath: "installation/bin/node"
+      ))
+    }
+    candidates.append(contentsOf: versionedNodeCandidates(
+      root: "\(home)/.volta/tools/image/node",
+      source: "Volta install",
+      preferredMajor: preferredMajor,
+      relativeNodePath: "bin/node"
+    ))
+    candidates.append(contentsOf: [
+      (path: "\(home)/.volta/bin/node", source: "Volta shim"),
+      (path: "\(home)/.local/share/mise/shims/node", source: "mise shim"),
+      (path: "\(home)/.asdf/shims/node", source: "asdf shim"),
+      (path: "\(home)/.nodenv/shims/node", source: "nodenv shim"),
+    ])
+    return candidates
+  }
+
+  private func versionedNodeCandidates(
+    root: String,
+    source: String,
+    preferredMajor: Int,
+    relativeNodePath: String
+  ) -> [(path: String, source: String)] {
+    guard
+      let entries = try? fileManager.contentsOfDirectory(atPath: root)
+    else {
+      return []
+    }
+    return entries
+      .filter { Self.nodeDirectoryName($0, matchesMajor: preferredMajor) }
+      .sorted { $0.localizedStandardCompare($1) == .orderedDescending }
+      .map { entry in
+        var nodeURL = URL(fileURLWithPath: root, isDirectory: true)
+          .appendingPathComponent(entry, isDirectory: true)
+        for component in relativeNodePath.split(separator: "/") {
+          nodeURL.appendPathComponent(String(component), isDirectory: false)
+        }
+        return (path: nodeURL.path, source: source)
+      }
+  }
+
+  private static func nodeDirectoryName(_ name: String, matchesMajor major: Int) -> Bool {
+    let normalized = name.hasPrefix("v") ? String(name.dropFirst()) : name
+    return normalized == String(major) || normalized.hasPrefix("\(major).")
+  }
+
+  private func probeSystemNode(path: String, source: String) -> SystemNodeResolution? {
+    let result = runProcess(
+      executable: path,
+      arguments: [
+        "-p",
+        "JSON.stringify({version: process.version, modules: process.versions.modules})",
+      ],
+      timeoutSeconds: 3
+    )
+    guard
+      result.exitCode == 0,
+      let data = result.stdout.data(using: .utf8),
+      let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+      let version = json["version"] as? String,
+      let moduleVersion = json["modules"] as? String,
+      Self.nodeVersionMajor(version) != nil
+    else {
+      return nil
+    }
+    return SystemNodeResolution(
+      moduleVersion: moduleVersion.trimmingCharacters(in: .whitespacesAndNewlines),
+      path: path,
+      source: source,
+      version: version.trimmingCharacters(in: .whitespacesAndNewlines)
+    )
+  }
+
+  private static func nodeResolution(
+    _ resolution: SystemNodeResolution,
+    satisfies expectedRuntime: GxserverNativeNodeRuntime?
+  ) -> Bool {
+    guard let major = nodeVersionMajor(resolution.version) else {
+      return false
+    }
+    guard let expectedRuntime else {
+      return major >= minimumNodeMajor
+    }
+    return major == expectedRuntime.nodeMajor && resolution.moduleVersion == expectedRuntime.nodeModuleVersion
+  }
+
+  private func systemNodeDependencyError(
+    resolution: SystemNodeResolution,
+    expectedRuntime: GxserverNativeNodeRuntime?
+  ) -> String? {
+    /*
+     CDXC:GxserverBootstrap 2026-06-06-22:00:
+     Ghostex does not bundle Node for gxserver. When the app ships prebuilt better-sqlite3, startup must require the matching user-installed Node ABI and show installation guidance before launch instead of letting the daemon crash and spam auth-token errors.
+     */
+    if let expectedRuntime {
+      let requirement =
+        expectedRuntime.nodeRequirement ??
+        "Node.js \(expectedRuntime.nodeMajor).x with NODE_MODULE_VERSION \(expectedRuntime.nodeModuleVersion)"
+      let installGuidance =
+        "Install Node \(expectedRuntime.nodeMajor) LTS from \(Self.nodeInstallURL) or with nvm, mise, fnm, asdf, nodenv, Volta, or Homebrew. Homebrew example: `brew install node@\(expectedRuntime.nodeMajor)`."
+      if resolution.path.isEmpty {
+        return
+          "gxserver requires \(requirement) for this Ghostex build because its bundled database module was compiled for that Node ABI, but no matching system Node was found. \(installGuidance) Ghostex does not bundle, auto-install, or fall back to a private Node runtime for gxserver."
+      }
+      if !Self.nodeResolution(resolution, satisfies: expectedRuntime) {
+        let version = resolution.version.isEmpty ? "an unknown Node version" : resolution.version
+        let moduleVersion = resolution.moduleVersion.isEmpty
+          ? "unknown NODE_MODULE_VERSION"
+          : "NODE_MODULE_VERSION \(resolution.moduleVersion)"
+        return
+          "gxserver requires \(requirement) for this Ghostex build because its bundled database module was compiled for that Node ABI, but the detected system Node is \(version) (\(moduleVersion)). \(installGuidance) Ghostex does not bundle, auto-install, or fall back to a private Node runtime for gxserver."
+      }
+      return nil
+    }
     if resolution.path.isEmpty {
       return
-        "gxserver requires Node.js \(Self.minimumNodeMajor) LTS or newer, but Node was not found. Install Node \(Self.minimumNodeMajor) LTS or newer from \(Self.nodeInstallURL) or with a system package manager such as Homebrew. Ghostex does not bundle, auto-install, or fall back to a private Node runtime for gxserver."
+        "gxserver requires Node.js \(Self.minimumNodeMajor) LTS or newer, but Node was not found. Install Node \(Self.minimumNodeMajor) LTS or newer from \(Self.nodeInstallURL) or with nvm, mise, fnm, asdf, nodenv, Volta, or Homebrew. Ghostex does not bundle, auto-install, or fall back to a private Node runtime for gxserver."
     }
     let major = Self.nodeVersionMajor(resolution.version)
     if major == nil || major! < Self.minimumNodeMajor {
       return
-        "gxserver requires Node.js \(Self.minimumNodeMajor) LTS or newer, but found \(resolution.version.isEmpty ? "an unknown Node version" : resolution.version) at \(resolution.path). Install Node \(Self.minimumNodeMajor) LTS or newer from \(Self.nodeInstallURL) or with a system package manager such as Homebrew. Ghostex does not bundle, auto-install, or fall back to a private Node runtime for gxserver."
+        "gxserver requires Node.js \(Self.minimumNodeMajor) LTS or newer, but found \(resolution.version.isEmpty ? "an unknown Node version" : resolution.version). Install Node \(Self.minimumNodeMajor) LTS or newer from \(Self.nodeInstallURL) or with nvm, mise, fnm, asdf, nodenv, Volta, or Homebrew. Ghostex does not bundle, auto-install, or fall back to a private Node runtime for gxserver."
     }
     return nil
   }
@@ -677,15 +951,25 @@ final class GxserverClient {
     /*
      CDXC:GxserverBootstrap 2026-05-30-17:14:
      App-packaged gxserver includes production native modules, so the macOS bootstrap should prefer stable system package-manager Node paths before per-shell version-manager shims. Version-manager shims remain supported, but only after Homebrew/usr-local candidates to avoid loading a different Node ABI than the packaged runtime was built with.
+
+     CDXC:GxserverBootstrap 2026-06-06-22:00:
+     Node 22 is the supported non-bundled gxserver app runtime for prebuilt native modules. Include Homebrew node@22 keg paths in LaunchServices subprocess PATH so users who installed the required runtime do not also need to patch shell startup files.
+
+     CDXC:GxserverBootstrap 2026-06-06-22:56:
+     Version-manager shims from Volta, mise, asdf, and nodenv should remain discoverable for users who do not install Node through Homebrew. Direct nvm/fnm installs are scanned separately because those managers usually depend on interactive shell functions instead of durable shims.
      */
     let defaultEntries = [
+      "/opt/homebrew/opt/node@\(Self.minimumNodeMajor)/bin",
       "/opt/homebrew/bin",
       "/opt/homebrew/sbin",
+      "/usr/local/opt/node@\(Self.minimumNodeMajor)/bin",
       "/usr/local/bin",
       "/usr/local/sbin",
+      "\(home)/.volta/bin",
       "\(home)/.local/share/mise/shims",
       "\(home)/.local/bin",
       "\(home)/.asdf/shims",
+      "\(home)/.nodenv/shims",
       "/usr/bin",
       "/bin",
       "/usr/sbin",

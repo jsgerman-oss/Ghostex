@@ -1300,6 +1300,10 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
   });
 
   useEffect(() => {
+    /*
+    CDXC:SidebarRefreshDiagnostics 2026-06-06-23:18:
+    The mount/unmount diagnostic must describe the React app lifetime only. Including effect-event callbacks in this dependency list made every hydrate render look like an app remount in persistent logs, hiding the real refresh cadence and adding avoidable Debugging Mode noise.
+    */
     const instanceId = refreshDebugInstanceIdRef.current;
     postSidebarStartupReproLog("appMounted", {
       elapsedMs: getSidebarStartupElapsedMs(sidebarStartupStartedAtRef.current),
@@ -1324,7 +1328,7 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
         sessionCount: Object.keys(useSidebarStore.getState().sessionsById).length,
       });
     };
-  }, [postSidebarRefreshLifecycleLog, postSidebarStartupReproLog]);
+  }, []);
 
   useEffect(() => {
     if (!debuggingMode || didLogInitialUiCollapseStateReadRef.current) {

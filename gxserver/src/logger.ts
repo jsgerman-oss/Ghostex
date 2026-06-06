@@ -41,6 +41,9 @@ gxserver logs can become GB-scale when a diagnostic storm already happened.
 Rotate the JSONL file at 25 MB with three retained files before appending any
 persisted entry so support bundles stay bounded after the next warning/error or
 Debugging Mode diagnostic write.
+
+CDXC:GxserverLogs 2026-06-06-23:21:
+Preview fields are user-owned content by default because they commonly contain terminal titles, command output, prompts, or response bodies. Redact string preview keys at the logger boundary so future diagnostic call sites cannot accidentally persist snippets in Debugging Mode.
 */
 export function createGxserverLogger(paths: GxserverPaths): GxserverLogger {
   const debuggingModeCache: DebuggingModeCache = { checkedAtMs: 0, enabled: false };
@@ -309,6 +312,8 @@ function isSensitiveTextKey(key: string): boolean {
     key === "comment" ||
     key === "description" ||
     key === "label" ||
+    key === "preview" ||
+    key.endsWith("preview") ||
     key === "command" ||
     key.endsWith("command") ||
     key === "stdout" ||

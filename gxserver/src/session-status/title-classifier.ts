@@ -22,7 +22,8 @@ const ANTIGRAVITY_TITLE_KEYWORD = "agy";
 const ANTIGRAVITY_ATTENTION_TITLE_PATTERN = /^🔔\s*agy$/iu;
 const ANTIGRAVITY_IDLE_TITLE_PATTERN = /^agy$/iu;
 export const GXSERVER_TITLE_ACTIVITY_WINDOW_MS = 1_000;
-export const GXSERVER_SLOW_SPINNER_ACTIVITY_WINDOW_MS = 3_000;
+export const GXSERVER_TITLE_ACTIVITY_HEARTBEAT_MS = 2_000;
+export const GXSERVER_SLOW_SPINNER_ACTIVITY_WINDOW_MS = 5_000;
 
 export function classifyTerminalTitleStatus(
   title: string | undefined,
@@ -119,6 +120,59 @@ export function getTitleActivityWindowMs(agentName: GxserverSessionStatusAgentNa
   return requiresObservedTitleTransitions(agentName)
     ? GXSERVER_SLOW_SPINNER_ACTIVITY_WINDOW_MS
     : GXSERVER_TITLE_ACTIVITY_WINDOW_MS;
+}
+
+export function createTitleActivitySignature(
+  title: string | undefined,
+  signal: GxserverTitleStatusSignal | undefined,
+): string | undefined {
+  const normalizedTitle = title?.trim().replace(/\s+/g, " ");
+  if (!normalizedTitle) {
+    return undefined;
+  }
+  if (signal?.state !== "working" && signal?.state !== "attention") {
+    return normalizedTitle;
+  }
+
+  let signature = normalizedTitle;
+  if (signal.agentName === "codex" || signal.agentName === "pi") {
+    for (const marker of CODEX_WORKING_MARKERS) {
+      signature = signature.split(marker).join(" ");
+    }
+    signature = signature.replace(CODEX_ACTION_REQUIRED_TITLE_PATTERN, "Action Required");
+  } else if (signal.agentName === "claude") {
+    for (const marker of [...CLAUDE_CODE_WORKING_MARKERS, ...CLAUDE_CODE_IDLE_MARKERS]) {
+      signature = signature.split(marker).join(" ");
+    }
+  } else if (signal.agentName === "cursor") {
+    signature = signature.replace(CURSOR_CLI_WORKING_TITLE_SUFFIX_PATTERN, "Working");
+  }
+
+  /*
+  CDXC:SessionStatus 2026-06-06-23:07:
+  Title-status sources can arrive from both zmx and native Ghostty. Treat same
+  semantic spinner titles as one activity stream so a client that sends raw
+  frames faster than zmx's heartbeat cannot rewrite gxserver state or publish
+  sidebar deltas for every animation tick.
+
+  CDXC:SessionStatus 2026-06-06-23:26:
+  zmx emits same-semantic spinner heartbeats every 2s, while scheduler and IPC
+  timing can move those observations around the old 3s stale boundary. Keep the
+  slow-spinner freshness window at 5s so active sessions do not flicker into
+  attention between sparse heartbeats, while frozen title-derived working still
+  expires without user acknowledgement.
+
+  CDXC:SessionStatus 2026-06-06-23:32:
+  Use 5s, not 7s, because stale-spinner inference also drives attention
+  notifications when a provider stops changing title frames without emitting a
+  clear attention title. This keeps a 3s margin over zmx's 2s heartbeat while
+  avoiding an unnecessary extra notification delay.
+  */
+  return signature
+    .replace(/\b\d+\s*s\b/giu, "<elapsed>")
+    .replace(/[\s\u2800-\u28ff·•⋅◦✳*✦◇🤖🔔]+/gu, " ")
+    .trim()
+    .replace(/\s+/g, " ");
 }
 
 function getCursorTitleState(title: string, allowAgentHintMatch = false): "idle" | "working" | undefined {

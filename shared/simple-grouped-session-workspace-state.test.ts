@@ -4040,6 +4040,62 @@ describe("setSessionSleepingInSimpleWorkspace", () => {
     });
   });
 
+  test("should preserve focus and active tab when a background session sleeps", () => {
+    const focusedSessionId = sessionIdForDisplay(2);
+    const backgroundSessionId = sessionIdForDisplay(0);
+    const otherAwakeSessionId = sessionIdForDisplay(1);
+    const slept = setSessionSleepingInSimpleWorkspace(
+      createWorkspaceSnapshot({
+        activeGroupId: DEFAULT_MAIN_GROUP_ID,
+        groups: [
+          {
+            groupId: DEFAULT_MAIN_GROUP_ID,
+            snapshot: {
+              focusedSessionId,
+              fullscreenRestoreVisibleCount: undefined,
+              paneLayout: {
+                activeSessionId: focusedSessionId,
+                kind: "tabs",
+                sessionIds: [backgroundSessionId, otherAwakeSessionId, focusedSessionId],
+              },
+              sessions: [
+                createSessionRecord(1, 0),
+                createSessionRecord(2, 1),
+                createSessionRecord(3, 2),
+              ],
+              viewMode: "grid",
+              visibleCount: 3,
+              visibleSessionIds: [backgroundSessionId, otherAwakeSessionId, focusedSessionId],
+            },
+            title: "Main",
+          },
+        ],
+        nextGroupNumber: 2,
+        nextSessionDisplayId: 3,
+        nextSessionNumber: 4,
+      }),
+      backgroundSessionId,
+      true,
+    );
+
+    /*
+     * CDXC:SessionSleep 2026-06-06-22:52:
+     * Auto-sleeping a background pane tab must park only that tab. The focused
+     * tab remains the active pane owner so native/sidebar sync does not redirect
+     * keyboard input to the next project-list session.
+     */
+    expect(slept.snapshot.groups[0]?.snapshot.focusedSessionId).toBe(focusedSessionId);
+    expect(slept.snapshot.groups[0]?.snapshot.visibleSessionIds).toEqual([
+      otherAwakeSessionId,
+      focusedSessionId,
+    ]);
+    expect(slept.snapshot.groups[0]?.snapshot.paneLayout).toEqual({
+      activeSessionId: focusedSessionId,
+      kind: "tabs",
+      sessionIds: [backgroundSessionId, otherAwakeSessionId, focusedSessionId],
+    });
+  });
+
   test("should restore a sleeping session into the focused pane tab group instead of its old pane", () => {
     const sleepingSession = {
       ...createSessionRecord(2, 1),

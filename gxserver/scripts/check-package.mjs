@@ -9,6 +9,7 @@ const gxserverRoot = path.resolve(scriptDir, "..");
 const distRoot = path.join(gxserverRoot, "dist");
 const packageDir = path.resolve(process.argv.includes("--package-dir") ? process.argv[process.argv.indexOf("--package-dir") + 1] : path.join(distRoot, "server-package"));
 const formulaPath = path.join(distRoot, "homebrew", "gxserver.rb");
+const appNativeNodeMajor = 22;
 
 /*
 CDXC:GxserverPackagingChecks 2026-05-30-15:49:
@@ -27,6 +28,7 @@ await assertNoBundledNodeRuntime(packageDir);
 await assertNoMacosUiDependency(packageDir);
 const packageVersion = await assertPackageManifest(path.join(packageDir, "package.json"));
 await assertBuildIdentity(path.join(packageDir, "build-identity.json"), packageVersion);
+await assertNativeRuntimeContract(packageDir);
 
 if (await exists(formulaPath)) {
   await assertHomebrewFormula(formulaPath);
@@ -79,6 +81,31 @@ async function assertBuildIdentity(identityPath, version) {
     identity.buildIdentity !== `gxserver:${version}:${identity.fingerprint}`
   ) {
     throw new Error("gxserver package build identity must match the package version and sha256 fingerprint.");
+  }
+}
+
+async function assertNativeRuntimeContract(root) {
+  const hasBundledBetterSqlite = await exists(path.join(root, "node_modules", "better-sqlite3"));
+  if (!hasBundledBetterSqlite) {
+    return;
+  }
+  /*
+  CDXC:GxserverPackagingChecks 2026-06-06-22:00:
+  App packages include prebuilt better-sqlite3, so package checks must fail when the staged artifact lacks the Node ABI metadata macOS uses to choose a matching user-installed Node runtime.
+  */
+  const runtimePath = path.join(root, "native-runtime.json");
+  await assertFile(runtimePath);
+  const runtime = JSON.parse(await readFile(runtimePath, "utf8"));
+  if (
+    runtime.nodeMajor !== appNativeNodeMajor ||
+    typeof runtime.nodeModuleVersion !== "string" ||
+    runtime.nodeModuleVersion.length === 0 ||
+    typeof runtime.nodeVersion !== "string" ||
+    runtime.nodeVersion.length === 0 ||
+    !Array.isArray(runtime.nativeModules) ||
+    !runtime.nativeModules.includes("better-sqlite3")
+  ) {
+    throw new Error("App-bundled gxserver native runtime metadata must target Node 22 and include better-sqlite3.");
   }
 }
 

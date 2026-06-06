@@ -5,6 +5,8 @@ import type {
 } from "../../protocol/index.js";
 import {
   classifyTerminalTitleStatus,
+  createTitleActivitySignature,
+  GXSERVER_TITLE_ACTIVITY_HEARTBEAT_MS,
   getTitleActivityWindowMs,
   normalizeStatusAgentName,
   requiresObservedTitleTransitions,
@@ -40,7 +42,7 @@ export function applyAgentActivityTransition(input: GxserverAgentActivityInput):
   }
 
   const titleSignal = classifyTerminalTitleStatus(input.title, input.agentId ?? previous.agentName);
-  const titleTransition = resolveTitleTransition(input, previous, titleSignal, nowIso);
+  const titleTransition = resolveTitleTransition(input, previous, titleSignal, nowIso, nowMs);
   if (
     input.event === "title" &&
     titleSignal &&
@@ -265,6 +267,7 @@ function resolveTitleTransition(
   previous: GxserverAgentActivityState,
   titleSignal: GxserverTitleStatusSignal | undefined,
   nowIso: string,
+  nowMs: number,
 ): Pick<GxserverAgentActivityState, "lastTitle" | "lastTitleChangeAt"> {
   const title = input.event === "title" ? normalizeText(input.title) : undefined;
   if (!title) {
@@ -277,10 +280,40 @@ function resolveTitleTransition(
     titleSignal?.agentName === undefined ||
     previous.agentName === titleSignal.agentName;
   const sameTitle = previous.lastTitle?.trim() === title.trim();
+  const shouldKeepPreviousTitleChangeAt =
+    sameAgent &&
+    (sameTitle || isWithinSameSemanticTitleHeartbeat(previous, title, titleSignal, nowMs));
   return {
     lastTitle: title,
-    lastTitleChangeAt: sameAgent && sameTitle ? previous.lastTitleChangeAt ?? nowIso : nowIso,
+    lastTitleChangeAt: shouldKeepPreviousTitleChangeAt ? previous.lastTitleChangeAt ?? nowIso : nowIso,
   };
+}
+
+function isWithinSameSemanticTitleHeartbeat(
+  previous: GxserverAgentActivityState,
+  title: string,
+  titleSignal: GxserverTitleStatusSignal | undefined,
+  nowMs: number,
+): boolean {
+  if (
+    titleSignal?.state !== "working" ||
+    !requiresObservedTitleTransitions(titleSignal.agentName) ||
+    !previous.lastTitle ||
+    !previous.lastTitleChangeAt
+  ) {
+    return false;
+  }
+  const lastTitleChangeMs = Date.parse(previous.lastTitleChangeAt);
+  if (!Number.isFinite(lastTitleChangeMs)) {
+    return false;
+  }
+  if (nowMs - lastTitleChangeMs >= GXSERVER_TITLE_ACTIVITY_HEARTBEAT_MS) {
+    return false;
+  }
+  return (
+    createTitleActivitySignature(previous.lastTitle, titleSignal) ===
+    createTitleActivitySignature(title, titleSignal)
+  );
 }
 
 function isTitleDerivedWorkingStale(
