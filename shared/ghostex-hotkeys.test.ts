@@ -13,7 +13,7 @@ describe("normalizeghostexHotkeySettings", () => {
      * Directional pane focus must avoid plain Cmd+Arrow so terminal prompts
      * and modal prompt editors keep native text navigation.
      */
-    expect(DEFAULT_ghostex_HOTKEYS.createSession).toBe("cmd+n");
+    expect(DEFAULT_ghostex_HOTKEYS.createSession).toBe("cmd+t");
     /**
      * CDXC:CommandPalette 2026-05-15-20:38:
      * Cmd+K should remain the shared default for the command palette so users
@@ -40,7 +40,7 @@ describe("normalizeghostexHotkeySettings", () => {
      * Focused pane-menu actions should be configurable hotkeys so the command
      * palette can expose the same actions users see in pane chrome.
      */
-    expect(DEFAULT_ghostex_HOTKEYS.openBrowserPane).toBe("ctrl+shift+b");
+    expect(DEFAULT_ghostex_HOTKEYS.openBrowserPane).toBe("cmd+n");
     expect(DEFAULT_ghostex_HOTKEYS.rotatePanesClockwise).toBe("ctrl+shift+l");
     expect(DEFAULT_ghostex_HOTKEYS.mergeAllTabs).toBe("ctrl+shift+m");
     expect(DEFAULT_ghostex_HOTKEYS.delayedSend).toBe("ctrl+shift+s");
@@ -50,6 +50,10 @@ describe("normalizeghostexHotkeySettings", () => {
     expect(DEFAULT_ghostex_HOTKEYS.focusGroup1).toBe("cmd+ctrl+1");
     expect(DEFAULT_ghostex_HOTKEYS.focusGroup5).toBe("cmd+ctrl+5");
     expect(DEFAULT_ghostex_HOTKEYS.focusSessionSlot1).toBe("cmd+1");
+    expect(DEFAULT_ghostex_HOTKEYS.switchAgentsView).toBe("alt+1");
+    expect(DEFAULT_ghostex_HOTKEYS.switchSourceView).toBe("alt+2");
+    expect(DEFAULT_ghostex_HOTKEYS.switchGitHubView).toBe("alt+3");
+    expect(DEFAULT_ghostex_HOTKEYS.switchKanbanView).toBe("alt+4");
     /**
      * CDXC:ActionsHotkeys 2026-05-17-01:18:
      * Action launch hotkeys are positional so Settings can bind the first five
@@ -84,11 +88,26 @@ describe("normalizeghostexHotkeySettings", () => {
   });
 
   test("matches focused pane action hotkeys", () => {
-    expect(getghostexHotkeyActionIdForKey(DEFAULT_ghostex_HOTKEYS, "ctrl+shift+b")).toBe(
+    expect(getghostexHotkeyActionIdForKey(DEFAULT_ghostex_HOTKEYS, "cmd+n")).toBe(
       "openBrowserPane",
     );
     expect(getghostexHotkeyActionIdForKey(DEFAULT_ghostex_HOTKEYS, "ctrl+shift+o")).toBe(
       "popOutPane",
+    );
+  });
+
+  test("matches workarea view switcher hotkeys", () => {
+    expect(getghostexHotkeyActionIdForKey(DEFAULT_ghostex_HOTKEYS, "alt+1")).toBe(
+      "switchAgentsView",
+    );
+    expect(getghostexHotkeyActionIdForKey(DEFAULT_ghostex_HOTKEYS, "alt+2")).toBe(
+      "switchSourceView",
+    );
+    expect(getghostexHotkeyActionIdForKey(DEFAULT_ghostex_HOTKEYS, "alt+3")).toBe(
+      "switchGitHubView",
+    );
+    expect(getghostexHotkeyActionIdForKey(DEFAULT_ghostex_HOTKEYS, "alt+4")).toBe(
+      "switchKanbanView",
     );
   });
 
@@ -120,14 +139,18 @@ describe("normalizeghostexHotkeySettings", () => {
         focusPreviousGroup: "cmd+shift+[",
         focusPreviousSession: "cmd+[",
         focusRight: "cmd+right",
+        createSession: "cmd+n",
+        openBrowserPane: "ctrl+shift+b",
       }),
     ).toMatchObject({
+      createSession: "cmd+t",
       focusLeft: "cmd+alt+left",
       focusNextGroup: "cmd+]",
       focusNextSession: "cmd+tab",
       focusPreviousGroup: "cmd+[",
       focusPreviousSession: "cmd+shift+tab",
       focusRight: "cmd+alt+right",
+      openBrowserPane: "cmd+n",
     });
   });
 

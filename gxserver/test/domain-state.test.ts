@@ -116,8 +116,8 @@ test("sessions use G IDs, zmx names, hidden previous-session metadata, and indep
     assert.deepEqual(
       ordered.map((session) => [session.sessionId, session.sidebarOrder]),
       [
-        ["G8v20", 0],
-        ["G1z99", 1000],
+        ["G8v20", 1000],
+        ["G1z99", 2000],
       ],
     );
 

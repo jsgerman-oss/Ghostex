@@ -157,6 +157,9 @@ type TitlebarResourceGroup = {
 type TitlebarResourceSession = {
   activity: "attention" | "idle" | "working";
   agentIcon?: string;
+  delayedSendDeadlineAt?: string;
+  delayedSendRemainingLabel?: string;
+  delayedSendRemainingMs?: number;
   isLive?: boolean;
   isRunning: boolean;
   isSleeping?: boolean;
@@ -1167,6 +1170,11 @@ function createInactiveTerminalSleepSessionIds(resourceGroups: TitlebarResourceG
    * Resources dropdown, not only old agent-detected rows. Keep working,
    * attention, and already sleeping sessions awake, but do not require agent
    * metadata or a seven-minute age gate.
+   *
+   * CDXC:TitlebarResources 2026-06-06-06:09:
+   * Delayed Send means a terminal has a staged Enter that must fire while the
+   * pane is awake. Exclude delayed-send sessions from the Resources sleep count
+   * and payload so macOS and Electron do not hide pending sends behind sleep.
    */
   return resourceGroups.flatMap((group) =>
     group.sessions
@@ -1175,7 +1183,8 @@ function createInactiveTerminalSleepSessionIds(resourceGroups: TitlebarResourceG
           session.sessionKind !== "terminal" ||
           session.isSleeping === true ||
           session.activity === "working" ||
-          session.activity === "attention"
+          session.activity === "attention" ||
+          hasTitlebarResourceDelayedSend(session)
         );
       })
       .map((session) =>
@@ -1183,6 +1192,19 @@ function createInactiveTerminalSleepSessionIds(resourceGroups: TitlebarResourceG
           ? createCombinedProjectSessionId(session.projectId, session.sessionId)
           : session.sessionId,
       ),
+  );
+}
+
+function hasTitlebarResourceDelayedSend(
+  session: Pick<
+    TitlebarResourceSession,
+    "delayedSendDeadlineAt" | "delayedSendRemainingLabel" | "delayedSendRemainingMs"
+  >,
+): boolean {
+  return Boolean(
+    session.delayedSendRemainingLabel ||
+      session.delayedSendDeadlineAt ||
+      typeof session.delayedSendRemainingMs === "number",
   );
 }
 

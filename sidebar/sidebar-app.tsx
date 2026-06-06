@@ -1862,6 +1862,11 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
 
     if (action.kind === "moveSidebar") {
       moveSidebar();
+      return;
+    }
+
+    if (action.kind === "focusedPaneAction" || action.kind === "switchWorkareaView") {
+      vscode.postMessage({ actionId: action.id, type: "runGhostexHotkeyAction" });
     }
   });
   useLayoutEffect(() => {

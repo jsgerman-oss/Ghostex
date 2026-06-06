@@ -93,3 +93,26 @@ export function getEffectiveSidebarSessionTag(input: {
 }): SidebarSessionTag | undefined {
   return input.sessionTag ?? (input.isFavorite === true ? "favorite" : undefined);
 }
+
+export function getRestoredPreviousSessionTag(input: {
+  isFavorite?: boolean;
+  sessionTag?: SidebarSessionTag | null;
+}): SidebarSessionTag | undefined {
+  /*
+  CDXC:PreviousSessions 2026-06-06-05:29:
+  Restoring a Previous Sessions row must keep the user's durable tag marker attached to the recreated session. Legacy Favorite-only rows restore as the `favorite` tag so the new tag model does not lose older session intent.
+  */
+  return normalizeSidebarSessionTag(input.sessionTag) ?? (input.isFavorite === true ? "favorite" : undefined);
+}
+
+export function getRestoredPreviousSessionSidebarOrder(input: {
+  sidebarOrder?: number | null;
+}): number | undefined {
+  /*
+  CDXC:ManualSessionSorting 2026-06-06-05:29:
+  Previous-session restore should return near the old manual sidebar position only when gxserver has a saved positive sidebarOrder from an explicit manual/pinned order. Rows without a saved manual position keep the normal new-session order at the top.
+  */
+  return typeof input.sidebarOrder === "number" && Number.isFinite(input.sidebarOrder) && input.sidebarOrder > 0
+    ? input.sidebarOrder
+    : undefined;
+}

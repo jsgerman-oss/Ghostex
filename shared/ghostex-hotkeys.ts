@@ -24,6 +24,10 @@ export type ghostexHotkeyActionId =
   | "focusLeft"
   | "splitMore"
   | "splitMoreDown"
+  | "switchAgentsView"
+  | "switchSourceView"
+  | "switchGitHubView"
+  | "switchKanbanView"
   | `runActionSlot${1 | 2 | 3 | 4 | 5}`
   | `focusGroup${1 | 2 | 3 | 4 | 5}`
   | `focusSessionSlot${1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9}`;
@@ -53,6 +57,7 @@ export type ghostexHotkeyAction =
   | { id: ghostexHotkeyActionId; kind: "renameActiveSession" }
   | { id: ghostexHotkeyActionId; kind: "runActionSlot"; slotNumber: number }
   | { id: ghostexHotkeyActionId; kind: "setViewMode"; viewMode: TerminalViewMode }
+  | { id: ghostexHotkeyActionId; kind: "switchWorkareaView"; view: "agents" | "github" | "kanban" | "source" }
   | { direction: "horizontal" | "vertical"; id: ghostexHotkeyActionId; kind: "splitFocusedPane" };
 
 export type ghostexHotkeyDefinition = {
@@ -79,10 +84,14 @@ export const GHOSTEX_HOTKEY_DEFINITIONS: readonly ghostexHotkeyDefinition[] = [
      * Default hotkeys should prefer plain Cmd chords so the app feels like a
      * Mac-first terminal workspace instead of requiring Cmd+Option layers for
      * everyday navigation.
+     *
+     * CDXC:Hotkeys 2026-06-06-04:36:
+     * Cmd+T is the default New Terminal Tab action. It creates a terminal tab in the focused workspace split pane, immediately after the currently focused tab.
      */
-    defaultKey: "cmd+n",
+    defaultKey: "cmd+t",
     description: "Create a terminal session.",
     id: "createSession",
+    retiredDefaultKeys: ["cmd+n"],
     title: "Create Session",
   },
   {
@@ -133,12 +142,36 @@ export const GHOSTEX_HOTKEY_DEFINITIONS: readonly ghostexHotkeyDefinition[] = [
      * Pane context-menu actions should also be command-palette commands with
      * configurable shortcuts. These hotkeys target the focused pane/session so
      * keyboard use follows the same scope as the visible pane menu.
+     *
+     * CDXC:Hotkeys 2026-06-06-04:36:
+     * Cmd+N is the default New Browser Tab action. It opens the browser as the next tab in the focused workspace split pane instead of creating a separate split or app window.
      */
-    defaultKey: "ctrl+shift+b",
-    description: "Open a browser pane beside the focused pane.",
+    defaultKey: "cmd+n",
+    description: "Open a browser tab beside the focused tab.",
     id: "openBrowserPane",
+    retiredDefaultKeys: ["ctrl+shift+b"],
     title: "Open Browser Pane",
   },
+  ...([
+    ["switchAgentsView", "agents", "alt+1", "Agents"],
+    ["switchSourceView", "source", "alt+2", "Source"],
+    ["switchGitHubView", "github", "alt+3", "GitHub"],
+    ["switchKanbanView", "kanban", "alt+4", "Kanban"],
+  ] as const).map(([id, view, defaultKey, title]) => ({
+    action: {
+      id,
+      kind: "switchWorkareaView" as const,
+      view,
+    },
+    /**
+     * CDXC:Hotkeys 2026-06-06-04:36:
+     * Option+1..4 are default workarea view switchers in titlebar order: Agents, Source, GitHub, Kanban. Keep these as named actions instead of overloading group/session slots so AppKit, Settings, and sidebar DOM dispatch switch the same project surface.
+     */
+    defaultKey,
+    description: `Switch to ${title} view.`,
+    id,
+    title: `Switch to ${title}`,
+  })),
   {
     action: {
       focusedPaneAction: "rotatePanesClockwise",

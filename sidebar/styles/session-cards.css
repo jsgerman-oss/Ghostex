@@ -364,6 +364,21 @@
   padding: 0 var(--reference-session-trailing-inset) 0 var(--reference-session-title-inset);
 }
 
+/*
+ * CDXC:PreviousSessions 2026-06-06-04:17:
+ * Inline Previous Sessions search rows must match normal project-session row
+ * spacing in the macOS and Electron reference sidebars. The terminal glyph is
+ * visually wider than the agent-logo slot, so use the same expanded title
+ * padding formula as project session buttons instead of the compact modal
+ * padding that lets the glyph overlap the title.
+ */
+.sidebar-reference-layout[data-reference-sidebar="true"] .session.session-history-card {
+  padding-left: calc(
+    var(--reference-session-title-inset) + var(--reference-sidebar-scroll-row-bleed-left, 7px) +
+      var(--reference-session-full-width-left-padding)
+  );
+}
+
 .previous-sessions-modal .session-history-card::before {
   display: none;
 }

@@ -1071,6 +1071,7 @@ export interface GxserverPresentationSearchResult {
   primaryTitle?: string;
   sessionId: GxserverSessionId;
   sessionTag?: GxserverSessionTag;
+  sidebarOrder?: number;
   subtitle?: string;
   surface: GxserverSessionSurface;
   terminalTitle?: string;

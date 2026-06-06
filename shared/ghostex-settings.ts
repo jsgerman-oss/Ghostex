@@ -539,11 +539,16 @@ export const DEFAULT_ghostex_SETTINGS: ghostexSettings = {
   sessionPersistenceProvider: "zmx",
   /**
    * CDXC:SessionPersistence 2026-05-23-00:50:
-   * The session-id pane overlay preference is enabled by default, but the
+   * The session-id pane overlay preference is configurable, and the
    * native label itself must still render only for terminal panes that carry
    * zmx/tmux/zellij persistence metadata.
+   *
+   * CDXC:SessionPersistence 2026-06-06-05:47:
+   * Provider session ids in terminal panes are opt-in chrome. Keep the setting
+   * disabled for default settings so new users do not see top-right provider
+   * identifiers unless they explicitly enable the pane overlay.
    */
-  showSessionIdInTerminalPanes: true,
+  showSessionIdInTerminalPanes: false,
   /**
    * CDXC:SidebarPlacement 2026-05-06-17:32
    * Sidebar side is a first-class setting so users can choose left or right
@@ -1177,7 +1182,8 @@ export function normalizeghostexSettings(candidate: unknown): ghostexSettings {
     sessionPersistenceProvider,
     /**
      * CDXC:SessionPersistence 2026-05-23-00:50:
-     * Older settings should gain the default-on session-id overlay preference.
+     * Older settings should normalize the session-id overlay preference from
+     * the canonical default while preserving explicit user choices.
      * The native pane still suppresses the actual label unless that terminal is
      * backed by zmx, tmux, or zellij.
      */

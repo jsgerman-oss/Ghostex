@@ -43,12 +43,15 @@ type CreateSessionResult = {
   snapshot: GroupedSessionWorkspaceSnapshot;
 };
 
+type SessionPaneTabInsertPosition = "after" | "append" | "before";
+
 export type VisibleSessionPlacement =
   | {
       kind: "appendFullWidth";
     }
   | {
       kind: "appendToTabGroup";
+      position?: SessionPaneTabInsertPosition;
       targetSessionId: string;
     }
   | {
@@ -597,14 +600,55 @@ export function removeSessionInSimpleWorkspace(
     return { changed: false, snapshot: normalizedSnapshot };
   }
 
+  const replacementSessionId = getClosingPaneTabReplacementSessionId(
+    owningGroup.snapshot.paneLayout,
+    sessionId,
+  );
+  const shouldPromoteReplacementSession =
+    replacementSessionId !== undefined &&
+    owningGroup.snapshot.sessions.some((session) => session.sessionId === replacementSessionId) &&
+    isActivePaneLayoutSession(owningGroup.snapshot.paneLayout, sessionId);
+  const paneLayoutWithoutSession = owningGroup.snapshot.paneLayout
+    ? removeSessionFromPaneLayout(
+        owningGroup.snapshot.paneLayout,
+        sessionId,
+        shouldPromoteReplacementSession ? replacementSessionId : undefined,
+      )
+    : undefined;
+  const visibleSessionIdsWithoutSession = getVisibleSessionIdsAfterSessionClose(
+    owningGroup.snapshot.visibleSessionIds,
+    sessionId,
+    shouldPromoteReplacementSession ? replacementSessionId : undefined,
+  );
+  const visibleCountAfterClose = paneLayoutWithoutSession
+    ? clampSupportedVisibleCount(Math.max(1, countPaneLayoutOwnerSlots(paneLayoutWithoutSession)))
+    : owningGroup.snapshot.visibleCount;
   const snapshotWithoutSession = updateGroup(normalizedSnapshot, owningGroup.groupId, (group) => ({
     ...group,
     snapshot: normalizeGroupSnapshot({
       ...group.snapshot,
-      sessions: group.snapshot.sessions.filter((session) => session.sessionId !== sessionId),
-      visibleSessionIds: group.snapshot.visibleSessionIds.filter((id) => id !== sessionId),
+      /*
+       * CDXC:PaneTabs 2026-06-06-04:32:
+       * Closing the active tab in a split pane should select the tab immediately to its right in the same pane before publish-time virtual-tab materialization runs.
+       * If that tab was parked, wake it so native sync still has a concrete pane owner and does not collapse the split into the other pane.
+       * When the closed tab was the pane's only tab, there is no replacement; remove that split branch and reduce the visible pane count so the remaining pane can show the project's tabs as one stack.
+       */
       focusedSessionId:
-        group.snapshot.focusedSessionId === sessionId ? undefined : group.snapshot.focusedSessionId,
+        group.snapshot.focusedSessionId === sessionId && shouldPromoteReplacementSession
+          ? replacementSessionId
+          : group.snapshot.focusedSessionId === sessionId
+            ? undefined
+            : group.snapshot.focusedSessionId,
+      paneLayout: paneLayoutWithoutSession,
+      sessions: group.snapshot.sessions
+        .filter((session) => session.sessionId !== sessionId)
+        .map((session) =>
+          shouldPromoteReplacementSession && session.sessionId === replacementSessionId
+            ? { ...session, isPoppedOut: undefined, isSleeping: false }
+            : session,
+        ),
+      visibleCount: visibleCountAfterClose,
+      visibleSessionIds: visibleSessionIdsWithoutSession,
     }),
   }));
   const shouldSwitchGroups =
@@ -2366,6 +2410,7 @@ function getNextPaneLayoutForCreatedSession(
       seededLayout,
       placement.targetSessionId,
       nextSessionId,
+      placement.position,
     );
     return normalizeCreatedPaneLayout(
       tabbedLayout ?? createPaneLayoutFromVisibleIds(nextVisibleSessionIds),
@@ -2619,6 +2664,7 @@ function setActiveSessionInPaneLayout(
 function removeSessionFromPaneLayout(
   layout: SessionPaneLayoutNode,
   sessionId: string,
+  replacementSessionId?: string,
 ): SessionPaneLayoutNode | undefined {
   if (layout.kind === "leaf") {
     return layout.sessionId === sessionId ? undefined : layout;
@@ -2631,17 +2677,21 @@ function removeSessionFromPaneLayout(
     if (sessionIds.length === 1) {
       return { kind: "leaf", sessionId: sessionIds[0]! };
     }
+    const fallbackActiveSessionId =
+      replacementSessionId && sessionIds.includes(replacementSessionId)
+        ? replacementSessionId
+        : sessionIds[0];
     return {
       ...layout,
       activeSessionId:
         layout.activeSessionId && sessionIds.includes(layout.activeSessionId)
           ? layout.activeSessionId
-          : sessionIds[0],
+          : fallbackActiveSessionId,
       sessionIds,
     };
   }
   const children = layout.children
-    .map((child) => removeSessionFromPaneLayout(child, sessionId))
+    .map((child) => removeSessionFromPaneLayout(child, sessionId, replacementSessionId))
     .filter((child): child is SessionPaneLayoutNode => child !== undefined);
   if (children.length === 0) {
     return undefined;
@@ -2652,12 +2702,94 @@ function removeSessionFromPaneLayout(
   return flattenPaneLayoutSplit({ ...layout, children });
 }
 
+function getClosingPaneTabReplacementSessionId(
+  layout: SessionPaneLayoutNode | undefined,
+  sessionId: string,
+): string | undefined {
+  if (!layout) {
+    return undefined;
+  }
+  if (layout.kind === "leaf") {
+    return undefined;
+  }
+  if (layout.kind === "tabs") {
+    return getAdjacentPaneTabSessionId(layout.sessionIds, sessionId);
+  }
+  for (const child of layout.children) {
+    const replacementSessionId = getClosingPaneTabReplacementSessionId(child, sessionId);
+    if (replacementSessionId) {
+      return replacementSessionId;
+    }
+  }
+  return undefined;
+}
+
+function getAdjacentPaneTabSessionId(
+  sessionIds: readonly string[],
+  sessionId: string,
+): string | undefined {
+  const index = sessionIds.indexOf(sessionId);
+  if (index < 0 || sessionIds.length <= 1) {
+    return undefined;
+  }
+  /*
+   * CDXC:PaneTabs 2026-06-06-04:32:
+   * Closing a selected tab follows browser-style selection: prefer the tab immediately to the right, then use the left sibling only when the closed tab was rightmost.
+   */
+  return sessionIds[index + 1] ?? sessionIds[index - 1];
+}
+
+function isActivePaneLayoutSession(
+  layout: SessionPaneLayoutNode | undefined,
+  sessionId: string,
+): boolean {
+  if (!layout) {
+    return false;
+  }
+  if (layout.kind === "leaf") {
+    return layout.sessionId === sessionId;
+  }
+  if (layout.kind === "tabs") {
+    return (layout.activeSessionId ?? layout.sessionIds[0]) === sessionId;
+  }
+  return layout.children.some((child) => isActivePaneLayoutSession(child, sessionId));
+}
+
+function getVisibleSessionIdsAfterSessionClose(
+  visibleSessionIds: readonly string[],
+  sessionId: string,
+  replacementSessionId: string | undefined,
+): string[] {
+  const nextVisibleSessionIds: string[] = [];
+  for (const visibleSessionId of visibleSessionIds) {
+    if (visibleSessionId === sessionId) {
+      if (replacementSessionId && !nextVisibleSessionIds.includes(replacementSessionId)) {
+        nextVisibleSessionIds.push(replacementSessionId);
+      }
+      continue;
+    }
+    if (visibleSessionId === replacementSessionId && visibleSessionIds.includes(sessionId)) {
+      continue;
+    }
+    nextVisibleSessionIds.push(visibleSessionId);
+  }
+  return nextVisibleSessionIds;
+}
+
+function countPaneLayoutOwnerSlots(layout: SessionPaneLayoutNode): number {
+  if (layout.kind === "split") {
+    return layout.children.reduce((count, child) => count + countPaneLayoutOwnerSlots(child), 0);
+  }
+  return 1;
+}
+
 function addSessionToPaneTabGroup(
   layout: SessionPaneLayoutNode,
   targetSessionId: string,
   sourceSessionId: string,
+  position: SessionPaneTabInsertPosition = "append",
 ): SessionPaneLayoutNode | undefined {
-  const result = addSessionToPaneTabGroupNode(layout, targetSessionId, sourceSessionId);
+  const result = addSessionToPaneTabGroupNode(layout, targetSessionId, sourceSessionId, position);
   return result.didAdd ? result.node : undefined;
 }
 
@@ -2665,6 +2797,7 @@ function addSessionToPaneTabGroupNode(
   node: SessionPaneLayoutNode,
   targetSessionId: string,
   sourceSessionId: string,
+  position: SessionPaneTabInsertPosition,
 ): { didAdd: boolean; node: SessionPaneLayoutNode } {
   if (node.kind === "leaf") {
     return node.sessionId === targetSessionId
@@ -2682,12 +2815,28 @@ function addSessionToPaneTabGroupNode(
     if (!node.sessionIds.includes(targetSessionId)) {
       return { didAdd: false, node };
     }
+    const nextSessionIds =
+      position === "append"
+        ? [...node.sessionIds, sourceSessionId]
+        : (() => {
+            const sessionIdsWithoutSource = node.sessionIds.filter(
+              (sessionId) => sessionId !== sourceSessionId,
+            );
+            const targetIndex = sessionIdsWithoutSource.indexOf(targetSessionId);
+            const insertIndex = position === "before" ? targetIndex : targetIndex + 1;
+            sessionIdsWithoutSource.splice(insertIndex, 0, sourceSessionId);
+            return sessionIdsWithoutSource;
+          })();
+    /**
+     * CDXC:PaneTabs 2026-06-06-04:36:
+     * Cmd+T and Cmd+N create tabs in the focused pane immediately next to the focused tab, not at the far right of the tab strip. Preserve the old append behavior unless callers explicitly request before/after placement.
+     */
     return {
       didAdd: true,
       node: {
         ...node,
         activeSessionId: sourceSessionId,
-        sessionIds: dedupeVisibleSessionIds([...node.sessionIds, sourceSessionId]),
+        sessionIds: dedupeVisibleSessionIds(nextSessionIds),
       },
     };
   }
@@ -2696,7 +2845,12 @@ function addSessionToPaneTabGroupNode(
     if (didAdd) {
       return child;
     }
-    const result = addSessionToPaneTabGroupNode(child, targetSessionId, sourceSessionId);
+    const result = addSessionToPaneTabGroupNode(
+      child,
+      targetSessionId,
+      sourceSessionId,
+      position,
+    );
     didAdd = result.didAdd;
     return result.node;
   });

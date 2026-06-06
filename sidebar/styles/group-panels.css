@@ -718,6 +718,12 @@ body:has(.sidebar-reference-layout[data-reference-sidebar="true"]) .stack {
    * The full reference sidebar container needs a 1px left margin so the whole
    * sidebar shifts right together instead of changing individual row padding,
    * hover backgrounds, icons, titles, or trailing controls independently.
+   *
+   * CDXC:SidebarReferenceBounds 2026-06-06-05:37:
+   * The shared sidebar component, not the macOS host, owns the 9px left inset
+   * formed by the 1px container margin and 8px content padding. Keep Electron
+   * and macOS on this same component-level edge contract so shared rows do not
+   * drift by host.
    */
   margin-left: 1px;
   padding: 0 1px 7px 8px;

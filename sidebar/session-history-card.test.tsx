@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, test } from "vitest";
@@ -61,5 +62,16 @@ describe("SessionHistoryCard", () => {
     );
 
     expect(markup).toContain('data-search-selected="true"');
+  });
+
+  test("keeps reference-sidebar history title padding aligned with project rows", () => {
+    const css = readFileSync(new URL("./styles/session-cards.css", import.meta.url), "utf8");
+    const referenceHistoryRule = css.match(
+      /\.sidebar-reference-layout\[data-reference-sidebar="true"\] \.session\.session-history-card\s*\{[^}]+padding-left:[^}]+\}/u,
+    )?.[0];
+
+    expect(referenceHistoryRule).toContain("var(--reference-session-title-inset)");
+    expect(referenceHistoryRule).toContain("var(--reference-sidebar-scroll-row-bleed-left");
+    expect(referenceHistoryRule).toContain("var(--reference-session-full-width-left-padding)");
   });
 });

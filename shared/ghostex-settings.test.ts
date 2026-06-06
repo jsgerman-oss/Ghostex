@@ -557,21 +557,25 @@ describe("normalizeghostexSettings", () => {
      * attach/recreate contract.
      *
      * CDXC:SessionPersistence 2026-05-23-00:50:
-     * The top-right provider/session overlay preference is enabled by default,
-     * but non-persistent terminal panes still have no provider session label to
-     * render.
+     * The top-right provider/session overlay preference is normalized with
+     * settings defaults, but non-persistent terminal panes still have no
+     * provider session label to render.
      *
      * CDXC:SessionPersistence 2026-05-26-13:41:
      * First-run settings should enable zmx by default, label it as recommended
      * in Settings, and hide tmux/zellij from the dropdown while preserving
      * their normalization support for existing settings and sessions.
+     *
+     * CDXC:SessionPersistence 2026-06-06-05:47:
+     * Provider session ids in terminal panes are disabled by default and remain
+     * available only when the user explicitly enables the pane overlay setting.
      */
     expect(DEFAULT_ghostex_SETTINGS.sessionPersistenceProvider).toBe("zmx");
-    expect(DEFAULT_ghostex_SETTINGS.showSessionIdInTerminalPanes).toBe(true);
+    expect(DEFAULT_ghostex_SETTINGS.showSessionIdInTerminalPanes).toBe(false);
     expect(DEFAULT_ghostex_SETTINGS.tmuxMode).toBe(false);
     expect(normalizeghostexSettings({})).toMatchObject({
       sessionPersistenceProvider: "zmx",
-      showSessionIdInTerminalPanes: true,
+      showSessionIdInTerminalPanes: false,
       tmuxMode: false,
     });
     expect(normalizeghostexSettings({ tmuxMode: true })).toMatchObject({

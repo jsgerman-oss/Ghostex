@@ -95,6 +95,7 @@ function toSearchResult(
     ...(titleProjection.primaryTitle !== undefined ? { primaryTitle: titleProjection.primaryTitle } : {}),
     sessionId: session.sessionId,
     ...(session.sessionTag ? { sessionTag: session.sessionTag } : {}),
+    ...(session.sidebarOrder !== undefined ? { sidebarOrder: session.sidebarOrder } : {}),
     subtitle: session.cwd ?? project?.path,
     surface: session.surface,
     ...(titleProjection.terminalTitle !== undefined ? { terminalTitle: titleProjection.terminalTitle } : {}),
