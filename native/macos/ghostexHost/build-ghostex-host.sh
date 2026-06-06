@@ -56,6 +56,85 @@ resolve_gxserver_node() {
 	return 1
 }
 
+node_supports_t3code() {
+	local candidate="$1"
+	# CDXC:T3CodePackaging 2026-06-06-05:50: The packaged T3 Code server declares Node ^22.16 || ^23.11 || >=24.10; build packaging must reject older Node runtimes so released panes fail with setup guidance instead of a localhost startup error.
+	"$candidate" -e 'const [major, minor] = process.versions.node.split(".").map(Number); process.exit((major === 22 && minor >= 16) || (major === 23 && minor >= 11) || (major === 24 && minor >= 10) || major > 24 ? 0 : 1);' >/dev/null 2>&1
+}
+
+resolve_t3code_node() {
+	local home
+	home="$HOME"
+	local candidates=(
+		"${GXSERVER_NODE_BIN:-}"
+		"/opt/homebrew/bin/node"
+		"/usr/local/bin/node"
+		"$home/.local/share/mise/shims/node"
+		"$home/.local/bin/node"
+		"$home/.asdf/shims/node"
+	)
+	local candidate
+	for candidate in "${candidates[@]}"; do
+		if [[ -n "$candidate" && -x "$candidate" ]] && node_supports_t3code "$candidate"; then
+			printf '%s\n' "$candidate"
+			return 0
+		fi
+	done
+	candidate="$(command -v node || true)"
+	if [[ -n "$candidate" && -x "$candidate" ]] && node_supports_t3code "$candidate"; then
+		printf '%s\n' "$candidate"
+		return 0
+	fi
+	return 1
+}
+
+resolve_t3code_root() {
+	local configured="${T3CODE_ROOT:-${VSMUX_T3CODE_REPO_ROOT:-${ghostex_T3CODE_REPO_ROOT:-}}}"
+	local candidate
+	if [[ -n "$configured" ]]; then
+		if [[ -f "$configured/apps/server/package.json" ]]; then
+			(cd "$configured" && pwd)
+			return 0
+		fi
+		return 1
+	fi
+	for candidate in \
+		"$REPO_ROOT/../t3code-embed" \
+		"$REPO_ROOT/../t3code" \
+		"$HOME/dev/_active/t3code-embed" \
+		"$HOME/dev/_active/t3code"; do
+		if [[ -f "$candidate/apps/server/package.json" ]]; then
+			(cd "$candidate" && pwd)
+			return 0
+		fi
+	done
+	return 1
+}
+
+package_t3code_server() {
+	local t3_root="$1"
+	local node_bin="$2"
+	local npm_bin="$3"
+	local target_dir="$WEB_DIR/t3code-server"
+
+	# CDXC:T3CodePackaging 2026-06-06-05:50: T3 Code is a core advertised pane type, so release builds must ship the managed server runtime under Web/t3code-server instead of letting installed apps fall through to a developer-only ~/dev/_active/t3code-embed checkout and fail with a network-looking pane error.
+	(
+		cd "$t3_root"
+		env PATH="$(dirname "$node_bin"):$PATH" bun run build
+	)
+	rm -rf "$target_dir"
+	mkdir -p "$target_dir"
+	cp -R "$t3_root/apps/server/dist" "$target_dir/dist"
+	"$node_bin" "$REPO_ROOT/scripts/package-t3code-server.mjs" \
+		--source-root "$t3_root" \
+		--target "$target_dir"
+	(
+		cd "$target_dir"
+		env PATH="$(dirname "$node_bin"):$PATH" "$npm_bin" install --omit=dev --no-audit --no-fund
+		env PATH="$(dirname "$node_bin"):$PATH" "$node_bin" dist/bin.mjs --help >/dev/null
+	)
+}
+
 # CDXC:GxserverPackaging 2026-06-01-16:11: The packaged gxserver native modules must be built with the same system Node that GxserverClient will use at runtime. Rebuild better-sqlite3 through that Node/npm before staging app resources so local starts do not ship a Node-ABI mismatch into /Applications/Ghostex.app.
 GXSERVER_NODE_BIN="${GXSERVER_NODE:-$(resolve_gxserver_node || true)}"
 if [[ -z "$GXSERVER_NODE_BIN" ]]; then
@@ -77,6 +156,35 @@ if [[ -z "$GXSERVER_NPM_BIN" || ! -x "$GXSERVER_NPM_BIN" ]]; then
 fi
 GXSERVER_NODE_VERSION="$("$GXSERVER_NODE_BIN" -p 'process.version')"
 GXSERVER_NODE_MODULE_VERSION="$("$GXSERVER_NODE_BIN" -p 'process.versions.modules')"
+
+T3CODE_NODE_BIN="${T3CODE_NODE:-$(resolve_t3code_node || true)}"
+if [[ -z "$T3CODE_NODE_BIN" ]]; then
+	cat >&2 <<EOF
+Node.js 22.16+, 23.11+, or 24.10+ is required to package T3 Code for the macOS app.
+
+Install a compatible Node runtime from https://nodejs.org or set T3CODE_NODE explicitly.
+EOF
+	exit 1
+fi
+T3CODE_NODE_DIR="$(cd "$(dirname "$T3CODE_NODE_BIN")" && pwd)"
+T3CODE_NPM_BIN="${T3CODE_NPM:-$T3CODE_NODE_DIR/npm}"
+if [[ ! -x "$T3CODE_NPM_BIN" ]]; then
+	T3CODE_NPM_BIN="$(PATH="$T3CODE_NODE_DIR:$PATH" command -v npm || true)"
+fi
+if [[ -z "$T3CODE_NPM_BIN" || ! -x "$T3CODE_NPM_BIN" ]]; then
+	echo "npm is required beside the selected T3 Code Node runtime: $T3CODE_NODE_BIN" >&2
+	exit 1
+fi
+T3CODE_ROOT="$(resolve_t3code_root || true)"
+if [[ -z "$T3CODE_ROOT" ]]; then
+	cat >&2 <<EOF
+T3 Code source is required to package the embedded runtime.
+
+Set T3CODE_ROOT or VSMUX_T3CODE_REPO_ROOT to a t3code checkout, or place it at:
+  ~/dev/_active/t3code-embed
+EOF
+	exit 1
+fi
 
 # CDXC:NativeBuild 2026-05-29-11:24: `bun run start` builds zmx and its Ghostty Zig dependency, which require Zig 0.15.2. A global Homebrew `zig` upgrade to 0.16 breaks the build API, so the local native build must choose the compatible Zig binary deliberately instead of inheriting the first PATH entry.
 ZIG_BIN="${ZIG:-}"
@@ -364,6 +472,7 @@ chmod 755 "$WEB_DIR/bin/zehn"
 )
 rm -rf "$WEB_DIR/gxserver"
 cp -R "$REPO_ROOT/gxserver/dist/server-package" "$WEB_DIR/gxserver"
+package_t3code_server "$T3CODE_ROOT" "$T3CODE_NODE_BIN" "$T3CODE_NPM_BIN"
 mkdir -p "$WEB_DIR/cli/node_modules"
 cp -R "$REPO_ROOT/node_modules/ws" "$WEB_DIR/cli/node_modules/ws"
 rm -rf "$WEB_DIR/monaco"

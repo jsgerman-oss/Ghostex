@@ -2012,6 +2012,13 @@ private final class GhostexGhosttySurfaceHostView: NSView {
 }
 
 @MainActor
+struct ManagedT3PaneRuntimeState {
+  let paneSessionIds: [String]
+  let reason: String
+  let runtimeCwd: String?
+}
+
+@MainActor
 final class TerminalWorkspaceView: NSView {
   private struct TerminalSession {
     let containerView: TerminalPaneLeafContainerView
@@ -2302,6 +2309,7 @@ final class TerminalWorkspaceView: NSView {
     alpha: 1)
   private let ghostty: GhostexGhosttyApp
   private let sendEvent: (HostEvent) -> Void
+  var onManagedT3PaneRuntimeStateChanged: (ManagedT3PaneRuntimeState) -> Void = { _ in }
   private var sessions: [String: TerminalSession] = [:]
   private var webPaneSessions: [String: WebPaneSession] = [:]
   private var projectEditorPaneSessions: [String: ProjectEditorPaneSession] = [:]
@@ -3694,6 +3702,7 @@ final class TerminalWorkspaceView: NSView {
           pendingAuthenticatedWebPaneLoadSessionIds.remove(command.sessionId)
           loadWebPane(sessionId: command.sessionId, url: url, reason: "createWebPaneExistingReroute")
         }
+        syncManagedT3PaneRuntimeState(reason: "createWebPaneExisting")
       } else if !existingSession.isManagedT3Pane, !isManagedT3Pane, let url = initialUrl {
         /*
          CDXC:BrowserAgentControl 2026-05-27-06:43:
@@ -3956,6 +3965,9 @@ final class TerminalWorkspaceView: NSView {
       titleBarView: titleBarView,
       borderView: borderView
     )
+    if isManagedT3Pane {
+      syncManagedT3PaneRuntimeState(reason: "createWebPaneNew")
+    }
     activeSessionIds.insert(command.sessionId)
     if let session = webPaneSessions[command.sessionId] {
       mountWebPaneContainer(for: session)
@@ -4002,6 +4014,9 @@ final class TerminalWorkspaceView: NSView {
         "sessionId": sessionId,
       ])
       return
+    }
+    if session.isManagedT3Pane {
+      syncManagedT3PaneRuntimeState(reason: "closeWebPane")
     }
     NativeT3CodePaneReproLog.append("nativeWorkspace.t3WebPane.close.start", [
       "currentUrl": session.currentURLString ?? NSNull(),
@@ -4058,6 +4073,38 @@ final class TerminalWorkspaceView: NSView {
       "sessionId": sessionId,
       "visibleSessionIds": orderedVisibleSessionIds(),
     ])
+  }
+
+  /**
+   CDXC:T3Code 2026-06-06-05:13:
+   The managed t3code runtime stays alive while native owns at least one managed
+   T3 web pane, including inactive tab siblings. Recompute from `webPaneSessions`
+   at the writer boundary so sidebar/gxserver projection gaps cannot stop the
+   provider while a real T3 tab is still open.
+   */
+  private func syncManagedT3PaneRuntimeState(reason: String) {
+    let managedSessions = webPaneSessions.values
+      .filter(\.isManagedT3Pane)
+      .sorted { $0.sessionId < $1.sessionId }
+    let paneSessionIds = managedSessions.map(\.sessionId)
+    let runtimeCwd = managedSessions
+      .compactMap { session -> String? in
+        let workspaceRoot = session.workspaceRoot?.trimmingCharacters(in: .whitespacesAndNewlines)
+        return workspaceRoot?.isEmpty == false ? workspaceRoot : nil
+      }
+      .first
+    NativeT3CodePaneReproLog.append("nativeWorkspace.t3WebPane.runtimeState.updated", [
+      "hasRuntimeCwd": runtimeCwd != nil,
+      "managedPaneCount": paneSessionIds.count,
+      "reason": reason,
+      "sessionIds": paneSessionIds,
+    ])
+    onManagedT3PaneRuntimeStateChanged(
+      ManagedT3PaneRuntimeState(
+        paneSessionIds: paneSessionIds,
+        reason: reason,
+        runtimeCwd: runtimeCwd
+      ))
   }
 
   func focusWebPane(sessionId: String, reason: String = "explicitFocusWebPaneCommand") {
@@ -15052,19 +15099,23 @@ private enum NativeSessionPersistenceMode {
       zmx_cwd=\(shellQuote(cwd))
       zmx_persistence_notice_command=\(shellQuote(persistenceNoticeCommand))
       zmx_title_notice_command=\(shellQuote(titleNoticeCommand))
+      zmx_prompt_editor_attach_args=
+      if [ "$GHOSTEX_PROMPT_EDITOR_BACKEND" = "monaco" ] && [ "$GHOSTEX_PROMPT_EDITOR_CLIENT" = "macos-app" ]; then
+        zmx_prompt_editor_attach_args='--prompt-editor=monaco'
+      fi
       \(zmxExecutableShellSetup())
       unset ZMX_SESSION ZMX_SESSION_PREFIX
       if "$zmx_bin" list --short 2>/dev/null | grep -F -x -- "$zmx_session" >/dev/null 2>&1; then
         if [ -n "$zmx_title_notice_command" ]; then
           /bin/zsh -lc "$zmx_title_notice_command"
         fi
-        exec "$zmx_bin" attach "$zmx_session"
+        exec "$zmx_bin" attach $zmx_prompt_editor_attach_args "$zmx_session"
       fi
       if [ -n "$zmx_persistence_notice_command" ]; then
         /bin/zsh -lc "$zmx_persistence_notice_command"
       fi
       cd "$zmx_cwd" || exit
-      exec "$zmx_bin" attach "$zmx_session"
+      exec "$zmx_bin" attach $zmx_prompt_editor_attach_args "$zmx_session"
       """
     /**
      CDXC:SessionPersistence 2026-05-05-07:28
@@ -15097,6 +15148,12 @@ private enum NativeSessionPersistenceMode {
      over: existing named sessions print the known sidebar title before attach,
      while new sessions print the persistence notice outside zmx before the
      sidebar sends one-shot startup text.
+
+     CDXC:PromptEditor 2026-06-06-16:40:
+     zmx prompt-editor routing must be advertised by the current desktop attach
+     client, not inherited from a shell created by another client. Add
+     --prompt-editor=monaco only when this macOS terminal environment selected
+     the Monaco backend; otherwise zmx reports gte for Ctrl+G.
      */
     return "/bin/zsh -lc \(shellQuote(script))"
   }
@@ -16193,6 +16250,10 @@ final class GhostexGhosttySurfaceView: NSView {
    letting AppKit's menu equivalents swallow them. Preserve native terminal-copy
    behavior when Ghostty owns an active selection, then send Cmd+C through to gte
    when the selection is inside the TUI itself.
+
+   CDXC:TerminalClipboard 2026-06-06-03:38:
+   Cmd+C should use Ghostty's copy action as the source of truth before falling through to Super-C terminal input.
+   A preflight selection boolean can lag the copy action and leave the system clipboard unchanged even though right-click Copy works.
    */
   private func handleCommandEditingKeyEquivalent(_ event: NSEvent) -> Bool {
     guard event.type == .keyDown, focused else {
@@ -16209,8 +16270,8 @@ final class GhostexGhosttySurfaceView: NSView {
       return sendTerminalInput(Self.controlGSequence, label: "cmd-g-as-ctrl-g")
     }
 
-    if flags.isDisjoint(with: [.shift]), key == "c", hasSelection() {
-      return false
+    if flags.isDisjoint(with: [.shift]), key == "c", performBindingAction("copy_to_clipboard") {
+      return true
     }
 
     if flags.isDisjoint(with: [.shift]), let key {

@@ -465,16 +465,11 @@ struct StartT3CodeRuntime: Decodable {
 
 struct SetT3CodeRuntimeSessionState: Decodable {
   /**
-   CDXC:T3Code 2026-05-10-22:48
-   The React sidebar owns the definition of a running T3 session: its card is
-   included in the current session-sidebar projection and is not sleeping.
-   Native receives only those sidebar ids so the provider heartbeat follows the
-   session model instead of workspace-pane visibility.
-
-   CDXC:T3Code 2026-05-14-09:34:
-   Native also needs one awake T3 workspace root on the same state update so it
-   can restart the managed t3code provider in the background when the server is
-   no longer live but T3 session cards remain visible in the sidebar.
+   CDXC:T3Code 2026-06-06-05:13:
+   This sidebar-projected state is protocol compatibility only. The managed
+   t3code provider lifetime follows live native managed T3 web panes instead,
+   because gxserver presentation can omit local T3 cards while the AppKit pane
+   registry still owns an open embedded tab.
    */
   let runtimeCwd: String?
   let runningSessionIds: [String]

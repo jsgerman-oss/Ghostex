@@ -41,11 +41,14 @@ test("zmx attach command preserves the renderer shell contract", () => {
   assert.match(command, /S1a:P3a91:G8v20/);
   assert.match(command, /http:\/\/127\.0\.0\.1:58744/);
   assert.match(command, /\/Users\/test\/\.ghostex\/gxserver\/auth\/token/);
+  assert.match(command, /zmx_prompt_editor_attach_args=/);
+  assert.match(command, /GHOSTEX_PROMPT_EDITOR_BACKEND/);
+  assert.match(command, /--prompt-editor=monaco/);
   assert.match(command, /"\$zmx_bin" list --short/);
   assert.match(command, /\/bin\/zsh -lc "\$zmx_title_notice_command"/);
   assert.match(command, /\/bin\/zsh -lc "\$zmx_persistence_notice_command"/);
   assert.match(command, /cd "\$zmx_cwd" \|\| exit/);
-  assert.match(command, /exec "\$zmx_bin" attach "\$zmx_session"/);
+  assert.match(command, /exec "\$zmx_bin" attach \$zmx_prompt_editor_attach_args "\$zmx_session"/);
   assert.doesNotMatch(command, /command -v zmx/);
 });
 

@@ -88,6 +88,9 @@ The renderer still receives one `/bin/zsh -lc` attach command string. That scrip
 CDXC:PromptEditor 2026-05-31-11:58:
 New zmx provider sessions need canonical gxserver identity in their launch environment so prompt-editor wrappers can address S:P:G sessions without assuming a single connected server. Attach scripts export only stable server/session identity here; client-specific Monaco vs gte routing remains a wrapper/runtime decision.
 
+CDXC:PromptEditor 2026-06-06-16:40:
+Desktop render surfaces must advertise Monaco support to zmx at attach time only when their runtime terminal environment selected the Monaco backend. Missing attach capability defaults to gte, so mobile, TUI, and SSH clients cannot inherit stale macOS app prompt-editor markers from an existing shell.
+
 CDXC:GxserverSessionTitle 2026-06-04-04:05:
 Agent hooks running inside server-created zmx sessions must report identity and first prompts back to gxserver even when no macOS state file exists. Export the gxserver base URL, protocol version, global session ref, and auth token file path so hooks can call the authenticated session-state API without embedding the bearer token in attach/run command text.
 */
@@ -105,6 +108,10 @@ zmx_gxserver_protocol_version=${shellQuote(String(input.gxserverProtocolVersion 
 zmx_persistence_notice_command=${shellQuote(persistenceNoticeCommand)}
 zmx_title_notice_command=${shellQuote(titleNoticeCommand)}
 zmx_bin=${shellQuote(input.zmxExecutablePath)}
+zmx_prompt_editor_attach_args=
+if [ "$GHOSTEX_PROMPT_EDITOR_BACKEND" = "monaco" ] && [ "$GHOSTEX_PROMPT_EDITOR_CLIENT" = "macos-app" ]; then
+  zmx_prompt_editor_attach_args='--prompt-editor=monaco'
+fi
 if [ ! -x "$zmx_bin" ]; then
   printf '%s\\n' 'session persistence is set to zmx, but Ghostex bundled zmx was not found.'
   exit 127
@@ -126,13 +133,13 @@ if "$zmx_bin" list --short 2>/dev/null | grep -F -x -- "$zmx_session" >/dev/null
   if [ -n "$zmx_title_notice_command" ]; then
     /bin/zsh -lc "$zmx_title_notice_command"
   fi
-  exec "$zmx_bin" attach "$zmx_session"
+  exec "$zmx_bin" attach $zmx_prompt_editor_attach_args "$zmx_session"
 fi
 if [ -n "$zmx_persistence_notice_command" ]; then
   /bin/zsh -lc "$zmx_persistence_notice_command"
 fi
 cd "$zmx_cwd" || exit
-exec "$zmx_bin" attach "$zmx_session"
+exec "$zmx_bin" attach $zmx_prompt_editor_attach_args "$zmx_session"
 `.trim();
   return `/bin/zsh -lc ${shellQuote(script)}`;
 }

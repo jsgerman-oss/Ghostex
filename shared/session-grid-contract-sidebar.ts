@@ -112,6 +112,12 @@ export type SidebarGhostexCliStatusMessage = {
    * The Cua Permissions row must report Cua Driver's own macOS privacy grants,
    * not Ghostex's Accessibility grant. Carry both Accessibility and Screen
    * Recording from `cua-driver check_permissions` in the setup status payload.
+   *
+   * CDXC:T3CodePackaging 2026-06-06-05:50:
+   * Settings -> Integrations must expose whether T3 Code is actually bundled in
+   * this app build, because T3 panes are a core visible feature and missing
+   * packaged runtime state should be repairable before users hit a web-pane
+   * network-style startup error.
    */
   browserSkillInstalled: boolean;
   browserSkillPath?: string;
@@ -134,6 +140,9 @@ export type SidebarGhostexCliStatusMessage = {
   gxPath?: string;
   gxUsable: boolean;
   installed: boolean;
+  t3RuntimeDetail?: string;
+  t3RuntimeInstalled?: boolean;
+  t3RuntimeSource?: "bundled" | "development" | "missing" | "unavailable";
   type: "ghostexCliStatus";
 };
 
@@ -293,6 +302,7 @@ export type SidebarPreviousSessionItem = SidebarSessionItem & {
   projectName?: string;
   projectPath?: string;
   sessionRecord?: SessionRecord;
+  sidebarOrder?: number;
 };
 
 export type SidebarSessionGroup = {

@@ -2883,36 +2883,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
   }
 
   /**
-   CDXC:T3Code 2026-05-14-09:34:
-   While the sidebar still shows awake T3 sessions, native must treat the
-   managed t3code provider as required background infrastructure. Refresh the
-   heartbeat and actively repair missing or unresponsive localhost runtime
-   state so restored T3 cards do not strand users in a manual retry flow.
+   CDXC:T3Code 2026-06-06-05:13:
+   The native-host command path keeps accepting sidebar T3 session-state messages
+   for protocol compatibility, but those messages cannot own provider lifetime.
+   Live managed T3 panes now refresh and repair t3code through the root workspace
+   pane registry.
    */
   @MainActor
   private func setT3CodeRuntimeSessionState(_ command: SetT3CodeRuntimeSessionState, reason: String) {
-    NativeT3RuntimeLauncher.setRunningSessionHeartbeat(
-      runningSessionIds: command.runningSessionIds,
-      reason: reason)
-    let runtimeCwd = command.runtimeCwd?.trimmingCharacters(in: .whitespacesAndNewlines)
-    guard !command.runningSessionIds.isEmpty, let runtimeCwd, !runtimeCwd.isEmpty else {
-      t3RuntimeVisibleSessionCwd = nil
-      t3RuntimeLivenessTimer?.invalidate()
-      t3RuntimeLivenessTimer = nil
-      return
-    }
-
-    t3RuntimeVisibleSessionCwd = runtimeCwd
-    ensureT3CodeRuntimeForRunningSessions(reason: reason)
-    if t3RuntimeLivenessTimer == nil {
-      let timer = Timer(timeInterval: 10.0, repeats: true) { [weak self] _ in
-        MainActor.assumeIsolated {
-          self?.ensureT3CodeRuntimeForRunningSessions(reason: "livenessTimer")
-        }
-      }
-      t3RuntimeLivenessTimer = timer
-      RunLoop.main.add(timer, forMode: .common)
-    }
+    /**
+     CDXC:T3Code 2026-06-06-05:13:
+     Sidebar-projected T3 session state is no longer allowed to own provider
+     lifetime. Live native managed T3 panes are the authoritative signal, so a
+     stale or gxserver-filtered hydrate payload cannot stop the runtime while a
+     real T3 tab remains open.
+     */
+    NativeT3CodePaneReproLog.append("nativeHost.t3Runtime.sidebarSessionState.ignored", [
+      "hasRuntimeCwd": command.runtimeCwd?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false,
+      "reason": reason,
+      "runningSessionCount": command.runningSessionIds.count,
+    ])
   }
 
   @MainActor
@@ -4946,6 +4936,9 @@ final class ghostexRootView: NSView {
     self.divider = PaneResizeHandleView()
     super.init(frame: .zero)
     workspaceView.setSidebarSide(sidebarSide)
+    workspaceView.onManagedT3PaneRuntimeStateChanged = { [weak self] state in
+      self?.setT3CodeRuntimePaneState(state)
+    }
     titlebarChromeView.titlebarHeight = Self.reactTitlebarHeight
 
     sidebarCommandRouter.onCommand = { [weak self] command in
@@ -6956,18 +6949,18 @@ final class ghostexRootView: NSView {
   }
 
   /**
-   CDXC:T3Code 2026-05-14-09:34:
-   The native sidebar can show T3 cards whose provider process was killed when
-   the main app closed or while the app was backgrounded. Use the sidebar's
-   running-session state as the source of truth and relaunch the provider in
-   the background whenever those cards remain awake but localhost is not live.
+   CDXC:T3Code 2026-06-06-05:13:
+   Runtime lifetime follows live native managed T3 panes, not sidebar session
+   cards. The pane registry reports all open T3 web panes, including inactive
+   tabs, so native can keep the heartbeat fresh and repair localhost when the
+   user still has an embedded T3 tab open.
    */
-  private func setT3CodeRuntimeSessionState(_ command: SetT3CodeRuntimeSessionState, reason: String) {
-    NativeT3RuntimeLauncher.setRunningSessionHeartbeat(
-      runningSessionIds: command.runningSessionIds,
-      reason: reason)
-    let runtimeCwd = command.runtimeCwd?.trimmingCharacters(in: .whitespacesAndNewlines)
-    guard !command.runningSessionIds.isEmpty, let runtimeCwd, !runtimeCwd.isEmpty else {
+  private func setT3CodeRuntimePaneState(_ state: ManagedT3PaneRuntimeState) {
+    NativeT3RuntimeLauncher.setLiveManagedPaneHeartbeat(
+      paneSessionIds: state.paneSessionIds,
+      reason: "nativePane.\(state.reason)")
+    let runtimeCwd = state.runtimeCwd?.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !state.paneSessionIds.isEmpty, let runtimeCwd, !runtimeCwd.isEmpty else {
       t3RuntimeVisibleSessionCwd = nil
       t3RuntimeLivenessTimer?.invalidate()
       t3RuntimeLivenessTimer = nil
@@ -6975,28 +6968,49 @@ final class ghostexRootView: NSView {
     }
 
     t3RuntimeVisibleSessionCwd = runtimeCwd
-    ensureT3CodeRuntimeForRunningSessions(reason: reason)
+    ensureT3CodeRuntimeForLivePanes(reason: "nativePane.\(state.reason)")
     if t3RuntimeLivenessTimer == nil {
       let timer = Timer(timeInterval: 10.0, repeats: true) { [weak self] _ in
-        self?.ensureT3CodeRuntimeForRunningSessions(reason: "livenessTimer")
+        self?.ensureT3CodeRuntimeForLivePanes(reason: "livenessTimer")
       }
       t3RuntimeLivenessTimer = timer
       RunLoop.main.add(timer, forMode: .common)
     }
   }
 
-  private func ensureT3CodeRuntimeForRunningSessions(reason: String) {
+  /**
+   CDXC:T3Code 2026-06-06-05:13:
+   A live managed T3 pane means the shared localhost provider is required even
+   if the sidebar projection currently omits the card. Probe and restart from
+   the pane-derived workspace root so an open T3 tab does not drift offline.
+   */
+  private func ensureT3CodeRuntimeForLivePanes(reason: String) {
     guard let runtimeCwd = t3RuntimeVisibleSessionCwd else {
       return
     }
     guard !NativeT3RuntimeLauncher.hasResponsiveManagedRuntimeListener() else {
       return
     }
-    NativeT3CodePaneReproLog.append("nativeSidebar.t3Runtime.runningSessions.autoStart", [
+    NativeT3CodePaneReproLog.append("nativeSidebar.t3Runtime.livePanes.autoStart", [
       "cwd": runtimeCwd,
       "reason": reason,
     ])
     startT3CodeRuntime(StartT3CodeRuntime(cwd: runtimeCwd))
+  }
+
+  /**
+   CDXC:T3Code 2026-06-06-05:13:
+   Sidebar-projected T3 session state is retained only for protocol
+   compatibility. It must not refresh or stop the managed provider because
+   gxserver presentation can exclude local T3 panes while native still owns a
+   live embedded tab.
+   */
+  private func setT3CodeRuntimeSessionState(_ command: SetT3CodeRuntimeSessionState, reason: String) {
+    NativeT3CodePaneReproLog.append("nativeSidebar.t3Runtime.sidebarSessionState.ignored", [
+      "hasRuntimeCwd": command.runtimeCwd?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false,
+      "reason": reason,
+      "runningSessionCount": command.runningSessionIds.count,
+    ])
   }
 
   /**

@@ -3977,6 +3977,18 @@ function IntegrationsSettingsTab({
   const desktopControlReady =
     ghostexCliStatus?.cuaDriverInstalled === true &&
     ghostexCliStatus?.computerUseSkillInstalled === true;
+  const t3RuntimeReady = ghostexCliStatus?.t3RuntimeInstalled === true;
+  const t3RuntimeStatus =
+    ghostexCliStatusLoading && !ghostexCliStatus
+      ? "Checking"
+      : t3RuntimeReady
+        ? ghostexCliStatus?.t3RuntimeSource === "development"
+          ? "Development"
+          : "Bundled"
+        : "Missing";
+  const t3RuntimeDescription =
+    ghostexCliStatus?.t3RuntimeDetail ??
+    "T3 Code should be packaged with Ghostex so GUI coding panes can start without a developer checkout.";
   /**
    * CDXC:CuaPermissions 2026-05-29-06:00:
    * Cua Permissions status must be based on Cua Driver's own permission check,
@@ -4018,6 +4030,28 @@ function IntegrationsSettingsTab({
               <IconDownload aria-hidden="true" data-icon="inline-start" />
               {cliReady ? "Reinstall CLI" : "Install CLI"}
             </Button>
+            <Button
+              disabled={ghostexCliStatusLoading || !onRequestGhostexCliStatus}
+              onClick={onRequestGhostexCliStatus}
+              type="button"
+              variant="ghost"
+            >
+              <IconRefresh aria-hidden="true" data-icon="inline-start" />
+              Refresh
+            </Button>
+          </IntegrationSettingsRow>
+
+          {/*
+           * CDXC:T3CodePackaging 2026-06-06-05:50:
+           * T3 Code panes are a core advertised Ghostex feature, so Settings -> Integrations must show whether the app build actually contains the managed T3 runtime instead of leaving users to discover a missing Web/t3code-server package through a pane startup failure.
+           */}
+          <IntegrationSettingsRow
+            description={t3RuntimeDescription}
+            icon={IconCodeDots}
+            status={t3RuntimeStatus}
+            tone={t3RuntimeReady ? "success" : "warning"}
+            title="T3 Code Runtime"
+          >
             <Button
               disabled={ghostexCliStatusLoading || !onRequestGhostexCliStatus}
               onClick={onRequestGhostexCliStatus}

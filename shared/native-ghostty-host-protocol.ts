@@ -157,15 +157,10 @@ export type NativeGhosttyHostCommand =
     }
   | {
       /**
-       * CDXC:T3Code 2026-05-10-22:48
-       * The sidebar owns T3 card visibility and sleep state. Send the native
-       * host the shown, non-sleeping T3 sessions so the managed provider
-       * keepalive follows "running in sidebar" instead of workspace pane focus.
-       *
-       * CDXC:T3Code 2026-05-14-09:34:
-       * Include the cwd for an awake T3 card so native can relaunch the
-       * background t3code provider when the localhost server disappeared while
-       * the sidebar still shows T3 sessions.
+       * CDXC:T3Code 2026-06-06-05:13:
+       * This message remains for protocol compatibility only. Native managed T3
+       * web panes now own provider lifetime, so stale sidebar/gxserver projection
+       * cannot stop t3code while an embedded T3 tab is still open.
        */
       runtimeCwd?: string;
       runningSessionIds: string[];

@@ -42,6 +42,8 @@ import {
   resolveDefaultCommandsPanelHeightRatio,
   getSessionCardPrimaryTitle,
   getSlotPosition,
+  getRestoredPreviousSessionSidebarOrder,
+  getRestoredPreviousSessionTag,
   isGhostPlaceholderSessionTitle,
   normalizeSessionRenameTitle,
   normalizeTerminalTitle,
@@ -406,15 +408,10 @@ type NativeHostCommand =
   | { cwd: string; type: "startT3CodeRuntime" }
   | {
       /**
-       * CDXC:T3Code 2026-05-10-22:48
-       * The sidebar is authoritative for whether a T3 card is shown and awake.
-       * Native uses this set to keep the managed t3code server alive while a
-       * T3 session is running, independent of which workspace pane is focused.
-       *
-       * CDXC:T3Code 2026-05-14-09:34:
-       * Awake T3 cards in the sidebar also need a workspace root on this state
-       * message so native can restart the background t3code provider when the
-       * server has exited but the user still has T3 sessions shown.
+       * CDXC:T3Code 2026-06-06-05:13:
+       * This message remains for protocol compatibility only. Native managed T3
+       * web panes now own provider lifetime, so stale sidebar/gxserver projection
+       * cannot stop t3code while an embedded T3 tab is still open.
        */
       runtimeCwd?: string;
       runningSessionIds: string[];
@@ -4274,6 +4271,11 @@ function summarizeVisiblePlacement(placement: VisibleSessionPlacement | undefine
     case "appendFullWidth":
       return { kind: placement.kind };
     case "appendToTabGroup":
+      return {
+        kind: placement.kind,
+        position: placement.position,
+        targetSessionId: placement.targetSessionId,
+      };
     case "replace":
       return { kind: placement.kind, targetSessionId: placement.targetSessionId };
     case "insertAfter":
@@ -11298,6 +11300,7 @@ function gxserverSearchResultToPreviousSessionItem(
     sessionId: result.sessionId,
     sessionKind: "terminal",
     sessionRecord: archivedRecord as TerminalSessionRecord,
+    sidebarOrder: result.sidebarOrder,
     shortcutLabel: "",
     terminalTitle: result.terminalTitle,
     ...(result.cwd ? { projectPath: result.cwd } : {}),
@@ -11691,7 +11694,16 @@ function restorePreviousSession(historyId: string): void {
     historyId,
     title: previousSession.primaryTitle || previousSession.alias || "Restored Session",
   });
-  createTerminal(previousSession.primaryTitle || previousSession.alias || "Restored Session");
+  createTerminal(
+    previousSession.primaryTitle || previousSession.alias || "Restored Session",
+    "",
+    undefined,
+    undefined,
+    {
+      sessionTag: getRestoredPreviousSessionTag(previousSession),
+      sidebarOrder: getRestoredPreviousSessionSidebarOrder(previousSession),
+    },
+  );
   deletePreviousSession(historyId);
 }
 
@@ -11708,6 +11720,8 @@ async function restoreRemotePreviousSession(
     previousSession.terminalTitle ||
     previousSession.alias ||
     DEFAULT_TERMINAL_SESSION_TITLE;
+  const restoredSessionTag = getRestoredPreviousSessionTag(previousSession);
+  const restoredSidebarOrder = getRestoredPreviousSessionSidebarOrder(previousSession);
   try {
     /*
      * CDXC:RemotePreviousSessions 2026-06-03-00:01:
@@ -11725,6 +11739,8 @@ async function restoreRemotePreviousSession(
           lifecycleState: "running",
           projectId: reference.projectId,
           restoredFromSessionId: reference.sessionId,
+          ...(restoredSessionTag ? { sessionTag: restoredSessionTag } : {}),
+          ...(restoredSidebarOrder !== undefined ? { sidebarOrder: restoredSidebarOrder } : {}),
           surface: "workspace",
           title,
         },
@@ -11773,6 +11789,11 @@ function restorePreviousTerminalSession(
   const groupId = resolvePreviousSessionRestoreGroupId(project, previousSession.groupId);
   const initialInput = buildNativeRestoredTerminalInitialInput(archivedRecord);
   const sessionPersistenceProvider = resolveTerminalSessionPersistenceProvider();
+  const restoredSessionTag = getRestoredPreviousSessionTag(previousSession);
+  const restoredSidebarOrder = getRestoredPreviousSessionSidebarOrder(previousSession);
+  const restoredFromSessionId = isNativeGxserverSessionId(archivedRecord.sessionId)
+    ? archivedRecord.sessionId
+    : undefined;
   /**
    * CDXC:PreviousSessions 2026-05-15-14:56
    * Restoring a previous session from sidebar search should reopen the session
@@ -11807,6 +11828,9 @@ function restorePreviousTerminalSession(
       sessionPersistenceProvider,
       visiblePlacement,
       diagnosticSource: "previousSessionRestore",
+      restoredFromSessionId,
+      sessionTag: restoredSessionTag,
+      sidebarOrder: restoredSidebarOrder,
     },
   );
   if (!restoredSession) {
@@ -11818,7 +11842,11 @@ function restorePreviousTerminalSession(
     return undefined;
   }
 
-  const restoredRecord = mergeArchivedTerminalDetails(restoredSession, archivedRecord);
+  const restoredRecord = mergeArchivedTerminalDetails(
+    restoredSession,
+    archivedRecord,
+    restoredSessionTag,
+  );
   const restoredNativeSessionId = nativeSessionIdForProjectSidebarSession(
     project.projectId,
     restoredSession.sessionId,
@@ -12014,6 +12042,7 @@ function resolvePreviousSessionRestoreGroupId(
 function mergeArchivedTerminalDetails(
   restoredSession: TerminalSessionRecord,
   archivedRecord: TerminalSessionRecord,
+  sessionTag: SidebarSessionTag | undefined,
 ): TerminalSessionRecord {
   return {
     ...restoredSession,
@@ -12021,8 +12050,9 @@ function mergeArchivedTerminalDetails(
     agentSessionId: archivedRecord.agentSessionId ?? restoredSession.agentSessionId,
     agentSessionPath: archivedRecord.agentSessionPath ?? restoredSession.agentSessionPath,
     firstUserMessage: archivedRecord.firstUserMessage,
-    isFavorite: archivedRecord.isFavorite,
+    isFavorite: sessionTag === "favorite" || archivedRecord.isFavorite,
     isSleeping: false,
+    sessionTag,
     sessionPersistenceName: restoredSession.sessionPersistenceName,
     sessionPersistenceProvider: restoredSession.sessionPersistenceProvider,
     terminalEngine: archivedRecord.terminalEngine ?? restoredSession.terminalEngine,
@@ -14945,17 +14975,11 @@ function ensureActiveWorkspaceVirtualPaneTabs(reason: string): boolean {
 
 function syncNativeT3RuntimeSessionState(sidebarMessage: SidebarHydrateMessage): void {
   /**
-   * CDXC:T3Code 2026-05-10-22:48
-   * A T3 session is "running" for provider keepalive purposes when its card is
-   * present in the current session sidebar projection and the card is not
-   * sleeping. This deliberately decouples provider lifetime from AppKit pane
-   * visibility so split focus changes do not stop an awake T3 session.
-   *
-   * CDXC:T3Code 2026-05-14-09:34:
-   * The same visible-session projection must carry a concrete cwd for native
-   * liveness repair. If t3code was terminated while sidebar T3 cards remain
-   * awake, native should relaunch the provider in the background instead of
-   * leaving those cards in a manual kill-and-recreate retry state.
+   * CDXC:T3Code 2026-06-06-05:13:
+   * This projection sync is compatibility-only after native pane ownership took
+   * over T3 provider lifetime. Keep sending it for older hosts, but current
+   * native ignores it so gxserver presentation gaps cannot stop t3code while an
+   * embedded T3 pane is still open.
    */
   const runningSessions = sidebarMessage.groups
     .flatMap((group) => group.sessions)
@@ -16166,6 +16190,17 @@ function mergeAgentHookStatusMessages(
   };
 }
 
+function nativeSidebarWebResourceDirectory(): string | undefined {
+  try {
+    if (window.location.protocol !== "file:") {
+      return undefined;
+    }
+    return decodeURIComponent(new URL(".", window.location.href).pathname);
+  } catch {
+    return undefined;
+  }
+}
+
 async function requestNativeGhostexCliStatus(): Promise<void> {
   /**
    * CDXC:FirstLaunchSetup 2026-05-26-17:12:
@@ -16188,9 +16223,11 @@ async function requestNativeGhostexCliStatus(): Promise<void> {
    * Check `cua-driver check_permissions` during the native setup status probe
    * instead of reusing Ghostex's own Accessibility grant.
    */
-  const result = await runNativeProcess("/usr/bin/python3", [
-    "-c",
-    String.raw`
+  const result = await runNativeProcess(
+    "/usr/bin/python3",
+    [
+      "-c",
+      String.raw`
 import json
 import os
 import re
@@ -16211,6 +16248,21 @@ agent_orchestration_skill_path = os.path.join(os.path.expanduser("~"), "agents",
 agent_orchestration_skill_installed = os.path.isfile(agent_orchestration_skill_path)
 generate_title_skill_path = os.path.join(os.path.expanduser("~"), "agents", "skills", "ghostex-generate-title", "SKILL.md")
 generate_title_skill_installed = os.path.isfile(generate_title_skill_path)
+web_resource_dir = os.environ.get("GHOSTEX_WEB_RESOURCE_DIR", "")
+t3_bundled_entrypoint = os.path.join(web_resource_dir, "t3code-server", "dist", "bin.mjs") if web_resource_dir else ""
+t3_configured_root = os.environ.get("VSMUX_T3CODE_REPO_ROOT") or os.environ.get("ghostex_T3CODE_REPO_ROOT") or ""
+t3_configured_entrypoint = os.path.join(t3_configured_root, "apps", "server", "src", "bin.ts") if t3_configured_root else ""
+t3_bundled_installed = bool(t3_bundled_entrypoint and os.path.isfile(t3_bundled_entrypoint))
+t3_development_installed = bool(t3_configured_entrypoint and os.path.isfile(t3_configured_entrypoint))
+t3_runtime_installed = bool(t3_bundled_installed or t3_development_installed)
+t3_runtime_source = "bundled" if t3_bundled_installed else "development" if t3_development_installed else "missing"
+t3_runtime_detail = (
+    "T3 Code runtime is bundled with this app."
+    if t3_bundled_installed
+    else "T3 Code is using an explicit development checkout."
+    if t3_development_installed
+    else "T3 Code runtime is missing from this app build. Reinstall Ghostex or rebuild so Web/t3code-server is packaged."
+)
 cua_driver_path = shutil.which("cua-driver")
 cua_app_installed = os.path.isdir("/Applications/CuaDriver.app")
 cua_driver_installed = bool(cua_driver_path or cua_app_installed)
@@ -16299,6 +16351,8 @@ if cua_driver_permission_detail:
     else:
         detail = detail + " Cua Driver permissions need attention."
 
+detail = detail + " " + t3_runtime_detail
+
 print(json.dumps({
     "browserSkillInstalled": browser_skill_installed,
     "browserSkillPath": browser_skill_path if browser_skill_installed else None,
@@ -16321,10 +16375,19 @@ print(json.dumps({
     "gxPath": gx_path,
     "gxUsable": gx_usable,
     "installed": bool(ghostex_path),
+    "t3RuntimeDetail": t3_runtime_detail,
+    "t3RuntimeInstalled": t3_runtime_installed,
+    "t3RuntimeSource": t3_runtime_source,
     "type": "ghostexCliStatus",
 }))
 `,
-  ]);
+    ],
+    {
+      env: {
+        GHOSTEX_WEB_RESOURCE_DIR: nativeSidebarWebResourceDirectory() ?? "",
+      },
+    },
+  );
 
   if (result.exitCode !== 0) {
     const errorMessage =
@@ -16341,6 +16404,9 @@ print(json.dumps({
       gxBlockedByExistingCommand: false,
       gxUsable: false,
       installed: false,
+      t3RuntimeDetail: "T3 Code runtime status could not be checked.",
+      t3RuntimeInstalled: false,
+      t3RuntimeSource: "missing",
       type: "ghostexCliStatus",
     });
     return;
@@ -16361,6 +16427,9 @@ print(json.dumps({
       gxBlockedByExistingCommand: false,
       gxUsable: false,
       installed: false,
+      t3RuntimeDetail: "T3 Code runtime status could not be checked.",
+      t3RuntimeInstalled: false,
+      t3RuntimeSource: "missing",
       type: "ghostexCliStatus",
     });
   }
@@ -17771,6 +17840,9 @@ type LaunchAgentTerminalOptions = {
   focusAfterCreate?: boolean;
   initialPresentation?: "background" | "focused";
   queueProviderStartupText?: boolean;
+  restoredFromSessionId?: GxserverSessionId;
+  sessionTag?: SidebarSessionTag;
+  sidebarOrder?: number;
   sessionPersistenceName?: string;
   sessionPersistenceProvider?: TerminalSessionPersistenceProvider;
   splitDirection?: "horizontal" | "vertical";
@@ -18176,6 +18248,7 @@ function createGxserverTerminalRecordForNativeCreate(
         ...(options?.sessionPersistenceName ? { providerName: options.sessionPersistenceName } : {}),
       },
       projectId: project.projectId as never,
+      restoredFromSessionId: options?.restoredFromSessionId,
       runtimeSettings: {
         agentName,
         agentSessionId: options?.agentSessionId,
@@ -18183,6 +18256,8 @@ function createGxserverTerminalRecordForNativeCreate(
         titleSource: options?.titleSource,
       },
       surface: options?.surface ?? "workspace",
+      sessionTag: options?.sessionTag,
+      sidebarOrder: options?.sidebarOrder,
       title,
     });
     return session;
@@ -18311,6 +18386,7 @@ function createTerminal(
       agentSessionId: options?.agentSessionId,
       initialPresentation: options?.initialPresentation,
       sessionId: gxserverSession?.sessionId,
+      sessionTag: options?.sessionTag,
       sessionPersistenceName,
       sessionPersistenceProvider,
       terminalEngine: "ghostty-native",
@@ -18549,6 +18625,9 @@ function createFocusedTabGroupPlacement(groupId?: string): VisibleSessionPlaceme
    * tab group. Require the focused session to already be surfaced so creation
    * preserves the user's split tree, tab groups, and pane ratios instead of
    * rebuilding layout from a hidden or sleeping anchor.
+   *
+   * CDXC:Hotkeys 2026-06-06-04:36:
+   * Cmd+T and Cmd+N create terminal/browser tabs immediately after the focused tab in the current split pane. The shared placement helper uses explicit after-positioning so keyboard-created tabs stay adjacent to the user's current context.
    */
   if (!targetGroup.snapshot.visibleSessionIds.includes(targetSessionId)) {
     appendPaneLayoutTraceDebugLog("focusedTabPlacement.unresolved", {
@@ -18569,7 +18648,7 @@ function createFocusedTabGroupPlacement(groupId?: string): VisibleSessionPlaceme
     targetGroup: summarizeWorkspaceGroupForPaneLayoutTrace(targetWorkspace, targetGroup.groupId),
     targetSessionId,
   });
-  return { kind: "appendToTabGroup", targetSessionId };
+  return { kind: "appendToTabGroup", position: "after", targetSessionId };
 }
 
 function createNativeSessionInCurrentContext(): void {
@@ -21723,8 +21802,32 @@ function runNativeHotkeyAction(actionId: ghostexHotkeyActionId, source: "dom" | 
       );
       publish();
       return;
+    case "switchWorkareaView":
+      switchNativeWorkareaView(action.view);
+      return;
     case "splitFocusedPane":
       splitFocusedNativePane(action.direction);
+      return;
+  }
+}
+
+function switchNativeWorkareaView(view: "agents" | "github" | "kanban" | "source"): void {
+  /**
+   * CDXC:Hotkeys 2026-06-06-04:36:
+   * Option+1..4 must switch the active project workarea using the same route as the titlebar segmented control: Agents, Source, GitHub, Kanban. Reuse those handlers so hotkeys preserve project-editor sleep, focus, and validation behavior.
+   */
+  switch (view) {
+    case "agents":
+      openAgentsModeFromTitlebar();
+      return;
+    case "source":
+      openActiveProjectEditorFromTitlebar();
+      return;
+    case "github":
+      void openGitHubProjectFromTitlebar();
+      return;
+    case "kanban":
+      openTasksPlaceholderFromTitlebar();
       return;
   }
 }
@@ -22926,6 +23029,11 @@ function sleepInactiveSessionsFromTitlebar(sessionIds: string[]): void {
    *
    * CDXC:TitlebarResources 2026-06-02-19:02:
    * The Resources list can contain gxserver presentation rows that are not materialized in native workspace storage yet. Revalidate from the current hydrate groups before sleeping so the titlebar action matches visible presentation, then delegate to setNativeSessionSleeping for gxserver-owned lifecycle mutation.
+   *
+   * CDXC:TitlebarResources 2026-06-06-06:09:
+   * Delayed Send is an awake-terminal contract: the scheduled Enter must fire
+   * in the existing pane. Revalidation must keep delayed-send sessions awake
+   * even if stale titlebar data still sends their ids.
    */
   const sidebarSessionsById = new Map(
     buildSidebarMessage().groups.flatMap((group) =>
@@ -22947,7 +23055,8 @@ function sleepInactiveSessionsFromTitlebar(sessionIds: string[]): void {
       !projectedSession ||
       projectedSession.sessionKind !== "terminal" ||
       projectedSession.isSleeping === true ||
-      projectedSession.lifecycleState === "sleeping"
+      projectedSession.lifecycleState === "sleeping" ||
+      hasProjectedDelayedSend(projectedSession)
     ) {
       continue;
     }
@@ -22991,6 +23100,10 @@ function sleepInactiveProjectSessions(projectId: string): void {
    *
    * CDXC:ProjectSleep 2026-06-02-19:02:
    * With gxserver presentation active, project-level Sleep Inactive must operate on the rendered presentation-backed project rows, not the old native workspace storage. Command-panel sessions remain macOS layout state, so include them from the native command panel after the visible project rows.
+   *
+   * CDXC:ProjectSleep 2026-06-06-06:09:
+   * Sleep Inactive must not sleep terminal sessions with active Delayed Send
+   * timers because the pending Enter depends on the live terminal surface.
    */
   const project = findProject(projectId);
   if (!project) {
@@ -23006,7 +23119,8 @@ function sleepInactiveProjectSessions(projectId: string): void {
           projectedSession.isSleeping === true ||
           projectedSession.lifecycleState === "sleeping" ||
           projectedSession.activity === "working" ||
-          projectedSession.activity === "attention"
+          projectedSession.activity === "attention" ||
+          hasProjectedDelayedSend(projectedSession)
         ) {
           continue;
         }
@@ -23022,7 +23136,8 @@ function sleepInactiveProjectSessions(projectId: string): void {
         projectedSession.isSleeping === true ||
         projectedSession.lifecycleState === "sleeping" ||
         projectedSession.activity === "working" ||
-        projectedSession.activity === "attention"
+        projectedSession.activity === "attention" ||
+        hasProjectedDelayedSend(projectedSession)
       ) {
         continue;
       }
@@ -23050,6 +23165,13 @@ function sleepInactiveProjectSessions(projectId: string): void {
       if (activity === "working" || activity === "attention") {
         continue;
       }
+      if (
+        hasProjectedDelayedSend(projectedSession) ||
+        (session.kind === "terminal" &&
+          getDelayedSendProjectionForProjectSession(project.projectId, session.sessionId))
+      ) {
+        continue;
+      }
       const combinedSessionId = createCombinedProjectSessionId(project.projectId, session.sessionId);
       if (session.kind === "terminal") {
         setNativeSessionSleeping(combinedSessionId, true);
@@ -23058,6 +23180,21 @@ function sleepInactiveProjectSessions(projectId: string): void {
       }
     }
   }
+}
+
+function hasProjectedDelayedSend(
+  session:
+    | Pick<
+        SidebarSessionItem,
+        "delayedSendDeadlineAt" | "delayedSendRemainingLabel" | "delayedSendRemainingMs"
+      >
+    | undefined,
+): boolean {
+  return Boolean(
+    session?.delayedSendRemainingLabel ||
+      session?.delayedSendDeadlineAt ||
+      typeof session?.delayedSendRemainingMs === "number",
+  );
 }
 
 function closeInactiveProjectSessions(projectId: string): void {
@@ -23292,6 +23429,18 @@ function shouldAutoSleepAgentSession({
   }
   const terminalState = terminalStateById.get(session.sessionId);
   if (!terminalState || terminalState.lifecycleState !== "running") {
+    return false;
+  }
+  /**
+   * CDXC:AutoSleep 2026-06-06-06:09:
+   * Agent Auto Sleep must not sleep terminals with active Delayed Send timers.
+   * The delayed Enter is intentionally bound to the live pane, so sleeping the
+   * agent before the timer fires would cancel the user-visible scheduled send.
+   */
+  if (
+    hasProjectedDelayedSend(projectedSession) ||
+    getDelayedSendProjectionForProjectSession(project.projectId, session.sessionId)
+  ) {
     return false;
   }
   const sessionForRestore = mergeNativeTerminalRuntimeMetadata(session, terminalState);
@@ -37329,6 +37478,7 @@ function handleNativeTerminalTitleBarAction(
       createTerminal(DEFAULT_TERMINAL_SESSION_TITLE, "", findSessionGroupId(sessionId), undefined, {
         visiblePlacement: {
           kind: "appendToTabGroup",
+          position: "after",
           targetSessionId: sessionId,
         },
       });
@@ -37337,6 +37487,7 @@ function handleNativeTerminalTitleBarAction(
       createNativeBrowserSession(DEFAULT_BROWSER_LAUNCH_URL, findSessionGroupId(sessionId), {
         visiblePlacement: {
           kind: "appendToTabGroup",
+          position: "after",
           targetSessionId: sessionId,
         },
       });

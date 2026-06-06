@@ -503,6 +503,7 @@ printf 'forwarded:%s\\n' "$1"
           GHOSTEX_HOME: homeDir,
           GHOSTEX_PROMPT_EDITOR_CLIENT: "macos-app",
           GHOSTEX_PROMPT_EDITOR_BACKEND: "monaco",
+          ZMX_SESSION: "",
         },
       });
 
@@ -559,6 +560,137 @@ printf '%s\\n' "$@" > ${JSON.stringify(markerFile)}
       expect(result.stderr).toBe("");
       expect((await readFile(markerFile, "utf8")).trim()).toBe(editFile);
     } finally {
+      await rm(tempDir, { force: true, recursive: true });
+    }
+  });
+
+  test("prompt-editor routes stale macOS Monaco zmx sessions to gte without attach capability", async () => {
+    /**
+     * CDXC:PromptEditor 2026-06-06-16:40:
+     * Reattached zmx sessions can inherit macOS app prompt-editor environment
+     * from the shell that created the session. The prompt-editor wrapper must
+     * trust zmx's current leader capability instead so SSH, TUI, and mobile
+     * attaches use gte even when the old environment still says macos-app.
+     */
+    const tempDir = await mkdtemp(path.join(tmpdir(), "ghostex-prompt-editor-zmx-gte-"));
+    const binDir = path.join(tempDir, "bin");
+    const editFile = path.join(tempDir, "prompt.md");
+    const markerFile = path.join(tempDir, "gte-args.txt");
+    const gtePath = path.join(binDir, "gte");
+    const zmxPath = path.join(binDir, "zmx");
+    try {
+      await mkdir(binDir, { recursive: true });
+      await writeFile(editFile, "prompt text\n");
+      await writeFile(
+        gtePath,
+        `#!/bin/sh
+printf '%s\\n' "$@" > ${JSON.stringify(markerFile)}
+`,
+      );
+      await writeFile(
+        zmxPath,
+        `#!/bin/sh
+if [ "$1" = "prompt-editor-capability" ]; then
+  printf '%s\\n' gte
+fi
+`,
+      );
+      await chmod(gtePath, 0o755);
+      await chmod(zmxPath, 0o755);
+
+      const result = await execFileAsync(process.execPath, [
+        path.resolve("scripts/ghostex-cli.mjs"),
+        "prompt-editor",
+        editFile,
+      ], {
+        env: {
+          ...process.env,
+          GHOSTEX_PROMPT_EDITOR_CLIENT: "macos-app",
+          GHOSTEX_PROMPT_EDITOR_BACKEND: "monaco",
+          PATH: `${binDir}${path.delimiter}${process.env.PATH}`,
+          ZMX_SESSION: "shared-session",
+        },
+      });
+
+      expect(result.stderr).toBe("");
+      expect((await readFile(markerFile, "utf8")).trim()).toBe(editFile);
+    } finally {
+      await rm(tempDir, { force: true, recursive: true });
+    }
+  });
+
+  test("prompt-editor uses Monaco when zmx leader advertises Monaco capability", async () => {
+    const tempDir = await mkdtemp(path.join(tmpdir(), "ghostex-prompt-editor-zmx-monaco-"));
+    const homeDir = path.join(tempDir, "home");
+    const binDir = path.join(tempDir, "bin");
+    const editFile = path.join(tempDir, "prompt.md");
+    const receivedMessages = [];
+    const zmxPath = path.join(binDir, "zmx");
+    const server = net.createServer((socket) => {
+      let buffer = "";
+      socket.setEncoding("utf8");
+      socket.on("data", async (chunk) => {
+        buffer += chunk;
+        let newlineIndex = buffer.indexOf("\n");
+        while (newlineIndex >= 0) {
+          const line = buffer.slice(0, newlineIndex);
+          buffer = buffer.slice(newlineIndex + 1);
+          if (line) {
+            const message = JSON.parse(line);
+            receivedMessages.push(message);
+            await writeFile(message.statusFile, "saved\n");
+          }
+          newlineIndex = buffer.indexOf("\n");
+        }
+      });
+    });
+    try {
+      await mkdir(path.join(homeDir, "cli"), { recursive: true });
+      await mkdir(binDir, { recursive: true });
+      await writeFile(path.join(homeDir, "cli", "bridge-token"), "test-token\n");
+      await writeFile(editFile, "prompt text\n");
+      await writeFile(
+        zmxPath,
+        `#!/bin/sh
+if [ "$1" = "prompt-editor-capability" ]; then
+  printf '%s\\n' monaco
+fi
+`,
+      );
+      await chmod(zmxPath, 0o755);
+      await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+      const address = server.address();
+
+      const result = await execFileAsync(process.execPath, [
+        path.resolve("scripts/ghostex-cli.mjs"),
+        "prompt-editor",
+        editFile,
+        "--port",
+        String(address.port),
+        "--timeout-ms",
+        "1000",
+        "--exit-timeout-ms",
+        "1000",
+      ], {
+        env: {
+          ...process.env,
+          GHOSTEX_HOME: homeDir,
+          GHOSTEX_PROMPT_EDITOR_CLIENT: "",
+          GHOSTEX_PROMPT_EDITOR_BACKEND: "monaco",
+          PATH: `${binDir}${path.delimiter}${process.env.PATH}`,
+          ZMX_SESSION: "shared-session",
+        },
+      });
+
+      expect(result.stderr).toBe("");
+      expect(receivedMessages).toHaveLength(1);
+      expect(receivedMessages[0]).toMatchObject({
+        editorKind: "monaco",
+        filePath: editFile,
+        type: "openFloatingEditor",
+      });
+    } finally {
+      await new Promise((resolve) => server.close(resolve));
       await rm(tempDir, { force: true, recursive: true });
     }
   });
