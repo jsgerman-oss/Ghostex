@@ -8,7 +8,7 @@
   <a href="https://ghostex.dev"><img alt="Website" src="https://img.shields.io/badge/Website-ghostex.dev-0EA5E9"></a>
 </p>
 
-> If it's your first time using this app then please start with v4 (new architecture - it's stable just migration from v3 needs more testing): [Download V4](https://github.com/maddada/Ghostex/releases/tag/v4.0.0-beta.2)
+> If it's your first time using this app then please start with v4 (new architecture). It's working well, just need to test the migration from v3 more: [Download V4](https://github.com/maddada/Ghostex/releases/tag/v4.0.0-beta.2)
 
 # Ghostex
 
