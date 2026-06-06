@@ -4,6 +4,18 @@
 <!-- CDXC:BetaDistribution 2026-06-05-22:26: Release notes for 4.0.0-beta.1 must make clear that the nightly beta is distributed through GitHub Releases and Homebrew without moving Sparkle users onto the beta feed. -->
 <!-- CDXC:BetaDistribution 2026-06-06-06:35: Release notes for 4.0.0-beta.2 must keep the nightly beta visible in GitHub Releases and Homebrew DMG installs while leaving Sparkle automatic-update feeds on the current public release. -->
 <!-- CDXC:BetaDistribution 2026-06-06-07:41: The final beta.2 package includes diagnostic throttling, generated-shell-input history suppression, and clone/rename/session timer fixes, so release notes must describe those user-visible stability changes before GitHub and Homebrew publication. -->
+<!-- CDXC:BetaDistribution 2026-06-07-00:09: Release notes for 4.0.0-beta.3 must describe the nightly beta as GitHub Releases and Homebrew DMG distribution only, with Sparkle automatic-update feeds left on the current public release. -->
+<!-- CDXC:BetaDistribution 2026-06-07-00:09: The beta.3 package includes sidebar focus stability, editor startup failure surfacing, title-storm throttling, packaged gxserver Node-runtime validation, native web bundle compiler support, and privacy-tightened debug logs, so release notes must stay user-facing while covering those shipped behaviors. -->
+
+## 4.0.0-beta.3 - 2026-06-07
+
+- Beta distribution remains available through GitHub Releases and Homebrew DMG installs while Sparkle automatic-update feeds stay on the current public release.
+- Agent working indicators and session titles are steadier during spinner-heavy Codex, Claude, Cursor, and Pi activity, reducing attention flicker and repeated no-op sidebar refreshes.
+- Background sleep, close, and auto-sleep transitions preserve the focused pane/tab instead of pulling focus away from the active session.
+- New projects and embedded editor panes appear in the sidebar earlier, and code-server startup failures now surface as row errors and toasts instead of failing silently.
+- Installed macOS builds validate the packaged gxserver Node 22 native-module runtime and show actionable reinstall or Node setup guidance when the runtime does not match.
+- Native sidebar web bundles are compiled through the React Compiler build path for smoother nightly sidebar interactions.
+- Support diagnostics avoid writing raw title previews, command output previews, session id lists, paths, and stderr snippets while still keeping counts and timing useful for troubleshooting.
 
 ## 4.0.0-beta.2 - 2026-06-06
 

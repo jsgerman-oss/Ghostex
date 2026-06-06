@@ -1,6 +1,13 @@
 
 ## All features:
 
+- 4.0.0-beta.3 beta distribution is available through GitHub Releases and Homebrew DMG installs while Sparkle automatic-update feeds stay on the current public release.
+- Agent working indicators and session titles stay steadier during spinner-heavy Codex, Claude, Cursor, and Pi activity, reducing attention flicker and repeated no-op sidebar refreshes.
+- Background sleep, close, and auto-sleep transitions preserve the focused pane/tab instead of pulling focus away from the active session.
+- New projects and embedded editor panes appear in the sidebar earlier, and code-server startup failures surface as row errors and toasts.
+- Installed macOS builds validate the packaged gxserver Node 22 native-module runtime and show actionable reinstall or Node setup guidance when the runtime does not match.
+- Native sidebar web bundles use the React Compiler build path for smoother nightly sidebar interactions.
+- Support diagnostics avoid writing raw title previews, command output previews, session id lists, paths, and stderr snippets while keeping counts and timing useful for troubleshooting.
 - 4.0.0-beta.2 beta distribution is available through GitHub Releases and Homebrew DMG installs while Sparkle automatic-update feeds stay on the current public release.
 - Native T3 Code panes keep the managed runtime alive from live pane ownership, including inactive tab siblings, so an open embedded T3 tab is not stopped by sidebar projection gaps.
 - Installed macOS builds package the managed T3 Code server runtime and show bundled, development, or missing status in Settings -> Integrations.
