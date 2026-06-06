@@ -3,9 +3,15 @@
 
 - 4.0.0-beta.3 beta distribution is available through GitHub Releases and Homebrew DMG installs while Sparkle automatic-update feeds stay on the current public release.
 - Agent working indicators and session titles stay steadier during spinner-heavy Codex, Claude, Cursor, and Pi activity, reducing attention flicker and repeated no-op sidebar refreshes.
-- Background sleep, close, and auto-sleep transitions preserve the focused pane/tab instead of pulling focus away from the active session.
+- Background sleep, close, and auto-sleep transitions preserve the focused pane/tab instead of pulling focus away from the active session, and focused agent sessions are always excluded from Agent Auto Sleep.
 - New projects and embedded editor panes appear in the sidebar earlier, and code-server startup failures surface as row errors and toasts.
 - Installed macOS builds validate the packaged gxserver Node 22 native-module runtime and show actionable reinstall or Node setup guidance when the runtime does not match.
+- T3 Code panes in installed macOS builds resolve the packaged runtime path, retain an in-flight startup instead of spawning duplicates, and keep local T3/browser pane rows visible inside gxserver-backed project groups.
+- Codex-powered title generation, board-title generation, and other internal prompt jobs run as ephemeral/internal work so they do not create restorable Codex sessions or overwrite a real session's resume identity.
+- Codex resume validates exact ids and falls back through filtered title lookup, avoiding internal `codex exec` title-generation transcripts.
+- Cancelling first-prompt title generation no longer lets a stale result rename the session, and a later user prompt can retry title generation.
+- Agent Auto Sleep waits when zmx title-observer health is starting, retrying, or failed instead of treating unavailable working-status detection as idle.
+- Ghostex-launched app, gxserver, zmx, agent-hook, Git, Beads, clone, and local dev subprocesses keep ANSI color capability even when the parent shell exports `NO_COLOR`.
 - Native sidebar web bundles use the React Compiler build path for smoother nightly sidebar interactions.
 - Support diagnostics avoid writing raw title previews, command output previews, session id lists, paths, and stderr snippets while keeping counts and timing useful for troubleshooting.
 - 4.0.0-beta.2 beta distribution is available through GitHub Releases and Homebrew DMG installs while Sparkle automatic-update feeds stay on the current public release.

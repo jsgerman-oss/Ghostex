@@ -6,14 +6,21 @@
 <!-- CDXC:BetaDistribution 2026-06-06-07:41: The final beta.2 package includes diagnostic throttling, generated-shell-input history suppression, and clone/rename/session timer fixes, so release notes must describe those user-visible stability changes before GitHub and Homebrew publication. -->
 <!-- CDXC:BetaDistribution 2026-06-07-00:09: Release notes for 4.0.0-beta.3 must describe the nightly beta as GitHub Releases and Homebrew DMG distribution only, with Sparkle automatic-update feeds left on the current public release. -->
 <!-- CDXC:BetaDistribution 2026-06-07-00:09: The beta.3 package includes sidebar focus stability, editor startup failure surfacing, title-storm throttling, packaged gxserver Node-runtime validation, native web bundle compiler support, and privacy-tightened debug logs, so release notes must stay user-facing while covering those shipped behaviors. -->
+<!-- CDXC:BetaDistribution 2026-06-07-02:47: The final beta.3 package also includes color-capable subprocess launches, internal Codex title-generation isolation, safer Codex resume lookup, zmx title-observer health for Auto Sleep, focused-agent auto-sleep protection, T3 startup retention, packaged T3 runtime path resolution, and native-only T3/browser sidebar row restoration. -->
 
 ## 4.0.0-beta.3 - 2026-06-07
 
 - Beta distribution remains available through GitHub Releases and Homebrew DMG installs while Sparkle automatic-update feeds stay on the current public release.
 - Agent working indicators and session titles are steadier during spinner-heavy Codex, Claude, Cursor, and Pi activity, reducing attention flicker and repeated no-op sidebar refreshes.
-- Background sleep, close, and auto-sleep transitions preserve the focused pane/tab instead of pulling focus away from the active session.
+- Background sleep, close, and auto-sleep transitions preserve the focused pane/tab instead of pulling focus away from the active session, and focused agent sessions are always excluded from Agent Auto Sleep.
 - New projects and embedded editor panes appear in the sidebar earlier, and code-server startup failures now surface as row errors and toasts instead of failing silently.
 - Installed macOS builds validate the packaged gxserver Node 22 native-module runtime and show actionable reinstall or Node setup guidance when the runtime does not match.
+- T3 Code panes in installed macOS builds now resolve the packaged runtime path, retain an in-flight startup instead of spawning duplicates, and keep local T3/browser pane rows visible inside gxserver-backed project groups.
+- Codex-powered title generation, board-title generation, and other internal prompt jobs now run as ephemeral/internal work so they do not create restorable Codex sessions or overwrite a real session's resume identity.
+- Codex resume now validates exact ids and falls back through filtered title lookup, avoiding internal `codex exec` title-generation transcripts.
+- Cancelling first-prompt title generation no longer lets a stale result rename the session, and a later user prompt can retry title generation.
+- Agent Auto Sleep waits when zmx title-observer health is starting, retrying, or failed instead of treating unavailable working-status detection as idle.
+- Ghostex-launched app, gxserver, zmx, agent-hook, Git, Beads, clone, and local dev subprocesses keep ANSI color capability even when the parent shell exports `NO_COLOR`.
 - Native sidebar web bundles are compiled through the React Compiler build path for smoother nightly sidebar interactions.
 - Support diagnostics avoid writing raw title previews, command output previews, session id lists, paths, and stderr snippets while still keeping counts and timing useful for troubleshooting.
 
