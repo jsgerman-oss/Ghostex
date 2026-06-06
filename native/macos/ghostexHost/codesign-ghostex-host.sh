@@ -141,10 +141,10 @@ sign_nested_resource_code() {
 		return 0
 	fi
 
-	# CDXC:BetaDistribution 2026-06-06-07:54: The 4.0 beta release bundles server runtimes with nested native Node modules and vendor tools. Apple notarization validates those Mach-O payloads independently, so sign each nested executable, module, or dylib with Developer ID, secure timestamp, and hardened runtime before signing the outer app.
+	# CDXC:BetaDistribution 2026-06-06-07:54: The 4.0 beta release bundles server runtimes with nested native Node modules and vendor tools. Apple notarization validates those Mach-O payloads independently, so sign each nested executable, module, dylib, or packaged vendor helper with Developer ID, secure timestamp, and hardened runtime before signing the outer app.
 	find "$resource_path" \
 		-type f \
-		\( -perm -111 -o -name '*.node' -o -name '*.dylib' \) \
+		\( -perm -111 -o -name '*.node' -o -name '*.dylib' -o -name 'spawn-helper' \) \
 		-print0 |
 		while IFS= read -r -d '' resource_code; do
 			if file "$resource_code" | grep -q 'Mach-O'; then
