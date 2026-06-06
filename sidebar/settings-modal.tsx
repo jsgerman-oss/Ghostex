@@ -371,7 +371,6 @@ const MAIN_SETTINGS_SECTION_SETTING_KEYS: Record<
     "autoSleepAgentSessionsEnabled",
     "autoSleepAgentIdleMinutes",
     "autoSleepRequireAgentResumeCommand",
-    "autoSleepFocusedAgentSessions",
     "autoSleepFavoriteAgentSessions",
   ],
   power: [
@@ -900,11 +899,6 @@ export function SettingsModal({
         key: "autoSleepRequireAgentResumeCommand",
         subtitle: "Only auto-sleep agent sessions Ghostex can wake with a resume command.",
         title: "Require resume command",
-      },
-      {
-        key: "autoSleepFocusedAgentSessions",
-        subtitle: "Allow the currently focused agent terminal to auto-sleep.",
-        title: "Include focused agent",
       },
       {
         key: "autoSleepFavoriteAgentSessions",
@@ -2262,16 +2256,6 @@ export function SettingsModal({
                 onChange={(checked) =>
                   updateDraft("autoSleepRequireAgentResumeCommand", checked)
                 }
-              />
-              ) : null}
-              {draft.autoSleepAgentSessionsEnabled &&
-              mainSettingVisible(settingsSearch.autoSleep, "autoSleepFocusedAgentSessions") ? (
-              <ToggleField
-                checked={draft.autoSleepFocusedAgentSessions}
-                description="Allow the currently focused agent terminal to auto-sleep."
-                label="Include focused agent"
-                {...getSettingModificationProps("autoSleepFocusedAgentSessions")}
-                onChange={(checked) => updateDraft("autoSleepFocusedAgentSessions", checked)}
               />
               ) : null}
               {draft.autoSleepAgentSessionsEnabled &&

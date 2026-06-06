@@ -301,6 +301,14 @@ describe("normalizeghostexSettings", () => {
      * CDXC:AutoSleep 2026-05-28-08:06:
      * Settings must preserve the existing editor/Git sleep defaults while
      * making agent auto-sleep opt-in and bounded to visible idle-duration choices.
+     *
+     * CDXC:AutoSleep 2026-06-07-00:53:
+     * Agent auto-sleep defaults to fifteen idle minutes once enabled, matching
+     * editor auto-sleep while keeping the opt-in gate.
+     *
+     * CDXC:AutoSleep 2026-06-07-00:56:
+     * Focused agent sessions are always excluded from auto-sleep, so the old
+     * focused-agent override is no longer normalized as a setting.
      */
     expect(AUTO_SLEEP_IDLE_MINUTE_OPTIONS).toEqual([
       { label: "5 minutes", value: 5 },
@@ -312,14 +320,13 @@ describe("normalizeghostexSettings", () => {
       { label: "5 hours", value: 300 },
     ]);
     expect(normalizeghostexSettings({})).toMatchObject({
-      autoSleepAgentIdleMinutes: 60,
+      autoSleepAgentIdleMinutes: 15,
       autoSleepAgentSessionsEnabled: false,
       autoSleepBrowserIdleMinutes: 30,
       autoSleepBrowserSessionsEnabled: false,
       autoSleepCodeEditorEnabled: true,
       autoSleepCodeEditorIdleMinutes: 15,
       autoSleepFavoriteAgentSessions: false,
-      autoSleepFocusedAgentSessions: false,
       autoSleepGitEditorEnabled: true,
       autoSleepGitEditorIdleMinutes: 15,
       autoSleepProjectEditorEnabled: true,
@@ -338,7 +345,7 @@ describe("normalizeghostexSettings", () => {
         autoSleepProjectEditorIdleMinutes: 999,
       }),
     ).toMatchObject({
-      autoSleepAgentIdleMinutes: 60,
+      autoSleepAgentIdleMinutes: 15,
       autoSleepAgentSessionsEnabled: true,
       autoSleepBrowserIdleMinutes: 120,
       autoSleepBrowserSessionsEnabled: true,

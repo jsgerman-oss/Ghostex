@@ -2,6 +2,22 @@ import AppKit
 import Darwin
 import GhosttyKit
 
+private let ghostexColorDisablingEnvironmentKeys = [
+  "ANSI_COLORS_DISABLED",
+  "NO_COLOR",
+  "NODE_DISABLE_COLORS",
+]
+
+private func removeGhostexProcessColorDisablingEnvironment() {
+  /**
+   CDXC:ProcessColorEnv 2026-06-07-00:38:
+   Ghostex can be launched from agent terminals that export NO_COLOR, but the GUI app is a color-capable host for Ghostty, gxserver, zmx, and forked agent sessions. Strip inherited color-disabling keys at process start so they cannot leak into app-wide environment snapshots.
+   */
+  for key in ghostexColorDisablingEnvironmentKeys {
+    unsetenv(key)
+  }
+}
+
 private func terminalCliArguments() -> [String] {
   CommandLine.arguments.dropFirst().filter { argument in
     !argument.hasPrefix("-psn_")
@@ -66,6 +82,8 @@ private func isGhostexDevBundleIdentifier(_ bundleIdentifier: String?) -> Bool {
    */
   bundleIdentifier?.hasPrefix("com.madda.ghostex-dev") == true
 }
+
+removeGhostexProcessColorDisablingEnvironment()
 
 let cliArguments = terminalCliArguments()
 if !cliArguments.isEmpty || isTerminalCliInvocation() {

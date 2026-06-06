@@ -102,6 +102,11 @@ private let ghostexNativeShellPathSentinel = "__GHOSTEX_NATIVE_SHELL_PATH__"
 private let ghostexNativeShellPathDiscoveryTimeout: DispatchTimeInterval = .seconds(2)
 private let ghostexNativeShellPathCacheLock = NSLock()
 private var ghostexNativeShellPathCache: [String]?
+private let ghostexNativeColorDisablingEnvironmentKeys = [
+  "ANSI_COLORS_DISABLED",
+  "NO_COLOR",
+  "NODE_DISABLE_COLORS",
+]
 
 private func normalizedNativeProcessEnvironment(overrides: [String: String]?) -> [String: String] {
   /**
@@ -110,12 +115,18 @@ private func normalizedNativeProcessEnvironment(overrides: [String: String]?) ->
    background commands must still find common developer tools installed through
    Homebrew, mise, asdf, or ~/.local/bin, because features such as session title
    generation run Codex through this process bridge instead of inside a terminal.
+
+   CDXC:NativeCommandBridge 2026-06-07-00:38:
+   Native helper subprocesses must not inherit NO_COLOR from the app process or command-specific env overlays. Keep helper environments color-capable by stripping color-disabling keys at the normalized process boundary.
    */
   var environment = ProcessInfo.processInfo.environment
   environment["PATH"] = normalizedNativeProcessPath(environment["PATH"], environment: environment)
   if let overrides {
     environment.merge(overrides) { _, newValue in newValue }
     environment["PATH"] = normalizedNativeProcessPath(environment["PATH"], environment: environment)
+  }
+  for key in ghostexNativeColorDisablingEnvironmentKeys {
+    environment.removeValue(forKey: key)
   }
   return environment
 }
@@ -613,6 +624,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
     updaterDelegate: self,
     userDriverDelegate: self)
   private var t3CodeRuntimeProcess: Process?
+  private var t3CodeRuntimeStartedAt: Date?
   private var t3RuntimeVisibleSessionCwd: String?
   private var t3RuntimeLivenessTimer: Timer?
   private var codeServerRuntimeProcess: Process?
@@ -2950,6 +2962,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
        the handle only after the same health probe used for listener adoption.
        */
       guard NativeT3RuntimeLauncher.hasResponsiveManagedRuntimeListener() else {
+        if let startedAt = t3CodeRuntimeStartedAt {
+          let runtimeAgeSeconds = Date().timeIntervalSince(startedAt)
+          if runtimeAgeSeconds <= NativeT3RuntimeLauncher.startupGraceInterval {
+            NativeT3CodePaneReproLog.append("nativeHost.t3Runtime.start.booting", [
+              "pid": process.processIdentifier,
+              "runtimeAgeSeconds": runtimeAgeSeconds,
+              "startupGraceSeconds": NativeT3RuntimeLauncher.startupGraceInterval,
+            ])
+            workspaceView?.reloadManagedT3WebPanes(reason: "runtimeRetainedDuringStartup")
+            return
+          }
+        }
         if NativeT3RuntimeLauncher.shouldRetainUnresponsiveManagedRuntime(
           pid: Int(process.processIdentifier))
         {
@@ -2973,6 +2997,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
         ])
         process.terminate()
         t3CodeRuntimeProcess = nil
+        t3CodeRuntimeStartedAt = nil
         NativeT3RuntimeLauncher.clearStaleRuntimeIfNeeded(logPrefix: "nativeHost")
         return startT3CodeRuntime(command)
       }
@@ -2981,6 +3006,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
         "pid": process.processIdentifier,
       ])
       return
+    }
+    if let process = t3CodeRuntimeProcess, !process.isRunning {
+      NativeT3CodePaneReproLog.append("nativeHost.t3Runtime.start.trackedExited", [
+        "pid": process.processIdentifier
+      ])
+      t3CodeRuntimeProcess = nil
+      t3CodeRuntimeStartedAt = nil
     }
 
     /**
@@ -2997,8 +3029,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
       return
     }
 
+    let launchStartedAt: Date
+    switch NativeT3RuntimeLauncher.claimLaunchStart() {
+    case .retained(let launchAgeSeconds):
+      NativeT3CodePaneReproLog.append("nativeHost.t3Runtime.start.launchInProgressRetained", [
+        "launchAgeSeconds": launchAgeSeconds,
+        "startupGraceSeconds": NativeT3RuntimeLauncher.startupGraceInterval,
+      ])
+      workspaceView?.reloadManagedT3WebPanes(reason: "runtimeRetainedDuringStartup")
+      return
+    case .claimed(let claimedStartedAt):
+      launchStartedAt = claimedStartedAt
+    }
+
     NativeT3RuntimeLauncher.clearStaleRuntimeIfNeeded(logPrefix: "nativeHost")
     if NativeT3RuntimeLauncher.hasManagedRuntimeListener() {
+      NativeT3RuntimeLauncher.clearLaunchAttempt(startedAt: launchStartedAt)
       NativeT3CodePaneReproLog.append("nativeHost.t3Runtime.start.retainedExistingUnresponsive", [
         "cwd": command.cwd,
         "port": NativeT3RuntimeLauncher.port,
@@ -3015,14 +3061,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
       let process = launch.process
       try process.run()
       t3CodeRuntimeProcess = process
+      t3CodeRuntimeStartedAt = launchStartedAt
       NativeT3CodePaneReproLog.append("nativeHost.t3Runtime.start.spawned", [
         "args": process.arguments ?? [],
         "cwd": command.cwd,
         "executable": process.executableURL?.path ?? NSNull(),
         "pid": process.processIdentifier,
+        "startedAt": launchStartedAt.timeIntervalSince1970,
       ])
       workspaceView?.reloadManagedT3WebPanes(reason: "runtimeSpawned")
-      process.terminationHandler = { [outputCapture = launch.outputCapture] terminatedProcess in
+      process.terminationHandler = { [outputCapture = launch.outputCapture, launchStartedAt] terminatedProcess in
+        NativeT3RuntimeLauncher.clearLaunchAttempt(startedAt: launchStartedAt)
         var details = outputCapture.finish()
         details["pid"] = terminatedProcess.processIdentifier
         details["reason"] = terminatedProcess.terminationReason.rawValue
@@ -3030,6 +3079,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
         NativeT3CodePaneReproLog.append("nativeHost.t3Runtime.exit", details)
       }
     } catch {
+      NativeT3RuntimeLauncher.clearLaunchAttempt(startedAt: launchStartedAt)
       NativeT3CodePaneReproLog.append("nativeHost.t3Runtime.start.failed", [
         "cwd": command.cwd,
         "error": error.localizedDescription,
@@ -3056,6 +3106,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
         process.terminate()
       }
       t3CodeRuntimeProcess = nil
+      t3CodeRuntimeStartedAt = nil
     }
     NativeT3RuntimeLauncher.clearStaleRuntimeIfNeeded(
       logPrefix: "\(logPrefix).stop",
@@ -4811,6 +4862,7 @@ final class ghostexRootView: NSView {
   private var pendingHotkeyPrefix: String?
   private var pendingHotkeyPrefixExpiresAt: Date?
   private var t3CodeRuntimeProcess: Process?
+  private var t3CodeRuntimeStartedAt: Date?
   private var t3RuntimeVisibleSessionCwd: String?
   private var t3RuntimeLivenessTimer: Timer?
   private var codeServerRuntimeProcess: Process?
@@ -7053,6 +7105,18 @@ final class ghostexRootView: NSView {
        WKWebView.
        */
       guard NativeT3RuntimeLauncher.hasResponsiveManagedRuntimeListener() else {
+        if let startedAt = t3CodeRuntimeStartedAt {
+          let runtimeAgeSeconds = Date().timeIntervalSince(startedAt)
+          if runtimeAgeSeconds <= NativeT3RuntimeLauncher.startupGraceInterval {
+            NativeT3CodePaneReproLog.append("nativeSidebar.t3Runtime.start.booting", [
+              "pid": process.processIdentifier,
+              "runtimeAgeSeconds": runtimeAgeSeconds,
+              "startupGraceSeconds": NativeT3RuntimeLauncher.startupGraceInterval,
+            ])
+            workspaceView.reloadManagedT3WebPanes(reason: "runtimeRetainedDuringStartup")
+            return
+          }
+        }
         if NativeT3RuntimeLauncher.shouldRetainUnresponsiveManagedRuntime(
           pid: Int(process.processIdentifier))
         {
@@ -7078,6 +7142,7 @@ final class ghostexRootView: NSView {
         ])
         process.terminate()
         t3CodeRuntimeProcess = nil
+        t3CodeRuntimeStartedAt = nil
         NativeT3RuntimeLauncher.clearStaleRuntimeIfNeeded(logPrefix: "nativeSidebar")
         return startT3CodeRuntime(command)
       }
@@ -7086,6 +7151,13 @@ final class ghostexRootView: NSView {
         "pid": process.processIdentifier,
       ])
       return
+    }
+    if let process = t3CodeRuntimeProcess, !process.isRunning {
+      NativeT3CodePaneReproLog.append("nativeSidebar.t3Runtime.start.trackedExited", [
+        "pid": process.processIdentifier
+      ])
+      t3CodeRuntimeProcess = nil
+      t3CodeRuntimeStartedAt = nil
     }
 
     /**
@@ -7102,8 +7174,22 @@ final class ghostexRootView: NSView {
       return
     }
 
+    let launchStartedAt: Date
+    switch NativeT3RuntimeLauncher.claimLaunchStart() {
+    case .retained(let launchAgeSeconds):
+      NativeT3CodePaneReproLog.append("nativeSidebar.t3Runtime.start.launchInProgressRetained", [
+        "launchAgeSeconds": launchAgeSeconds,
+        "startupGraceSeconds": NativeT3RuntimeLauncher.startupGraceInterval,
+      ])
+      workspaceView.reloadManagedT3WebPanes(reason: "runtimeRetainedDuringStartup")
+      return
+    case .claimed(let claimedStartedAt):
+      launchStartedAt = claimedStartedAt
+    }
+
     NativeT3RuntimeLauncher.clearStaleRuntimeIfNeeded(logPrefix: "nativeSidebar")
     if NativeT3RuntimeLauncher.hasManagedRuntimeListener() {
+      NativeT3RuntimeLauncher.clearLaunchAttempt(startedAt: launchStartedAt)
       NativeT3CodePaneReproLog.append(
         "nativeSidebar.t3Runtime.start.retainedExistingUnresponsive",
         [
@@ -7122,14 +7208,17 @@ final class ghostexRootView: NSView {
       let process = launch.process
       try process.run()
       t3CodeRuntimeProcess = process
+      t3CodeRuntimeStartedAt = launchStartedAt
       NativeT3CodePaneReproLog.append("nativeSidebar.t3Runtime.start.spawned", [
         "args": process.arguments ?? [],
         "cwd": command.cwd,
         "executable": process.executableURL?.path ?? NSNull(),
         "pid": process.processIdentifier,
+        "startedAt": launchStartedAt.timeIntervalSince1970,
       ])
       workspaceView.reloadManagedT3WebPanes(reason: "runtimeSpawned")
-      process.terminationHandler = { [outputCapture = launch.outputCapture] terminatedProcess in
+      process.terminationHandler = { [outputCapture = launch.outputCapture, launchStartedAt] terminatedProcess in
+        NativeT3RuntimeLauncher.clearLaunchAttempt(startedAt: launchStartedAt)
         var details = outputCapture.finish()
         details["pid"] = terminatedProcess.processIdentifier
         details["reason"] = terminatedProcess.terminationReason.rawValue
@@ -7137,6 +7226,7 @@ final class ghostexRootView: NSView {
         NativeT3CodePaneReproLog.append("nativeSidebar.t3Runtime.exit", details)
       }
     } catch {
+      NativeT3RuntimeLauncher.clearLaunchAttempt(startedAt: launchStartedAt)
       NativeT3CodePaneReproLog.append("nativeSidebar.t3Runtime.start.failed", [
         "cwd": command.cwd,
         "error": error.localizedDescription,
@@ -7162,6 +7252,7 @@ final class ghostexRootView: NSView {
         process.terminate()
       }
       t3CodeRuntimeProcess = nil
+      t3CodeRuntimeStartedAt = nil
     }
     NativeT3RuntimeLauncher.clearStaleRuntimeIfNeeded(
       logPrefix: "\(logPrefix).stop",

@@ -185,7 +185,6 @@ export type ghostexSettings = {
   autoSleepBrowserIdleMinutes: AutoSleepIdleMinutes;
   autoSleepCodeEditorEnabled: boolean;
   autoSleepCodeEditorIdleMinutes: AutoSleepIdleMinutes;
-  autoSleepFocusedAgentSessions: boolean;
   autoSleepGitEditorEnabled: boolean;
   autoSleepGitEditorIdleMinutes: AutoSleepIdleMinutes;
   autoSleepProjectEditorEnabled: boolean;
@@ -455,14 +454,22 @@ export const DEFAULT_ghostex_SETTINGS: ghostexSettings = {
    * Background VS Code, Project, and Git panes auto-sleep after fifteen minutes
    * of idle time by default. Browser and agent auto-sleep start opt-in because
    * they close live user-created session surfaces.
+   *
+   * CDXC:AutoSleep 2026-06-07-00:53:
+   * Agent auto-sleep keeps its opt-in policy, but the default idle threshold is
+   * now fifteen minutes so enabled agent sessions retire on the same window as
+   * editor surfaces.
+   *
+   * CDXC:AutoSleep 2026-06-07-00:56:
+   * Focused agent sessions must never auto-sleep and no longer have a Settings
+   * override because sleeping the active conversation is not a supported UX.
    */
   autoSleepAgentSessionsEnabled: false,
-  autoSleepAgentIdleMinutes: 60,
+  autoSleepAgentIdleMinutes: 15,
   autoSleepBrowserSessionsEnabled: false,
   autoSleepBrowserIdleMinutes: 30,
   autoSleepCodeEditorEnabled: true,
   autoSleepCodeEditorIdleMinutes: 15,
-  autoSleepFocusedAgentSessions: false,
   autoSleepGitEditorEnabled: true,
   autoSleepGitEditorIdleMinutes: 15,
   autoSleepProjectEditorEnabled: true,
@@ -1029,11 +1036,6 @@ export function normalizeghostexSettings(candidate: unknown): ghostexSettings {
       ),
       DEFAULT_ghostex_SETTINGS.autoSleepCodeEditorIdleMinutes,
     ),
-    autoSleepFocusedAgentSessions: readBoolean(
-      source,
-      "autoSleepFocusedAgentSessions",
-      DEFAULT_ghostex_SETTINGS.autoSleepFocusedAgentSessions,
-    ),
     autoSleepGitEditorEnabled: readBoolean(
       source,
       "autoSleepGitEditorEnabled",
@@ -1536,8 +1538,12 @@ export function getSessionTitleGenerationCommandPreview(
   const prompt = SESSION_TITLE_GENERATION_PROMPT_PLACEHOLDER;
   switch (agent) {
     case "codex":
+      /*
+      CDXC:SessionTitleSettings 2026-06-07-01:57:
+      Settings must preview the same internal Codex title-generation command gxserver runs. Include `--ephemeral` so users see that generated titles do not create restorable Codex sessions.
+      */
       return createSessionTitleGenerationHereDocPreview(
-        `${command} exec --skip-git-repo-check -m gpt-5.4-mini -c 'model_reasoning_effort="low"'`,
+        `${command} exec --ephemeral --skip-git-repo-check -m gpt-5.4-mini -c 'model_reasoning_effort="low"'`,
         prompt,
       );
     case "cursor":

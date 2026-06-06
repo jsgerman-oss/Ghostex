@@ -102,6 +102,11 @@ final class GxserverClient {
   private static let expectedProduct = "gxserver"
   private static let minimumNodeMajor = 22
   private static let nodeInstallURL = "https://nodejs.org/en/download"
+  private static let colorDisablingEnvironmentKeys = [
+    "ANSI_COLORS_DISABLED",
+    "NO_COLOR",
+    "NODE_DISABLE_COLORS",
+  ]
   private let fileManager = FileManager.default
 
   /*
@@ -957,7 +962,13 @@ final class GxserverClient {
 
      CDXC:GxserverBootstrap 2026-06-06-22:56:
      Version-manager shims from Volta, mise, asdf, and nodenv should remain discoverable for users who do not install Node through Homebrew. Direct nvm/fnm installs are scanned separately because those managers usually depend on interactive shell functions instead of durable shims.
+
+     CDXC:GxserverBootstrap 2026-06-07-00:38:
+     gxserver is the owner of forked zmx provider launches, so its daemon environment must never inherit NO_COLOR from the GUI app or local dev shell. Strip color-disabling keys before Node starts the daemon instead of relying on later terminal-surface cleanup.
      */
+    for key in Self.colorDisablingEnvironmentKeys {
+      environment.removeValue(forKey: key)
+    }
     let defaultEntries = [
       "/opt/homebrew/opt/node@\(Self.minimumNodeMajor)/bin",
       "/opt/homebrew/bin",

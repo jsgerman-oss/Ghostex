@@ -13,10 +13,11 @@ const installDir = process.env.INSTALL_DIR || "/Applications";
 const configuration = process.env.CONFIGURATION || "Debug";
 const protocolVersion = 1;
 const gxserverBaseUrl = "http://127.0.0.1:58744";
+const startEnvironment = withoutColorDisablingEnvironment(process.env);
 
 const variant = parseVariant(process.argv.slice(2), process.env.GHOSTEX_APP_VARIANT);
 const buildEnv = {
-  ...process.env,
+  ...startEnvironment,
   GHOSTEX_APP_VARIANT: variant,
 };
 /*
@@ -148,6 +149,7 @@ function findRunningAppPids() {
   const result = spawnSync("pgrep", ["-f", pattern], {
     cwd: repoRoot,
     encoding: "utf8",
+    env: startEnvironment,
     stdio: ["ignore", "pipe", "ignore"],
   });
   if (result.status !== 0 || !result.stdout.trim()) {
@@ -257,7 +259,7 @@ function installAndOpenApp(appPath) {
 function run(command, args, options = {}) {
   const result = spawnSync(command, args, {
     cwd: repoRoot,
-    env: options.env || process.env,
+    env: options.env || startEnvironment,
     stdio: options.stdio || "inherit",
   });
   if (result.error) {
@@ -291,4 +293,16 @@ function escapeRegExp(value) {
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function withoutColorDisablingEnvironment(environment) {
+  /*
+  CDXC:LocalStartColorEnv 2026-06-07-00:38:
+  Local starts can be run from agent terminals that export NO_COLOR. Ghostex app, gxserver, and forked agent sessions must stay color-capable, so strip inherited color-disabling keys before build, install, open, and daemon-control subprocesses.
+  */
+  const sanitized = { ...environment };
+  for (const key of ["ANSI_COLORS_DISABLED", "NO_COLOR", "NODE_DISABLE_COLORS"]) {
+    delete sanitized[key];
+  }
+  return sanitized;
 }

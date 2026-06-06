@@ -1157,6 +1157,23 @@ let storedAgentOrder: string[] = [];
 let agents: SidebarAgentButton[] = [];
 const gitWorkflowToastBySessionId = new Map<string, { title: string; toastId: string }>();
 const submittedFirstPromptGeneratedTitleEnterBySessionKey = new Set<string>();
+const NATIVE_INTERNAL_PROMPT_GENERATION_ENVIRONMENT_KEYS = [
+  "GHOSTEX_GLOBAL_SESSION_REF",
+  "GHOSTEX_GXSERVER_AUTH_TOKEN_FILE",
+  "GHOSTEX_GXSERVER_BASE_URL",
+  "GHOSTEX_GXSERVER_PROTOCOL_VERSION",
+  "GHOSTEX_SESSION_ID",
+  "GHOSTEX_SESSION_STATE_FILE",
+  "GHOSTEX_WORKSPACE_ID",
+  "GHOSTEX_WORKSPACE_ROOT",
+  "VSMUX_SESSION_ID",
+  "VSMUX_SESSION_STATE_FILE",
+  "VSMUX_WORKSPACE_ID",
+  "VSMUX_WORKSPACE_ROOT",
+  "ghostex_SESSION_STATE_FILE",
+  "ghostex_WORKSPACE_ID",
+  "ghostex_WORKSPACE_ROOT",
+] as const;
 let gxserverDaemonToastPendingResolution = false;
 let projectCommandsByProjectId: ProjectSidebarCommandsStore = {};
 let storedCommands: StoredSidebarCommand[] = [];
@@ -5744,7 +5761,6 @@ function syncAutoSleepSettings(
     previousSettings.autoSleepAgentIdleMinutes !== nextSettings.autoSleepAgentIdleMinutes ||
     previousSettings.autoSleepRequireAgentResumeCommand !==
       nextSettings.autoSleepRequireAgentResumeCommand ||
-    previousSettings.autoSleepFocusedAgentSessions !== nextSettings.autoSleepFocusedAgentSessions ||
     previousSettings.autoSleepFavoriteAgentSessions !== nextSettings.autoSleepFavoriteAgentSessions
   ) {
     runNativeAutoSleepMonitor("settings-change");
@@ -10058,10 +10074,16 @@ function buildNativePromptGenerationShellCommand(input: {
    * Treat Cursor as a first-class prompt-generation agent so choosing it as the
    * default prompt agent still generates Codex session names and stages
    * `/rename <generated title>` instead of failing before the rename command.
+   *
+   * CDXC:PromptAgents 2026-06-07-01:57:
+   * Native prompt generation is internal utility work. Codex must run with
+   * `--ephemeral` so generated session titles, commit messages, and board titles
+   * cannot create persistent Codex transcripts that later collide with real
+   * user sessions during restore by title.
    */
   if (input.agent.agentId === "codex") {
     return createNativeHereDocCommand(
-      `${command} exec --skip-git-repo-check -m gpt-5.4-mini -c 'model_reasoning_effort="low"'`,
+      `${command} exec --ephemeral --skip-git-repo-check -m gpt-5.4-mini -c 'model_reasoning_effort="low"'`,
       input.delimiter,
       input.prompt,
     );
@@ -10088,7 +10110,7 @@ function createNativeHereDocCommand(command: string, delimiter: string, body: st
 
 function runNativePromptGenerationShellCommand(
   command: string,
-  options: { cwd?: string; timeoutMs?: number } = {},
+  options: { cwd?: string; env?: Record<string, string>; timeoutMs?: number } = {},
 ): Promise<NativeProcessResult> {
   /**
    * CDXC:PromptAgents 2026-05-30-04:11:
@@ -10096,8 +10118,29 @@ function runNativePromptGenerationShellCommand(
    * aliases/functions used by interactive agent launches. Run zsh as an
    * interactive login command so short commands such as `x` can expand before
    * Codex commit-message and session-title generation execute.
+   *
+   * CDXC:PromptAgents 2026-06-07-01:57:
+   * Internal prompt generation must not inherit Ghostex session identity from an
+   * active terminal pane. Strip session-binding env vars and mark the child
+   * process so installed agent hooks ignore background generation instead of
+   * persisting its Codex session id onto the user's restorable session.
    */
-  return runNativeProcess("/bin/zsh", ["-lic", command], options);
+  return runNativeProcess("/bin/zsh", ["-lic", command], {
+    ...options,
+    env: createNativeInternalPromptGenerationEnvironment(options.env),
+  });
+}
+
+function createNativeInternalPromptGenerationEnvironment(
+  environment: Record<string, string> = {},
+): Record<string, string> {
+  const sanitized = { ...environment };
+  for (const key of NATIVE_INTERNAL_PROMPT_GENERATION_ENVIRONMENT_KEYS) {
+    sanitized[key] = "";
+  }
+  sanitized.GHOSTEX_INTERNAL_PROMPT_GENERATION = "1";
+  sanitized.GHOSTEX_INTERNAL_TITLE_GENERATION = "1";
+  return sanitized;
 }
 
 function focusPendingGitProject(projectId: string): NativeProject {
@@ -14281,6 +14324,7 @@ function createRemotePresentationSidebarSession(
     sessionPersistenceProvider: "zmx",
     shortcutLabel: String(index + 1),
     terminalTitle: presentation.terminalTitle,
+    titleObservation: presentation.titleObservation,
   };
 }
 
@@ -14639,12 +14683,21 @@ function createPresentationProjectSidebarGroup(
 ): SidebarSessionGroup | undefined {
   const isActiveProject = project.projectId === activeProjectId;
   const worktree = getNativeWorktreeMetadataForPresentationProject(project.projectId);
-  const sidebarSessions = sessions.map((session, index) =>
+  const presentationSessionIds = new Set(sessions.map((session) => session.sessionId));
+  const presentationSidebarSessions = sessions.map((session, index) =>
     createPresentationSidebarSession(project.projectId, session, index, isActiveProject, localProject),
   );
+  const localPaneSessions = createLocalOnlyPaneSidebarSessionsForPresentationProject(
+    localProject,
+    presentationSessionIds,
+  );
+  const sidebarSessions = [...presentationSidebarSessions, ...localPaneSessions];
   /*
   CDXC:GxserverPresentationProjects 2026-06-01-21:14:
   Project rows are not session rows. A freshly added folder such as a code checkout must stay visible in the Projects section even when gxserver has not created any workspace sessions for it yet.
+
+  CDXC:T3Code 2026-06-07-01:17:
+  T3 Code and browser panes are macOS-local WKWebView sessions even when gxserver owns terminal presentation. Merge only those native pane cards into normal project groups with project-scoped ids so the native tab bar cannot show a T3/browser pane that the React sidebar omits, while stale pre-cutover terminal rows stay suppressed.
   */
   return {
     groupId: createCombinedProjectGroupId(project.projectId),
@@ -14668,6 +14721,26 @@ function createPresentationProjectSidebarGroup(
     viewMode: "grid",
     visibleCount: clampVisibleSessionCount(Math.max(1, sidebarSessions.filter((session) => session.isVisible).length)),
   };
+}
+
+function createLocalOnlyPaneSidebarSessionsForPresentationProject(
+  project: NativeProject | undefined,
+  presentationSessionIds: ReadonlySet<string>,
+): SidebarSessionItem[] {
+  if (!project) {
+    return [];
+  }
+  return createProjectedSidebarGroupsForProject(project)
+    .flatMap((group) => group.sessions)
+    .filter(
+      (session) =>
+        (session.sessionKind === "t3" || session.sessionKind === "browser") &&
+        !presentationSessionIds.has(session.sessionId),
+    )
+    .map((session) => ({
+      ...session,
+      sessionId: createCombinedProjectSessionId(project.projectId, session.sessionId),
+    }));
 }
 
 function createPresentationSidebarSession(
@@ -14720,6 +14793,7 @@ function createPresentationSidebarSession(
     sessionRoutingId: createNativeSidebarSessionRoutingId(projectId, presentation.sessionId),
     shortcutLabel: String(index + 1),
     terminalTitle: presentation.terminalTitle,
+    titleObservation: presentation.titleObservation,
   };
 }
 
@@ -16724,6 +16798,12 @@ function getNativeCodexNotifyHookScript(): string {
    * Ghostex must capture native agent session ids from hook payloads.
    * Resume commands should prefer that exact id, while the existing title-based
    * restore path remains the backup when a hook did not capture an id.
+   *
+   * CDXC:SessionRestore 2026-06-07-01:57:
+   * Ghostex-owned prompt generation is not a user session. The notify hook must
+   * ignore internal generation markers so Codex exec jobs for titles or commit
+   * messages cannot overwrite the restorable agent identity of the terminal that
+   * launched them.
    */
   return `#!/bin/bash
 if [ -n "$1" ]; then
@@ -16737,6 +16817,10 @@ HOOK_STATE_DIR=${quoteNativeShellArg(GHOSTEX_AGENT_HOOK_STATE_DIR)}
 GHOSTEX_DIRECT_SESSION_REF="\${GHOSTEX_GLOBAL_SESSION_REF:-}"
 GHOSTEX_DIRECT_BASE_URL="\${GHOSTEX_GXSERVER_BASE_URL:-}"
 GHOSTEX_DIRECT_TOKEN_FILE="\${GHOSTEX_GXSERVER_AUTH_TOKEN_FILE:-}"
+if [ "\${GHOSTEX_INTERNAL_PROMPT_GENERATION:-}" = "1" ] || [ "\${GHOSTEX_INTERNAL_TITLE_GENERATION:-}" = "1" ]; then
+  printf '{"continue":true}'
+  exit 0
+fi
 if [ -z "$SESSION_STATE_FILE" ] && { [ -z "$GHOSTEX_DIRECT_SESSION_REF" ] || [ -z "$GHOSTEX_DIRECT_BASE_URL" ] || [ -z "$GHOSTEX_DIRECT_TOKEN_FILE" ]; }; then
   printf '{"continue":true}'
   exit 0
@@ -20124,21 +20208,88 @@ async function cancelNativeFirstPromptAutoRename(sessionId: string): Promise<voi
         sessionId: reference.sessionId,
       },
     );
+    let pendingPromptCleared = false;
     if (result.session.runtimeSettings.gxserverFirstPromptAutoTitleStatus === "cancelled") {
+      if (terminalState.sessionStateFilePath) {
+        pendingPromptCleared = await clearNativeFirstPromptAutoRenamePendingPrompt(
+          terminalState.sessionStateFilePath,
+        );
+      }
       terminalState.firstPromptAutoRenameInProgress = false;
       publish();
     }
+    appendSessionTitleDebugLog("nativeSidebar.firstPromptAutoRename.cancelled", {
+      pendingPromptCleared,
+      reason: "gxserver-owned",
+      sessionId,
+    });
   } catch (error) {
     appendSessionTitleGenerationErrorLog("nativeSidebar.firstPromptAutoRename.cancelFailed", {
       error: error instanceof Error ? error.message : String(error),
       sessionId,
     });
   }
-  appendSessionTitleDebugLog("nativeSidebar.firstPromptAutoRename.cancelled", {
-    pendingPromptCleared: false,
-    reason: "gxserver-owned",
-    sessionId,
-  });
+}
+
+async function clearNativeFirstPromptAutoRenamePendingPrompt(
+  sessionStateFilePath: string,
+): Promise<boolean> {
+  /*
+  CDXC:GxserverSessionTitle 2026-06-07-01:19:
+  Escape cancellation should suppress only the currently pending title prompt. Clear the hook-state pending prompt while preserving the first-user-message field so the next UserPromptSubmit hook can queue a retry that includes the original request plus the new user message.
+  */
+  const command = [
+    `/usr/bin/python3 - ${quoteNativeShellArg(sessionStateFilePath)} <<'GHOSTEX_CLEAR_PENDING_FIRST_PROMPT'`,
+    "import pathlib",
+    "import sys",
+    "",
+    "keys = [",
+    '    "status",',
+    '    "statusUpdatedAt",',
+    '    "attentionEventId",',
+    '    "attentionAcknowledgedAt",',
+    '    "attentionAcknowledgedEventId",',
+    '    "agent",',
+    '    "agentSessionId",',
+    '    "agentSessionPath",',
+    '    "firstUserMessageBase64",',
+    '    "frozenAt",',
+    '    "autoTitleFromFirstPrompt",',
+    '    "historyBase64",',
+    '    "lastActivityAt",',
+    '    "pendingFirstPromptAutoRenamePrompt",',
+    '    "title",',
+    "]",
+    "state_path = pathlib.Path(sys.argv[1])",
+    "state = {}",
+    "try:",
+    "    lines = state_path.read_text(encoding='utf-8').splitlines()",
+    "except FileNotFoundError:",
+    "    print('unchanged')",
+    "    sys.exit(0)",
+    "for line in lines:",
+    "    key, separator, value = line.partition('=')",
+    "    if separator:",
+    "        state[key] = value",
+    "changed = bool(state.get('pendingFirstPromptAutoRenamePrompt', '').strip())",
+    "state['pendingFirstPromptAutoRenamePrompt'] = ''",
+    "state_path.parent.mkdir(parents=True, exist_ok=True)",
+    "temp_path = state_path.with_suffix(state_path.suffix + '.tmp')",
+    "temp_path.write_text(''.join(f'{key}={state.get(key, \"\")}\\n' for key in keys), encoding='utf-8')",
+    "temp_path.replace(state_path)",
+    "print('changed' if changed else 'unchanged')",
+    "GHOSTEX_CLEAR_PENDING_FIRST_PROMPT",
+  ].join("\n");
+  const result = await runNativeProcess("/bin/zsh", ["-lc", command], { timeoutMs: 5_000 });
+  if (result.exitCode !== 0) {
+    appendSessionTitleGenerationErrorLog("nativeSidebar.firstPromptAutoRename.clearPendingFailed", {
+      exitCode: result.exitCode,
+      stderrLength: result.stderr.length,
+      stdoutLength: result.stdout.length,
+    });
+    return false;
+  }
+  return result.stdout.trim() === "changed";
 }
 
 async function readNativePersistedSessionState(
@@ -23512,10 +23663,17 @@ function shouldAutoSleepAgentSession({
   if (activity !== "idle") {
     return false;
   }
+  if (isTitleObservationUnsafeForAutoSleep(projectedSession)) {
+    return false;
+  }
   if (session.isFavorite === true && !settings.autoSleepFavoriteAgentSessions) {
     return false;
   }
-  if (!settings.autoSleepFocusedAgentSessions && isFocusedAgentAutoSleepSession(project, session)) {
+  /*
+  CDXC:AutoSleep 2026-06-07-00:56:
+  The focused agent session is always user-active from the sidebar's point of view. Do not expose or honor an override that allows Auto Sleep to retire the active conversation.
+  */
+  if (isFocusedAgentAutoSleepSession(project, session)) {
     return false;
   }
   if (
@@ -23529,6 +23687,15 @@ function shouldAutoSleepAgentSession({
     return false;
   }
   return nowMs - lastActivityMs >= settings.autoSleepAgentIdleMinutes * AUTO_SLEEP_MINUTE_MS;
+}
+
+function isTitleObservationUnsafeForAutoSleep(session: SidebarSessionItem | undefined): boolean {
+  /*
+  CDXC:AutoSleep 2026-06-07-00:30:
+  Working-status detection for gxserver terminals depends on the zmx title observer. When the observer is starting, retrying, or failed, Auto Sleep must treat an idle projection as unknown rather than idle; once the observer is active, normal idle-time sleeping applies.
+  */
+  const status = session?.titleObservation?.status;
+  return status === "starting" || status === "retrying" || status === "failed";
 }
 
 function shouldAutoSleepBrowserSession({

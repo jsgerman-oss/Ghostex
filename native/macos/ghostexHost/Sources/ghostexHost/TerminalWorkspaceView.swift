@@ -63,6 +63,23 @@ private let nativeTerminalColorEnvironmentKeys = [
 private let projectBeadsResponseEventName = "ghostex-project-beads-response"
 private let projectBoardResponseEventName = "ghostex-project-board-response"
 private let projectBoardImageResponseEventName = "ghostex-project-board-image-response"
+private let projectBoardInternalPromptGenerationEnvironmentKeys = [
+  "GHOSTEX_GLOBAL_SESSION_REF",
+  "GHOSTEX_GXSERVER_AUTH_TOKEN_FILE",
+  "GHOSTEX_GXSERVER_BASE_URL",
+  "GHOSTEX_GXSERVER_PROTOCOL_VERSION",
+  "GHOSTEX_SESSION_ID",
+  "GHOSTEX_SESSION_STATE_FILE",
+  "GHOSTEX_WORKSPACE_ID",
+  "GHOSTEX_WORKSPACE_ROOT",
+  "VSMUX_SESSION_ID",
+  "VSMUX_SESSION_STATE_FILE",
+  "VSMUX_WORKSPACE_ID",
+  "VSMUX_WORKSPACE_ROOT",
+  "ghostex_SESSION_STATE_FILE",
+  "ghostex_WORKSPACE_ID",
+  "ghostex_WORKSPACE_ROOT",
+]
 
 private struct NativeZmxRefreshIfStaleProcessResult: Sendable {
   let didLaunch: Bool
@@ -737,8 +754,16 @@ private func projectBoardNativeProcessEnvironment() -> [String: String] {
   /**
    CDXC:ProjectBoard 2026-06-02-13:31:
    Beads commands now execute in gxserver, not this Swift host. This environment remains only for Project-board prompt-agent title generation, which runs the user-selected agent command and is separate from Beads shared-state ownership.
+
+   CDXC:ProjectBoard 2026-06-07-01:57:
+   Project-board title generation is internal prompt-agent work. It must not inherit Ghostex session-binding environment from a terminal pane, and hooks must see the internal marker so background Codex exec jobs cannot become restorable user sessions.
    */
   var environment = ProcessInfo.processInfo.environment
+  for key in projectBoardInternalPromptGenerationEnvironmentKeys {
+    environment.removeValue(forKey: key)
+  }
+  environment["GHOSTEX_INTERNAL_PROMPT_GENERATION"] = "1"
+  environment["GHOSTEX_INTERNAL_TITLE_GENERATION"] = "1"
   environment["PATH"] = projectBoardNativeProcessPath(environment["PATH"])
   return environment
 }
@@ -8004,15 +8029,18 @@ final class TerminalWorkspaceView: NSView {
     let command = agentCommand?.trimmingCharacters(in: .whitespacesAndNewlines)
     /*
      CDXC:PromptAgents 2026-05-29-20:33:
-     Cursor Agent supports read-only background generation through `--print --mode ask`.
-     Project-board title generation must accept Cursor as a selected/default prompt agent so empty Beads ticket titles do not fail when Cursor is the user's prompt agent.
+    Cursor Agent supports read-only background generation through `--print --mode ask`.
+    Project-board title generation must accept Cursor as a selected/default prompt agent so empty Beads ticket titles do not fail when Cursor is the user's prompt agent.
+
+    CDXC:ProjectBoard 2026-06-07-01:57:
+    Codex project-board title generation must be ephemeral so the generated-title prompt cannot create a persistent Codex transcript that session restore may later match by title.
      */
     guard let normalizedAgentId, !normalizedAgentId.isEmpty else {
-      return "codex exec --skip-git-repo-check -m gpt-5.4-mini -c 'model_reasoning_effort=\"low\"'"
+      return "codex exec --ephemeral --skip-git-repo-check -m gpt-5.4-mini -c 'model_reasoning_effort=\"low\"'"
     }
     if let command, !command.isEmpty {
       if normalizedAgentId == "codex" {
-        return "\(command) exec --skip-git-repo-check -m gpt-5.4-mini -c 'model_reasoning_effort=\"low\"'"
+        return "\(command) exec --ephemeral --skip-git-repo-check -m gpt-5.4-mini -c 'model_reasoning_effort=\"low\"'"
       }
       if normalizedAgentId == "cursor" {
         return "\(command) --print --mode ask --trust --output-format text"
@@ -8024,7 +8052,7 @@ final class TerminalWorkspaceView: NSView {
     }
     switch normalizedAgentId {
     case "codex":
-      return "codex exec --skip-git-repo-check -m gpt-5.4-mini -c 'model_reasoning_effort=\"low\"'"
+      return "codex exec --ephemeral --skip-git-repo-check -m gpt-5.4-mini -c 'model_reasoning_effort=\"low\"'"
     case "claude":
       return "claude -p"
     case "cursor":

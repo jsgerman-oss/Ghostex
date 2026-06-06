@@ -674,8 +674,18 @@ enum NativeT3RuntimeLauncher {
   private static let bootstrapCredentialLock = NSLock()
   private static var bootstrapCredential: String?
   private static var ownerBearerToken: String?
+  private static let launchAttemptLock = NSLock()
+  private static var launchAttemptStartedAt: Date?
   @MainActor private static var liveManagedPaneHeartbeatTimer: Timer?
   @MainActor private static var liveManagedPaneHeartbeatSessionIds: [String] = []
+  /**
+   CDXC:T3CodeStartup 2026-06-07-02:46:
+   The packaged T3 server can bind late while startup migrations and desktop
+   bootstrap complete. Share one native launch grace across the host and sidebar
+   entry points so restore-time duplicate start commands retain the first
+   wrapper instead of spawning a competing server that leaves panes on loading.
+   */
+  static let startupGraceInterval: TimeInterval = 30.0
   private static let startupUnresponsiveRetentionSeconds = 90
   private static let staleRuntimeShutdownTimeout: TimeInterval = 2.0
   /**
@@ -798,6 +808,33 @@ enum NativeT3RuntimeLauncher {
 
   static func hasFreshAppHeartbeat() -> Bool {
     isAppHeartbeatFresh(ageSeconds: appHeartbeatAgeSeconds())
+  }
+
+  enum LaunchStartClaim {
+    case claimed(Date)
+    case retained(TimeInterval)
+  }
+
+  static func claimLaunchStart() -> LaunchStartClaim {
+    let now = Date()
+    launchAttemptLock.lock()
+    defer { launchAttemptLock.unlock() }
+    if let startedAt = launchAttemptStartedAt {
+      let ageSeconds = now.timeIntervalSince(startedAt)
+      if ageSeconds <= startupGraceInterval {
+        return .retained(ageSeconds)
+      }
+    }
+    launchAttemptStartedAt = now
+    return .claimed(now)
+  }
+
+  static func clearLaunchAttempt(startedAt: Date) {
+    launchAttemptLock.lock()
+    defer { launchAttemptLock.unlock() }
+    if launchAttemptStartedAt == startedAt {
+      launchAttemptStartedAt = nil
+    }
   }
 
   static func shouldRetainUnresponsiveManagedRuntime(pid: Int) -> Bool {
@@ -1262,10 +1299,22 @@ enum NativeT3RuntimeLauncher {
     let bundledDirectoryName = "t3code-server"
     var candidates: [URL] = []
     if let resourceURL = Bundle.main.resourceURL {
+      /**
+       CDXC:T3CodePackaging 2026-06-07-02:30:
+       The macOS target copies web assets under Contents/Resources/Web. Resolve
+       the bundled T3 server from Web/t3code-server/dist/bin.mjs before legacy
+       root/out probes so installed apps launch the packaged server instead of
+       falling through to the development-checkout error.
+       */
+      candidates.append(
+        resourceURL.appendingPathComponent("Web/\(bundledDirectoryName)/dist/bin.mjs"))
       candidates.append(
         resourceURL.appendingPathComponent("out/\(bundledDirectoryName)/dist/bin.mjs"))
       candidates.append(resourceURL.appendingPathComponent("\(bundledDirectoryName)/dist/bin.mjs"))
     }
+    candidates.append(
+      URL(fileURLWithPath: FileManager.default.currentDirectoryPath, isDirectory: true)
+        .appendingPathComponent("Web/\(bundledDirectoryName)/dist/bin.mjs"))
     candidates.append(
       URL(fileURLWithPath: FileManager.default.currentDirectoryPath, isDirectory: true)
         .appendingPathComponent("out/\(bundledDirectoryName)/dist/bin.mjs"))

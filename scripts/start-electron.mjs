@@ -22,7 +22,8 @@ const electronAppBinary = path.join(
 );
 const protocolVersion = 1;
 const gxserverBaseUrl = "http://127.0.0.1:58744";
-const buildEnv = { ...process.env };
+const startEnvironment = withoutColorDisablingEnvironment(process.env);
+const buildEnv = { ...startEnvironment };
 
 /*
 CDXC:ElectronLocalStart 2026-06-03-03:04:
@@ -103,6 +104,7 @@ function findRunningElectronShellPids() {
   const result = spawnSync("ps", ["-axo", "pid=,command="], {
     cwd: repoRoot,
     encoding: "utf8",
+    env: startEnvironment,
     stdio: ["ignore", "pipe", "ignore"],
   });
   if (result.status !== 0 || !result.stdout.trim()) {
@@ -227,7 +229,7 @@ async function fetchGxserverJson(pathname, { method, token, timeoutMs = 1000 }) 
 function run(command, args, options = {}) {
   const child = spawn(command, args, {
     cwd: options.cwd || repoRoot,
-    env: options.env || process.env,
+    env: options.env || startEnvironment,
     stdio: "inherit",
   });
   return new Promise((resolve, reject) => {
@@ -248,4 +250,16 @@ function run(command, args, options = {}) {
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function withoutColorDisablingEnvironment(environment) {
+  /*
+  CDXC:ElectronLocalStartColorEnv 2026-06-07-00:38:
+  Local Electron starts share gxserver and agent-session behavior with native Ghostex. Strip inherited NO_COLOR-style keys before launching build, Electron, and daemon-control subprocesses so desktop sessions remain color-capable.
+  */
+  const sanitized = { ...environment };
+  for (const key of ["ANSI_COLORS_DISABLED", "NO_COLOR", "NODE_DISABLE_COLORS"]) {
+    delete sanitized[key];
+  }
+  return sanitized;
 }
