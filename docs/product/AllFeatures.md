@@ -12,6 +12,13 @@
 - Provider session ids in terminal panes are hidden by default and remain available through the explicit session-id overlay setting.
 - Native terminal Cmd+C copies through Ghostty's copy action so selected terminal text reaches the system clipboard consistently.
 - Reference-sidebar Previous Sessions rows align with normal project-session row spacing.
+- Debug logs stay quiet in normal use, rotate before growing too large, and show a titlebar warning while Debug logging and UI is enabled.
+- zmx title streams heartbeat changing spinner frames slowly enough to preserve working status without flooding gxserver or sidebar presentation.
+- Ghostex-generated launch, resume, fork, restore, Search by Text, and command-pane scripts avoid Atuin shell-history capture by using the shell's leading-space ignore convention.
+- Rename Session > Generate Name keeps the visible "Generating title" overlay active until the generated rename is applied or submitted.
+- Clone & Add can be submitted as soon as locally valid repository and destination fields are present, while existing-destination previews still block cloning.
+- Delayed Send timers keep the leading clock visible over tags and deadline-only projections, and native terminal badges relayout immediately when timers start or cancel.
+- Sleep and close actions for presentation-backed zmx sessions use gxserver provider transitions even when older local session metadata is incomplete.
 - 4.0.0 beta distribution is available through GitHub Releases and Homebrew DMG installs while Sparkle automatic-update feeds stay on the current public release.
 - Session tags can be applied, displayed on session cards, filtered in Active and Previous Sessions, and preserved in manual session order.
 - Git commit review can inspect changed-file diffs inline inside the review modal.

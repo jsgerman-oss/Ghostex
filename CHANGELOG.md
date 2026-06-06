@@ -3,6 +3,7 @@
 <!-- CDXC:Distribution 2026-05-30-09:52: Release notes for 3.26.0 must include all user-facing commits after v3.25.0 so README, GitHub, Sparkle, and Homebrew describe the same shipped behavior. -->
 <!-- CDXC:BetaDistribution 2026-06-05-22:26: Release notes for 4.0.0-beta.1 must make clear that the nightly beta is distributed through GitHub Releases and Homebrew without moving Sparkle users onto the beta feed. -->
 <!-- CDXC:BetaDistribution 2026-06-06-06:35: Release notes for 4.0.0-beta.2 must keep the nightly beta visible in GitHub Releases and Homebrew DMG installs while leaving Sparkle automatic-update feeds on the current public release. -->
+<!-- CDXC:BetaDistribution 2026-06-06-07:41: The final beta.2 package includes diagnostic throttling, generated-shell-input history suppression, and clone/rename/session timer fixes, so release notes must describe those user-visible stability changes before GitHub and Homebrew publication. -->
 
 ## 4.0.0-beta.2 - 2026-06-06
 
@@ -17,6 +18,13 @@
 - Default terminal panes no longer show provider session ids unless the session-id overlay setting is explicitly enabled.
 - Native terminal Cmd+C now uses Ghostty's copy action directly so selected terminal text reaches the system clipboard consistently.
 - Reference-sidebar Previous Sessions rows now align with normal project-session row spacing.
+- Debug logs are quieter in normal use, rotate before growing too large, and show a titlebar warning while Debug logging and UI is enabled.
+- zmx title updates keep working-state heartbeats alive without flooding gxserver or sidebar presentation with repeated spinner frames.
+- Ghostex-generated launch, resume, fork, restore, Search by Text, and command-pane scripts now avoid being saved into Atuin shell history.
+- Rename Session > Generate Name keeps the visible "Generating title" overlay active until the generated rename is applied or submitted.
+- Clone & Add enables as soon as locally valid repository and destination fields are present, while existing-destination previews still block cloning.
+- Delayed Send timers now keep the leading clock visible even when a session is tagged or only the deadline is projected, and native badges relayout immediately when timers start or cancel.
+- Sleep and close actions for presentation-backed zmx sessions now use gxserver provider transitions even when older local session metadata is incomplete.
 
 ## 4.0.0-beta.1 - 2026-06-05
 
