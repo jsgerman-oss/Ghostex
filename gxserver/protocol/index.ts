@@ -911,6 +911,20 @@ export interface GxserverSessionTitleProjection {
 
 export type GxserverPresentationRevision = number & { readonly __gxserverPresentationRevision: unique symbol };
 export type GxserverPresentationSessionActivity = "attention" | "idle" | "working";
+/*
+CDXC:SessionStatus 2026-06-07-00:30:
+zmx title observation health is presentation metadata for working-status detection. Publish only coarse watcher states and timestamps so clients can avoid treating unavailable detection as idle without exposing terminal titles, commands, paths, or user content.
+*/
+export type GxserverTitleObservationStatus = "active" | "failed" | "retrying" | "starting";
+
+export interface GxserverTitleObservationState {
+  failureCount?: number;
+  lastFailedAt?: string;
+  lastObservedAt?: string;
+  lastStartedAt?: string;
+  nextRetryAt?: string;
+  status: GxserverTitleObservationStatus;
+}
 
 export interface GxserverPresentationAttentionState {
   acknowledged: boolean;
@@ -978,6 +992,7 @@ export interface GxserverPresentationSession {
   primaryTitle?: string;
   terminalTitle?: string;
   title: string;
+  titleObservation?: GxserverTitleObservationState;
   titleSource: GxserverSessionTitleSource;
   trustedResumeTitle?: string;
   tooltip?: string;

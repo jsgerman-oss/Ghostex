@@ -30,6 +30,11 @@ export const GXSERVER_BEADS_BOARD_FILE_LIMIT_BYTES = GXSERVER_TYPED_OPERATION_ST
 export const GXSERVER_BEADS_BOARD_RESPONSE_LIMIT_BYTES = GXSERVER_TYPED_OPERATION_STDOUT_LIMIT_BYTES;
 export const GXSERVER_BEADS_BOARD_ROW_LIMIT = 5_000;
 const GXSERVER_TYPED_OPERATION_KILL_GRACE_MS = 1_000;
+const GXSERVER_TYPED_OPERATION_COLOR_DISABLING_ENVIRONMENT_KEYS = [
+  "ANSI_COLORS_DISABLED",
+  "NO_COLOR",
+  "NODE_DISABLE_COLORS",
+] as const;
 
 export class GxserverTypedOperationError extends Error {
   readonly code: "badRequest" | "dependencyUnavailable" | "forbidden" | "notFound";
@@ -532,7 +537,7 @@ async function runTypedCommand(
     const child = spawn(command.executable, command.args, {
       cwd: command.cwd,
       detached: process.platform !== "win32",
-      env: { ...process.env, ...options.env },
+      env: typedOperationProcessEnvironment(options.env),
       stdio: [usesStdin ? "pipe" : "ignore", "pipe", "pipe"],
     });
     const stdoutChunks: Buffer[] = [];
@@ -695,6 +700,18 @@ function commandOptions(
     limits: context.commandLimits,
     signal: context.abortSignal,
   };
+}
+
+function typedOperationProcessEnvironment(env: Record<string, string> = {}): NodeJS.ProcessEnv {
+  /*
+  CDXC:TypedOperationsColorEnv 2026-06-07-00:38:
+  Shared git, GitHub, worktree, and Beads commands run under gxserver but are still terminal-adjacent user workflows. Strip NO_COLOR-style keys from daemon and request-provided env values so typed operations do not propagate color-disabled environments.
+  */
+  const environment: NodeJS.ProcessEnv = { ...process.env, ...env };
+  for (const key of GXSERVER_TYPED_OPERATION_COLOR_DISABLING_ENVIRONMENT_KEYS) {
+    delete environment[key];
+  }
+  return environment;
 }
 
 function resolveTypedCommandLimits(limits?: Partial<GxserverTypedCommandLimits>): GxserverTypedCommandLimits {

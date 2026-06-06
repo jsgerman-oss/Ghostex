@@ -18,6 +18,11 @@ const OPENCODE_AGENT_ID = "opencode";
 const OPENCODE_PLUGIN_MARKER = "ghostex-opencode-session-plugin-marker";
 const OPENCODE_PLUGIN_SPEC = "./plugins/ghostex-session.js";
 const SHELL_PATH_SENTINEL = "__GHOSTEX_GXSERVER_SHELL_PATH__";
+const GXSERVER_AGENT_HOOK_COLOR_DISABLING_ENVIRONMENT_KEYS = [
+  "ANSI_COLORS_DISABLED",
+  "NO_COLOR",
+  "NODE_DISABLE_COLORS",
+] as const;
 
 export interface GxserverAgentHookPaths {
   hookStateDirectory: string;
@@ -86,9 +91,13 @@ export async function normalizeGxserverProcessPath(
   Merge the user's login-shell PATH with GUI/default entries so OpenCode,
   NVM/npm, mise/asdf, Homebrew, and ~/.opencode/bin installs are discovered
   without duplicating a divergent macOS-sidebar PATH policy.
+
+  CDXC:AgentHooksColorEnv 2026-06-07-00:38:
+  Agent hook probes and notifier helpers must not inherit NO_COLOR from gxserver or agent-provided overlays. Strip color-disabling keys before login-shell probes and generated hook subprocesses.
   */
-  const homeDir = environment.HOME || os.homedir();
-  const shellEntries = await discoverLoginShellPathEntries(environment);
+  const sanitizedEnvironment = withoutGxserverAgentHookColorDisablingEnvironment(environment);
+  const homeDir = sanitizedEnvironment.HOME || os.homedir();
+  const shellEntries = await discoverLoginShellPathEntries(sanitizedEnvironment);
   const existingEntries = splitPath(currentPath);
   const defaultEntries = [
     path.join(homeDir, ".opencode", "bin"),
@@ -108,7 +117,8 @@ export async function normalizeGxserverProcessPath(
 }
 
 export async function discoverLoginShellPathEntries(environment: NodeJS.ProcessEnv = process.env): Promise<string[]> {
-  const configuredShell = String(environment.SHELL ?? "").trim();
+  const sanitizedEnvironment = withoutGxserverAgentHookColorDisablingEnvironment(environment);
+  const configuredShell = String(sanitizedEnvironment.SHELL ?? "").trim();
   const candidates = configuredShell && configuredShell !== "/bin/zsh"
     ? [configuredShell, "/bin/zsh"]
     : [configuredShell || "/bin/zsh"];
@@ -116,7 +126,7 @@ export async function discoverLoginShellPathEntries(environment: NodeJS.ProcessE
     if (!(await isExecutable(candidate))) {
       continue;
     }
-    const entries = await runLoginShellPathProbe(candidate, environment);
+    const entries = await runLoginShellPathProbe(candidate, sanitizedEnvironment);
     if (entries.length > 0) {
       return entries;
     }
@@ -133,6 +143,12 @@ function firstString(...values) {
     if (typeof value === "string" && value.trim()) return value.trim();
   }
   return null;
+}
+
+function withoutColorDisablingEnvironment(overrides = {}) {
+  const environment = { ...process.env, ...overrides };
+  for (const key of ["ANSI_COLORS_DISABLED", "NO_COLOR", "NODE_DISABLE_COLORS"]) delete environment[key];
+  return environment;
 }
 
 function props(event) {
@@ -161,7 +177,7 @@ function send(eventName, ctx, event) {
     session_id: sessionId,
   };
   try {
-    const child = spawn(${JSON.stringify(notifyHookPath)}, [], { stdio: ["pipe", "ignore", "ignore"], env: { ...process.env, GHOSTEX_AGENT: "opencode" }, detached: true });
+    const child = spawn(${JSON.stringify(notifyHookPath)}, [], { stdio: ["pipe", "ignore", "ignore"], env: withoutColorDisablingEnvironment({ GHOSTEX_AGENT: "opencode" }), detached: true });
     child.on("error", () => {});
     child.stdin.on("error", () => {});
     child.stdin.end(JSON.stringify(payload));
@@ -275,14 +291,14 @@ async function removeLegacyOpenCodeConfigPluginEntry(configPath: string): Promis
 }
 
 async function resolveCommandPath(command: string, homeDir: string): Promise<string> {
-  const pathValue = await normalizeGxserverProcessPath(process.env.PATH, {
+  const commandEnvironment = withoutGxserverAgentHookColorDisablingEnvironment({
     ...process.env,
     HOME: homeDir,
   });
+  const pathValue = await normalizeGxserverProcessPath(process.env.PATH, commandEnvironment);
   const { stdout } = await execFileAsync("/bin/zsh", ["-lc", `command -v -- ${shellQuote(command)}`], {
     env: {
-      ...process.env,
-      HOME: homeDir,
+      ...commandEnvironment,
       PATH: pathValue,
     },
     timeout: 2_000,
@@ -295,7 +311,7 @@ async function runLoginShellPathProbe(shellPath: string, environment: NodeJS.Pro
     shellPath,
     ["-ilc", `printf '\\n${SHELL_PATH_SENTINEL}%s\\n' "$PATH"`],
     {
-      env: environment,
+      env: withoutGxserverAgentHookColorDisablingEnvironment(environment),
       timeout: 2_000,
     },
   ).catch(() => ({ stdout: "" }));
@@ -324,6 +340,14 @@ function splitPath(value: string | undefined): string[] {
     .split(":")
     .map((entry) => entry.trim())
     .filter(Boolean);
+}
+
+function withoutGxserverAgentHookColorDisablingEnvironment(environment: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const sanitized = { ...environment };
+  for (const key of GXSERVER_AGENT_HOOK_COLOR_DISABLING_ENVIRONMENT_KEYS) {
+    delete sanitized[key];
+  }
+  return sanitized;
 }
 
 function uniquePathEntries(entries: readonly string[]): string[] {

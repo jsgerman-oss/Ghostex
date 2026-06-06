@@ -7,26 +7,46 @@ import {
   type GxserverAuthToken,
   type GxserverRuntimeMetadata,
   type GxserverSessionDomainState,
+  type GxserverTitleObservationState,
 } from "../protocol/index.js";
 import type { GxserverLogger } from "./logger.js";
 import type { GxserverResolvedTool } from "./toolchain.js";
 import { providerZmxSessionName } from "./zmx-lifecycle.js";
 
+export interface GxserverZmxTitleObservationStateChange {
+  projectId: GxserverSessionDomainState["projectId"];
+  reason: string;
+  sessionId: GxserverSessionDomainState["sessionId"];
+  state: GxserverTitleObservationState;
+}
+
 interface GxserverZmxTitleObserverOptions {
   authToken: GxserverAuthToken;
   logger: GxserverLogger;
   metadata: GxserverRuntimeMetadata;
+  now?: () => Date;
+  onObservationStateChange?: (change: GxserverZmxTitleObservationStateChange) => void | Promise<void>;
+  readyDelayMs?: number;
   requireZmx: () => Promise<GxserverResolvedTool>;
+  retryDelaysMs?: readonly number[];
 }
 
-interface ZmxTitleObserverProcess {
-  child: ChildProcessByStdio<null, Readable, Readable>;
+interface DesiredZmxTitleObservationSession {
   projectId: GxserverSessionDomainState["projectId"];
   sessionId: GxserverSessionDomainState["sessionId"];
-  stderr: string;
-  stdout: string;
   zmxName: string;
 }
+
+interface ZmxTitleObserverProcess extends DesiredZmxTitleObservationSession {
+  child: ChildProcessByStdio<null, Readable, Readable>;
+  lastStartedAt: string;
+  readyTimer?: NodeJS.Timeout;
+  stderr: string;
+  stdout: string;
+}
+
+const DEFAULT_READY_DELAY_MS = 250;
+const DEFAULT_RETRY_DELAYS_MS = [250, 500, 1_000, 2_000, 5_000] as const;
 
 /*
 CDXC:ZmxTitleObservations 2026-06-01-10:17:
@@ -34,11 +54,17 @@ zmx is the shared PTY owner for managed terminal sessions, so gxserver should co
 
 CDXC:ZmxTitleObservations 2026-06-06-23:21:
 Persistent zmx observer diagnostics must not include title previews, raw zmx output, response text, or stderr content. Use lengths, status codes, IDs, and booleans so Debugging Mode can diagnose watcher behavior without writing user-owned terminal titles or command output to support-bundle logs.
+
+CDXC:ZmxTitleObservations 2026-06-07-00:30:
+Waking a zmx-backed session can expose the session row before the zmx watch-title socket is ready. Keep the desired observation registered, retry startup with bounded backoff, and publish coarse watcher health so Auto Sleep never treats missing working-status detection as proof that the agent is idle.
 */
 export class GxserverZmxTitleObserver {
   #closed = false;
   readonly #options: GxserverZmxTitleObserverOptions;
+  readonly #desiredSessions = new Map<string, DesiredZmxTitleObservationSession>();
   readonly #processes = new Map<string, ZmxTitleObserverProcess>();
+  readonly #retryTimers = new Map<string, NodeJS.Timeout>();
+  readonly #states = new Map<string, GxserverTitleObservationState>();
 
   constructor(options: GxserverZmxTitleObserverOptions) {
     this.#options = options;
@@ -53,9 +79,9 @@ export class GxserverZmxTitleObserver {
       desiredKeys.add(sessionKey(session));
       await this.observeSession(session, reason);
     }
-    for (const [key, process] of this.#processes) {
+    for (const [key] of this.#desiredSessions) {
       if (!desiredKeys.has(key)) {
-        this.#stopProcess(key, process, "session-no-longer-observable");
+        this.#stopObserving(key, "session-no-longer-observable");
       }
     }
   }
@@ -65,35 +91,118 @@ export class GxserverZmxTitleObserver {
       return;
     }
     const key = sessionKey(session);
+    const zmxName = providerZmxSessionName(session);
+    if (!zmxName) {
+      return;
+    }
+    const desired: DesiredZmxTitleObservationSession = {
+      projectId: session.projectId,
+      sessionId: session.sessionId,
+      zmxName,
+    };
+    this.#desiredSessions.set(key, desired);
     const existing = this.#processes.get(key);
     if (existing && !existing.child.killed && existing.child.exitCode === null) {
       return;
     }
+    if (this.#retryTimers.has(key)) {
+      return;
+    }
 
-    const zmxName = providerZmxSessionName(session);
-    const zmx = await this.#options.requireZmx();
-    const child = spawn(zmx.executablePath, ["watch-title", zmxName], {
-      stdio: ["ignore", "pipe", "pipe"],
-    });
+    await this.#startProcess(key, desired, reason);
+  }
+
+  close(): void {
+    this.#closed = true;
+    for (const key of this.#retryTimers.keys()) {
+      this.#clearRetryTimer(key);
+    }
+    for (const [key, process] of this.#processes) {
+      this.#stopProcess(key, process, "server-shutdown");
+    }
+    this.#desiredSessions.clear();
+  }
+
+  async #startProcess(key: string, desired: DesiredZmxTitleObservationSession, reason: string): Promise<void> {
+    if (this.#closed || !this.#isDesiredSession(key, desired)) {
+      return;
+    }
+    this.#clearRetryTimer(key);
+    const lastStartedAt = this.#nowIso();
+    let zmx: GxserverResolvedTool;
+    try {
+      zmx = await this.#options.requireZmx();
+    } catch (error) {
+      const failureCount = this.#nextFailureCount(key);
+      await this.#options.logger.log({
+        details: {
+          failureCount,
+          message: error instanceof Error ? error.message : String(error),
+          reason,
+        },
+        event: "zmxTitleObserver.resolveFailed",
+        level: failureCount === 1 ? "warn" : "debug",
+        projectId: desired.projectId,
+        serverId: this.#options.metadata.serverId,
+        sessionId: desired.sessionId,
+      });
+      this.#scheduleRetry(key, desired, reason, "resolve-failed");
+      return;
+    }
+
+    let child: ChildProcessByStdio<null, Readable, Readable>;
+    try {
+      child = spawn(zmx.executablePath, ["watch-title", desired.zmxName], {
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+    } catch (error) {
+      const failureCount = this.#nextFailureCount(key);
+      await this.#options.logger.log({
+        details: {
+          failureCount,
+          message: error instanceof Error ? error.message : String(error),
+          reason,
+          zmxName: desired.zmxName,
+        },
+        event: "zmxTitleObserver.spawnFailed",
+        level: failureCount === 1 ? "warn" : "debug",
+        projectId: desired.projectId,
+        serverId: this.#options.metadata.serverId,
+        sessionId: desired.sessionId,
+      });
+      this.#scheduleRetry(key, desired, reason, "spawn-failed");
+      return;
+    }
+
     const process: ZmxTitleObserverProcess = {
       child,
-      projectId: session.projectId,
-      sessionId: session.sessionId,
+      lastStartedAt,
+      projectId: desired.projectId,
+      sessionId: desired.sessionId,
       stderr: "",
       stdout: "",
-      zmxName,
+      zmxName: desired.zmxName,
     };
     this.#processes.set(key, process);
+    this.#emitObservationState(key, process, {
+      ...this.#previousObservationContext(key),
+      lastStartedAt,
+      status: "starting",
+    }, reason);
 
     await this.#options.logger.log({
-      details: { reason, zmxName },
+      details: { reason, zmxName: desired.zmxName },
       event: "zmxTitleObserver.started",
       level: "debug",
-      projectId: session.projectId,
+      projectId: desired.projectId,
       serverId: this.#options.metadata.serverId,
-      sessionId: session.sessionId,
+      sessionId: desired.sessionId,
     });
 
+    process.readyTimer = setTimeout(() => {
+      this.#markProcessActive(key, process, "watcher-ready");
+    }, this.#readyDelayMs());
+    process.readyTimer.unref();
     child.stdout.setEncoding("utf8");
     child.stdout.on("data", (chunk) => {
       this.#handleStdout(key, process, String(chunk));
@@ -104,43 +213,43 @@ export class GxserverZmxTitleObserver {
     });
     child.on("error", (error) => {
       void this.#options.logger.log({
-        details: { message: error.message, zmxName },
+        details: { message: error.message, zmxName: desired.zmxName },
         event: "zmxTitleObserver.error",
-        level: "warn",
-        projectId: session.projectId,
+        level: "debug",
+        projectId: desired.projectId,
         serverId: this.#options.metadata.serverId,
-        sessionId: session.sessionId,
+        sessionId: desired.sessionId,
       });
     });
     child.on("exit", (code, signal) => {
       if (this.#processes.get(key)?.child === child) {
         this.#processes.delete(key);
       }
+      this.#clearReadyTimer(process);
+      const shouldRetry = !this.#closed && this.#desiredSessions.get(key)?.zmxName === desired.zmxName;
       void this.#options.logger.log({
         details: {
           code,
+          willRetry: shouldRetry,
           signal,
           stderrLength: process.stderr.length,
-          zmxName,
+          zmxName: desired.zmxName,
         },
         event: this.#closed ? "zmxTitleObserver.stopped" : "zmxTitleObserver.exited",
-        level: this.#closed || code === 0 ? "debug" : "warn",
-        projectId: session.projectId,
+        level: this.#closed || code === 0 || shouldRetry ? "debug" : "warn",
+        projectId: desired.projectId,
         serverId: this.#options.metadata.serverId,
-        sessionId: session.sessionId,
+        sessionId: desired.sessionId,
       });
+      if (shouldRetry) {
+        this.#scheduleRetry(key, desired, "process-exit", "process-exit");
+      }
     });
-  }
-
-  close(): void {
-    this.#closed = true;
-    for (const [key, process] of this.#processes) {
-      this.#stopProcess(key, process, "server-shutdown");
-    }
   }
 
   #stopProcess(key: string, process: ZmxTitleObserverProcess, reason: string): void {
     this.#processes.delete(key);
+    this.#clearReadyTimer(process);
     if (!process.child.killed && process.child.exitCode === null) {
       process.child.kill("SIGTERM");
     }
@@ -152,6 +261,15 @@ export class GxserverZmxTitleObserver {
       serverId: this.#options.metadata.serverId,
       sessionId: process.sessionId,
     });
+  }
+
+  #stopObserving(key: string, reason: string): void {
+    this.#desiredSessions.delete(key);
+    this.#clearRetryTimer(key);
+    const process = this.#processes.get(key);
+    if (process) {
+      this.#stopProcess(key, process, reason);
+    }
   }
 
   #handleStdout(key: string, process: ZmxTitleObserverProcess, chunk: string): void {
@@ -180,6 +298,7 @@ export class GxserverZmxTitleObserver {
       });
       return;
     }
+    this.#markProcessActive(key, process, "title-observed");
     try {
       const response = await fetch(`http://${GXSERVER_LOCAL_API_HOST}:${GXSERVER_LOCAL_API_PORT}/api/ingestTerminalTitleEvent`, {
         body: JSON.stringify({
@@ -237,6 +356,159 @@ export class GxserverZmxTitleObserver {
       });
     }
   }
+
+  #markProcessActive(key: string, process: ZmxTitleObserverProcess, reason: string): void {
+    if (this.#processes.get(key) !== process || process.child.killed || process.child.exitCode !== null) {
+      return;
+    }
+    const previous = this.#states.get(key);
+    const lastObservedAt = reason === "title-observed" ? this.#nowIso() : previous?.lastObservedAt;
+    if (previous?.status === "active" && reason === "title-observed") {
+      /*
+      CDXC:ZmxTitleObservations 2026-06-07-00:30:
+      Spinner titles can change frequently while the watcher is already healthy. Keep the latest observation timestamp in memory for later failure diagnostics, but do not persist or broadcast health-only updates on every title tick.
+      */
+      this.#states.set(key, {
+        ...previous,
+        lastObservedAt,
+      });
+      return;
+    }
+    this.#emitObservationState(key, process, {
+      lastStartedAt: process.lastStartedAt,
+      ...(lastObservedAt ? { lastObservedAt } : {}),
+      status: "active",
+    }, reason);
+  }
+
+  #scheduleRetry(
+    key: string,
+    desired: DesiredZmxTitleObservationSession,
+    reason: string,
+    failedPhase: string,
+  ): void {
+    if (this.#closed || !this.#isDesiredSession(key, desired)) {
+      return;
+    }
+    this.#clearRetryTimer(key);
+    const failureCount = this.#nextFailureCount(key);
+    const delayMs = this.#retryDelayMs(failureCount);
+    const lastFailedAt = this.#nowIso();
+    const nextRetryAt = new Date(Date.parse(lastFailedAt) + delayMs).toISOString();
+    this.#emitObservationState(key, desired, {
+      ...this.#previousObservationContext(key),
+      failureCount,
+      lastFailedAt,
+      nextRetryAt,
+      status: "retrying",
+    }, reason);
+    const timer = setTimeout(() => {
+      this.#retryTimers.delete(key);
+      void this.#startProcess(key, desired, "retry");
+    }, delayMs);
+    timer.unref();
+    this.#retryTimers.set(key, timer);
+    void this.#options.logger.log({
+      details: {
+        delayMs,
+        failedPhase,
+        failureCount,
+        reason,
+        zmxName: desired.zmxName,
+      },
+      event: "zmxTitleObserver.retryScheduled",
+      level: failedPhase === "process-exit" && failureCount === 1 ? "warn" : "debug",
+      projectId: desired.projectId,
+      serverId: this.#options.metadata.serverId,
+      sessionId: desired.sessionId,
+    });
+  }
+
+  #emitObservationState(
+    key: string,
+    session: DesiredZmxTitleObservationSession,
+    state: GxserverTitleObservationState,
+    reason: string,
+  ): void {
+    const previous = this.#states.get(key);
+    if (JSON.stringify(previous) === JSON.stringify(state)) {
+      return;
+    }
+    this.#states.set(key, state);
+    const handler = this.#options.onObservationStateChange;
+    if (!handler) {
+      return;
+    }
+    void Promise.resolve(handler({
+      projectId: session.projectId,
+      reason,
+      sessionId: session.sessionId,
+      state,
+    })).catch((error) => {
+      void this.#options.logger.log({
+        details: { message: error instanceof Error ? error.message : String(error), reason, state: state.status },
+        event: "zmxTitleObserver.stateCallbackFailed",
+        level: "warn",
+        projectId: session.projectId,
+        serverId: this.#options.metadata.serverId,
+        sessionId: session.sessionId,
+      });
+    });
+  }
+
+  #previousObservationContext(key: string): Partial<GxserverTitleObservationState> {
+    const previous = this.#states.get(key);
+    return {
+      ...(previous?.lastObservedAt ? { lastObservedAt: previous.lastObservedAt } : {}),
+      ...(previous?.lastStartedAt ? { lastStartedAt: previous.lastStartedAt } : {}),
+    };
+  }
+
+  #nextFailureCount(key: string): number {
+    const previous = this.#states.get(key);
+    return typeof previous?.failureCount === "number" && Number.isFinite(previous.failureCount)
+      ? previous.failureCount + 1
+      : 1;
+  }
+
+  #clearRetryTimer(key: string): void {
+    const timer = this.#retryTimers.get(key);
+    if (!timer) {
+      return;
+    }
+    clearTimeout(timer);
+    this.#retryTimers.delete(key);
+  }
+
+  #clearReadyTimer(process: ZmxTitleObserverProcess): void {
+    if (!process.readyTimer) {
+      return;
+    }
+    clearTimeout(process.readyTimer);
+    process.readyTimer = undefined;
+  }
+
+  #readyDelayMs(): number {
+    return normalizeDelayMs(this.#options.readyDelayMs, DEFAULT_READY_DELAY_MS);
+  }
+
+  #retryDelayMs(failureCount: number): number {
+    const delays = this.#options.retryDelaysMs?.length ? this.#options.retryDelaysMs : DEFAULT_RETRY_DELAYS_MS;
+    return normalizeDelayMs(delays[Math.min(Math.max(0, failureCount - 1), delays.length - 1)], DEFAULT_RETRY_DELAYS_MS[0]);
+  }
+
+  #nowIso(): string {
+    return (this.#options.now?.() ?? new Date()).toISOString();
+  }
+
+  #isDesiredSession(key: string, desired: DesiredZmxTitleObservationSession): boolean {
+    const current = this.#desiredSessions.get(key);
+    return (
+      current?.projectId === desired.projectId &&
+      current.sessionId === desired.sessionId &&
+      current.zmxName === desired.zmxName
+    );
+  }
 }
 
 function parseZmxTitleLine(line: string): string | undefined {
@@ -258,6 +530,10 @@ function isZmxTitleObservableSession(session: GxserverSessionDomainState): boole
 
 function sessionKey(session: Pick<GxserverSessionDomainState, "projectId" | "sessionId">): string {
   return `${session.projectId}/${session.sessionId}`;
+}
+
+function normalizeDelayMs(value: unknown, fallback: number): number {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : fallback;
 }
 
 function trimBufferedText(value: string): string {

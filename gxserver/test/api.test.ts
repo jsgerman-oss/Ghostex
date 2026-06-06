@@ -1063,6 +1063,146 @@ test("first-prompt auto-title cancellation prevents the pending rename command",
   );
 });
 
+test("cancelled first-prompt auto-title retries after a later prompt", async () => {
+  const zmxCalls: string[] = [];
+  const sendInputs: string[] = [];
+  const prompts: string[] = [];
+  let releaseFirstTitle: ((title: string) => void) | undefined;
+  let firstTitleGenerationStarted: (() => void) | undefined;
+  const firstTitleStarted = new Promise<void>((resolve) => {
+    firstTitleGenerationStarted = resolve;
+  });
+  const firstTitleResult = new Promise<string>((resolve) => {
+    releaseFirstTitle = resolve;
+  });
+
+  await withApiServer(
+    "local",
+    async ({ baseUrl, token }) => {
+      const createdProject = await requestJson(baseUrl, "/api/createProject", {
+        body: {
+          params: { name: "Ghostex", path: "/repo/ghostex" },
+          protocolVersion: GXSERVER_PROTOCOL_VERSION,
+        },
+        method: "POST",
+        token,
+      });
+      const project = createdProject.body.result.project;
+      const createdSession = await requestJson(baseUrl, "/api/createSession", {
+        body: {
+          params: {
+            projectId: project.projectId,
+            runtimeSettings: { titleSource: "placeholder" },
+            title: "Terminal",
+          },
+          protocolVersion: GXSERVER_PROTOCOL_VERSION,
+        },
+        method: "POST",
+        token,
+      });
+      const session = createdSession.body.result.session;
+      const firstPrompt = "Please cancel this generated title before rename";
+      const firstIngest = await requestJson(baseUrl, "/api/ingestSessionStateEvent", {
+        body: {
+          params: {
+            agentName: "codex",
+            agentSessionId: "019e8fd3-f8ad-7932-baeb-d9f6f912c57d",
+            firstUserMessage: firstPrompt,
+            projectId: project.projectId,
+            sessionId: session.sessionId,
+          },
+          protocolVersion: GXSERVER_PROTOCOL_VERSION,
+        },
+        method: "POST",
+        token,
+      });
+      assert.equal(firstIngest.status, 200);
+      assert.equal(firstIngest.body.result.session.runtimeSettings.gxserverFirstPromptAutoTitleStatus, "running");
+      await firstTitleStarted;
+
+      const cancelled = await requestJson(baseUrl, "/api/cancelFirstPromptAutoTitle", {
+        body: {
+          params: {
+            projectId: project.projectId,
+            reason: "escape",
+            sessionId: session.sessionId,
+          },
+          protocolVersion: GXSERVER_PROTOCOL_VERSION,
+        },
+        method: "POST",
+        token,
+      });
+      assert.equal(cancelled.status, 200);
+      assert.equal(cancelled.body.result.session.runtimeSettings.gxserverFirstPromptAutoTitleStatus, "cancelled");
+
+      releaseFirstTitle?.("Cancelled Title");
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      assert.deepEqual(sendInputs, []);
+
+      const staleRetry = await requestJson(baseUrl, "/api/ingestSessionStateEvent", {
+        body: {
+          params: {
+            agentName: "codex",
+            agentSessionId: "019e8fd3-f8ad-7932-baeb-d9f6f912c57d",
+            firstUserMessage: firstPrompt,
+            projectId: project.projectId,
+            sessionId: session.sessionId,
+          },
+          protocolVersion: GXSERVER_PROTOCOL_VERSION,
+        },
+        method: "POST",
+        token,
+      });
+      assert.equal(staleRetry.status, 200);
+      assert.equal(staleRetry.body.result.session.runtimeSettings.gxserverFirstPromptAutoTitleStatus, "cancelled");
+
+      const laterPrompt = "Now explain the auto sleep defaults";
+      const retried = await requestJson(baseUrl, "/api/ingestSessionStateEvent", {
+        body: {
+          params: {
+            agentName: "codex",
+            agentSessionId: "019e8fd3-f8ad-7932-baeb-d9f6f912c57d",
+            firstUserMessage: laterPrompt,
+            projectId: project.projectId,
+            sessionId: session.sessionId,
+          },
+          protocolVersion: GXSERVER_PROTOCOL_VERSION,
+        },
+        method: "POST",
+        token,
+      });
+      assert.equal(retried.status, 200);
+      assert.equal(retried.body.result.session.runtimeSettings.gxserverFirstPromptAutoTitleStatus, "running");
+
+      const titledSession = await waitForSession(
+        baseUrl,
+        token,
+        project.projectId,
+        session.sessionId,
+        (candidate) => candidate.runtimeSettings?.gxserverFirstPromptAutoTitleStatus === "applied",
+      );
+      assert.equal(titledSession.title, "Auto Sleep Defaults");
+      assert.equal(titledSession.runtimeSettings.firstUserMessage, laterPrompt);
+      assert.deepEqual(prompts, [firstPrompt, laterPrompt]);
+      assert.deepEqual(sendInputs, ["/rename Auto Sleep Defaults"]);
+      assert.ok(zmxCalls.some((script) => script.includes('exec "$zmx_bin" send "$zmx_session"')));
+    },
+    {
+      firstPromptTitleGeneration: {
+        generateTitle: async ({ prompt }) => {
+          prompts.push(prompt);
+          if (prompts.length === 1) {
+            firstTitleGenerationStarted?.();
+            return firstTitleResult;
+          }
+          return "Auto Sleep Defaults";
+        },
+      },
+      zmxLifecycle: fakeZmxLifecycle(zmxCalls, () => 0, { stdinInputs: sendInputs }),
+    },
+  );
+});
+
 test("domain-state APIs reject oversized and too-deep project/session JSON before SQLite persistence", async () => {
   await withApiServer("local", async ({ baseUrl, token }) => {
     const oversizedProjectBody = {
@@ -1336,8 +1476,14 @@ test("zmx lifecycle APIs attach existing sessions without replay and create miss
         token,
       });
       assert.equal(resumePlan.status, 200);
-      assert.equal(
+      assert.match(resumePlan.body.result.plan.primaryCommand, /CODEX_RESUME_SESSION_ID/);
+      assert.match(resumePlan.body.result.plan.primaryCommand, /--exact/);
+      assert.match(
         resumePlan.body.result.plan.primaryCommand,
+        /codex --yolo resume "\$CODEX_RESUME_SESSION_ID"/,
+      );
+      assert.equal(
+        resumePlan.body.result.plan.displayCommand,
         'codex --yolo resume "6a6c2672-6b45-45fe-a1a8-a73f9a3a9c56"',
       );
       assert.equal(resumePlan.body.result.plan.copyCommand, resumePlan.body.result.plan.primaryCommand);

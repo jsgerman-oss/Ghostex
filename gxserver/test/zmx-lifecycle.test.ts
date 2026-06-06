@@ -241,6 +241,36 @@ test("zmx command runner caps output and pipes stdin without argv payloads", asy
   assert.match(capped.stderr, /stdout exceeded 25 bytes/);
 });
 
+test("zmx command runner strips inherited color-disabling environment", async () => {
+  /*
+  CDXC:GxserverZmxLifecycle 2026-06-07-00:38:
+  Forked agent providers must stay color-capable even when gxserver starts from an agent terminal with NO_COLOR-style variables. Assert the zmx runner removes those inherited keys before spawning the shell that starts zmx and agent CLIs.
+  */
+  const previous = {
+    ANSI_COLORS_DISABLED: process.env.ANSI_COLORS_DISABLED,
+    NO_COLOR: process.env.NO_COLOR,
+    NODE_DISABLE_COLORS: process.env.NODE_DISABLE_COLORS,
+  };
+  process.env.ANSI_COLORS_DISABLED = "1";
+  process.env.NO_COLOR = "1";
+  process.env.NODE_DISABLE_COLORS = "1";
+  try {
+    const result = await runZshScript(
+      'printf "%s,%s,%s" "${ANSI_COLORS_DISABLED-unset}" "${NO_COLOR-unset}" "${NODE_DISABLE_COLORS-unset}"',
+    );
+    assert.equal(result.exitCode, 0);
+    assert.equal(result.stdout, "unset,unset,unset");
+  } finally {
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
+    }
+  }
+});
+
 test("startup restore selects active visible sessions, not every stored session", () => {
   const session = (sessionId: string, lifecycleState: GxserverSessionDomainState["lifecycleState"]) =>
     ({ kind: "agent", lifecycleState, sessionId }) as Pick<

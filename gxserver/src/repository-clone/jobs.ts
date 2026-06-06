@@ -17,6 +17,11 @@ import { GxserverRepositoryCloneError } from "./errors.js";
 
 export const GXSERVER_REPOSITORY_CLONE_TIMEOUT_MS = 30 * 60_000;
 export const GXSERVER_REPOSITORY_CLONE_OUTPUT_LIMIT_BYTES = 4 * 1024 * 1024;
+const GXSERVER_REPOSITORY_CLONE_COLOR_DISABLING_ENVIRONMENT_KEYS = [
+  "ANSI_COLORS_DISABLED",
+  "NO_COLOR",
+  "NODE_DISABLE_COLORS",
+] as const;
 
 export interface GxserverRepositoryCloneJobManagerOptions {
   runGitClone?: GxserverRepositoryCloneRunner;
@@ -237,7 +242,7 @@ async function runGitCloneProcess(
     try {
       child = spawn("git", request.args, {
         cwd: request.cwd,
-        env: process.env,
+        env: repositoryCloneProcessEnvironment(),
         stdio: ["ignore", "pipe", "pipe"],
       });
     } catch (error) {
@@ -310,6 +315,18 @@ async function runGitCloneProcess(
       });
     });
   });
+}
+
+function repositoryCloneProcessEnvironment(): NodeJS.ProcessEnv {
+  /*
+  CDXC:RepositoryCloneColorEnv 2026-06-07-00:38:
+  Clone jobs are gxserver-owned subprocesses and must not inherit NO_COLOR from daemon launch contexts. Strip color-disabling keys before spawning git so follow-on hooks and tooling stay color-capable.
+  */
+  const environment = { ...process.env };
+  for (const key of GXSERVER_REPOSITORY_CLONE_COLOR_DISABLING_ENVIRONMENT_KEYS) {
+    delete environment[key];
+  }
+  return environment;
 }
 
 function appendCappedChunk(

@@ -10,6 +10,7 @@ import type {
   GxserverPresentationSnapshot,
   GxserverProjectDomainState,
   GxserverSessionDomainState,
+  GxserverTitleObservationState,
 } from "../../protocol/index.js";
 import { getEffectiveAgentActivityState } from "../session-status/index.js";
 import { projectSessionTitle } from "../session-title/projection.js";
@@ -104,6 +105,7 @@ export function projectPresentationSession(
 ): GxserverPresentationSession {
   const titleProjection = projectSessionTitle(session);
   const activityState = normalizePresentationActivityState(session.runtimeSettings.agentActivity, generatedAt);
+  const titleObservation = normalizeTitleObservationState(session.runtimeSettings.zmxTitleObservation);
   const agentName = readText(session.runtimeSettings.agentName) ?? session.agentId;
   const subtitle = session.cwd ?? project.path;
   return {
@@ -137,6 +139,7 @@ export function projectPresentationSession(
     surface: session.surface,
     ...(titleProjection.terminalTitle !== undefined ? { terminalTitle: titleProjection.terminalTitle } : {}),
     title: titleProjection.title,
+    ...(titleObservation ? { titleObservation } : {}),
     titleSource: titleProjection.titleSource,
     ...(titleProjection.trustedResumeTitle !== undefined ? { trustedResumeTitle: titleProjection.trustedResumeTitle } : {}),
     tooltip: buildSessionTooltip(project, session, titleProjection.title),
@@ -225,6 +228,49 @@ function normalizePresentationActivityState(value: unknown, generatedAt: string 
   };
 }
 
+function normalizeTitleObservationState(value: unknown): GxserverTitleObservationState | undefined {
+  if (!isObjectRecord(value)) {
+    return undefined;
+  }
+  const status = readTitleObservationStatus(value.status);
+  if (!status) {
+    return undefined;
+  }
+  const failureCount = readFailureCount(value.failureCount);
+  const lastFailedAt = readText(value.lastFailedAt);
+  const lastObservedAt = readText(value.lastObservedAt);
+  const lastStartedAt = readText(value.lastStartedAt);
+  const nextRetryAt = readText(value.nextRetryAt);
+  /*
+  CDXC:SessionStatus 2026-06-07-00:30:
+  Project only coarse zmx title-observer state into shared session rows. Clients need this to distinguish idle from unknown-detection during watcher startup/retry, but raw titles, terminal text, commands, paths, and stderr must stay out of presentation payloads.
+  */
+  return {
+    ...(failureCount !== undefined ? { failureCount } : {}),
+    ...(lastFailedAt ? { lastFailedAt } : {}),
+    ...(lastObservedAt ? { lastObservedAt } : {}),
+    ...(lastStartedAt ? { lastStartedAt } : {}),
+    ...(nextRetryAt ? { nextRetryAt } : {}),
+    status,
+  };
+}
+
+function readTitleObservationStatus(value: unknown): GxserverTitleObservationState["status"] | undefined {
+  switch (value) {
+    case "active":
+    case "failed":
+    case "retrying":
+    case "starting":
+      return value;
+    default:
+      return undefined;
+  }
+}
+
+function readFailureCount(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? Math.floor(value) : undefined;
+}
+
 function buildSessionTooltip(
   project: GxserverProjectDomainState,
   session: GxserverSessionDomainState,
@@ -286,4 +332,8 @@ function comparePresentationSessions(
 
 function readText(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function isObjectRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }

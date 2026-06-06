@@ -392,7 +392,8 @@ export function buildAgentResumeCommand(
   }
   const resumeTitle = agentId === "pi" ? undefined : getTrustedAgentResumeTitle(input);
   const exactReference = getExactAgentSessionReference(agentId, input);
-  const codexReference = agentId === "codex" ? (getCodexSessionReference(input) ?? resumeTitle) : undefined;
+  const codexExactReference = agentId === "codex" ? getCodexSessionReference(input) : undefined;
+  const codexReference = agentId === "codex" ? (codexExactReference ?? resumeTitle) : undefined;
   const claudeReference = agentId === "claude" ? (getClaudeSessionReference(input) ?? resumeTitle) : undefined;
   const cursorReference = agentId === "cursor" ? getCursorSessionReference(input) : undefined;
   const openCodeReference = agentId === "opencode" ? getOpenCodeSessionReference(input) : undefined;
@@ -413,7 +414,17 @@ export function buildAgentResumeCommand(
     case "grok":
       return exactReference ? `${agentCommand} -r ${quoteShellDoubleArg(exactReference)}` : undefined;
     case "codex":
-      return codexReference ? `${agentCommand} resume ${quoteShellDoubleArg(codexReference)}` : undefined;
+      if (!codexReference) {
+        return undefined;
+      }
+      if (options.display) {
+        return codexExactReference
+          ? `${agentCommand} resume ${quoteShellDoubleArg(codexExactReference)}`
+          : `${agentCommand} resume ${quoteShellDoubleArg(codexReference)}  # lookup Codex session id by title`;
+      }
+      return codexExactReference
+        ? buildCodexValidatedResumeCommand(agentCommand, codexExactReference)
+        : buildCodexResumeLookupCommand(agentCommand, codexReference);
     case "claude":
       return claudeReference ? `${agentCommand} --resume ${quoteShellDoubleArg(claudeReference)}` : undefined;
     case "cursor":
@@ -495,7 +506,7 @@ export function buildAgentResumeFallbackCommand(
     case "codex": {
       const exactReference = getCodexSessionReference(input);
       return exactReference && exactReference !== resumeTitle
-        ? `${agentCommand} resume ${quoteShellDoubleArg(resumeTitle)}`
+        ? buildCodexResumeLookupCommand(agentCommand, resumeTitle)
         : undefined;
     }
     case "claude": {
@@ -803,10 +814,42 @@ function buildOpenCodeResumeCommand(agentCommand: string, resumeTitle: string, l
   return `${agentCommand} -s "$(${lookupAgentCommand} session list --format json | /usr/bin/python3 -c ${quoteShellArg(getOpenCodeSessionLookupScript())} ${quoteShellArg(resumeTitle)})"`;
 }
 
+function buildCodexValidatedResumeCommand(agentCommand: string, sessionReference: string): string {
+  /*
+  CDXC:GxserverAgentLifecycle 2026-06-07-01:57:
+  Codex sleep/wake restore may keep its title fallback, but it must never resume Ghostex's internal `codex exec` title-generation transcript. Validate exact ids through the same transcript classifier used by title lookup so a polluted stored id fails primary restore and falls through to the filtered fallback.
+  */
+  return [
+    'CODEX_RESUME_SESSION_ID="$(',
+    `/usr/bin/python3 -c ${quoteShellArg(getCodexSessionIdLookupScript())} --exact ${quoteShellArg(sessionReference)}`,
+    ')"',
+    "&&",
+    'test -n "$CODEX_RESUME_SESSION_ID"',
+    "&&",
+    `${agentCommand} resume "$CODEX_RESUME_SESSION_ID"`,
+    "||",
+    `{ printf '%s\\n' ${quoteShellArg(`Unable to restore Codex session "${sessionReference}".`)}; false; }`,
+  ].join(" ");
+}
+
+function buildCodexResumeLookupCommand(agentCommand: string, resumeTitle: string): string {
+  return [
+    'CODEX_RESUME_SESSION_ID="$(',
+    `/usr/bin/python3 -c ${quoteShellArg(getCodexSessionIdLookupScript())} --title ${quoteShellArg(resumeTitle)}`,
+    ')"',
+    "&&",
+    'test -n "$CODEX_RESUME_SESSION_ID"',
+    "&&",
+    `${agentCommand} resume "$CODEX_RESUME_SESSION_ID"`,
+    "||",
+    `{ printf '%s\\n' ${quoteShellArg(`Unable to find restorable Codex session id for "${resumeTitle}".`)}; false; }`,
+  ].join(" ");
+}
+
 function buildCodexForkLookupCommand(agentCommand: string, resumeTitle: string): string {
   return [
     'CODEX_FORK_SESSION_ID="$(',
-    `/usr/bin/python3 -c ${quoteShellArg(getCodexSessionIdLookupScript())} ${quoteShellArg(resumeTitle)}`,
+    `/usr/bin/python3 -c ${quoteShellArg(getCodexSessionIdLookupScript())} --title ${quoteShellArg(resumeTitle)}`,
     ')"',
     "&&",
     'test -n "$CODEX_FORK_SESSION_ID"',
@@ -821,10 +864,12 @@ function getCodexSessionIdLookupScript(): string {
   return `import json
 import os
 import pathlib
+import re
 import sys
 
-title = sys.argv[1].strip()
-if not title:
+mode = sys.argv[1].strip() if len(sys.argv) > 1 else ""
+query = sys.argv[2].strip() if len(sys.argv) > 2 else ""
+if mode not in {"--exact", "--title"} or not query:
     sys.exit(1)
 
 home = pathlib.Path.home()
@@ -840,12 +885,96 @@ for value in [
     candidate_homes.append(value)
 
 seen = set()
-matches = []
+codex_homes = []
 for codex_home in candidate_homes:
     codex_home = codex_home.resolve() if codex_home.exists() else codex_home
     if str(codex_home) in seen:
         continue
     seen.add(str(codex_home))
+    codex_homes.append(codex_home)
+
+session_id_pattern = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", re.I)
+internal_title_prompt_markers = (
+    "Write a concise session title that summarizes the user's text.",
+    "Output handling:",
+    "Print only the final result to stdout.",
+)
+
+def transcript_paths_for_session(codex_home, session_id, item=None):
+    seen_paths = set()
+    for key in ["path", "session_path", "sessionPath", "transcript_path", "transcriptPath"]:
+        value = str((item or {}).get(key) or "").strip()
+        if not value:
+            continue
+        path = pathlib.Path(value).expanduser()
+        if not path.is_absolute():
+            path = codex_home / path
+        if str(path) not in seen_paths:
+            seen_paths.add(str(path))
+            yield path
+    sessions_dir = codex_home / "sessions"
+    if not sessions_dir.is_dir():
+        return
+    try:
+        for path in sessions_dir.rglob(f"*{session_id}*.jsonl"):
+            if str(path) in seen_paths:
+                continue
+            seen_paths.add(str(path))
+            yield path
+    except Exception:
+        return
+
+def transcript_is_internal_codex_exec(path):
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            for index, line in enumerate(handle):
+                if index > 80:
+                    break
+                if all(marker in line for marker in internal_title_prompt_markers):
+                    return True
+                try:
+                    entry = json.loads(line)
+                except Exception:
+                    continue
+                payload = entry.get("payload") if isinstance(entry, dict) else None
+                if not isinstance(payload, dict):
+                    continue
+                if str(payload.get("originator") or "").strip() == "codex_exec":
+                    return True
+                if str(payload.get("source") or "").strip() == "exec":
+                    return True
+    except FileNotFoundError:
+        return False
+    except Exception:
+        return False
+    return False
+
+def is_internal_codex_session(codex_home, session_id, item=None):
+    if str((item or {}).get("originator") or "").strip() == "codex_exec":
+        return True
+    if str((item or {}).get("source") or "").strip() == "exec":
+        return True
+    return any(transcript_is_internal_codex_exec(path) for path in transcript_paths_for_session(codex_home, session_id, item))
+
+def exact_reference_is_internal(session_id):
+    for codex_home in codex_homes:
+        if is_internal_codex_session(codex_home, session_id):
+            return True
+    return False
+
+if mode == "--exact":
+    exact_match = session_id_pattern.search(query)
+    if not exact_match:
+        sys.stdout.write(query)
+        sys.exit(0)
+    session_id = exact_match.group(0).lower()
+    if exact_reference_is_internal(session_id):
+        sys.exit(1)
+    sys.stdout.write(session_id)
+    sys.exit(0)
+
+matches = []
+for codex_home in codex_homes:
     index_path = codex_home / "session_index.jsonl"
     try:
         lines = index_path.read_text(encoding="utf-8").splitlines()
@@ -856,10 +985,12 @@ for codex_home in candidate_homes:
             item = json.loads(line)
         except Exception:
             continue
-        if str(item.get("thread_name") or "").strip() != title:
+        if str(item.get("thread_name") or "").strip() != query:
             continue
         session_id = str(item.get("id") or "").strip()
         if not session_id:
+            continue
+        if is_internal_codex_session(codex_home, session_id, item):
             continue
         matches.append((str(item.get("updated_at") or ""), session_id))
 

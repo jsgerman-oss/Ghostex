@@ -12,6 +12,14 @@ import {
 import { getUnsupportedNodeMessage } from "./node-version.js";
 import { runGxserverForeground } from "./server.js";
 
+const GXSERVER_COLOR_DISABLING_ENVIRONMENT_KEYS = [
+  "ANSI_COLORS_DISABLED",
+  "NO_COLOR",
+  "NODE_DISABLE_COLORS",
+] as const;
+
+removeGxserverColorDisablingEnvironment();
+
 const cliDir = dirname(fileURLToPath(import.meta.url));
 const version = await readPackageVersion(cliDir);
 const buildIdentity = await readGxserverBuildIdentity(cliDir, version);
@@ -82,4 +90,14 @@ async function readPackageVersion(cliDir: string): Promise<string> {
   const packageJsonPath = resolve(cliDir, "..", "..", "package.json");
   const packageJson = JSON.parse(await readFile(packageJsonPath, "utf8")) as { version?: string };
   return packageJson.version ?? "0.0.0";
+}
+
+function removeGxserverColorDisablingEnvironment(): void {
+  /*
+  CDXC:GxserverColorEnv 2026-06-07-00:38:
+  gxserver owns color-capable terminal and agent provider lifecycles. Strip NO_COLOR-style variables at CLI process start so direct daemon launches cannot store or propagate color-disabled process.env snapshots.
+  */
+  for (const key of GXSERVER_COLOR_DISABLING_ENVIRONMENT_KEYS) {
+    delete process.env[key];
+  }
 }

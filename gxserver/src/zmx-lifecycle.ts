@@ -42,6 +42,12 @@ export const GXSERVER_ZMX_COMMAND_STDERR_LIMIT_BYTES = 64 * 1024;
 export const GXSERVER_ZMX_HISTORY_STDOUT_LIMIT_BYTES = 256 * 1024;
 export const GXSERVER_ZMX_SEND_TEXT_LIMIT_BYTES = 512 * 1024;
 
+const GXSERVER_COLOR_DISABLING_ENVIRONMENT_KEYS = [
+  "ANSI_COLORS_DISABLED",
+  "NO_COLOR",
+  "NODE_DISABLE_COLORS",
+] as const;
+
 export interface GxserverZmxAttachCommandInput {
   cwd: string;
   globalSessionRef?: string;
@@ -491,12 +497,25 @@ function zmxKillThrownErrorMessage(error: unknown): string {
   return `zmx kill command failed: ${String(error)}`;
 }
 
+function gxserverZmxChildEnvironment(): NodeJS.ProcessEnv {
+  /*
+  CDXC:GxserverZmxLifecycle 2026-06-07-00:38:
+  Fork/resume provider sessions are color-capable terminal workloads. gxserver may be launched from a shell or desktop app that has NO_COLOR set, so every zmx lifecycle child must strip color-disabling keys before zmx starts shells or agents.
+  */
+  const environment = { ...process.env };
+  for (const key of GXSERVER_COLOR_DISABLING_ENVIRONMENT_KEYS) {
+    delete environment[key];
+  }
+  return environment;
+}
+
 export function runZshScript(script: string, options: GxserverZmxCommandOptions = {}): Promise<GxserverZmxCommandResult> {
   const stdoutLimitBytes = options.stdoutLimitBytes ?? GXSERVER_ZMX_COMMAND_STDOUT_LIMIT_BYTES;
   const stderrLimitBytes = options.stderrLimitBytes ?? GXSERVER_ZMX_COMMAND_STDERR_LIMIT_BYTES;
   const timeoutMs = options.timeoutMs ?? ZMX_LIFECYCLE_COMMAND_TIMEOUT_MS;
   return new Promise((resolve, reject) => {
     const child = spawn("/bin/zsh", ["-lc", script], {
+      env: gxserverZmxChildEnvironment(),
       stdio: ["pipe", "pipe", "pipe"],
     });
     const stdout: Buffer[] = [];

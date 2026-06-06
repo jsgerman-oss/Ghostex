@@ -1,5 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
+import { chmodSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import {
   applyAgentActivityTransition,
   buildAgentForkPlan,
@@ -124,11 +128,17 @@ test("resume and fallback command construction follows current sidebar rules", (
     title: "Readable thread title",
   });
 
-  assert.equal(
-    buildAgentResumeCommand(project, session),
-    'codex resume "6a6c2672-6b45-45fe-a1a8-a73f9a3a9c56"',
+  assert.match(buildAgentResumeCommand(project, session) ?? "", /CODEX_RESUME_SESSION_ID/);
+  assert.match(
+    buildAgentResumeCommand(project, session) ?? "",
+    /codex resume "\$CODEX_RESUME_SESSION_ID"/,
   );
-  assert.equal(buildAgentResumeFallbackCommand(project, session), 'codex resume "Readable thread title"');
+  assert.match(buildAgentResumeCommand(project, session) ?? "", /--exact/);
+  assert.match(buildAgentResumeFallbackCommand(project, session) ?? "", /--title/);
+  assert.match(
+    buildAgentResumeFallbackCommand(project, session) ?? "",
+    /codex resume "\$CODEX_RESUME_SESSION_ID"/,
+  );
   const startupText = buildAgentResumeStartupText(project, session);
   assert.match(startupText ?? "", /Restoring session/);
   assert.match(startupText ?? "", /Exact resume failed; trying saved fallback resume command/);
@@ -151,11 +161,80 @@ test("resume startup commands apply Accept All at runtime without changing store
   });
 
   assert.equal(
-    buildAgentResumeCommand(project, session),
+    buildAgentResumePlan(project, session).displayCommand,
     'codex --yolo resume "6a6c2672-6b45-45fe-a1a8-a73f9a3a9c56"',
   );
-  assert.equal(buildAgentResumeFallbackCommand(project, session), 'codex --yolo resume "Readable thread title"');
+  assert.match(buildAgentResumeCommand(project, session) ?? "", /codex --yolo resume "\$CODEX_RESUME_SESSION_ID"/);
+  assert.match(buildAgentResumeFallbackCommand(project, session) ?? "", /codex --yolo resume "\$CODEX_RESUME_SESSION_ID"/);
   assert.equal(session.runtimeSettings.agentCommand, "codex");
+});
+
+test("Codex resume rejects internal exact ids and falls back to restorable title matches", () => {
+  const tempDir = mkdtempSync(path.join(os.tmpdir(), "ghostex-codex-resume-"));
+  const binDir = path.join(tempDir, "bin");
+  const codexHome = path.join(tempDir, "codex-home");
+  const sessionsDir = path.join(codexHome, "sessions", "2026", "06", "07");
+  mkdirSync(binDir, { recursive: true });
+  mkdirSync(sessionsDir, { recursive: true });
+
+  const realSessionId = "11111111-1111-4111-8111-111111111111";
+  const internalSessionId = "22222222-2222-4222-8222-222222222222";
+  const title = "Readable thread title";
+  writeFileSync(
+    path.join(codexHome, "session_index.jsonl"),
+    [
+      JSON.stringify({ id: realSessionId, thread_name: title, updated_at: "2026-06-06T21:00:00.000Z" }),
+      JSON.stringify({ id: internalSessionId, thread_name: title, updated_at: "2026-06-06T21:03:00.000Z" }),
+    ].join("\n") + "\n",
+    "utf8",
+  );
+  writeFileSync(
+    path.join(sessionsDir, `rollout-2026-06-07T01-00-00-${realSessionId}.jsonl`),
+    JSON.stringify({
+      payload: { id: realSessionId, originator: "codex-tui", source: "cli" },
+      type: "session_meta",
+    }) + "\n",
+    "utf8",
+  );
+  writeFileSync(
+    path.join(sessionsDir, `rollout-2026-06-07T01-03-00-${internalSessionId}.jsonl`),
+    JSON.stringify({
+      payload: { id: internalSessionId, originator: "codex_exec", source: "exec" },
+      type: "session_meta",
+    }) + "\n",
+    "utf8",
+  );
+  const fakeCodex = path.join(binDir, "codex");
+  writeFileSync(fakeCodex, "#!/bin/sh\nprintf '%s\\n' \"$*\"\n", "utf8");
+  chmodSync(fakeCodex, 0o755);
+
+  const project = projectFixture();
+  const session = sessionFixture({
+    agentId: "codex",
+    runtimeSettings: {
+      agentCommand: "codex",
+      agentSessionId: internalSessionId,
+      titleSource: "user",
+    },
+    title,
+  });
+  const startupText = buildAgentResumeStartupText(project, session);
+  assert.match(startupText ?? "", /CODEX_RESUME_SESSION_ID/);
+  assert.match(startupText ?? "", /--exact/);
+  assert.match(startupText ?? "", /--title/);
+
+  const output = execFileSync("/bin/zsh", ["-lc", (startupText ?? "").trim()], {
+    cwd: tempDir,
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      CODEX_HOME: codexHome,
+      PATH: `${binDir}:${process.env.PATH ?? ""}`,
+    },
+  });
+  assert.match(output, /Exact resume failed; trying saved fallback resume command/);
+  assert.match(output, new RegExp(`resume ${realSessionId}`));
+  assert.doesNotMatch(output, new RegExp(`resume ${internalSessionId}`));
 });
 
 test("fork plan uses gxserver Codex runtime identity and Accept All policy", () => {
@@ -274,9 +353,11 @@ test("temporary Search by Text titles are not trusted resume fallbacks", () => {
     },
     title: "Search by Text",
   });
-  assert.equal(
-    buildAgentResumeCommand(project, identifiedSession),
-    'codex resume "019e7c39-7ba7-7ac3-b79c-02757e299516"',
+  assert.match(buildAgentResumeCommand(project, identifiedSession) ?? "", /CODEX_RESUME_SESSION_ID/);
+  assert.match(buildAgentResumeCommand(project, identifiedSession) ?? "", /--exact/);
+  assert.match(
+    buildAgentResumeCommand(project, identifiedSession) ?? "",
+    /codex resume "\$CODEX_RESUME_SESSION_ID"/,
   );
   assert.equal(buildAgentResumeFallbackCommand(project, identifiedSession), undefined);
 });

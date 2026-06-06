@@ -27,6 +27,15 @@ import type {
 
 export type SidebarActiveSessionsSortMode = "manual" | "lastActivity";
 
+export type SidebarTitleObservationState = {
+  failureCount?: number;
+  lastFailedAt?: string;
+  lastObservedAt?: string;
+  lastStartedAt?: string;
+  nextRetryAt?: string;
+  status: "active" | "failed" | "retrying" | "starting";
+};
+
 export type AgentsHubTab = "mds" | "skills" | "hooks" | "configs";
 
 export type AgentsHubProfile = {
@@ -210,6 +219,11 @@ export type SidebarSessionItem = {
   primaryTitle?: string;
   isPrimaryTitleTerminalTitle?: boolean;
   terminalTitle?: string;
+  /**
+   * CDXC:SessionStatus 2026-06-07-00:30:
+   * Sidebar Auto Sleep must not interpret an idle activity value as reliable while gxserver's zmx title observer is starting or retrying. Carry only coarse observer health so the UI can defer sleep decisions without exposing terminal titles or user-owned terminal content.
+   */
+  titleObservation?: SidebarTitleObservationState;
   alias: string;
   shortcutLabel: string;
   row: number;

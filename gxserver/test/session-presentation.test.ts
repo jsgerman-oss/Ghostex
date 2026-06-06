@@ -599,6 +599,39 @@ test("previous sessions search hides placeholder inactive rows but keeps restora
   assert.equal(search.results.find((result) => result.sessionId === "G1trust")?.updatedAt, trusted.updatedAt);
 });
 
+test("presentation projects sanitized zmx title-observer health", () => {
+  const project = projectFixture({});
+  const session = sessionFixture({
+    runtimeSettings: {
+      zmxTitleObservation: {
+        failureCount: 2,
+        lastFailedAt: "2026-06-07T00:29:59.000Z",
+        lastObservedAt: "2026-06-07T00:29:40.000Z",
+        lastStartedAt: "2026-06-07T00:29:58.000Z",
+        nextRetryAt: "2026-06-07T00:30:00.000Z",
+        rawTitle: "private terminal title",
+        status: "retrying",
+      },
+    },
+  });
+
+  const snapshot = projectGxserverPresentationSnapshot({
+    projects: [project],
+    revision: 4 as GxserverPresentationRevision,
+    sessions: [session],
+  });
+
+  assert.deepEqual(snapshot.sessions[0]?.titleObservation, {
+    failureCount: 2,
+    lastFailedAt: "2026-06-07T00:29:59.000Z",
+    lastObservedAt: "2026-06-07T00:29:40.000Z",
+    lastStartedAt: "2026-06-07T00:29:58.000Z",
+    nextRetryAt: "2026-06-07T00:30:00.000Z",
+    status: "retrying",
+  });
+  assert.equal(JSON.stringify(snapshot.sessions[0]).includes("private terminal title"), false);
+});
+
 class MockPresentationRepository {
   readonly #project: GxserverProjectDomainState;
   #sessions: GxserverSessionDomainState[];

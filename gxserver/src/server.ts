@@ -111,7 +111,7 @@ import {
   type GxserverZmxCommandOptions,
   type GxserverZmxCommandRunner,
 } from "./zmx-lifecycle.js";
-import { GxserverZmxTitleObserver } from "./zmx-title-observer.js";
+import { GxserverZmxTitleObserver, type GxserverZmxTitleObservationStateChange } from "./zmx-title-observer.js";
 import type {
   GxserverAttachSessionMetadataParams,
   GxserverAttachSessionMetadataResult,
@@ -216,6 +216,28 @@ const GXSERVER_AGENT_TITLE_METADATA_DEBOUNCE_MS = 3_000;
 const GXSERVER_FIRST_PROMPT_TITLE_SOURCE_MAX_LENGTH = 250;
 const GXSERVER_GENERATED_SESSION_TITLE_MAX_LENGTH = 39;
 const GXSERVER_FIRST_PROMPT_TITLE_GENERATION_TIMEOUT_MS = 30_000;
+const GXSERVER_COMMAND_COLOR_DISABLING_ENVIRONMENT_KEYS = [
+  "ANSI_COLORS_DISABLED",
+  "NO_COLOR",
+  "NODE_DISABLE_COLORS",
+] as const;
+const GXSERVER_INTERNAL_PROMPT_GENERATION_ENVIRONMENT_KEYS = [
+  "GHOSTEX_GLOBAL_SESSION_REF",
+  "GHOSTEX_GXSERVER_AUTH_TOKEN_FILE",
+  "GHOSTEX_GXSERVER_BASE_URL",
+  "GHOSTEX_GXSERVER_PROTOCOL_VERSION",
+  "GHOSTEX_SESSION_ID",
+  "GHOSTEX_SESSION_STATE_FILE",
+  "GHOSTEX_WORKSPACE_ID",
+  "GHOSTEX_WORKSPACE_ROOT",
+  "VSMUX_SESSION_ID",
+  "VSMUX_SESSION_STATE_FILE",
+  "VSMUX_WORKSPACE_ID",
+  "VSMUX_WORKSPACE_ROOT",
+  "ghostex_SESSION_STATE_FILE",
+  "ghostex_WORKSPACE_ID",
+  "ghostex_WORKSPACE_ROOT",
+] as const;
 const agentTitleMetadataDebouncer = createAgentTitleDebouncer({
   delayMs: GXSERVER_AGENT_TITLE_METADATA_DEBOUNCE_MS,
 });
@@ -261,6 +283,7 @@ export async function runGxserverForeground(options: GxserverForegroundOptions):
     authToken: auth.token,
     logger,
     metadata,
+    onObservationStateChange: (change) => recordZmxTitleObservationState(runtime, change),
     requireZmx: () => (runtime.zmxLifecycle?.requireZmx ?? requireBundledZmx)(),
   });
 
@@ -1450,6 +1473,56 @@ function observeZmxTitleForSession(runtime: GxserverApiRuntime, session: Gxserve
   );
 }
 
+function recordZmxTitleObservationState(
+  runtime: GxserverApiRuntime,
+  change: GxserverZmxTitleObservationStateChange,
+): void {
+  const db = openGxserverDatabase(runtime.paths);
+  try {
+    const repository = new GxserverDomainRepository(db, runtime.metadata.serverId);
+    const session = repository.getSession(change.projectId, change.sessionId);
+    if (!session) {
+      return;
+    }
+    const runtimeSettings = {
+      ...session.runtimeSettings,
+      zmxTitleObservation: change.state,
+    };
+    if (JSON.stringify(session.runtimeSettings.zmxTitleObservation) === JSON.stringify(change.state)) {
+      return;
+    }
+    /*
+    CDXC:SessionStatus 2026-06-07-00:30:
+    The zmx title watcher is the source of terminal-title working detection. Store only the coarse watcher health in session runtime settings and immediately publish a presentation delta so native Auto Sleep can defer decisions while detection is starting or retrying.
+    */
+    repository.updateSession({
+      projectId: change.projectId,
+      runtimeSettings,
+      sessionId: change.sessionId,
+    });
+    schedulePresentationSessionDelta(runtime, repository, {
+      projectId: change.projectId,
+      reason: `zmx-title-observer-${change.state.status}`,
+      sessionId: change.sessionId,
+    });
+  } catch (error) {
+    void runtime.logger.log({
+      details: {
+        message: error instanceof Error ? error.message : String(error),
+        reason: change.reason,
+        state: change.state.status,
+      },
+      event: "zmxTitleObserver.statePersistFailed",
+      level: "warn",
+      projectId: change.projectId,
+      serverId: runtime.metadata.serverId,
+      sessionId: change.sessionId,
+    });
+  } finally {
+    db.close();
+  }
+}
+
 function schedulePresentationProjectDelta(
   runtime: GxserverApiRuntime,
   db: ReturnType<typeof openGxserverDatabase>,
@@ -2492,6 +2565,29 @@ async function runGxserverFirstPromptAutoTitleJob(
       });
       return;
     }
+    if (
+      latestStatus !== "running" ||
+      normalizeGxserverFirstPromptTitlePrompt(readRuntimeText(latestSession.runtimeSettings, "firstUserMessage")) !==
+        decision.normalizedPrompt
+    ) {
+      /*
+      CDXC:GxserverSessionTitle 2026-06-07-01:19:
+      Escape cancels only the prompt that was being titled. A later prompt may claim a new title job while the cancelled generator is still returning; compare the stored prompt before submitting `/rename` so stale jobs cannot apply their old title over the retry.
+      */
+      await runtime.logger.log({
+        details: {
+          agentName: getGxserverFirstPromptAgentName(latestSession),
+          status: "stale",
+        },
+        event: "session-title.firstPromptAutoTitle",
+        level: "debug",
+        projectId: latestSession.projectId,
+        requestId: input.requestId,
+        serverId: runtime.metadata.serverId,
+        sessionId: latestSession.sessionId,
+      });
+      return;
+    }
     const commandText = decision.strategy === "generateTitleAndName" ? `/name ${title}` : `/rename ${title}`;
     const zmx = await (runtime.zmxLifecycle?.requireZmx ?? requireBundledZmx)();
     /*
@@ -2636,12 +2732,20 @@ function decideGxserverFirstPromptAutoTitle(
   strategy?: "generateTitleAndRename" | "generateTitleAndName";
 } {
   const status = readRuntimeText(session.runtimeSettings, "gxserverFirstPromptAutoTitleStatus");
+  const normalizedPrompt = normalizeGxserverFirstPromptTitlePrompt(prompt);
+  const cancelledPrompt = normalizeGxserverFirstPromptTitlePrompt(
+    readRuntimeText(session.runtimeSettings, "firstUserMessage"),
+  );
+  const isCancelledRetryPrompt =
+    status === "cancelled" &&
+    normalizedPrompt !== undefined &&
+    normalizedPrompt !== cancelledPrompt;
   if (
     (status === "running" && !options.allowRunning) ||
     status === "applied" ||
-    status === "cancelled" ||
     status === "failed" ||
-    status === "skipped"
+    status === "skipped" ||
+    (status === "cancelled" && !isCancelledRetryPrompt)
   ) {
     return { reason: `already-${status}`, shouldRun: false };
   }
@@ -2653,7 +2757,6 @@ function decideGxserverFirstPromptAutoTitle(
   if (!strategy) {
     return { reason: "unsupportedAgent", shouldRun: false };
   }
-  const normalizedPrompt = normalizeGxserverFirstPromptTitlePrompt(prompt);
   if (!normalizedPrompt) {
     return { reason: "emptyPrompt", shouldRun: false, strategy };
   }
@@ -2783,21 +2886,47 @@ async function generateGxserverFirstPromptSessionTitle(
     delimiter,
     prompt: generationPrompt,
   });
-  const pathValue = await normalizeGxserverProcessPath(process.env.PATH, {
+  const commandEnvironment = gxserverInternalPromptGenerationEnvironment(gxserverCommandEnvironment({
     ...process.env,
     HOME: runtime.paths.homeDir,
-  });
+  }));
+  const pathValue = await normalizeGxserverProcessPath(process.env.PATH, commandEnvironment);
   const result = await execFileAsync("/bin/zsh", ["-lic", command], {
     cwd: cwd || runtime.paths.homeDir,
     env: {
-      ...process.env,
-      HOME: runtime.paths.homeDir,
+      ...commandEnvironment,
       PATH: pathValue,
     },
     maxBuffer: 64 * 1024,
     timeout: GXSERVER_FIRST_PROMPT_TITLE_GENERATION_TIMEOUT_MS,
   });
   return parseGxserverGeneratedSessionTitleText(String(result.stdout ?? ""));
+}
+
+function gxserverCommandEnvironment(environment: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  /*
+  CDXC:GxserverCommandColorEnv 2026-06-07-00:38:
+  gxserver title-generation commands can launch agent CLIs outside an attached terminal. Strip NO_COLOR-style keys from daemon command env snapshots so generated-title helpers do not run in color-disabled mode.
+  */
+  const sanitized = { ...environment };
+  for (const key of GXSERVER_COMMAND_COLOR_DISABLING_ENVIRONMENT_KEYS) {
+    delete sanitized[key];
+  }
+  return sanitized;
+}
+
+function gxserverInternalPromptGenerationEnvironment(environment: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  /*
+  CDXC:GxserverSessionTitle 2026-06-07-01:57:
+  Internal Codex title generation must never attach itself to the user-facing terminal session being named. Strip Ghostex session-binding variables before launching the prompt job and mark the process so installed hooks ignore it instead of saving a title-generator transcript as restorable session identity.
+  */
+  const sanitized = { ...environment };
+  for (const key of GXSERVER_INTERNAL_PROMPT_GENERATION_ENVIRONMENT_KEYS) {
+    delete sanitized[key];
+  }
+  sanitized.GHOSTEX_INTERNAL_PROMPT_GENERATION = "1";
+  sanitized.GHOSTEX_INTERNAL_TITLE_GENERATION = "1";
+  return sanitized;
 }
 
 function normalizeGxserverFirstPromptTitleGenerationAgent(
@@ -2848,11 +2977,14 @@ function buildGxserverFirstPromptTitleGenerationCommand(input: {
 
   CDXC:GxserverSessionTitle 2026-06-04-22:44:
   Grok Build is available as a first-prompt title generator. The local `grok --help` contract exposes headless `-p`, `--model`, plain output, no alternate screen, no plan, no subagents, web-search disabling, and max-turn limits; `grok models` exposes Composer 2.5 as `grok-composer-2.5-fast`, so use that exact model id for the background summarization command.
+
+  CDXC:GxserverSessionTitle 2026-06-07-01:57:
+  Codex first-prompt title generation is internal summarization, not a user-restorable conversation. Run Codex with `--ephemeral` so the title prompt cannot create a persistent transcript that sleep/wake restore may later resolve by id or title.
   */
   switch (input.agent) {
     case "codex":
       return createGxserverHereDocCommand(
-        `${input.command} exec --skip-git-repo-check -m gpt-5.4-mini -c 'model_reasoning_effort="low"'`,
+        `${input.command} exec --ephemeral --skip-git-repo-check -m gpt-5.4-mini -c 'model_reasoning_effort="low"'`,
         input.delimiter,
         input.prompt,
       );
