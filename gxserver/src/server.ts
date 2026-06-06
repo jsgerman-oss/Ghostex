@@ -1114,6 +1114,7 @@ async function dispatchDomainStateEndpoint(
           `Session ${lifecycle.projectId}/${lifecycle.sessionId} does not exist.`,
         );
       }
+      const presentationDeltaBefore = stringifyPresentationSessionDelta(repository, lifecycle.projectId, lifecycle.sessionId);
       const decision = applyTerminalTitleEvent(repository, {
         ...titleEvent,
         projectId: lifecycle.projectId,
@@ -1137,25 +1138,41 @@ async function dispatchDomainStateEndpoint(
         sessionId: lifecycle.sessionId,
         title: titleEvent.rawTitle,
       });
-      const session = repository.updateSession({
-        lastActiveAt: statusUpdate.lastActiveAt,
-        projectId: presentedSession.projectId,
-        runtimeSettings: statusUpdate.runtimeSettings,
-        sessionId: presentedSession.sessionId,
-      });
-      scheduleStaleActivityPresentationRefresh(runtime, session, "terminal-title-stale-activity");
-      const reconciled = scheduleAgentTitleMetadataCheck(runtime, repository, {
-        force: true,
-        projectId: lifecycle.projectId,
-        reason: "terminal-title-event",
-        sessionId: lifecycle.sessionId,
-      });
+      /*
+      CDXC:GxserverSessionTitles 2026-06-06-07:09:
+      zmx title streams can produce many repeated spinner frames. Preserve title-derived working detection by storing real activity-window changes, but do not rewrite the session row, force metadata checks, or broadcast sidebar presentation deltas when a terminal-title event leaves both stored status and projected session chrome unchanged.
+      */
+      const shouldStoreStatusUpdate = shouldPersistSessionStatusUpdate(presentedSession, statusUpdate);
+      const session = shouldStoreStatusUpdate
+        ? repository.updateSession({
+            lastActiveAt: statusUpdate.lastActiveAt,
+            projectId: presentedSession.projectId,
+            runtimeSettings: statusUpdate.runtimeSettings,
+            sessionId: presentedSession.sessionId,
+          })
+        : presentedSession;
+      if (shouldStoreStatusUpdate) {
+        scheduleStaleActivityPresentationRefresh(runtime, session, "terminal-title-stale-activity");
+      }
+      const shouldCheckAgentTitleMetadata = decision.changed || presentation?.changed === true;
+      const reconciled = shouldCheckAgentTitleMetadata
+        ? scheduleAgentTitleMetadataCheck(runtime, repository, {
+            force: true,
+            projectId: lifecycle.projectId,
+            reason: "terminal-title-event",
+            sessionId: lifecycle.sessionId,
+          })
+        : undefined;
       const responseSession = reconciled?.session ?? repository.getSession(lifecycle.projectId, lifecycle.sessionId) ?? session;
-      schedulePresentationSessionDelta(runtime, repository, {
-        projectId: lifecycle.projectId,
-        reason: "terminal-title-event",
-        sessionId: lifecycle.sessionId,
-      });
+      const presentationDeltaAfter = stringifyPresentationSessionDelta(repository, lifecycle.projectId, lifecycle.sessionId);
+      const presentationDeltaScheduled = presentationDeltaBefore !== presentationDeltaAfter;
+      if (presentationDeltaScheduled) {
+        schedulePresentationSessionDelta(runtime, repository, {
+          projectId: lifecycle.projectId,
+          reason: "terminal-title-event",
+          sessionId: lifecycle.sessionId,
+        });
+      }
       const response = {
         agentSessionId: decision.agentSessionId,
         activity: statusUpdate.activity,
@@ -1181,20 +1198,19 @@ async function dispatchDomainStateEndpoint(
           decisionChanged: decision.changed,
           decisionReason: decision.reason,
           metadataChanged: reconciled?.changed === true,
+          metadataCheckQueued: shouldCheckAgentTitleMetadata,
           metadataReason: reconciled?.reason,
           metadataTitleFound: reconciled?.metadataTitleFound,
           presentationChanged: presentation?.changed === true,
+          presentationDeltaScheduled,
           provider: titleEvent.sessionPersistenceProvider,
           rawTitleLength: rawTitleForLog.length,
-          rawTitlePreview: rawTitleForLog.slice(0, 80),
           responseReason: response.reason,
           responseTitleSource: responseSession.runtimeSettings.titleSource,
+          statusUpdateStored: shouldStoreStatusUpdate,
           sessionTitleBeforeLength: current.title.length,
-          sessionTitleBeforePreview: current.title.slice(0, 80),
           sessionTitleDecisionLength: titledSession.title.length,
-          sessionTitleDecisionPreview: titledSession.title.slice(0, 80),
           visibleTitleLength: decision.visibleTitle?.length,
-          visibleTitlePreview: decision.visibleTitle?.slice(0, 80),
         },
         event: "sessionTitle.terminalTitleEvent",
         level: response.changed ? "info" : "debug",
@@ -1682,8 +1698,57 @@ function buildPresentationSessionDelta(
   };
 }
 
+function stringifyPresentationSessionDelta(
+  repository: GxserverDomainRepository,
+  projectId: GxserverProjectId,
+  sessionId: GxserverSessionId,
+): string | undefined {
+  const delta = buildPresentationSessionDelta(repository, projectId, sessionId);
+  return delta ? stringifyPresentationDelta(delta) : undefined;
+}
+
 function stringifyPresentationDelta(delta: GxserverPresentationDelta): string {
   return JSON.stringify(delta);
+}
+
+function shouldPersistSessionStatusUpdate(
+  session: GxserverSessionDomainState,
+  update: { activity: unknown; lastActiveAt?: string },
+): boolean {
+  if ((session.lastActiveAt ?? undefined) !== (update.lastActiveAt ?? undefined)) {
+    return true;
+  }
+  return (
+    JSON.stringify(persistableAgentActivitySnapshot(session.runtimeSettings.agentActivity)) !==
+    JSON.stringify(persistableAgentActivitySnapshot(update.activity))
+  );
+}
+
+function persistableAgentActivitySnapshot(value: unknown): Record<string, unknown> {
+  if (!isObjectRecord(value)) {
+    return {};
+  }
+  const activity = value.activity;
+  const snapshot: Record<string, unknown> = {
+    activity,
+    agentName: value.agentName,
+    attentionEventId: value.attentionEventId,
+    hasSeenWorking: value.hasSeenWorking,
+    isAcknowledged: value.isAcknowledged,
+    lastTitle: value.lastTitle,
+    lastTitleChangeAt: value.lastTitleChangeAt,
+    suppressedUntil: value.suppressedUntil,
+    workingSource: value.workingSource,
+    workingStartedAt: value.workingStartedAt,
+  };
+  if (activity !== "idle") {
+    snapshot.lastChangedAt = value.lastChangedAt;
+  }
+  return snapshot;
+}
+
+function isObjectRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function getPresentationLastDeltaJsonBySessionKey(runtime: GxserverApiRuntime): Map<string, string> {

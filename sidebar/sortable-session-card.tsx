@@ -1511,6 +1511,7 @@ export function SortableSessionCard({
           >
             <SessionFloatingAgentIcon
               agentIcon={session.agentIcon}
+              delayedSendDeadlineAt={session.delayedSendDeadlineAt}
               delayedSendRemainingLabel={session.delayedSendRemainingLabel}
               faviconDataUrl={session.faviconDataUrl}
               isFavorite={session.isFavorite}

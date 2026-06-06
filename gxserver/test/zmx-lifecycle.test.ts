@@ -9,6 +9,7 @@ import {
   buildZmxExistsCommand,
   buildZmxHistoryCommand,
   buildZmxKillCommand,
+  buildZmxRunCommand,
   buildZmxSendCommand,
   decideStartupTextDisposition,
   GXSERVER_ZMX_SEND_TEXT_LIMIT_BYTES,
@@ -190,6 +191,31 @@ test("zmx session interaction commands use bundled zmx for history and raw input
   assert.match(send, /exec "\$zmx_bin" send "\$zmx_session"/);
   assert.doesNotMatch(send, /zmx_text=/);
   assert.doesNotMatch(`${history}\n${send}`, /command -v zmx/);
+});
+
+test("zmx run startup command is prefixed once for Atuin history ignore", () => {
+  const command = buildZmxRunCommand({
+    cwd: "/repo/ghostex",
+    globalSessionRef: "S1a:P3a91:G8v20",
+    gxserverAuthTokenFile: "/Users/test/.ghostex/gxserver/auth/token",
+    gxserverBaseUrl: "http://127.0.0.1:58744",
+    gxserverProtocolVersion: 5,
+    sessionName: "S1a-P3a91-G8v20",
+    startupText: "codex resume abc\r",
+    zmxExecutablePath: "/bundle/zmx",
+  });
+
+  assert.match(command, /zmx_startup_command=' codex resume abc'/);
+  assert.match(command, /exec "\$zmx_bin" run "\$zmx_session" -d \/bin\/zsh -lc "\$zmx_startup_command"/);
+
+  const alreadyPrefixed = buildZmxRunCommand({
+    cwd: "/repo/ghostex",
+    sessionName: "S1a-P3a91-G8v20",
+    startupText: " codex resume abc\r",
+    zmxExecutablePath: "/bundle/zmx",
+  });
+  assert.match(alreadyPrefixed, /zmx_startup_command=' codex resume abc'/);
+  assert.doesNotMatch(alreadyPrefixed, /zmx_startup_command='  codex/);
 });
 
 test("zmx command runner caps output and pipes stdin without argv payloads", async () => {

@@ -1,4 +1,6 @@
-import { appendFile, mkdir } from "node:fs/promises";
+import { readFileSync } from "node:fs";
+import { appendFile, mkdir, rename, rm, stat } from "node:fs/promises";
+import path from "node:path";
 import type { GxserverLogEntry, GxserverLogLevel } from "../protocol/index.js";
 import type { GxserverPaths } from "./paths.js";
 
@@ -15,6 +17,14 @@ const REDACTED_TEXT = "[redacted]";
 const REDACTED_PATH = "[redacted:path]";
 const REDACTED_URL = "[redacted:url]";
 const REDACTED_SECRET = "[redacted:secret]";
+const DEBUGGING_MODE_SETTINGS_CACHE_MS = 1_000;
+const GXSERVER_LOG_FILE_MAX_BYTES = 25 * 1024 * 1024;
+const GXSERVER_LOG_FILE_MAX_ROTATIONS = 3;
+
+interface DebuggingModeCache {
+  checkedAtMs: number;
+  enabled: boolean;
+}
 
 /*
 CDXC:GxserverLogs 2026-05-30-14:16:
@@ -22,12 +32,26 @@ gxserver writes structured JSONL to `~/.ghostex/logs/gxserver.jsonl` with camelC
 
 CDXC:GxserverLogs 2026-05-30-23:52:
 Users must be able to zip and share gxserver logs without leaking project/session names, filesystem paths, prompt text, command text, URLs with private query strings, or credentials. Sanitize every optional message/error/details field and legacy-derived string field at the JSONL boundary so future call sites cannot bypass the ID-first logging contract.
+
+CDXC:GxserverLogs 2026-06-06-07:09:
+Routine gxserver diagnostics became a CPU and disk multiplier during terminal-title storms. Persist only warning/error entries unless Settings Debug Logging and UI is enabled, and enforce that policy at the logger boundary so future info/debug call sites cannot spam `~/.ghostex/logs/gxserver.jsonl` during normal use.
+
+CDXC:GxserverLogs 2026-06-06-07:26:
+gxserver logs can become GB-scale when a diagnostic storm already happened.
+Rotate the JSONL file at 25 MB with three retained files before appending any
+persisted entry so support bundles stay bounded after the next warning/error or
+Debugging Mode diagnostic write.
 */
 export function createGxserverLogger(paths: GxserverPaths): GxserverLogger {
+  const debuggingModeCache: DebuggingModeCache = { checkedAtMs: 0, enabled: false };
   return {
     async log(entry: GxserverLogInput): Promise<void> {
+      if (!shouldPersistGxserverLogEntry(entry.level, () => readDebuggingModeEnabled(paths, debuggingModeCache))) {
+        return;
+      }
       await mkdir(paths.logsDir, { recursive: true });
       const line = JSON.stringify(normalizeLogEntry(entry));
+      await rotateGxserverLogIfNeeded(paths.logFile, Buffer.byteLength(line, "utf8") + 1);
       await appendFile(paths.logFile, `${line}\n`, "utf8");
     },
   };
@@ -68,6 +92,81 @@ export function logLevelFromStatus(statusCode: number): GxserverLogLevel {
     return "warn";
   }
   return "info";
+}
+
+function shouldPersistGxserverLogEntry(
+  level: GxserverLogLevel,
+  isDebuggingModeEnabled: () => boolean,
+): boolean {
+  return level === "warn" || level === "error" || isDebuggingModeEnabled();
+}
+
+function readDebuggingModeEnabled(paths: GxserverPaths, cache: DebuggingModeCache): boolean {
+  const nowMs = Date.now();
+  if (nowMs - cache.checkedAtMs < DEBUGGING_MODE_SETTINGS_CACHE_MS) {
+    return cache.enabled;
+  }
+  cache.checkedAtMs = nowMs;
+  cache.enabled = readDebuggingModeSettingsFile(paths);
+  return cache.enabled;
+}
+
+function readDebuggingModeSettingsFile(paths: GxserverPaths): boolean {
+  try {
+    const settingsPath = path.join(paths.homeDir, ".ghostex", "state", "native-sidebar-settings.json");
+    const settings = JSON.parse(readFileSync(settingsPath, "utf8")) as { debuggingMode?: unknown };
+    return settings.debuggingMode === true;
+  } catch {
+    return false;
+  }
+}
+
+async function rotateGxserverLogIfNeeded(logFile: string, incomingByteCount: number): Promise<void> {
+  const size = await readFileSize(logFile);
+  if (size + incomingByteCount <= GXSERVER_LOG_FILE_MAX_BYTES) {
+    return;
+  }
+  await rm(rotatedGxserverLogFile(logFile, GXSERVER_LOG_FILE_MAX_ROTATIONS), { force: true });
+  for (let index = GXSERVER_LOG_FILE_MAX_ROTATIONS - 1; index >= 1; index -= 1) {
+    const source = rotatedGxserverLogFile(logFile, index);
+    const destination = rotatedGxserverLogFile(logFile, index + 1);
+    try {
+      await rename(source, destination);
+    } catch (error) {
+      if (!isNodeErrorCode(error, "ENOENT")) {
+        throw error;
+      }
+    }
+  }
+  try {
+    await rename(logFile, rotatedGxserverLogFile(logFile, 1));
+  } catch (error) {
+    if (!isNodeErrorCode(error, "ENOENT")) {
+      throw error;
+    }
+  }
+}
+
+async function readFileSize(filePath: string): Promise<number> {
+  try {
+    return (await stat(filePath)).size;
+  } catch (error) {
+    if (isNodeErrorCode(error, "ENOENT")) {
+      return 0;
+    }
+    throw error;
+  }
+}
+
+function rotatedGxserverLogFile(logFile: string, index: number): string {
+  return `${logFile}.${index}`;
+}
+
+function isNodeErrorCode(error: unknown, code: string): boolean {
+  if (typeof error !== "object" || error === null || !("code" in error)) {
+    return false;
+  }
+  return (error as { code?: unknown }).code === code;
 }
 
 function normalizeError(error: string | Error): string {

@@ -1281,10 +1281,14 @@ export function SettingsModal({
         subtitle: "Height used when opening the command pane and when double-clicking its top resize rail.",
         title: "Command Pane Default Height",
       },
+      /*
+      CDXC:DiagnosticsSettings 2026-06-06-07:09:
+      Debugging Mode is both diagnostic disk logging and debug UI exposure. The setting label and searchable subtitle must warn that detailed app logs can affect performance so users disable it after a repro.
+      */
       {
         key: "debuggingMode",
-        subtitle: "Expose debugging-only sidebar controls.",
-        title: "Show debugging UI",
+        subtitle: "Show debugging controls and write detailed app diagnostics to disk. This can affect performance, so turn it off when you do not need it.",
+        title: "Debug logging and UI",
       },
     ]),
   };
@@ -2027,8 +2031,8 @@ export function SettingsModal({
               {mainSettingVisible(settingsSearch.workspace, "debuggingMode") ? (
               <ToggleField
                 checked={draft.debuggingMode}
-                description="Expose debugging-only sidebar controls."
-                label="Show debugging UI"
+                description="Shows debugging controls and writes detailed app diagnostics to disk. This can affect performance, so turn it off when you do not need it."
+                label="Debug logging and UI"
                 {...getSettingModificationProps("debuggingMode")}
                 onChange={(checked) => updateDraft("debuggingMode", checked)}
               />

@@ -11,6 +11,7 @@ test("legacy log migration writes structured event categories into gxserver JSON
   const homeDir = await mkdtemp(path.join(tmpdir(), "gxserver-log-migration-"));
   try {
     const paths = getGxserverPaths(homeDir);
+    await writeNativeSidebarSettings(homeDir, { debuggingMode: true });
     const legacyLogsDir = path.join(homeDir, "legacy-logs");
     await mkdir(legacyLogsDir, { recursive: true });
     await writeFile(
@@ -78,6 +79,7 @@ test("oversized legacy logs migrate a bounded tail without materializing the ful
   const homeDir = await mkdtemp(path.join(tmpdir(), "gxserver-log-tail-migration-"));
   try {
     const paths = getGxserverPaths(homeDir);
+    await writeNativeSidebarSettings(homeDir, { debuggingMode: true });
     const legacyLogsDir = path.join(homeDir, "legacy-logs");
     await mkdir(legacyLogsDir, { recursive: true });
     await writeFile(
@@ -106,6 +108,12 @@ test("oversized legacy logs migrate a bounded tail without materializing the ful
     await rm(homeDir, { force: true, recursive: true });
   }
 });
+
+async function writeNativeSidebarSettings(homeDir: string, settings: Record<string, unknown>): Promise<void> {
+  const stateDir = path.join(homeDir, ".ghostex", "state");
+  await mkdir(stateDir, { recursive: true });
+  await writeFile(path.join(stateDir, "native-sidebar-settings.json"), JSON.stringify(settings), "utf8");
+}
 
 test("legacy log line migration rejects unparseable timestamped lines", () => {
   const migrated = migrateLegacyLogLine({

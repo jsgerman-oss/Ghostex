@@ -46,5 +46,36 @@ enum NativeLogPrivacyTests {
     assertTrue(!json.contains("codex --dangerously-do-something"), "command text must be redacted")
     assertTrue(!json.contains("secret-token"), "secrets must be redacted")
     assertTrue(!json.contains("private?token"), "full URLs and query strings must be redacted")
+
+    let persistenceKillPayload = NativeLogPrivacy.sanitizePayload([
+      "details": [
+        "provider": "zmx",
+        "reason": "sleepSession",
+        "sessionId": "S456",
+        "stderrBytes": 128,
+        "stdoutBytes": 64,
+        "terminationStatus": 0,
+      ],
+      "event": "nativeWorkspace.persistenceSessionKill.completed",
+    ])
+    let persistenceKillJson = serializePrivacyTestPayload(persistenceKillPayload)
+
+    assertTrue(persistenceKillJson.contains("nativeWorkspace.persistenceSessionKill.completed"), "persistence kill event should remain visible")
+    assertTrue(persistenceKillJson.contains("stderrBytes"), "stderr byte count should remain visible")
+    assertTrue(persistenceKillJson.contains("stdoutBytes"), "stdout byte count should remain visible")
+    assertTrue(!persistenceKillJson.contains("sessionName"), "persistence kill logs must not include provider session-name keys")
+    assertTrue(!persistenceKillJson.contains("stderr\":\""), "persistence kill logs must not include stderr text")
+    assertTrue(!persistenceKillJson.contains("stdout\":\""), "persistence kill logs must not include stdout text")
+    assertTrue(!persistenceKillJson.contains("P1.S2"), "persistence kill logs must not include raw zmx names")
+
+    assertTrue(
+      isNativePersistentLogImportantDiagnostic("nativeSidebar.gxserver.sessionTitleEventFailed"),
+      "failed native diagnostic events should persist in normal mode")
+    assertTrue(
+      isNativePersistentLogImportantDiagnostic("nativeWorkspace.runtime.timeout"),
+      "timeout native diagnostic events should persist in normal mode")
+    assertTrue(
+      !isNativePersistentLogImportantDiagnostic("nativeSidebar.gxserver.presentationDelta.applied"),
+      "routine native diagnostic events should require debugging mode")
   }
 }

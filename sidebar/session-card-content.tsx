@@ -624,6 +624,7 @@ export function getSessionTitleTooltipOptions({
 
 type SessionAgentIconProps = {
   agentIcon: SidebarSessionItem["agentIcon"];
+  delayedSendDeadlineAt?: string;
   delayedSendRemainingLabel?: string;
   faviconDataUrl?: string;
   isFavorite?: boolean;
@@ -739,6 +740,7 @@ function SessionAgentIconDecoration({
 
 export function SessionFloatingAgentIcon({
   agentIcon,
+  delayedSendDeadlineAt,
   delayedSendRemainingLabel,
   faviconDataUrl,
   isFavorite = false,
@@ -750,8 +752,13 @@ export function SessionFloatingAgentIcon({
   showTerminalIcon = false,
 }: SessionAgentIconProps & { onDelayedSendClick?: () => void }) {
   const effectiveSessionTag = getEffectiveSessionTag({ isFavorite, sessionTag });
+  const hasActiveDelayedSend = Boolean(delayedSendRemainingLabel || delayedSendDeadlineAt);
 
-  if (delayedSendRemainingLabel && !isPinned) {
+  if (hasActiveDelayedSend) {
+    /*
+    CDXC:DelayedSend 2026-06-06-05:29:
+    An active Delayed Send timer always owns the leading session icon slot, even when the session is tagged, pinned, or has a visible agent icon. The deadline alone is enough to show the yellow clock so a missing countdown label cannot hide the active timer state.
+    */
     return (
       <DelayedSendSidebarIcon
         className="session-floating-agent-tabler-icon session-delayed-send-agent-icon"
@@ -763,13 +770,7 @@ export function SessionFloatingAgentIcon({
 
   return (
     <>
-      {delayedSendRemainingLabel ? (
-        <DelayedSendSidebarIcon
-          className="session-floating-agent-tabler-icon session-delayed-send-agent-icon"
-          onClick={onDelayedSendClick}
-          remainingLabel={delayedSendRemainingLabel}
-        />
-      ) : effectiveSessionTag ? (
+      {effectiveSessionTag ? (
         <SessionTagSidebarIcon sessionTag={effectiveSessionTag} />
       ) : isPinned ? (
         <PinnedSessionSidebarIcon />
@@ -866,7 +867,7 @@ function DelayedSendSidebarIcon({
 }: {
   className: string;
   onClick?: () => void;
-  remainingLabel: string;
+  remainingLabel?: string;
 }) {
   /**
    * CDXC:DelayedSend 2026-05-17-03:14
@@ -878,7 +879,7 @@ function DelayedSendSidebarIcon({
    * directly in the leading agent-icon slot; a wrapper would become a separate
    * flow box and can push the clock above the session card.
    */
-  const tooltip = `Delayed Send in ${remainingLabel}`;
+  const tooltip = remainingLabel ? `Delayed Send in ${remainingLabel}` : "Delayed Send scheduled";
   return (
     <button
       aria-label={tooltip}

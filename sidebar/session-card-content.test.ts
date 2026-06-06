@@ -395,6 +395,36 @@ describe("SessionFloatingAgentIcon", () => {
     expect(markup).not.toContain('data-provider="tmux"');
     expect(markup).not.toContain(">t</span>");
   });
+
+  test("should show delayed send clock instead of a tag icon", () => {
+    const markup = renderToStaticMarkup(
+      createElement(SessionFloatingAgentIcon, {
+        agentIcon: "codex",
+        delayedSendRemainingLabel: "04:32",
+        sessionTag: "todo",
+      }),
+    );
+
+    expect(markup).toContain("session-delayed-send-agent-icon");
+    expect(markup).toContain('aria-label="Delayed Send in 04:32"');
+    expect(markup).not.toContain("session-tag-agent-icon");
+    expect(markup).not.toContain('data-session-tag="todo"');
+  });
+
+  test("should show delayed send clock when only a deadline is projected", () => {
+    const markup = renderToStaticMarkup(
+      createElement(SessionFloatingAgentIcon, {
+        agentIcon: "codex",
+        delayedSendDeadlineAt: "2026-06-06T10:00:00.000Z",
+        sessionTag: "favorite",
+      }),
+    );
+
+    expect(markup).toContain("session-delayed-send-agent-icon");
+    expect(markup).toContain('aria-label="Delayed Send scheduled"');
+    expect(markup).not.toContain("session-tag-agent-icon");
+    expect(markup).not.toContain('data-session-tag="favorite"');
+  });
 });
 
 describe("formatSessionHeadingText", () => {

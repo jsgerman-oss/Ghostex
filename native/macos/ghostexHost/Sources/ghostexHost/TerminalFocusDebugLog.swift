@@ -54,9 +54,16 @@ enum TerminalFocusDebugLog {
      focused repro. Startup pane breadcrumbs use the same forced write path and
      a distinct prefix so they can be found after a restart-time layout restore
      issue without broadening routine focus logging.
+
+     CDXC:Diagnostics 2026-06-06-07:09:
+     Forced native diagnostics are still regular logging unless the event is
+     warning/error/failure-like. Do not write routine forced/startup entries
+     when Debugging Mode is off, so normal app use only persists warnings,
+     errors, exceptions, and crashes.
      */
     let isStartupPaneLayoutEvent = event.hasPrefix("nativePaneLayoutStartup.")
-    guard force || isStartupPaneLayoutEvent || (NativeDebugLogging.isEnabled && !noisyEvents.contains(event)) else {
+    let isImportantDiagnostic = isNativePersistentLogImportantDiagnostic(event)
+    guard isImportantDiagnostic || (NativeDebugLogging.isEnabled && (force || isStartupPaneLayoutEvent || !noisyEvents.contains(event))) else {
       return
     }
     let logsDirectory = GhostexAppStorage.logsDirectory
@@ -133,6 +140,30 @@ enum TerminalFocusDebugLog {
 
 func nullableLogString(_ value: String?) -> Any {
   value ?? NSNull()
+}
+
+func isNativePersistentLogImportantDiagnostic(_ event: String) -> Bool {
+  /*
+   CDXC:Diagnostics 2026-06-06-07:09:
+   Persistent native logs should stay quiet during normal use but still capture
+   failures that support can inspect without asking users to reproduce with
+   Debugging Mode already enabled. Classify only warning/error/exception-style
+   event names as normal-mode writes; all routine diagnostics remain gated.
+  */
+  let normalized = event.lowercased()
+  return (
+    normalized.contains("warn")
+      || normalized.contains("error")
+      || normalized.contains("exception")
+      || normalized.contains("fail")
+      || normalized.contains("invalid")
+      || normalized.contains("missing")
+      || normalized.contains("timeout")
+      || normalized.contains("exhausted")
+      || normalized.contains("crash")
+      || normalized.contains("unhealthy")
+      || normalized.contains("portbusy")
+  )
 }
 
 enum NativeLogPrivacy {

@@ -23,7 +23,7 @@ test("agent launch command generation preserves Accept All flags and delayed sen
     globalAcceptAllEnabled: true,
   });
   assert.equal(codex.command, "codex --yolo");
-  assert.equal(codex.startupText, "codex --yolo\r");
+  assert.equal(codex.startupText, " codex --yolo\r");
   assert.equal(codex.startupTextDisposition, "queueAfterTerminalReady");
   assert.deepEqual(codex.delayedSend, {
     deadlineAt: "2026-05-30T16:00:00.000Z",
@@ -175,7 +175,7 @@ test("fork plan uses gxserver Codex runtime identity and Accept All policy", () 
 
   const plan = buildAgentForkPlan(project, session);
   assert.equal(plan.primaryCommand, 'codex --yolo fork "6a6c2672-6b45-45fe-a1a8-a73f9a3a9c56"');
-  assert.equal(plan.startupText, 'codex --yolo fork "6a6c2672-6b45-45fe-a1a8-a73f9a3a9c56"\r');
+  assert.equal(plan.startupText, ' codex --yolo fork "6a6c2672-6b45-45fe-a1a8-a73f9a3a9c56"\r');
   assert.equal(plan.startupTextDisposition, "queueAfterTerminalReady");
 });
 
@@ -222,7 +222,7 @@ test("fork session params persist server-owned startup plan for clients", () => 
   assert.equal(params.runtimeSettings?.forkedFromSessionId, "G1src");
   const launchPlan = params.launchSettings?.agentLaunchPlan as Record<string, unknown> | undefined;
   assert.equal(launchPlan?.command, 'claude --resume "claude-thread" --fork-session');
-  assert.equal(launchPlan?.startupText, 'claude --resume "claude-thread" --fork-session\r');
+  assert.equal(launchPlan?.startupText, ' claude --resume "claude-thread" --fork-session\r');
 });
 
 test("resume plan separates OpenCode lookup command from runtime Accept All command", () => {

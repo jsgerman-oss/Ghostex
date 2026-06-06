@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { createGxserverLogger, normalizeLogEntry } from "../src/logger.js";
@@ -50,6 +50,66 @@ test("JSONL logger writes one parseable camelCase entry per line", async () => {
       source: "unitTest",
     });
     assert.equal(Object.keys(parsed).some((key) => key.includes("_")), false);
+  } finally {
+    await rm(homeDir, { force: true, recursive: true });
+  }
+});
+
+test("JSONL logger suppresses info and debug when debugging mode is disabled", async () => {
+  const homeDir = await mkdtemp(path.join(tmpdir(), "gxserver-logs-gated-"));
+  try {
+    const paths = getGxserverPaths(homeDir);
+    const logger = createGxserverLogger(paths);
+
+    await logger.log({ event: "routine.info", level: "info", ts: "2026-06-06T03:09:00.000Z" });
+    await logger.log({ event: "routine.debug", level: "debug", ts: "2026-06-06T03:09:01.000Z" });
+    await logger.log({ event: "routine.warn", level: "warn", ts: "2026-06-06T03:09:02.000Z" });
+    await logger.log({ event: "routine.error", level: "error", ts: "2026-06-06T03:09:03.000Z" });
+
+    const lines = (await readFile(paths.logFile, "utf8")).trim().split("\n");
+    assert.deepEqual(
+      lines.map((line) => (JSON.parse(line) as Record<string, unknown>).event),
+      ["routine.warn", "routine.error"],
+    );
+  } finally {
+    await rm(homeDir, { force: true, recursive: true });
+  }
+});
+
+test("JSONL logger writes routine diagnostics when debugging mode is enabled", async () => {
+  const homeDir = await mkdtemp(path.join(tmpdir(), "gxserver-logs-debug-"));
+  try {
+    const paths = getGxserverPaths(homeDir);
+    await writeNativeSidebarSettings(homeDir, { debuggingMode: true });
+    const logger = createGxserverLogger(paths);
+
+    await logger.log({ event: "routine.info", level: "info", ts: "2026-06-06T03:09:00.000Z" });
+    await logger.log({ event: "routine.debug", level: "debug", ts: "2026-06-06T03:09:01.000Z" });
+
+    const lines = (await readFile(paths.logFile, "utf8")).trim().split("\n");
+    assert.deepEqual(
+      lines.map((line) => (JSON.parse(line) as Record<string, unknown>).event),
+      ["routine.info", "routine.debug"],
+    );
+  } finally {
+    await rm(homeDir, { force: true, recursive: true });
+  }
+});
+
+test("JSONL logger rotates oversized gxserver log files before appending", async () => {
+  const homeDir = await mkdtemp(path.join(tmpdir(), "gxserver-logs-rotate-"));
+  try {
+    const paths = getGxserverPaths(homeDir);
+    await mkdir(paths.logsDir, { recursive: true });
+    await writeFile(paths.logFile, `${"x".repeat(25 * 1024 * 1024)}\n`, "utf8");
+    const logger = createGxserverLogger(paths);
+
+    await logger.log({ event: "routine.warn", level: "warn", ts: "2026-06-06T03:26:00.000Z" });
+
+    const current = await readFile(paths.logFile, "utf8");
+    const rotated = await readFile(`${paths.logFile}.1`, "utf8");
+    assert.match(current, /routine\.warn/u);
+    assert.equal(rotated.startsWith("xxx"), true);
   } finally {
     await rm(homeDir, { force: true, recursive: true });
   }
@@ -145,3 +205,9 @@ test("typed operation scope rejection logs stay shareable", () => {
   });
   assert.doesNotMatch(JSON.stringify(normalized), /private-project|secret-token|bd list/);
 });
+
+async function writeNativeSidebarSettings(homeDir: string, settings: Record<string, unknown>): Promise<void> {
+  const stateDir = path.join(homeDir, ".ghostex", "state");
+  await mkdir(stateDir, { recursive: true });
+  await writeFile(path.join(stateDir, "native-sidebar-settings.json"), JSON.stringify(settings), "utf8");
+}

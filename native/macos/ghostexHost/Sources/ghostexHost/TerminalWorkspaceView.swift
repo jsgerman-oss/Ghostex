@@ -5645,11 +5645,14 @@ final class TerminalWorkspaceView: NSView {
        launching a fresh non-interactive zsh.
        */
       /**
-       CDXC:CommandPanes 2026-05-31-06:22:
-       Reused action panes stage command scripts through writeTerminalScript. Ghostty may insert carriage-return text without submitting it, leaving the visible `. /tmp/...zsh` line stuck until the next user action. Stage the source command as plain text, then submit it through sendTerminalEnter so reruns execute on the first click.
-       */
+      CDXC:CommandPanes 2026-05-31-06:22:
+      Reused action panes stage command scripts through writeTerminalScript. Ghostty may insert carriage-return text without submitting it, leaving the visible `. /tmp/...zsh` line stuck until the next user action. Stage the source command as plain text, then submit it through sendTerminalEnter so reruns execute on the first click.
+
+      CDXC:TerminalAutomation 2026-06-06-16:58:
+      Temp restore/action script source commands are Ghostex-owned shell input, not user-entered terminal history. Prefix exactly one leading space before staging the `. /tmp/...; rm ...` command so Atuin ignores automated restore and command-pane rerun entries.
+      */
       let command =
-        ". \(quotedPath); /bin/rm -f -- \(quotedPath)"
+        " . \(quotedPath); /bin/rm -f -- \(quotedPath)"
       TerminalFocusDebugLog.append(
         event: "nativeWorkspace.writeTerminalScript",
         details: [
@@ -6310,6 +6313,7 @@ final class TerminalWorkspaceView: NSView {
      borders without touching focusedSessionId, first responder, titlebar
      webviews, or project/editor state.
      */
+    let previousDelayedSendRemainingLabels = sessionDelayedSendRemainingLabels
     attentionSessionIds = Set(command.attentionSessionIds ?? [])
     sessionAgentIconColors = command.sessionAgentIconColors ?? [:]
     sessionAgentIconDataUrls = command.sessionAgentIconDataUrls ?? [:]
@@ -6322,7 +6326,9 @@ final class TerminalWorkspaceView: NSView {
     sessionTitleBarActions = command.sessionTitleBarActions ?? [:]
     sessionTitles = command.sessionTitles ?? [:]
     zmxInactiveSessionIds = Set(command.sessionZmxInactiveIds ?? [])
-    if previousFirstPromptTitleGenerationSessionIds != firstPromptTitleGenerationSessionIds {
+    if previousDelayedSendRemainingLabels != sessionDelayedSendRemainingLabels ||
+      previousFirstPromptTitleGenerationSessionIds != firstPromptTitleGenerationSessionIds
+    {
       needsLayout = true
     }
     for session in sessions.values {
@@ -6332,6 +6338,13 @@ final class TerminalWorkspaceView: NSView {
        while the terminal is already mounted. Push the updated label into the
        floating pane badge here so the visible session counts down without
        waiting for a broader layout sync.
+
+       CDXC:DelayedSend 2026-06-06-06:50:
+       Starting or cancelling a Delayed Send timer can arrive through this
+       chrome-only path before any tab switch or split relayout. Mark the
+       workspace layout dirty when the timer-label map changes so the newly
+       visible badge receives its top-right frame immediately instead of drawing
+       from a stale pane-container origin.
        */
       session.delayedSendLabelView.setRemainingLabel(
         sessionDelayedSendRemainingLabels[session.sessionId])
@@ -14939,22 +14952,27 @@ private enum NativeSessionPersistenceMode {
     process.standardOutput = Pipe()
     process.standardError = Pipe()
     process.terminationHandler = { terminatedProcess in
-      let stdout = stringFromPipe(terminatedProcess.standardOutput as? Pipe)
-      let stderr = stringFromPipe(terminatedProcess.standardError as? Pipe)
+      let stdoutBytes = byteCountFromPipe(terminatedProcess.standardOutput as? Pipe)
+      let stderrBytes = byteCountFromPipe(terminatedProcess.standardError as? Pipe)
       let eventName =
         terminatedProcess.terminationStatus == 0
         ? "nativeWorkspace.persistenceSessionKill.completed"
         : "nativeWorkspace.persistenceSessionKill.failed"
       DispatchQueue.main.async {
+        /**
+         CDXC:LoggingPrivacy 2026-06-06-06:46:
+         Persistence kill diagnostics are written to support-bundle logs. Keep
+         the event structured but never write provider session names or command
+         stdout/stderr because those can expose user-owned content.
+         */
         TerminalFocusDebugLog.append(
           event: eventName,
           details: [
             "provider": provider.rawValue,
             "reason": reason,
             "sessionId": sessionId,
-            "sessionName": sessionName,
-            "stderr": stderr,
-            "stdout": stdout,
+            "stderrBytes": stderrBytes,
+            "stdoutBytes": stdoutBytes,
             "terminationStatus": Int(terminatedProcess.terminationStatus),
           ])
       }
@@ -14967,17 +14985,16 @@ private enum NativeSessionPersistenceMode {
           "provider": provider.rawValue,
           "reason": reason,
           "sessionId": sessionId,
-          "sessionName": sessionName,
         ])
     } catch {
+      let nsError = error as NSError
       TerminalFocusDebugLog.append(
         event: "nativeWorkspace.persistenceSessionKill.launchFailed",
         details: [
-          "error": error.localizedDescription,
+          "errorCode": nsError.code,
           "provider": provider.rawValue,
           "reason": reason,
           "sessionId": sessionId,
-          "sessionName": sessionName,
         ])
     }
   }
@@ -15025,13 +15042,11 @@ private enum NativeSessionPersistenceMode {
     }
   }
 
-  private static func stringFromPipe(_ pipe: Pipe?) -> String {
+  private static func byteCountFromPipe(_ pipe: Pipe?) -> Int {
     guard let pipe else {
-      return ""
+      return 0
     }
-    let data = pipe.fileHandleForReading.readDataToEndOfFile()
-    return String(data: data, encoding: .utf8)?
-      .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    return pipe.fileHandleForReading.readDataToEndOfFile().count
   }
 
   private static func tmuxAttachCommand(
@@ -23823,6 +23838,14 @@ private final class TerminalPaneDelayedSendLabelView: NSTextField {
     isHidden = nextLabel.isEmpty
     needsLayout = true
     superview?.needsLayout = true
+    /*
+     CDXC:DelayedSend 2026-06-06-06:50:
+     TerminalWorkspaceView owns the in-workspace Delayed Send badge frame, while
+     the direct superview is only a leaf pane container. Bubble invalidation one
+     level higher so first show/hide and countdown-width changes do not wait for
+     a later tab-switch layout pass to move the timer to the top-right corner.
+     */
+    superview?.superview?.needsLayout = true
   }
 }
 

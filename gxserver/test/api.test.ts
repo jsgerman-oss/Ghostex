@@ -1425,7 +1425,7 @@ test("zmx lifecycle API starts missing providers through detached zmx run withou
       assert.equal(start.body.result.providerState.lifecycleState, "exists");
       const runScript = calls.find((script) => script.includes('run "$zmx_session" -d /bin/zsh -lc "$zmx_startup_command"'));
       assert.ok(runScript);
-      assert.match(runScript, /zmx_startup_command='codex --yolo'/);
+      assert.match(runScript, /zmx_startup_command=' codex --yolo'/);
       assert.match(runScript, /export GHOSTEX_GLOBAL_SESSION_REF=/);
       assert.match(runScript, /cd "\$zmx_cwd" \|\| exit/);
 
@@ -2898,6 +2898,7 @@ test("repository clone preview reports existing default destination and start re
 
 test("/api/queryLogs enforces auth, protocol, method, and returns filtered logs", async () => {
   await withApiServer("local", async ({ baseUrl, paths, token }) => {
+    await writeNativeSidebarSettings(paths.homeDir, { debuggingMode: true });
     await createGxserverLogger(paths).log({
       client: "cli",
       event: "agent.detected",
@@ -3501,6 +3502,12 @@ async function waitForProcessExit(child: ChildProcessWithoutNullStreams, timeout
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function writeNativeSidebarSettings(homeDir: string, settings: Record<string, unknown>): Promise<void> {
+  const stateDir = path.join(homeDir, ".ghostex", "state");
+  await mkdir(stateDir, { recursive: true });
+  await writeFile(path.join(stateDir, "native-sidebar-settings.json"), JSON.stringify(settings), "utf8");
 }
 
 function runGitForTest(cwd: string, args: readonly string[]): void {

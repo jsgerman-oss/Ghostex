@@ -16,6 +16,7 @@ import type { GxserverProjectId, GxserverSessionId } from "../protocol/index.js"
 
 test("first-run import migrates macOS sidebar projects, active and sleeping sessions, metadata, settings, commands, and logs", async () => {
   await withLegacyImportFixture(async (fixture) => {
+    await updateNativeSidebarSettings(fixture.sharedSettingsFile, { debuggingMode: true });
     const beforeSettingsText = await readFile(fixture.sharedSettingsFile, "utf8");
     const result = await runImport(fixture);
 
@@ -846,6 +847,14 @@ async function runImport(fixture: LegacyImportFixture) {
     serverId: "S7k",
     sharedStateDir: fixture.sharedStateDir,
   });
+}
+
+async function updateNativeSidebarSettings(
+  settingsFile: string,
+  patch: Record<string, unknown>,
+): Promise<void> {
+  const settings = JSON.parse(await readFile(settingsFile, "utf8")) as Record<string, unknown>;
+  await writeFile(settingsFile, JSON.stringify({ ...settings, ...patch }), "utf8");
 }
 
 async function createLegacyLocalStorageDatabase(filePath: string, values: Record<string, string>): Promise<void> {

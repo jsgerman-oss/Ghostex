@@ -1141,8 +1141,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
      Forced session-title entries record Codex title-generation failures even
      when debugging mode is disabled. Those failures must persist to the
      session-title log instead of interrupting the user with a native alert.
+
+     CDXC:Diagnostics 2026-06-06-07:09:
+     The force flag is not a normal-mode logging override for routine
+     breadcrumbs. Persist warning/error/failure-like session-title events with
+     Debugging Mode off, and keep all other session-title diagnostics behind the
+     settings toggle.
      */
-    guard force || NativeDebugLogging.isEnabled else {
+    guard isNativePersistentLogImportantDiagnostic(event) || NativeDebugLogging.isEnabled else {
       return
     }
     let logsDirectory = GhostexAppStorage.logsDirectory
@@ -1158,7 +1164,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
      title events, detector output, and sidebar projection can be correlated
      without mixing them with session rename diagnostics.
      */
-    guard NativeDebugLogging.isEnabled else {
+    guard isNativePersistentLogImportantDiagnostic(event) || NativeDebugLogging.isEnabled else {
       return
     }
     let logsDirectory = GhostexAppStorage.logsDirectory

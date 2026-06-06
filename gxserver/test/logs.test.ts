@@ -11,6 +11,7 @@ test("log query filters malformed JSONL, identities, timestamps, limit, and orde
   const homeDir = await mkdtemp(path.join(tmpdir(), "gxserver-query-"));
   try {
     const paths = getGxserverPaths(homeDir);
+    await writeNativeSidebarSettings(homeDir, { debuggingMode: true });
     const logger = createGxserverLogger(paths);
     await logger.log({
       client: "cli",
@@ -114,6 +115,7 @@ test("log query reverse flag maps to descending order", async () => {
   const homeDir = await mkdtemp(path.join(tmpdir(), "gxserver-query-reverse-"));
   try {
     const paths = getGxserverPaths(homeDir);
+    await writeNativeSidebarSettings(homeDir, { debuggingMode: true });
     const logger = createGxserverLogger(paths);
     await logger.log({ event: "first", level: "info", ts: "2026-05-30T10:00:00.000Z" });
     await logger.log({ event: "second", level: "info", ts: "2026-05-30T10:01:00.000Z" });
@@ -128,3 +130,9 @@ test("log query reverse flag maps to descending order", async () => {
     await rm(homeDir, { force: true, recursive: true });
   }
 });
+
+async function writeNativeSidebarSettings(homeDir: string, settings: Record<string, unknown>): Promise<void> {
+  const stateDir = path.join(homeDir, ".ghostex", "state");
+  await mkdir(stateDir, { recursive: true });
+  await writeFile(path.join(stateDir, "native-sidebar-settings.json"), JSON.stringify(settings), "utf8");
+}

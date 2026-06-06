@@ -93,6 +93,9 @@ Desktop render surfaces must advertise Monaco support to zmx at attach time only
 
 CDXC:GxserverSessionTitle 2026-06-04-04:05:
 Agent hooks running inside server-created zmx sessions must report identity and first prompts back to gxserver even when no macOS state file exists. Export the gxserver base URL, protocol version, global session ref, and auth token file path so hooks can call the authenticated session-state API without embedding the bearer token in attach/run command text.
+
+CDXC:GxserverSessionIO 2026-06-06-16:58:
+Server-owned zmx run startup commands can execute without the macOS sidebar queue. Preserve or add a single leading shell-history ignore space before passing startup text to the interactive zsh command so automated resume/fork/launch commands do not enter Atuin history.
 */
 
 export function buildZmxAttachCommand(input: GxserverZmxAttachCommandInput): string {
@@ -198,7 +201,7 @@ export function buildZmxRunCommand(input: GxserverZmxRunCommandInput): string {
   CDXC:GxserverRemoteAgents 2026-06-03-02:18:
   Remote gxserver can create agent sessions without a local macOS renderer, so it also needs a bounded way to start the backing zmx provider. This command launches only the named session with server-owned startup text, cwd, bundled zmx, and gxserver identity; it does not expose generic process execution.
   */
-  const startupCommand = input.startupText.replace(/[\r\n]+$/u, "").trim();
+  const startupCommand = withAtuinIgnoredShellHistoryPrefix(input.startupText.replace(/[\r\n]+$/u, ""));
   return `
 zmx_session=${shellQuote(input.sessionName)}
 zmx_cwd=${shellQuote(input.cwd)}
@@ -232,6 +235,14 @@ fi
 cd "$zmx_cwd" || exit
 exec "$zmx_bin" run "$zmx_session" -d /bin/zsh -lc "$zmx_startup_command"
 `.trim();
+}
+
+function withAtuinIgnoredShellHistoryPrefix(text: string): string {
+  const trimmedRight = text.trimEnd();
+  if (!trimmedRight.trim()) {
+    return "";
+  }
+  return trimmedRight.startsWith(" ") ? trimmedRight : ` ${trimmedRight.trimStart()}`;
 }
 
 export function buildZmxExistsCommand(input: {

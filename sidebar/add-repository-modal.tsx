@@ -12,8 +12,10 @@ import {
 import { Field, FieldDescription, FieldGroup, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import type { GxserverRepositoryClonePreviewResult } from "../shared/gxserver-protocol";
+import { parseRepositoryCloneInput } from "../shared/repository-clone";
 import { AppTooltip, TooltipProvider } from "./app-tooltip";
 import { postAppModalHostMessage } from "./app-modal-host-bridge";
+import { canSubmitAddRepositoryClone } from "./add-repository-modal-state";
 import { RemoteProjectPickerModal } from "./remote-project-picker/remote-project-picker-modal";
 import type {
   T3FilesystemBrowseInput,
@@ -247,19 +249,21 @@ export function AddRepositoryModal({
 
   const hasInvalidRepositoryInput = repositoryInput.trim().length > 0 && Boolean(previewErrorMessage);
   const destinationWarning = clonePreview?.destinationExists ? clonePreview.warning : undefined;
-  const canClone =
-    !isCloning &&
-    Boolean(clonePreview) &&
-    !clonePreview?.destinationExists &&
-    !previewErrorMessage &&
-    folderPath.trim().length > 0 &&
-    newFolderName.trim().length > 0;
+  const canClone = canSubmitAddRepositoryClone({
+    clonePreview,
+    folderPath,
+    isCloning,
+    newFolderName,
+    previewErrorMessage,
+    repositoryInput,
+  });
 
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     setErrorMessage(undefined);
+    const normalizedRepositoryInput = repositoryInput.trim();
     const normalizedFolderPath = folderPath.trim();
-    if (!clonePreview || previewErrorMessage) {
+    if (!parseRepositoryCloneInput(normalizedRepositoryInput)) {
       setErrorMessage("Enter a Git repository to clone.");
       return;
     }
@@ -271,8 +275,12 @@ export function AddRepositoryModal({
       setErrorMessage("Enter a new folder name.");
       return;
     }
-    if (clonePreview.destinationExists) {
+    if (clonePreview?.destinationExists) {
       setErrorMessage(clonePreview.warning ?? "Choose a new folder name before cloning.");
+      return;
+    }
+    if (previewErrorMessage) {
+      setErrorMessage(previewErrorMessage);
       return;
     }
 
@@ -288,7 +296,7 @@ export function AddRepositoryModal({
       cloneMainOnly,
       folderPath: normalizedFolderPath,
       newFolderName: newFolderName.trim(),
-      repositoryInput,
+      repositoryInput: normalizedRepositoryInput,
       requestId,
       shallowClone,
     });
@@ -397,6 +405,8 @@ export function AddRepositoryModal({
                   setNewFolderName(event.currentTarget.value);
                   setHasEditedNewFolderName(true);
                   hasEditedNewFolderNameRef.current = true;
+                  setClonePreview(undefined);
+                  setPreviewErrorMessage(undefined);
                   setErrorMessage(undefined);
                 }}
                 placeholder="Repository folder name"

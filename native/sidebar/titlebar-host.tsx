@@ -193,7 +193,7 @@ type TitlebarNotice = {
   body: string;
   icon: TitlebarTipIcon;
   id: string;
-  settingsTarget: "agentHooks" | "sessionPersistence";
+  settingsTarget: "agentHooks" | "debuggingMode" | "sessionPersistence";
   title: string;
 };
 
@@ -450,6 +450,20 @@ const TITLEBAR_PERSISTENCE_OFF_NOTICE: TitlebarNotice = {
   id: "session-persistence-off-mobile-attach",
   settingsTarget: "sessionPersistence",
   title: "Mobile attach needs persistence",
+};
+
+/**
+ * CDXC:DiagnosticsSettings 2026-06-06-07:09:
+ * Debugging Mode intentionally writes detailed diagnostics to disk and can
+ * affect app performance. Surface a non-dismissable Tips & Tricks notice while
+ * it is enabled so users turn it off after reproducing an issue.
+ */
+const TITLEBAR_DEBUGGING_MODE_NOTICE: TitlebarNotice = {
+  body: "Ghostex is writing detailed diagnostics to disk. Turn Debug logging and UI off when you are not actively debugging to reduce CPU and disk use.",
+  icon: "warning",
+  id: "debugging-mode-enabled",
+  settingsTarget: "debuggingMode",
+  title: "Debug mode is on",
 };
 
 function createTitlebarMissingAgentHooksNotice(
@@ -1346,9 +1360,10 @@ function App() {
       ...(projectState.sessionPersistenceProvider === "off"
         ? [TITLEBAR_PERSISTENCE_OFF_NOTICE]
         : []),
+      ...(projectState.debuggingMode ? [TITLEBAR_DEBUGGING_MODE_NOTICE] : []),
       ...(missingAgentHooksNotice ? [missingAgentHooksNotice] : []),
     ],
-    [missingAgentHooksNotice, projectState.sessionPersistenceProvider],
+    [missingAgentHooksNotice, projectState.debuggingMode, projectState.sessionPersistenceProvider],
   );
   const markTipRead = useCallback((tipId: string) => {
     setReadTipIds((current) => {
@@ -2065,9 +2080,23 @@ function App() {
     });
   };
 
+  const openDebuggingModeSettings = () => {
+    setTipsMenuOpen(false);
+    window.webkit?.messageHandlers?.ghostexAppModalHost?.postMessage({
+      initialSearchQuery: "Debug logging and UI",
+      initialTab: "settings",
+      modal: "settings",
+      type: "open",
+    });
+  };
+
   const openNoticeSettings = (target: TitlebarNotice["settingsTarget"]) => {
     if (target === "agentHooks") {
       openAgentHooksSettings();
+      return;
+    }
+    if (target === "debuggingMode") {
+      openDebuggingModeSettings();
       return;
     }
     openSessionPersistenceSettings();

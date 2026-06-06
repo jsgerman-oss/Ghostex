@@ -15,6 +15,10 @@ import {
   type NativeGxserverResponseEvent,
 } from "./gxserver-client";
 import {
+  hasGxserverPresentationZmxRuntime,
+  shouldUseGxserverProviderTransition,
+} from "./gxserver-provider-transition";
+import {
   createNativeLayoutSyncKey,
   createNativePaneOwnerSelectionKey,
   normalizeNativeLayoutSyncValue,
@@ -1596,6 +1600,7 @@ const terminalStateById = new Map<
     lastActivityAt?: string;
     lastStartedAt?: string;
     lifecycleState: "done" | "error" | "running" | "sleeping";
+    manualGeneratedRenameInProgress?: boolean;
     protectStoredTitleFromAutomation?: boolean;
     sessionPersistenceName?: string;
     sessionPersistenceProvider?: TerminalSessionPersistenceProvider;
@@ -1611,6 +1616,20 @@ native sidebar caches the returned projection only to render local client-owned
 layout rows; it does not recompute whether a raw terminal title is final.
 */
 const gxserverTitleProjectionBySessionKey = new Map<string, GxserverSessionTitleProjection>();
+
+function isNativeSessionTitleGenerationOverlayActive(
+  terminalState: NonNullable<ReturnType<typeof terminalStateById.get>> | undefined,
+): boolean {
+  /*
+  CDXC:SessionRename 2026-06-06-06:51:
+  Manual Rename > Generate Name uses the same "Generating title" overlay as first-prompt naming, but it is a local modal-driven rename lifecycle. Keep its flag separate from gxserver's first-prompt status so presentation deltas cannot clear the modal overlay before the generated rename has been requested, staged, and submitted.
+  */
+  return (
+    terminalState?.firstPromptAutoRenameInProgress === true ||
+    terminalState?.manualGeneratedRenameInProgress === true
+  );
+}
+
 let latestNativeAgentHookStatus: SidebarAgentHookStatusMessage | undefined;
 let nativeAgentHookStatusRequestInFlight = false;
 let nativeAgentHookStatusAutoRequestQueued = false;
@@ -1740,13 +1759,21 @@ function queueNativeTerminalStartupText(sessionId: string, text: string): void {
     pendingNativeTerminalStartupTextBySessionId.delete(sessionId);
     return;
   }
-  pendingNativeTerminalStartupTextBySessionId.set(sessionId, text);
+  pendingNativeTerminalStartupTextBySessionId.set(sessionId, withAtuinIgnoredShellHistoryPrefix(text));
 }
 
 function takeNativeTerminalStartupText(sessionId: string): string | undefined {
   const text = pendingNativeTerminalStartupTextBySessionId.get(sessionId);
   pendingNativeTerminalStartupTextBySessionId.delete(sessionId);
   return text;
+}
+
+function withAtuinIgnoredShellHistoryPrefix(text: string): string {
+  /*
+  CDXC:TerminalAutomation 2026-06-06-16:58:
+  Ghostex-owned startup, resume, fork, restore, and command-pane action scripts are typed into interactive shells where Atuin can record them as user history. Prefix exactly one leading space at the shell-input boundary so app-generated commands stay out of Atuin history while agent CLI commands such as `/rename` remain unchanged on their direct write path.
+  */
+  return text.startsWith(" ") ? text : ` ${text}`;
 }
 
 function waitForNativeTerminalReady(
@@ -3505,10 +3532,11 @@ function postOSIntegrationStatus(message: SidebarOSIntegrationStatusMessage): vo
 }
 
 function appendSessionTitleDebugLog(event: string, details?: unknown): void {
-  if (!isNativeSidebarDebugLoggingEnabled()) {
+  const isImportantDiagnostic = shouldPersistNativeSidebarDiagnostic(event);
+  if (!isImportantDiagnostic && !isNativeSidebarDebugLoggingEnabled()) {
     return;
   }
-  if (!shouldPersistNativeSidebarDiagnostic(event)) {
+  if (!isImportantDiagnostic) {
     return;
   }
   postNative({
@@ -3558,10 +3586,11 @@ function appendAgentDetectionDebugLog(event: string, details?: unknown): void {
    * switch and drop non-error events before they cross the WebKit bridge so
    * long-running sidebar sessions cannot create multi-GB app logs.
    */
-  if (!isNativeSidebarDebugLoggingEnabled()) {
+  const isImportantDiagnostic = shouldPersistNativeSidebarDiagnostic(event);
+  if (!isImportantDiagnostic && !isNativeSidebarDebugLoggingEnabled()) {
     return;
   }
-  if (!shouldPersistNativeSidebarDiagnostic(event)) {
+  if (!isImportantDiagnostic) {
     return;
   }
   postNative({
@@ -3586,11 +3615,17 @@ function appendTerminalFocusDebugLog(
    * User-reproduced tab creation bugs need low-volume paneLayout traces while
    * Debugging Mode is enabled. Forced entries may bypass the noisy-event filter
    * for a focused repro, but they still respect the app-wide debug-mode gate.
+   *
+   * CDXC:Diagnostics 2026-06-06-07:09:
+   * Normal mode may persist warning/error/failure-like diagnostics, but routine
+   * forced focus breadcrumbs must wait for Debugging Mode so repro logging does
+   * not become a performance issue during everyday sidebar use.
    */
-  if (!isNativeSidebarDebugLoggingEnabled()) {
+  const isImportantDiagnostic = shouldPersistNativeSidebarDiagnostic(event);
+  if (!isImportantDiagnostic && !isNativeSidebarDebugLoggingEnabled()) {
     return;
   }
-  if (!options.force && !shouldPersistNativeSidebarDiagnostic(event)) {
+  if (!isImportantDiagnostic && !options.force) {
     return;
   }
   window.webkit?.messageHandlers?.ghostexNativeHost?.postMessage({
@@ -3612,11 +3647,17 @@ function appendLayoutLayeringDebugLog(
    * focus noise. Send paneLayout synthesis, native hit-test routing, and
    * browser/editor overlap breadcrumbs through a dedicated native log command
    * while preserving the same Debugging Mode gate as ordinary diagnostics.
+   *
+   * CDXC:Diagnostics 2026-06-06-07:09:
+   * Failure-like layout/layering events can persist in normal mode, but routine
+   * forced pane-layout traces are Debugging Mode diagnostics so they cannot
+   * spam disk when users are not actively reproducing an issue.
    */
-  if (!isNativeSidebarDebugLoggingEnabled()) {
+  const isImportantDiagnostic = shouldPersistNativeSidebarDiagnostic(event);
+  if (!isImportantDiagnostic && !isNativeSidebarDebugLoggingEnabled()) {
     return;
   }
-  if (!options.force && !shouldPersistNativeSidebarDiagnostic(event)) {
+  if (!isImportantDiagnostic && !options.force) {
     return;
   }
   postNative({
@@ -3757,8 +3798,18 @@ function appendSidebarRefreshDebugLog(event: string, details?: unknown): void {
    * file keyed to the Settings debugging switch. Persist only explicit React
    * lifecycle, hydrate, publish, and requested create/close boundaries so the
    * log shows whether the sidebar remounted or merely received a new snapshot.
+   *
+   * CDXC:SidebarRefreshDiagnostics 2026-06-06-07:09:
+   * Presentation streams can emit many no-op deltas while title spinners run.
+   * Persist failure-like refresh diagnostics immediately, but sample routine
+   * message/render/delta breadcrumbs in Debugging Mode so the debug log remains
+   * useful without turning WebKit logging into a CPU and disk hotspot.
    */
-  if (!isNativeSidebarDebugLoggingEnabled()) {
+  const isImportantDiagnostic = shouldPersistNativeSidebarDiagnostic(event);
+  if (!isImportantDiagnostic && !isNativeSidebarDebugLoggingEnabled()) {
+    return;
+  }
+  if (!isImportantDiagnostic && !shouldPersistSidebarRefreshDebugLog(event)) {
     return;
   }
   postNative({
@@ -3835,6 +3886,41 @@ function shouldPersistNativeSidebarDiagnostic(event: string): boolean {
     normalizedEvent.includes("unhealthy") ||
     normalizedEvent.includes("portbusy")
   );
+}
+
+const SIDEBAR_REFRESH_DEBUG_LOG_SAMPLE_MS = 5_000;
+const sidebarRefreshDebugLogSampleAtByEvent = new Map<string, number>();
+
+function shouldPersistSidebarRefreshDebugLog(event: string): boolean {
+  if (isHighVolumeSidebarRefreshDebugEvent(event)) {
+    return shouldSampleSidebarRefreshDebugLog(event, SIDEBAR_REFRESH_DEBUG_LOG_SAMPLE_MS);
+  }
+  return true;
+}
+
+function isHighVolumeSidebarRefreshDebugEvent(event: string): boolean {
+  return (
+    event === "messageReceived" ||
+    event === "messageApplied" ||
+    event === "renderStateChanged" ||
+    event.endsWith(".presentationDelta.applied") ||
+    event.endsWith(".presentationPaneChrome.applied") ||
+    event.endsWith(".presentationActivity.localFirst") ||
+    event.endsWith(".presentationLifecycle.localFirst") ||
+    event.endsWith(".presentationProject.materialized") ||
+    event.endsWith(".presentationProject.materializeSkipped") ||
+    event.endsWith(".status")
+  );
+}
+
+function shouldSampleSidebarRefreshDebugLog(event: string, intervalMs: number): boolean {
+  const nowMs = Date.now();
+  const previousMs = sidebarRefreshDebugLogSampleAtByEvent.get(event);
+  if (previousMs !== undefined && nowMs - previousMs < intervalMs) {
+    return false;
+  }
+  sidebarRefreshDebugLogSampleAtByEvent.set(event, nowMs);
+  return true;
 }
 
 function isNativeSidebarDebugLoggingEnabled(): boolean {
@@ -13777,7 +13863,7 @@ function createProjectedSidebarSessionsForGroup(
       lifecycleState:
         terminalState?.lifecycleState ??
         (isLive ? "running" : session.lifecycleState),
-      isGeneratingFirstPromptTitle: terminalState?.firstPromptAutoRenameInProgress === true,
+      isGeneratingFirstPromptTitle: isNativeSessionTitleGenerationOverlayActive(terminalState),
       isRunning: isLive,
       isPrimaryTitleTerminalTitle:
         gxserverTitleProjection?.isPrimaryTitleTerminalTitle ??
@@ -19826,11 +19912,28 @@ function readGxserverFirstPromptTitleGenerationRunning(
   return status === "running";
 }
 
+function setNativeManualGeneratedRenameInProgress(sessionId: string, inProgress: boolean): void {
+  const terminalState = terminalStateById.get(sessionId);
+  if (!terminalState) {
+    return;
+  }
+  const nextValue = inProgress ? true : undefined;
+  if (terminalState.manualGeneratedRenameInProgress === nextValue) {
+    return;
+  }
+  /*
+  CDXC:SessionRename 2026-06-06-06:51:
+  The Cmd+R Generate Name flow should keep the visible title overlay up for the whole rename transaction, not only for the prompt summarization call. Clear this local flag only when the generated title has either failed, applied without an agent command, or the staged agent rename command has been submitted.
+  */
+  terminalState.manualGeneratedRenameInProgress = nextValue;
+  publish();
+}
+
 async function pollNativeFirstPromptAutoRenameSessions(): Promise<void> {
   for (const [sessionId, terminalState] of terminalStateById.entries()) {
     if (
       terminalState.lifecycleState !== "running" ||
-      terminalState.firstPromptAutoRenameInProgress
+      isNativeSessionTitleGenerationOverlayActive(terminalState)
     ) {
       continue;
     }
@@ -20951,9 +21054,7 @@ function applyGxserverSessionTransition(
     : undefined;
   const canTransitionLocalTerminal = session?.kind === "terminal";
   const canTransitionPresentationSession =
-    session === undefined &&
-    presentationSession?.surface === "workspace" &&
-    presentationSession.zmxName.trim().length > 0;
+    session === undefined && hasGxserverPresentationZmxRuntime(presentationSession);
   if (
     (!canTransitionLocalTerminal && !canTransitionPresentationSession) ||
     !isCanonicalGxserverProjectSession(reference.project.projectId, reference.sessionId)
@@ -20975,10 +21076,11 @@ function applyGxserverSessionTransition(
     { kind: origin.kind, orderedSessions } as NativeGxserverSessionTransitionOrigin,
   );
 
-  const shouldUseProviderTransition =
-    localProvider === "zmx" ||
-    (session === undefined && presentationSession?.surface === "workspace" && presentationSession.zmxName.trim().length > 0);
-  if (!shouldUseProviderTransition) {
+  const useProviderTransition = shouldUseGxserverProviderTransition({
+    localProvider,
+    presentation: presentationSession,
+  });
+  if (!useProviderTransition) {
     updateGxserverSessionLifecycleOnly(
       reference.project.projectId,
       reference.sessionId,
@@ -22613,10 +22715,7 @@ async function renameNativeSidebarTerminalSession(
    */
   let requestedTitle = requestedTitleInput;
   if (shouldGenerateTitle) {
-    if (terminalState) {
-      terminalState.firstPromptAutoRenameInProgress = true;
-      publish();
-    }
+    setNativeManualGeneratedRenameInProgress(reference.sessionId, true);
     appendSessionTitleDebugLog("nativeSidebar.renameSession.generateTitle.started", {
       pastedTextLength: requestedTitleInput.length,
       sessionId: reference.sessionId,
@@ -22642,12 +22741,8 @@ async function renameNativeSidebarTerminalSession(
         sessionId: reference.sessionId,
         source,
       });
+      setNativeManualGeneratedRenameInProgress(reference.sessionId, false);
       return;
-    } finally {
-      if (terminalState) {
-        terminalState.firstPromptAutoRenameInProgress = false;
-        publish();
-      }
     }
   }
 
@@ -22696,6 +22791,7 @@ async function renameNativeSidebarTerminalSession(
         source,
       });
       if (!result.shouldSendAgentRenameCommand) {
+        setNativeManualGeneratedRenameInProgress(reference.sessionId, false);
         publish();
         return;
       }
@@ -22709,6 +22805,7 @@ async function renameNativeSidebarTerminalSession(
         source,
       });
       if (!agentName?.trim()) {
+        setNativeManualGeneratedRenameInProgress(reference.sessionId, false);
         return;
       }
     }
@@ -22764,6 +22861,7 @@ async function renameNativeSidebarTerminalSession(
       sessionId: reference.sessionId,
       source,
     });
+    setNativeManualGeneratedRenameInProgress(reference.sessionId, false);
     publish();
     return;
   }
@@ -22825,6 +22923,7 @@ async function renameNativeSidebarTerminalSession(
       sessionId: reference.sessionId,
       source,
     });
+    setNativeManualGeneratedRenameInProgress(reference.sessionId, false);
   }, AUTO_SUBMIT_STAGED_RENAME_DELAY_MS);
   publish();
 }
@@ -22837,9 +22936,13 @@ function stopNativeSleepingSessionRuntime(
   const nativeSessionId = forgetNativeSessionMappingForProject(project.projectId, sessionId);
   const session = findTerminalSessionInProject(project, sessionId);
   const terminalState = terminalStateById.get(sessionId);
+  const presentationSession = findGxserverPresentationSession(project.projectId, sessionId);
   const shouldStopZmxThroughGxserver =
     options.gxserverTransitionHandled !== true &&
-    (terminalState?.sessionPersistenceProvider ?? session?.sessionPersistenceProvider) === "zmx";
+    shouldUseGxserverProviderTransition({
+      localProvider: terminalState?.sessionPersistenceProvider ?? session?.sessionPersistenceProvider,
+      presentation: presentationSession,
+    });
   clearNativeSidebarCommandSessionBySessionId(sessionId);
   terminalStateById.delete(sessionId);
   clearSettledTerminalTitleSync(sessionId);
@@ -25210,7 +25313,7 @@ async function searchPreviousSessionsByText(): Promise<void> {
    * replace it.
    */
   appendAgentDetectionDebugLog("nativeSidebar.searchPreviousSessionsByText.received");
-  const session = createTerminal("Search by Text", "gx f\r", undefined, undefined, {
+  const session = createTerminal("Search by Text", withAtuinIgnoredShellHistoryPrefix("gx f\r"), undefined, undefined, {
     titleSource: "placeholder",
     visiblePlacement: createFocusedTabGroupPlacement(),
   });
@@ -25280,7 +25383,7 @@ function getNativeSidebarCommandExecutionText(
    * available for lifecycle tracking, but it must stay off the visible terminal
    * input path so users see only their action output.
    */
-  return [
+  return withAtuinIgnoredShellHistoryPrefix([
     "__ghostex_command_pane_action() {",
     command,
     "}",
@@ -25291,7 +25394,7 @@ function getNativeSidebarCommandExecutionText(
     getNativeSidebarCommandStatusStampText("idle", runId, "$__ghostex_exit"),
     !closeOnExit && options.continueWithInteractiveShell ? "exec /bin/zsh -l" : "",
     closeOnExit ? 'exit "$__ghostex_exit"' : "",
-  ].filter(Boolean).join("\n");
+  ].filter(Boolean).join("\n"));
 }
 
 function getNativeSidebarCommandProcessCommand(executionText: string): string {
@@ -25758,7 +25861,7 @@ function runNativeSidebarCommand(
       commandId: command.commandId,
       sessionTitle,
     });
-    return createTerminal(`Debug: ${sessionTitle}`, `${commandText}\r`);
+    return createTerminal(`Debug: ${sessionTitle}`, withAtuinIgnoredShellHistoryPrefix(`${commandText}\r`));
   }
 
   /*
@@ -35099,7 +35202,7 @@ function syncNativeLayout(
       continue;
     }
     const terminalState = terminalStateById.get(session.sessionId);
-    if (terminalState?.firstPromptAutoRenameInProgress === true) {
+    if (isNativeSessionTitleGenerationOverlayActive(terminalState)) {
       /**
        * CDXC:SessionTitleSync 2026-05-30-05:44:
        * AppKit owns native terminal panes, so first-prompt title generation

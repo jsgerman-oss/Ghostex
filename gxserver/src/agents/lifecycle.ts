@@ -160,6 +160,9 @@ Resume plans must resolve exact agent conversation identity before title lookup 
 
 CDXC:GxserverForkSession 2026-06-04-07:42:
 Fork is a gxserver-owned lifecycle action for macOS, Electron, CLI, Android, and iOS. Build provider fork commands from the authoritative domain session identity and daemon agent settings so sidebar clients do not reject valid Codex rows because their local presentation cache is missing agentName or agentSessionId.
+
+CDXC:GxserverAgentLifecycle 2026-06-06-16:58:
+gxserver-generated launch, resume, and fork startup text is typed into interactive shells by macOS clients and by server-owned zmx run flows. Prefix one leading space at the shell-input boundary so automated commands do not enter Atuin history; keep display/copy commands unprefixed and leave in-agent slash commands to client-specific prompt flows.
 */
 export function buildAgentLaunchPlan(input: GxserverAgentLaunchInput): GxserverAgentLaunchPlan {
   const baseCommand = normalizeText(input.command) ?? resolveDefaultAgentCommand(input.agentId) ?? "";
@@ -185,7 +188,7 @@ export function buildAgentLaunchPlan(input: GxserverAgentLaunchInput): GxserverA
           }
         : undefined,
     firstUserMessage: normalizeText(input.firstUserMessage),
-    startupText: command ? `${command}\r` : "",
+    startupText: command ? asAtuinIgnoredShellInput(command) : "",
     startupTextDisposition: command ? "queueAfterTerminalReady" : "none",
   };
 }
@@ -204,7 +207,7 @@ export function buildAgentForkPlan(
   const resumeTitle = agentId === "pi" ? undefined : getTrustedAgentResumeTitle(input);
   const primaryCommand = buildAgentForkCommand(agentId, agentCommand, input, resumeTitle);
   const displayCommand = buildAgentForkCommand(agentId, agentCommand, input, resumeTitle, { display: true });
-  const startupText = primaryCommand ? `${primaryCommand}\r` : undefined;
+  const startupText = primaryCommand ? asAtuinIgnoredShellInput(primaryCommand) : undefined;
   return {
     agentId,
     baseCommand: normalizeText(input.agentLookupCommand),
@@ -222,7 +225,7 @@ export function createAgentForkSessionParams(
   plan: GxserverAgentForkPlan,
 ): GxserverCreateSessionParams {
   const agentId = normalizeText(plan.agentId) ?? normalizeText(sourceSession.agentId) ?? "codex";
-  const startupText = normalizeText(plan.startupText);
+  const startupText = normalizeStartupText(plan.startupText);
   return {
     agentId,
     cwd: sourceSession.cwd ?? project.path,
@@ -358,7 +361,7 @@ export function buildAgentResumePlan(
   const displayCommand = primaryCommand ? (buildAgentResumeCommand(project, session, { display: true }, agentSettings) ?? primaryCommand) : undefined;
   const fallbackCommand = buildAgentResumeFallbackCommand(project, session, agentSettings);
   const startupText = primaryCommand
-    ? `${wrapRestoredTerminalResumeCommand(primaryCommand, displayCommand ?? primaryCommand, fallbackCommand)}\r`
+    ? asAtuinIgnoredShellInput(wrapRestoredTerminalResumeCommand(primaryCommand, displayCommand ?? primaryCommand, fallbackCommand))
     : undefined;
   return {
     agentId: normalizeText(input.agentId),
@@ -685,6 +688,11 @@ function wrapRestoredTerminalResumeCommand(
   return lines.join("\n");
 }
 
+function asAtuinIgnoredShellInput(command: string): string {
+  const text = command.replace(/[\r\n]+$/u, "");
+  return `${text.startsWith(" ") ? text : ` ${text}`}\r`;
+}
+
 function toAgentResumeInput(
   project: GxserverProjectDomainState,
   session: GxserverSessionDomainState,
@@ -940,7 +948,7 @@ sys.exit(1)
 
 function readAgentLaunchPlan(value: Record<string, unknown>): GxserverAgentLaunchPlan | undefined {
   const plan = normalizeObject(value.agentLaunchPlan);
-  const startupText = normalizeText(plan.startupText);
+  const startupText = normalizeStartupText(plan.startupText);
   const command = normalizeText(plan.command);
   return startupText || command
     ? {
@@ -979,6 +987,10 @@ function normalizeObject(value: unknown): Record<string, unknown> {
 
 function normalizeText(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function normalizeStartupText(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() ? value : undefined;
 }
 
 function readBoolean(value: unknown): boolean {

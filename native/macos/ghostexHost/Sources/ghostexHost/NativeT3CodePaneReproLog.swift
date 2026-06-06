@@ -3,6 +3,8 @@ import OSLog
 import WebKit
 
 enum NativeT3CodePaneReproLog {
+  private static let maxLogFileBytes: UInt64 = 25 * 1024 * 1024
+  private static let maxRotatedLogFiles = 3
   private static let logger = Logger(
     subsystem: "com.madda.ghostex.host", category: "native-t3-code-pane-repro")
   private static let noisyEvents = Set([
@@ -32,9 +34,16 @@ enum NativeT3CodePaneReproLog {
    navigation, HTTP response, and injected page diagnostics when debugging mode
    is enabled, while dropping layout/resize breadcrumbs that can fire every
    frame during normal sidebar resizing.
+
+   CDXC:T3Code 2026-06-06-07:09:
+   T3/code-pane repro diagnostics can run for long sessions and previously had
+   no file rotation. Keep routine entries behind Debugging Mode, allow only
+   important warning/error/failure-like events in normal mode, and rotate this
+   support log at 25 MB with three retained files.
    */
   static func append(_ event: String, _ details: [String: Any] = [:]) {
-    guard NativeDebugLogging.isEnabled, !noisyEvents.contains(event) else {
+    let isImportantDiagnostic = isNativePersistentLogImportantDiagnostic(event)
+    guard isImportantDiagnostic || (NativeDebugLogging.isEnabled && !noisyEvents.contains(event)) else {
       return
     }
     let logsDirectory = GhostexAppStorage.logsDirectory
@@ -49,6 +58,7 @@ enum NativeT3CodePaneReproLog {
         try FileManager.default.createDirectory(at: logsDirectory, withIntermediateDirectories: true)
         didCreateLogsDirectory = true
       }
+      try rotateLogIfNeeded(logURL: logURL, incomingByteCount: UInt64(line.lengthOfBytes(using: .utf8)))
       if FileManager.default.fileExists(atPath: logURL.path) {
         let handle = try FileHandle(forWritingTo: logURL)
         try handle.seekToEnd()
@@ -73,6 +83,34 @@ enum NativeT3CodePaneReproLog {
       return "{\"event\":\"serializationFailed\"}"
     }
     return json
+  }
+
+  private static func rotateLogIfNeeded(logURL: URL, incomingByteCount: UInt64) throws {
+    let manager = FileManager.default
+    let size = (try? manager.attributesOfItem(atPath: logURL.path)[.size] as? NSNumber)?.uint64Value ?? 0
+    guard size + incomingByteCount > maxLogFileBytes else {
+      return
+    }
+    let oldest = rotatedLogURL(logURL, index: maxRotatedLogFiles)
+    if manager.fileExists(atPath: oldest.path) {
+      try manager.removeItem(at: oldest)
+    }
+    for index in stride(from: maxRotatedLogFiles - 1, through: 1, by: -1) {
+      let source = rotatedLogURL(logURL, index: index)
+      let destination = rotatedLogURL(logURL, index: index + 1)
+      if manager.fileExists(atPath: source.path) {
+        try manager.moveItem(at: source, to: destination)
+      }
+    }
+    let firstRotation = rotatedLogURL(logURL, index: 1)
+    if manager.fileExists(atPath: firstRotation.path) {
+      try manager.removeItem(at: firstRotation)
+    }
+    try manager.moveItem(at: logURL, to: firstRotation)
+  }
+
+  private static func rotatedLogURL(_ logURL: URL, index: Int) -> URL {
+    logURL.deletingLastPathComponent().appendingPathComponent("\(logURL.lastPathComponent).\(index)")
   }
 }
 
@@ -1235,6 +1273,17 @@ enum NativeT3RuntimeLauncher {
       URL(fileURLWithPath: FileManager.default.currentDirectoryPath, isDirectory: true)
         .appendingPathComponent("\(bundledDirectoryName)/dist/bin.mjs"))
     return candidates.first { FileManager.default.fileExists(atPath: $0.path) }?.path
+  }
+
+  private static func expandedPath(_ path: String) -> String {
+    /**
+     CDXC:T3CodePackaging 2026-06-06-06:46:
+     Native T3 runtime launch must expand user-configured and discovered Node
+     paths inside NativeT3RuntimeLauncher itself. The Code Server runtime has
+     its own private helper, but bundled T3 Code startup cannot depend on that
+     sibling type or the macOS app fails to build before launch.
+     */
+    return (path as NSString).expandingTildeInPath
   }
 
   private static func resolveBundledT3NodePath() throws -> String {

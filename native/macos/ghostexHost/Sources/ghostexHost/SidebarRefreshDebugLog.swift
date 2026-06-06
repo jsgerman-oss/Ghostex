@@ -18,9 +18,15 @@ enum SidebarRefreshDebugLog {
    records native action boundaries and React sidebar lifecycle events. Honor
    Settings Debugging Mode here as the final gate so no persistent sidebar
    refresh diagnostics are written during normal app use.
+
+   CDXC:SidebarRefreshDiagnostics 2026-06-06-07:09:
+   Routine sidebar refresh diagnostics stay Debugging Mode only, but
+   warning/error/failure-like refresh events should persist in normal mode so
+   support can diagnose crashes and failed refreshes without enabling broad
+   disk logging first.
    */
   static func append(event: String, details: String?) {
-    guard NativeDebugLogging.isEnabled else {
+    guard isNativePersistentLogImportantDiagnostic(event) || NativeDebugLogging.isEnabled else {
       return
     }
     let logsDirectory = GhostexAppStorage.logsDirectory
