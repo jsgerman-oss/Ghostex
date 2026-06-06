@@ -2,6 +2,21 @@
 
 <!-- CDXC:Distribution 2026-05-30-09:52: Release notes for 3.26.0 must include all user-facing commits after v3.25.0 so README, GitHub, Sparkle, and Homebrew describe the same shipped behavior. -->
 <!-- CDXC:BetaDistribution 2026-06-05-22:26: Release notes for 4.0.0-beta.1 must make clear that the nightly beta is distributed through GitHub Releases and Homebrew without moving Sparkle users onto the beta feed. -->
+<!-- CDXC:BetaDistribution 2026-06-06-06:35: Release notes for 4.0.0-beta.2 must keep the nightly beta visible in GitHub Releases and Homebrew DMG installs while leaving Sparkle automatic-update feeds on the current public release. -->
+
+## 4.0.0-beta.2 - 2026-06-06
+
+- Beta distribution remains available through GitHub Releases and Homebrew DMG installs while Sparkle automatic-update feeds stay on the current public release.
+- T3 Code panes now keep the managed runtime alive from live native pane ownership, including inactive tab siblings, so sidebar projection gaps no longer stop an open embedded T3 tab.
+- Installed macOS builds now package the managed T3 Code server runtime and show its bundled/development/missing status in Settings -> Integrations.
+- Ctrl+G prompt editing in zmx sessions now follows the currently attached client capability, so desktop Monaco remains available while SSH, mobile, and TUI attaches stay on terminal-native `gte`.
+- Restoring Previous Sessions preserves session tags, restored-from identity, and saved manual sidebar order when that order was explicitly stored.
+- Cmd+T now creates a terminal tab next to the focused tab, Cmd+N opens a browser tab next to the focused tab, and Option+1 through Option+4 switch Agents, Source, GitHub, and Kanban views.
+- Closing the active tab in a split pane now promotes the adjacent tab in that pane before layout materialization, preserving split layout instead of collapsing unrelated panes.
+- Sleep Inactive and Agent Auto Sleep now keep terminals with active Delayed Send timers awake until the scheduled send fires.
+- Default terminal panes no longer show provider session ids unless the session-id overlay setting is explicitly enabled.
+- Native terminal Cmd+C now uses Ghostty's copy action directly so selected terminal text reaches the system clipboard consistently.
+- Reference-sidebar Previous Sessions rows now align with normal project-session row spacing.
 
 ## 4.0.0-beta.1 - 2026-06-05
 

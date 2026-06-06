@@ -1,6 +1,17 @@
 
 ## All features:
 
+- 4.0.0-beta.2 beta distribution is available through GitHub Releases and Homebrew DMG installs while Sparkle automatic-update feeds stay on the current public release.
+- Native T3 Code panes keep the managed runtime alive from live pane ownership, including inactive tab siblings, so an open embedded T3 tab is not stopped by sidebar projection gaps.
+- Installed macOS builds package the managed T3 Code server runtime and show bundled, development, or missing status in Settings -> Integrations.
+- zmx Ctrl+G prompt editing follows the currently attached client capability, keeping desktop Monaco available while SSH, mobile, and TUI attaches use terminal-native `gte`.
+- Previous Sessions restore durable session tags, restored-from identity, and saved manual sidebar order when that order was explicitly stored.
+- Cmd+T creates a terminal tab next to the focused tab, Cmd+N opens a browser tab next to the focused tab, and Option+1 through Option+4 switch Agents, Source, GitHub, and Kanban views.
+- Closing an active split-pane tab promotes the adjacent tab in that same pane before layout materialization, preserving the split layout when another tab can own the pane.
+- Sleep Inactive and Agent Auto Sleep keep terminals with active Delayed Send timers awake until the scheduled send fires.
+- Provider session ids in terminal panes are hidden by default and remain available through the explicit session-id overlay setting.
+- Native terminal Cmd+C copies through Ghostty's copy action so selected terminal text reaches the system clipboard consistently.
+- Reference-sidebar Previous Sessions rows align with normal project-session row spacing.
 - 4.0.0 beta distribution is available through GitHub Releases and Homebrew DMG installs while Sparkle automatic-update feeds stay on the current public release.
 - Session tags can be applied, displayed on session cards, filtered in Active and Previous Sessions, and preserved in manual session order.
 - Git commit review can inspect changed-file diffs inline inside the review modal.
