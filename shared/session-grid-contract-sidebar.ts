@@ -422,6 +422,11 @@ export type SidebarCommandSessionIndicator = {
 
 export type SidebarHudState = {
   activeSessionsSortMode: SidebarActiveSessionsSortMode;
+  /**
+   * CDXC:AgentHooks 2026-06-07-08:51:
+   * Tips & Tricks and Settings consume gxserver-owned hook status from shared HUD state so every client can warn about unreliable agent statuses without probing local hook files or owning installer logic.
+   */
+  agentHookStatus?: SidebarAgentHookStatusMessage;
   agentManagerZoomPercent: number;
   agents: SidebarAgentButton[];
   buildStamp?: string;

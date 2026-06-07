@@ -390,6 +390,39 @@ test("presentation snapshot carries gxserver title projection semantics", () => 
   assert.equal(presentation.trustedResumeTitle, "Missing sidebar sessions");
 });
 
+test("presentation snapshot resolves missing last-active timestamps from createdAt", () => {
+  const project = projectFixture({});
+  const missingActivity = sessionFixture({
+    createdAt: "2026-06-01T09:00:00.000Z",
+    sessionId: "G1old",
+    title: "Metadata Refreshed",
+    updatedAt: "2026-06-07T05:17:00.000Z",
+  });
+  const realActivity = sessionFixture({
+    createdAt: "2026-06-01T09:30:00.000Z",
+    lastActiveAt: "2026-06-02T11:00:00.000Z",
+    sessionId: "G2run",
+    title: "Actually Active",
+    updatedAt: "2026-06-07T05:18:00.000Z",
+  });
+
+  const snapshot = projectGxserverPresentationSnapshot({
+    projects: [project],
+    revision: 2 as GxserverPresentationRevision,
+    sessions: [missingActivity, realActivity],
+  });
+
+  const projectedMissingActivity = snapshot.sessions.find((session) => session.sessionId === "G1old");
+  assert.equal(projectedMissingActivity?.lastActiveAt, missingActivity.createdAt);
+  assert.equal(projectedMissingActivity?.updatedAt, missingActivity.updatedAt);
+  assert.equal(projectedMissingActivity?.sortKey.includes(missingActivity.createdAt), true);
+  assert.equal(projectedMissingActivity?.sortKey.includes(missingActivity.updatedAt), false);
+  assert.equal(
+    snapshot.sessions.find((session) => session.sessionId === "G2run")?.lastActiveAt,
+    realActivity.lastActiveAt,
+  );
+});
+
 test("presentation snapshot excludes unpinned stopped history but keeps pinned previous sessions", () => {
   const project = projectFixture({});
   const stoppedNoise = sessionFixture({
@@ -551,6 +584,35 @@ test("metadata search can page previous sessions without hydrating them into the
   assert.equal(search.results[0]?.surface, "workspace");
 });
 
+test("presentation search resolves missing last-active timestamps before ranking results", () => {
+  const project = projectFixture({ name: "Ghostex" });
+  const metadataRefreshed = sessionFixture({
+    createdAt: "2026-06-01T09:00:00.000Z",
+    sessionId: "G1meta",
+    title: "Metadata Refreshed",
+    updatedAt: "2026-06-07T05:17:00.000Z",
+  });
+  const actuallyRecent = sessionFixture({
+    createdAt: "2026-06-01T09:30:00.000Z",
+    lastActiveAt: "2026-06-02T11:00:00.000Z",
+    sessionId: "G2real",
+    title: "Actually Recent",
+    updatedAt: "2026-06-01T09:31:00.000Z",
+  });
+
+  const search = searchGxserverPresentationSessions(
+    { projects: [project], sessions: [metadataRefreshed, actuallyRecent] },
+    {},
+  );
+
+  assert.deepEqual(
+    search.results.map((result) => result.sessionId),
+    ["G2real", "G1meta"],
+  );
+  assert.equal(search.results.find((result) => result.sessionId === "G1meta")?.lastActiveAt, metadataRefreshed.createdAt);
+  assert.equal(search.results.find((result) => result.sessionId === "G1meta")?.updatedAt, metadataRefreshed.updatedAt);
+});
+
 test("previous sessions search hides placeholder inactive rows but keeps restorable history", () => {
   const project = projectFixture({ name: "Ghostex" });
   const trusted = sessionFixture({
@@ -581,13 +643,33 @@ test("previous sessions search hides placeholder inactive rows but keeps restora
     sessionId: "G4fav",
     title: "Codex Session",
   });
+  const commandPane = sessionFixture({
+    commandId: "start",
+    lifecycleState: "stopped",
+    runtimeSettings: { titleSource: "terminal-auto" },
+    sessionId: "G5cmd",
+    surface: "commands",
+    title: "bun run start",
+  });
+  const pinnedCommandPane = sessionFixture({
+    commandId: "test",
+    isPinned: true,
+    lifecycleState: "stopped",
+    runtimeSettings: { titleSource: "terminal-auto" },
+    sessionId: "G6pin",
+    surface: "commands",
+    title: "bun test",
+  });
 
   /*
   CDXC:PreviousSessions 2026-06-04-20:21:
   listPreviousSessions should be a useful restore list, not every inactive gxserver row. Hide unpinned placeholder and unknown rows while preserving trusted stopped rows and rows the user explicitly kept with Favorite/Pin.
+
+  CDXC:PreviousSessions 2026-06-07-05:28:
+  Command-pane sessions are not previous workspace sessions. Keep `surface: "commands"` rows out of listPreviousSessions even when they have trusted terminal titles or pinned state, because clients should not show command runs like `bun run start` in the Previous Sessions modal.
   */
   const search = searchGxserverPreviousSessions(
-    { projects: [project], sessions: [trusted, placeholder, unknown, favoritePlaceholder] },
+    { projects: [project], sessions: [trusted, placeholder, unknown, favoritePlaceholder, commandPane, pinnedCommandPane] },
     { includeActive: false, includePrevious: true },
   );
 

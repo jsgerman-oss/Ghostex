@@ -121,6 +121,8 @@ import type {
   GxserverCreateSessionParams,
   GxserverEndpointPath,
   GxserverForkSessionResult,
+  GxserverIngestAgentHookEventParams,
+  GxserverIngestAgentHookEventResult,
   GxserverInstallAgentHooksParams,
   GxserverListenerConfig,
   GxserverListenerKind,
@@ -167,6 +169,7 @@ import type {
   GxserverUpdateSessionOrderParams,
   GxserverUpdateSessionParams,
   GxserverFirstPromptTitleGenerationAgent,
+  GxserverAgentActivityState,
 } from "../protocol/index.js";
 import { createSourceGxserverBuildIdentity } from "./build-identity.js";
 
@@ -238,6 +241,43 @@ const GXSERVER_INTERNAL_PROMPT_GENERATION_ENVIRONMENT_KEYS = [
   "ghostex_WORKSPACE_ID",
   "ghostex_WORKSPACE_ROOT",
 ] as const;
+const GXSERVER_AGENT_HOOK_WORKING_EVENTS = new Set([
+  "BeforeAgent",
+  "PreInvocation",
+  "UserPromptSubmit",
+  "agent.start",
+  "agent_start",
+  "beforeShellExecution",
+  "beforeSubmitPrompt",
+  "pre_llm_call",
+  "pre_tool_call",
+]);
+const GXSERVER_AGENT_HOOK_ATTENTION_EVENTS = new Set([
+  "AfterAgent",
+  "Notification",
+  "PermissionRequest",
+  "Stop",
+  "afterAgentResponse",
+  "agent.end",
+  "agent_end",
+  "message.updated",
+  "on_complete",
+  "on_error",
+  "on_tool_permission",
+  "permission.updated",
+  "session.updated",
+  "stop",
+  "turn-completion",
+]);
+const GXSERVER_AGENT_HOOK_IDLE_EVENTS = new Set([
+  "SessionEnd",
+  "release",
+  "session.end",
+  "session_shutdown",
+  "on_session_end",
+  "on_session_finalize",
+  "on_session_reset",
+]);
 const agentTitleMetadataDebouncer = createAgentTitleDebouncer({
   delayMs: GXSERVER_AGENT_TITLE_METADATA_DEBOUNCE_MS,
 });
@@ -1090,6 +1130,85 @@ async function dispatchDomainStateEndpoint(
         ...result,
       } satisfies Record<string, unknown> & GxserverCancelFirstPromptAutoTitleResult;
     }
+    case "/api/ingestAgentHookEvent": {
+      const hookEvent = params as unknown as GxserverIngestAgentHookEventParams;
+      const lifecycle = readSessionLifecycleParams(params);
+      /*
+      CDXC:AgentHooks 2026-06-07-08:51:
+      Hook activity is a gxserver-owned state transition, not a macOS sidebar fallback. Ingest provider metadata and explicit hook status together so every client receives the same working/attention/idle projection from gxserver presentation state.
+      */
+      const metadata = applySessionStateEvent(repository, {
+        ...hookEvent,
+        projectId: lifecycle.projectId,
+        sessionId: lifecycle.sessionId,
+      });
+      let session = metadata.session;
+      const hookActivity = normalizeAgentHookActivity(hookEvent.status, hookEvent.eventName ?? hookEvent.rawEventName);
+      const hookActivityNowMs = parseAgentHookActivityTimestamp(hookEvent.statusUpdatedAt) ?? Date.now();
+      let activityUpdate: ReturnType<typeof updateSessionActivitySettings> | undefined;
+      let activityChanged = false;
+      let activityReason = hookActivity ? "activity-unchanged" : "metadata-only";
+      if (hookActivity) {
+        if (isStaleAgentHookActivityEvent(session.runtimeSettings.agentActivity, hookActivityNowMs)) {
+          activityReason = "stale-activity-event";
+        } else {
+          activityUpdate = updateSessionActivitySettings(session, {
+            activity: hookActivity,
+            agentName: hookEvent.agentName,
+            nowMs: hookActivityNowMs,
+            projectId: lifecycle.projectId,
+            sessionId: lifecycle.sessionId,
+          });
+          activityChanged = shouldPersistSessionStatusUpdate(session, activityUpdate);
+          if (activityChanged) {
+            session = repository.updateSession({
+              lastActiveAt: activityUpdate.lastActiveAt,
+              projectId: session.projectId,
+              runtimeSettings: activityUpdate.runtimeSettings,
+              sessionId: session.sessionId,
+            });
+            scheduleStaleActivityPresentationRefresh(runtime, session, "agent-hook-stale-activity");
+          }
+          activityReason = activityChanged ? "activity-updated" : "activity-unchanged";
+        }
+      }
+      const reconciled = scheduleAgentTitleMetadataCheck(runtime, repository, {
+        force: true,
+        projectId: lifecycle.projectId,
+        reason: "agent-hook-event",
+        sessionId: lifecycle.sessionId,
+      });
+      session = reconciled?.session ?? repository.getSession(lifecycle.projectId, lifecycle.sessionId) ?? session;
+      const autoTitleClaim = claimGxserverFirstPromptAutoTitle(repository, session, hookEvent.firstUserMessage);
+      const responseSession = autoTitleClaim.session ?? session;
+      if (autoTitleClaim.claimed) {
+        scheduleGxserverFirstPromptAutoTitleJob(runtime, {
+          projectId: lifecycle.projectId,
+          requestId,
+          sessionId: lifecycle.sessionId,
+        });
+      }
+      schedulePresentationSessionDelta(runtime, repository, {
+        projectId: lifecycle.projectId,
+        reason: "agent-hook-event",
+        sessionId: lifecycle.sessionId,
+      });
+      return {
+        ...(activityUpdate ? { activity: activityUpdate.activity } : {}),
+        changed: metadata.changed || activityChanged || reconciled?.changed === true || autoTitleClaim.claimed,
+        enteredAttention: activityUpdate?.enteredAttention ?? false,
+        ...(activityUpdate ? { previousActivity: activityUpdate.previousActivity } : {}),
+        projection: projectSessionTitle(responseSession),
+        reason: reconciled?.changed === true
+          ? reconciled.reason
+          : autoTitleClaim.claimed
+            ? "first-prompt-auto-title-claimed"
+            : activityReason !== "metadata-only"
+              ? activityReason
+              : metadata.reason,
+        session: responseSession,
+      } satisfies Record<string, unknown> & GxserverIngestAgentHookEventResult;
+    }
     case "/api/ingestSessionStateEvent": {
       const stateEvent = params as unknown as GxserverSessionStateEventParams;
       const lifecycle = readSessionLifecycleParams(params);
@@ -1795,6 +1914,54 @@ function shouldPersistSessionStatusUpdate(
     JSON.stringify(persistableAgentActivitySnapshot(session.runtimeSettings.agentActivity)) !==
     JSON.stringify(persistableAgentActivitySnapshot(update.activity))
   );
+}
+
+function normalizeAgentHookActivity(
+  status: unknown,
+  eventName: unknown,
+): GxserverAgentActivityState["activity"] | undefined {
+  if (status === "attention" || status === "idle" || status === "working") {
+    return status;
+  }
+  const normalizedEventName = typeof eventName === "string" ? eventName.trim() : "";
+  if (!normalizedEventName) {
+    return undefined;
+  }
+  const lowerEventName = normalizedEventName.toLowerCase();
+  if (
+    GXSERVER_AGENT_HOOK_WORKING_EVENTS.has(normalizedEventName) ||
+    GXSERVER_AGENT_HOOK_WORKING_EVENTS.has(lowerEventName)
+  ) {
+    return "working";
+  }
+  if (
+    GXSERVER_AGENT_HOOK_ATTENTION_EVENTS.has(normalizedEventName) ||
+    GXSERVER_AGENT_HOOK_ATTENTION_EVENTS.has(lowerEventName)
+  ) {
+    return "attention";
+  }
+  if (
+    GXSERVER_AGENT_HOOK_IDLE_EVENTS.has(normalizedEventName) ||
+    GXSERVER_AGENT_HOOK_IDLE_EVENTS.has(lowerEventName)
+  ) {
+    return "idle";
+  }
+  return undefined;
+}
+
+function parseAgentHookActivityTimestamp(value: unknown): number | undefined {
+  if (typeof value !== "string" || !value.trim()) {
+    return undefined;
+  }
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function isStaleAgentHookActivityEvent(currentActivity: unknown, incomingNowMs: number): boolean {
+  const currentChangedAt = isObjectRecord(currentActivity) && typeof currentActivity.lastChangedAt === "string"
+    ? Date.parse(currentActivity.lastChangedAt)
+    : Number.NaN;
+  return Number.isFinite(currentChangedAt) && Number.isFinite(incomingNowMs) && incomingNowMs < currentChangedAt;
 }
 
 function persistableAgentActivitySnapshot(value: unknown): Record<string, unknown> {
@@ -3438,6 +3605,7 @@ function isDomainStateEndpoint(path: GxserverEndpointPath): boolean {
     path === "/api/readAgentResumePlan" ||
     path === "/api/requestSessionRename" ||
     path === "/api/cancelFirstPromptAutoTitle" ||
+    path === "/api/ingestAgentHookEvent" ||
     path === "/api/ingestSessionStateEvent" ||
     path === "/api/ingestTerminalTitleEvent" ||
     path === "/api/updateAgentActivity" ||

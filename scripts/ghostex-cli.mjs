@@ -2830,8 +2830,19 @@ async function zmxPromptEditorCapability() {
   if (!String(process.env.ZMX_SESSION ?? "").trim()) {
     return undefined;
   }
+  /**
+   * CDXC:PromptEditor 2026-06-07-08:09:
+   * zmx-backed Ctrl+G routing must query the same app/gxserver-provided zmx
+   * binary that created or attached the session. PATH can contain a stale
+   * Homebrew zmx without prompt-editor-capability, so zmx sessions without an
+   * explicit GHOSTEX_ZMX_BIN stay terminal-native instead of probing PATH.
+   */
+  const zmxCommand = String(process.env.GHOSTEX_ZMX_BIN ?? "").trim();
+  if (!zmxCommand) {
+    return "gte";
+  }
   try {
-    const result = await execFileAsync("zmx", ["prompt-editor-capability"], {
+    const result = await execFileAsync(zmxCommand, ["prompt-editor-capability"], {
       env: process.env,
       timeout: 750,
     });

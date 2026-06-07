@@ -102,6 +102,11 @@ Agent hooks running inside server-created zmx sessions must report identity and 
 
 CDXC:GxserverSessionIO 2026-06-06-16:58:
 Server-owned zmx run startup commands can execute without the macOS sidebar queue. Preserve or add a single leading shell-history ignore space before passing startup text to the interactive zsh command so automated resume/fork/launch commands do not enter Atuin history.
+
+CDXC:PromptEditor 2026-06-07-08:09:
+Prompt-editor capability checks must use the same bundled zmx binary that
+gxserver uses for attach/run. Export GHOSTEX_ZMX_BIN into zmx shells so Ctrl+G
+does not resolve a stale PATH zmx before deciding whether Monaco is available.
 */
 
 export function buildZmxAttachCommand(input: GxserverZmxAttachCommandInput): string {
@@ -125,6 +130,7 @@ if [ ! -x "$zmx_bin" ]; then
   printf '%s\\n' 'session persistence is set to zmx, but Ghostex bundled zmx was not found.'
   exit 127
 fi
+export GHOSTEX_ZMX_BIN="$zmx_bin"
 unset ZMX_SESSION ZMX_SESSION_PREFIX
 if [ -n "$zmx_global_session_ref" ]; then
   export GHOSTEX_GLOBAL_SESSION_REF="$zmx_global_session_ref"
@@ -221,6 +227,7 @@ if [ ! -x "$zmx_bin" ]; then
   printf '%s\\n' 'session persistence is set to zmx, but Ghostex bundled zmx was not found.' >&2
   exit 127
 fi
+export GHOSTEX_ZMX_BIN="$zmx_bin"
 if [ -z "$zmx_startup_command" ]; then
   printf '%s\\n' 'gxserver startSessionProvider requires startup text.' >&2
   exit 64

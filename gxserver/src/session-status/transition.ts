@@ -21,6 +21,7 @@ export function applyAgentActivityTransition(input: GxserverAgentActivityInput):
   const nowIso = input.nowIso ?? new Date(nowMs).toISOString();
   const previous = normalizeAgentActivityState(input.previous, { activity: "idle" });
   const previousActivity = previous.activity;
+  const hasExplicitActivity = input.activity !== undefined;
   if (input.event === "launch" || input.event === "resume" || input.event === "agentDetected") {
     return {
       activity: "idle",
@@ -43,6 +44,24 @@ export function applyAgentActivityTransition(input: GxserverAgentActivityInput):
 
   const titleSignal = classifyTerminalTitleStatus(input.title, input.agentId ?? previous.agentName);
   const titleTransition = resolveTitleTransition(input, previous, titleSignal, nowIso, nowMs);
+  /*
+  CDXC:SessionStatus 2026-06-07-08:51:
+  Agent hooks are gxserver's authoritative working-state source. A plain terminal title change such as an editor command title must not downgrade explicit hook-driven working; only another explicit hook activity or a true attention title can change it.
+  */
+  if (
+    input.event === "title" &&
+    !hasExplicitActivity &&
+    previous.activity === "working" &&
+    previous.workingSource === "explicit" &&
+    titleSignal?.state !== "attention"
+  ) {
+    return {
+      ...previous,
+      agentName: titleSignal?.agentName ?? normalizeStatusAgentName(input.agentId) ?? previous.agentName,
+      lastChangedAt: previous.lastChangedAt ?? nowIso,
+      ...titleTransition,
+    };
+  }
   if (
     input.event === "title" &&
     titleSignal &&
@@ -63,7 +82,7 @@ export function applyAgentActivityTransition(input: GxserverAgentActivityInput):
   }
 
   const suppressedUntilMs = previous.suppressedUntil ? Date.parse(previous.suppressedUntil) : Number.NaN;
-  if (Number.isFinite(suppressedUntilMs) && nowMs < suppressedUntilMs) {
+  if (!hasExplicitActivity && Number.isFinite(suppressedUntilMs) && nowMs < suppressedUntilMs) {
     return {
       ...previous,
       activity: "idle",
@@ -111,7 +130,7 @@ export function applyAgentActivityTransition(input: GxserverAgentActivityInput):
     if (previousActivity === "attention") {
       return previous;
     }
-    if (previous.isAcknowledged && titleSignal?.state === "attention") {
+    if (!hasExplicitActivity && previous.isAcknowledged && titleSignal?.state === "attention") {
       return {
         ...previous,
         activity: "idle",
@@ -121,6 +140,7 @@ export function applyAgentActivityTransition(input: GxserverAgentActivityInput):
     }
     const workingStartedMs = previous.workingStartedAt ? Date.parse(previous.workingStartedAt) : Number.NaN;
     const canEnterAttention =
+      hasExplicitActivity ||
       input.event === "bell" ||
       input.event === "terminalError" ||
       titleSignal?.agentName === "antigravity" ||

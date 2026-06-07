@@ -1976,6 +1976,142 @@ test("agent activity API updates semantic activity and last active state", async
   );
 });
 
+test("agent hook event API owns working state across suppression and plain terminal titles", async () => {
+  await withApiServer(
+    "local",
+    async ({ baseUrl, paths, token }) => {
+      const project = (
+        await requestJson(baseUrl, "/api/createProject", {
+          body: { params: { name: "Ghostex", path: paths.rootDir }, protocolVersion: GXSERVER_PROTOCOL_VERSION },
+          method: "POST",
+          token,
+        })
+      ).body.result.project;
+      const session = (
+        await requestJson(baseUrl, "/api/createAgentSession", {
+          body: {
+            params: {
+              agentId: "codex",
+              projectId: project.projectId,
+              runtimeSettings: { titleSource: "user" },
+              title: "User title",
+            },
+            protocolVersion: GXSERVER_PROTOCOL_VERSION,
+          },
+          method: "POST",
+          token,
+        })
+      ).body.result.session;
+
+      await requestJson(baseUrl, "/api/updateAgentActivity", {
+        body: {
+          params: {
+            event: "launch",
+            nowMs: Date.parse("2026-06-07T06:47:25.000Z"),
+            projectId: project.projectId,
+            sessionId: session.sessionId,
+          },
+          protocolVersion: GXSERVER_PROTOCOL_VERSION,
+        },
+        method: "POST",
+        token,
+      });
+
+      const working = await requestJson(baseUrl, "/api/ingestAgentHookEvent", {
+        body: {
+          params: {
+            agentName: "codex",
+            eventName: "UserPromptSubmit",
+            projectId: project.projectId,
+            rawEventName: "UserPromptSubmit",
+            sessionId: session.sessionId,
+            status: "working",
+            statusUpdatedAt: "2026-06-07T06:47:30.000Z",
+          },
+          protocolVersion: GXSERVER_PROTOCOL_VERSION,
+        },
+        method: "POST",
+        token,
+      });
+      assert.equal(working.status, 200);
+      assert.equal(working.body.result.activity.activity, "working");
+      assert.equal(working.body.result.session.runtimeSettings.agentActivity.activity, "working");
+      assert.equal(working.body.result.session.runtimeSettings.agentActivity.workingSource, "explicit");
+
+      const title = await requestJson(baseUrl, "/api/ingestTerminalTitleEvent", {
+        body: {
+          params: {
+            agentName: "codex",
+            projectId: project.projectId,
+            rawTitle: "Monaco Ctrl+G Switch",
+            sessionId: session.sessionId,
+            sessionPersistenceProvider: "zmx",
+          },
+          protocolVersion: GXSERVER_PROTOCOL_VERSION,
+        },
+        method: "POST",
+        token,
+      });
+      assert.equal(title.status, 200);
+      assert.equal(title.body.result.activity.activity, "working");
+      assert.equal(title.body.result.session.runtimeSettings.agentActivity.activity, "working");
+
+      const stopped = await requestJson(baseUrl, "/api/ingestAgentHookEvent", {
+        body: {
+          params: {
+            agentName: "codex",
+            eventName: "Stop",
+            projectId: project.projectId,
+            rawEventName: "Stop",
+            sessionId: session.sessionId,
+            status: "attention",
+            statusUpdatedAt: "2026-06-07T06:47:31.000Z",
+          },
+          protocolVersion: GXSERVER_PROTOCOL_VERSION,
+        },
+        method: "POST",
+        token,
+      });
+      assert.equal(stopped.status, 200);
+      assert.equal(stopped.body.result.activity.activity, "attention");
+      assert.equal(stopped.body.result.enteredAttention, true);
+
+      const staleWorking = await requestJson(baseUrl, "/api/ingestAgentHookEvent", {
+        body: {
+          params: {
+            agentName: "codex",
+            eventName: "UserPromptSubmit",
+            projectId: project.projectId,
+            rawEventName: "UserPromptSubmit",
+            sessionId: session.sessionId,
+            status: "working",
+            statusUpdatedAt: "2026-06-07T06:47:30.500Z",
+          },
+          protocolVersion: GXSERVER_PROTOCOL_VERSION,
+        },
+        method: "POST",
+        token,
+      });
+      assert.equal(staleWorking.status, 200);
+      assert.equal(staleWorking.body.result.reason, "stale-activity-event");
+      assert.equal(staleWorking.body.result.session.runtimeSettings.agentActivity.activity, "attention");
+
+      const presentation = await requestJson(baseUrl, "/api/readPresentationSnapshot", {
+        body: { params: {}, protocolVersion: GXSERVER_PROTOCOL_VERSION },
+        method: "POST",
+        token,
+      });
+      const presentationSession = presentation.body.result.snapshot.sessions.find(
+        (candidate: { sessionId: string }) => candidate.sessionId === session.sessionId,
+      );
+      assert.equal(presentationSession?.activity, "attention");
+    },
+    {
+      zmxLifecycle: fakeZmxLifecycle([], () => 0),
+    },
+  );
+});
+
 test("missing cwd blocks restore when the provider session is missing", async () => {
   await withApiServer(
     "local",

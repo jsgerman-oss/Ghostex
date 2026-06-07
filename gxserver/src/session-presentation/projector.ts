@@ -108,6 +108,7 @@ export function projectPresentationSession(
   const titleObservation = normalizeTitleObservationState(session.runtimeSettings.zmxTitleObservation);
   const agentName = readText(session.runtimeSettings.agentName) ?? session.agentId;
   const subtitle = session.cwd ?? project.path;
+  const presentationLastActiveAt = resolvePresentationSessionLastActiveAt(session);
   return {
     actions: presentationSessionActions(session, activityState.activity),
     activity: activityState.activity,
@@ -127,7 +128,7 @@ export function projectPresentationSession(
     isPrimaryTitleTerminalTitle: titleProjection.isPrimaryTitleTerminalTitle,
     isTemporaryTitle: titleProjection.isTemporaryTitle,
     kind: session.kind,
-    ...(session.lastActiveAt ? { lastActiveAt: session.lastActiveAt } : {}),
+    lastActiveAt: presentationLastActiveAt,
     lifecycleState: session.lifecycleState,
     ...(titleProjection.primaryTitle !== undefined ? { primaryTitle: titleProjection.primaryTitle } : {}),
     projectId: session.projectId,
@@ -284,6 +285,14 @@ function projectSortKey(project: GxserverProjectDomainState): string {
   return `${pinRank}:${project.name.toLocaleLowerCase()}:${project.projectId}`;
 }
 
+export function resolvePresentationSessionLastActiveAt(session: GxserverSessionDomainState): string {
+  /*
+  CDXC:GxserverPresentationActivity 2026-06-07-05:17:
+  Sidebar clients show the presentation row's lastActiveAt as the "last active" timer. Use the true activity timestamp when gxserver has one and fall back to the session created/restored timestamp; never use updatedAt because provider probes, title observation, and metadata writes can advance it without user activity and make old sessions render as 0s in macOS, Electron, and future clients.
+  */
+  return session.lastActiveAt ?? session.createdAt;
+}
+
 function sessionSortKey(session: GxserverSessionDomainState): string {
   const activeRank = isActivePresentationSession(session) ? "0" : "1";
   const pinRank = session.isPinned
@@ -306,7 +315,7 @@ function sessionSortKey(session: GxserverSessionDomainState): string {
   partitions in the shared sidebar sorter.
   */
   const sidebarOrder = formatSidebarOrder(session.sidebarOrder);
-  return `${sidebarOrder}:${activeRank}:${pinRank}:${session.lastActiveAt ?? session.updatedAt}:${session.sessionId}`;
+  return `${sidebarOrder}:${activeRank}:${pinRank}:${resolvePresentationSessionLastActiveAt(session)}:${session.sessionId}`;
 }
 
 function formatSidebarOrder(value: unknown): string {

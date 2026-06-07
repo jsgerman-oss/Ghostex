@@ -50,6 +50,7 @@ export type GxserverEndpointPath =
   | "/api/updateAgentSettings"
   | "/api/readAgentHookStatus"
   | "/api/installAgentHooks"
+  | "/api/ingestAgentHookEvent"
   | "/api/createSession"
   | "/api/createAgentSession"
   | "/api/forkSession"
@@ -285,6 +286,28 @@ export interface GxserverInstallAgentHooksParams {
 
 export interface GxserverInstallAgentHooksResult extends GxserverReadAgentHookStatusResult {
   installedPaths: readonly string[];
+}
+
+export interface GxserverIngestAgentHookEventParams extends GxserverSessionLifecycleParams {
+  agentName?: string;
+  agentSessionId?: string;
+  agentSessionPath?: string;
+  eventName?: string;
+  firstUserMessage?: string;
+  rawEventName?: string;
+  status?: GxserverAgentActivityState["activity"];
+  statusUpdatedAt?: string;
+  title?: string;
+}
+
+export interface GxserverIngestAgentHookEventResult {
+  activity?: GxserverAgentActivityState;
+  changed: boolean;
+  enteredAttention: boolean;
+  previousActivity?: GxserverAgentActivityState["activity"];
+  projection: GxserverSessionTitleProjection;
+  reason: string;
+  session: GxserverSessionDomainState;
 }
 
 export interface GxserverEndpointDescriptor {

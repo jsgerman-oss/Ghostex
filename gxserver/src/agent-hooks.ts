@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { constants as fsConstants } from "node:fs";
-import { access, mkdir, readFile, writeFile } from "node:fs/promises";
+import { access, chmod, mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -14,9 +14,13 @@ import type {
 import type { GxserverPaths } from "./paths.js";
 
 const execFileAsync = promisify(execFile);
+const NOTIFY_HOOK_MARKER = "ghostex-gxserver-agent-notify-hook-marker";
+const NOTIFY_HOOK_VERSION = 2;
 const OPENCODE_AGENT_ID = "opencode";
 const OPENCODE_PLUGIN_MARKER = "ghostex-opencode-session-plugin-marker";
 const OPENCODE_PLUGIN_SPEC = "./plugins/ghostex-session.js";
+const AMP_PLUGIN_MARKER = "ghostex-amp-session-extension-marker";
+const PI_EXTENSION_MARKER = "ghostex-pi-session-extension-marker";
 const SHELL_PATH_SENTINEL = "__GHOSTEX_GXSERVER_SHELL_PATH__";
 const GXSERVER_AGENT_HOOK_COLOR_DISABLING_ENVIRONMENT_KEYS = [
   "ANSI_COLORS_DISABLED",
@@ -24,13 +28,152 @@ const GXSERVER_AGENT_HOOK_COLOR_DISABLING_ENVIRONMENT_KEYS = [
   "NODE_DISABLE_COLORS",
 ] as const;
 
+type GxserverAgentHookFormat = "antigravity" | "flatJson" | "nestedJson" | "opencode" | "pluginFile" | "markedYaml";
+
+interface GxserverAgentHookDefinition {
+  agentId: string;
+  cliCommand: string;
+  commandAgent?: string;
+  events?: readonly string[];
+  format: GxserverAgentHookFormat;
+  marker?: string;
+  paths: (hookPaths: GxserverAgentHookPaths) => Promise<string[]> | string[];
+}
+
 export interface GxserverAgentHookPaths {
   hookStateDirectory: string;
   homeDir: string;
   notifyHookPath: string;
   opencodeConfigPath: string;
   opencodePluginPath: string;
+  piExtensionPath: string;
 }
+
+const HOOK_DEFINITIONS: readonly GxserverAgentHookDefinition[] = [
+  {
+    agentId: "codex",
+    cliCommand: "codex",
+    events: ["SessionStart", "UserPromptSubmit", "Stop", "Notification", "SessionEnd"],
+    format: "nestedJson",
+    paths: async (hookPaths) => [
+      path.join(hookPaths.homeDir, ".codex", "hooks.json"),
+      ...(await listCodexProfileHookPaths(hookPaths.homeDir)),
+    ],
+  },
+  {
+    agentId: "claude",
+    cliCommand: "claude",
+    events: ["SessionStart", "UserPromptSubmit"],
+    format: "nestedJson",
+    paths: (hookPaths) => [path.join(hookPaths.homeDir, ".claude", "settings.json")],
+  },
+  {
+    agentId: "cursor",
+    cliCommand: "cursor-agent",
+    commandAgent: "cursor",
+    events: ["beforeSubmitPrompt", "beforeShellExecution", "afterAgentResponse", "stop"],
+    format: "flatJson",
+    paths: (hookPaths) => [path.join(hookPaths.homeDir, ".cursor", "hooks.json")],
+  },
+  {
+    agentId: "gemini",
+    cliCommand: "gemini",
+    commandAgent: "gemini",
+    events: ["SessionStart", "BeforeAgent", "AfterAgent", "SessionEnd"],
+    format: "nestedJson",
+    paths: (hookPaths) => [path.join(hookPaths.homeDir, ".gemini", "settings.json")],
+  },
+  {
+    agentId: "copilot",
+    cliCommand: "copilot",
+    commandAgent: "copilot",
+    events: ["SessionStart", "Stop", "Notification", "SessionEnd"],
+    format: "nestedJson",
+    paths: (hookPaths) => [path.join(hookPaths.homeDir, ".copilot", "config.json")],
+  },
+  {
+    agentId: "droid",
+    cliCommand: "droid",
+    commandAgent: "droid",
+    events: ["SessionStart", "Stop", "Notification", "SessionEnd"],
+    format: "nestedJson",
+    paths: (hookPaths) => [path.join(hookPaths.homeDir, ".factory", "settings.json")],
+  },
+  {
+    agentId: "grok",
+    cliCommand: "grok",
+    commandAgent: "grok",
+    events: ["SessionStart", "UserPromptSubmit", "Stop", "Notification", "SessionEnd"],
+    format: "nestedJson",
+    paths: (hookPaths) => [path.join(hookPaths.homeDir, ".grok", "hooks", "ghostex-session.json")],
+  },
+  {
+    agentId: "antigravity",
+    cliCommand: "agy",
+    commandAgent: "antigravity",
+    events: ["SessionStart", "PreInvocation", "Stop", "turn-completion", "Notification", "SessionEnd"],
+    format: "antigravity",
+    paths: (hookPaths) => [path.join(hookPaths.homeDir, ".gemini", "config", "hooks.json")],
+  },
+  {
+    agentId: "amp",
+    cliCommand: "amp",
+    commandAgent: "amp",
+    format: "pluginFile",
+    marker: AMP_PLUGIN_MARKER,
+    paths: (hookPaths) => [path.join(hookPaths.homeDir, ".config", "amp", "plugins", "ghostex-session.ts")],
+  },
+  {
+    agentId: "pi",
+    cliCommand: "pi",
+    commandAgent: "pi",
+    format: "pluginFile",
+    marker: PI_EXTENSION_MARKER,
+    paths: (hookPaths) => [hookPaths.piExtensionPath],
+  },
+  {
+    agentId: "rovodev",
+    cliCommand: "acli",
+    commandAgent: "rovodev",
+    format: "markedYaml",
+    marker: "ghostex hooks rovodev begin",
+    paths: (hookPaths) => [path.join(hookPaths.homeDir, ".rovodev", "config.yml")],
+  },
+  {
+    agentId: "hermes-agent",
+    cliCommand: "hermes",
+    commandAgent: "hermes-agent",
+    format: "markedYaml",
+    marker: "ghostex hooks hermes-agent begin",
+    paths: (hookPaths) => [path.join(hookPaths.homeDir, ".hermes", "config.yaml")],
+  },
+  {
+    agentId: "codebuddy",
+    cliCommand: "codebuddy",
+    commandAgent: "codebuddy",
+    events: ["SessionStart", "Stop", "Notification", "SessionEnd"],
+    format: "nestedJson",
+    paths: (hookPaths) => [path.join(hookPaths.homeDir, ".codebuddy", "settings.json")],
+  },
+  {
+    agentId: "qoder",
+    cliCommand: "qodercli",
+    commandAgent: "qoder",
+    events: ["SessionStart", "Stop", "SessionEnd"],
+    format: "nestedJson",
+    paths: (hookPaths) => [path.join(hookPaths.homeDir, ".qoder", "settings.json")],
+  },
+  {
+    agentId: OPENCODE_AGENT_ID,
+    cliCommand: "opencode",
+    commandAgent: OPENCODE_AGENT_ID,
+    format: "opencode",
+    marker: OPENCODE_PLUGIN_MARKER,
+    paths: (hookPaths) => [hookPaths.opencodePluginPath, hookPaths.opencodeConfigPath],
+  },
+];
+
+const HOOK_DEFINITIONS_BY_ID = new Map(HOOK_DEFINITIONS.map((definition) => [definition.agentId, definition]));
 
 export function createGxserverAgentHookPaths(paths: Pick<GxserverPaths, "homeDir">): GxserverAgentHookPaths {
   const homeDir = paths.homeDir;
@@ -40,6 +183,7 @@ export function createGxserverAgentHookPaths(paths: Pick<GxserverPaths, "homeDir
     notifyHookPath: path.join(homeDir, ".ghostex", "hooks", "agent-shell-notify.sh"),
     opencodeConfigPath: path.join(homeDir, ".config", "opencode", "opencode.json"),
     opencodePluginPath: path.join(homeDir, ".config", "opencode", "plugins", "ghostex-session.js"),
+    piExtensionPath: path.join(homeDir, ".pi", "agent", "extensions", "ghostex-session", "index.ts"),
   };
 }
 
@@ -64,15 +208,18 @@ export async function installGxserverAgentHooks(
   const hookPaths = createGxserverAgentHookPaths(paths);
   const agentIds = normalizeAgentIds(params.agentIds);
   const installedPaths: string[] = [];
-  if (agentIds.includes(OPENCODE_AGENT_ID)) {
-    /*
-    CDXC:AgentHooks 2026-06-03-20:28:
-    Nightly moved agent integration ownership toward gxserver. Keep OpenCode's
-    plugin marker detection, plugin write/update, and old opencode.json cleanup
-    in gxserver so the macOS sidebar only requests status/install results.
-    */
-    await installOpenCodeHook(hookPaths);
-    installedPaths.push(hookPaths.opencodePluginPath);
+  /*
+  CDXC:AgentHooks 2026-06-07-08:31:
+  Hook installation is an explicit user action from first-launch setup or Settings, but the installed artifacts and provider-specific merge rules are gxserver-owned so every client gets the same agent identity, first prompt, and activity lifecycle events instead of depending on macOS sidebar code.
+  */
+  await installNotifyHook(hookPaths);
+  installedPaths.push(hookPaths.notifyHookPath);
+  for (const agentId of agentIds) {
+    const definition = HOOK_DEFINITIONS_BY_ID.get(agentId);
+    if (!definition || !(await resolveCommandPath(definition.cliCommand, hookPaths.homeDir))) {
+      continue;
+    }
+    installedPaths.push(...await installAgentHook(definition, hookPaths));
   }
   const status = await readGxserverAgentHookStatus(paths, { agentIds });
   return {
@@ -135,7 +282,7 @@ export async function discoverLoginShellPathEntries(environment: NodeJS.ProcessE
 }
 
 export function buildOpenCodePluginSource(notifyHookPath: string): string {
-  return `// ${OPENCODE_PLUGIN_MARKER} v1
+  return `// ${OPENCODE_PLUGIN_MARKER} v2
 import { spawn } from "node:child_process";
 
 function firstString(...values) {
@@ -210,47 +357,649 @@ async function readRequestedHookRows(
 ): Promise<GxserverAgentHookStatusRow[]> {
   const agentIds = normalizeAgentIds(requestedAgentIds);
   const rows: GxserverAgentHookStatusRow[] = [];
-  if (agentIds.includes(OPENCODE_AGENT_ID)) {
-    rows.push(await readOpenCodeHookStatus(hookPaths));
+  for (const agentId of agentIds) {
+    const definition = HOOK_DEFINITIONS_BY_ID.get(agentId);
+    if (definition) {
+      rows.push(await readHookStatus(definition, hookPaths));
+    }
   }
   return rows;
 }
 
 function normalizeAgentIds(agentIds: readonly string[] | undefined): string[] {
-  const normalized = (agentIds ?? [OPENCODE_AGENT_ID])
+  const known = new Set(HOOK_DEFINITIONS.map((definition) => definition.agentId));
+  const normalized = (agentIds ?? HOOK_DEFINITIONS.map((definition) => definition.agentId))
     .map((agentId) => String(agentId).trim().toLowerCase())
     .filter(Boolean);
-  return normalized.length > 0
-    ? [...new Set(normalized)].filter((agentId) => agentId === OPENCODE_AGENT_ID)
-    : [OPENCODE_AGENT_ID];
+  const filtered = [...new Set(normalized)].filter((agentId) => known.has(agentId));
+  return filtered.length > 0 ? filtered : HOOK_DEFINITIONS.map((definition) => definition.agentId);
 }
 
-async function readOpenCodeHookStatus(hookPaths: GxserverAgentHookPaths): Promise<GxserverAgentHookStatusRow> {
-  const cliInstalled = Boolean(await resolveCommandPath("opencode", hookPaths.homeDir));
-  const hookInstalled = (await readFileText(hookPaths.opencodePluginPath)).includes(OPENCODE_PLUGIN_MARKER);
-  const paths = [hookPaths.opencodePluginPath, hookPaths.opencodeConfigPath];
+async function readHookStatus(
+  definition: GxserverAgentHookDefinition,
+  hookPaths: GxserverAgentHookPaths,
+): Promise<GxserverAgentHookStatusRow> {
+  const cliInstalled = Boolean(await resolveCommandPath(definition.cliCommand, hookPaths.homeDir));
+  const paths = await hookConfigPaths(definition, hookPaths);
+  const hookInstalled = await isAgentHookInstalled(definition, hookPaths, paths);
+  const notifyHookCurrent = await isNotifyHookCurrent(hookPaths.notifyHookPath);
+  const isInstalled = hookInstalled && notifyHookCurrent;
   if (!cliInstalled) {
     return {
-      agentId: OPENCODE_AGENT_ID,
-      cliCommand: "opencode",
+      agentId: definition.agentId,
+      cliCommand: definition.cliCommand,
       cliInstalled,
-      detail: "opencode was not found on PATH.",
-      hookInstalled,
+      detail: `${definition.cliCommand} was not found on PATH.`,
+      hookInstalled: isInstalled,
       paths,
       status: "cliMissing",
     };
   }
   return {
-    agentId: OPENCODE_AGENT_ID,
-    cliCommand: "opencode",
+    agentId: definition.agentId,
+    cliCommand: definition.cliCommand,
     cliInstalled,
-    detail: hookInstalled
-      ? `Installed in ${displayPath(hookPaths.opencodePluginPath, hookPaths.homeDir)}`
-      : `Run Install Hooks to write ${displayPath(hookPaths.opencodePluginPath, hookPaths.homeDir)}`,
-    hookInstalled,
+    detail: isInstalled
+      ? `Installed in ${displayPath(paths[0] ?? hookPaths.notifyHookPath, hookPaths.homeDir)}`
+      : notifyHookCurrent
+        ? `Run Install Hooks to write ${displayPath(paths[0] ?? hookPaths.notifyHookPath, hookPaths.homeDir)}`
+        : `Run Install Hooks to update ${displayPath(hookPaths.notifyHookPath, hookPaths.homeDir)}`,
+    hookInstalled: isInstalled,
     paths,
-    status: hookInstalled ? "installed" : "missing",
+    status: isInstalled ? "installed" : "missing",
   };
+}
+
+async function hookConfigPaths(definition: GxserverAgentHookDefinition, hookPaths: GxserverAgentHookPaths): Promise<string[]> {
+  return typeof definition.paths === "function" ? await definition.paths(hookPaths) : definition.paths;
+}
+
+async function isNotifyHookCurrent(notifyHookPath: string): Promise<boolean> {
+  const text = await readFileText(notifyHookPath);
+  return text.includes(`${NOTIFY_HOOK_MARKER} v${NOTIFY_HOOK_VERSION}`);
+}
+
+async function isAgentHookInstalled(
+  definition: GxserverAgentHookDefinition,
+  hookPaths: GxserverAgentHookPaths,
+  configPaths: readonly string[],
+): Promise<boolean> {
+  if (definition.format === "opencode") {
+    return (await readFileText(hookPaths.opencodePluginPath)).includes(OPENCODE_PLUGIN_MARKER);
+  }
+  if (definition.format === "pluginFile") {
+    const marker = definition.marker;
+    return Boolean(marker && (await readFileText(configPaths[0] ?? "")).includes(marker));
+  }
+  if (definition.format === "markedYaml") {
+    const marker = definition.marker;
+    return Boolean(marker && (await readFileText(configPaths[0] ?? "")).includes(marker));
+  }
+  if (definition.format === "antigravity") {
+    const text = await readFileText(configPaths[0] ?? "");
+    return text.includes(commandForAgent(definition, hookPaths.notifyHookPath));
+  }
+  const command = commandForAgent(definition, hookPaths.notifyHookPath);
+  const existingPaths = [];
+  for (const configPath of configPaths) {
+    if ((await readFileText(configPath)).trim()) {
+      existingPaths.push(configPath);
+    }
+  }
+  const pathsToCheck = definition.agentId === "codex" && existingPaths.length > 0 ? existingPaths : configPaths.slice(0, 1);
+  if (pathsToCheck.length === 0) {
+    return false;
+  }
+  const checks = await Promise.all(pathsToCheck.map(async (configPath) => hookJsonContainsCommand(configPath, command)));
+  return definition.agentId === "codex" ? checks.every(Boolean) : checks.some(Boolean);
+}
+
+async function installNotifyHook(hookPaths: GxserverAgentHookPaths): Promise<void> {
+  await mkdir(path.dirname(hookPaths.notifyHookPath), { recursive: true });
+  await writeFile(hookPaths.notifyHookPath, buildNotifyHookScript(), "utf8");
+  await chmod(hookPaths.notifyHookPath, 0o755);
+  await mkdir(hookPaths.hookStateDirectory, { recursive: true });
+}
+
+async function installAgentHook(
+  definition: GxserverAgentHookDefinition,
+  hookPaths: GxserverAgentHookPaths,
+): Promise<string[]> {
+  if (definition.format === "opencode") {
+    await installOpenCodeHook(hookPaths);
+    return [hookPaths.opencodePluginPath];
+  }
+  const configPaths = await hookConfigPaths(definition, hookPaths);
+  const command = commandForAgent(definition, hookPaths.notifyHookPath);
+  if (definition.format === "pluginFile") {
+    const configPath = configPaths[0];
+    if (!configPath) return [];
+    await mkdir(path.dirname(configPath), { recursive: true });
+    await writeFile(
+      configPath,
+      definition.agentId === "amp" ? buildAmpPluginSource(hookPaths.notifyHookPath) : buildPiExtensionSource(hookPaths.notifyHookPath),
+      "utf8",
+    );
+    return [configPath];
+  }
+  if (definition.format === "markedYaml") {
+    const configPath = configPaths[0];
+    if (!configPath) return [];
+    await installMarkedYamlHook(configPath, definition.agentId, command);
+    return [configPath];
+  }
+  const installedPaths: string[] = [];
+  for (const configPath of configPaths) {
+    await mergeJsonHook(configPath, definition, command);
+    installedPaths.push(configPath);
+  }
+  return installedPaths;
+}
+
+function commandForAgent(definition: GxserverAgentHookDefinition, notifyHookPath: string): string {
+  return definition.commandAgent ? `GHOSTEX_AGENT=${shellQuote(definition.commandAgent)} ${shellQuote(notifyHookPath)}` : notifyHookPath;
+}
+
+async function mergeJsonHook(configPath: string, definition: GxserverAgentHookDefinition, command: string): Promise<void> {
+  const data = readJsonObject(await readFileText(configPath));
+  if (definition.format === "antigravity") {
+    data.ghostex = Object.fromEntries(
+      (definition.events ?? []).map((eventName) => [eventName, [{ type: "command", command, timeout: 5 }]]),
+    );
+  } else if (definition.format === "flatJson") {
+    const hooks = ensureObjectProperty(data, "hooks");
+    data.version = data.version || 1;
+    for (const eventName of definition.events ?? []) {
+      const entries = Array.isArray(hooks[eventName]) ? hooks[eventName] as unknown[] : [];
+      if (!entries.some((entry) => isHookCommand(entry, command))) {
+        entries.push({ command });
+      }
+      hooks[eventName] = entries;
+    }
+  } else {
+    const hooks = ensureObjectProperty(data, "hooks");
+    for (const eventName of definition.events ?? []) {
+      const groups = Array.isArray(hooks[eventName]) ? hooks[eventName] as unknown[] : [];
+      if (!groups.some((group) => groupContainsHookCommand(group, command))) {
+        const nextGroup: Record<string, unknown> = {
+          hooks: [{ type: "command", command, ...(definition.commandAgent ? { timeout: 5000 } : {}) }],
+        };
+        if (definition.agentId === "claude") {
+          nextGroup.matcher = "*";
+        }
+        groups.push(nextGroup);
+      }
+      hooks[eventName] = groups;
+    }
+  }
+  await mkdir(path.dirname(configPath), { recursive: true });
+  await writeFile(configPath, `${JSON.stringify(data, null, 2)}\n`, "utf8");
+}
+
+async function installMarkedYamlHook(configPath: string, agentId: string, command: string): Promise<void> {
+  const beginMarker = `# ghostex hooks ${agentId} begin`;
+  const endMarker = `# ghostex hooks ${agentId} end`;
+  const currentLines = (await readFileText(configPath)).split(/\r?\n/u);
+  const lines = withoutMarkedBlock(currentLines, beginMarker, endMarker);
+  if (lines.length > 0 && lines[lines.length - 1]?.trim()) {
+    lines.push("");
+  }
+  if (agentId === "hermes-agent") {
+    const shellCommand = `sh -c ${shellQuote(command)}`;
+    lines.push(
+      beginMarker,
+      "hooks:",
+      ...["on_session_start", "pre_llm_call", "post_llm_call", "on_session_end", "on_session_finalize", "on_session_reset"]
+        .flatMap((eventName) => [`  ${eventName}:`, `    - command: ${yamlDoubleQuote(shellCommand)}`, "      timeout: 5"]),
+      endMarker,
+    );
+  } else {
+    lines.push(
+      beginMarker,
+      "eventHooks:",
+      "  events:",
+      ...["on_complete", "on_error", "on_tool_permission"].flatMap((eventName) => [
+        `    - name: ${eventName}`,
+        "      commands:",
+        `        - command: ${yamlDoubleQuote(command)}`,
+      ]),
+      endMarker,
+    );
+  }
+  await mkdir(path.dirname(configPath), { recursive: true });
+  await writeFile(configPath, `${lines.join("\n").replace(/\n*$/u, "")}\n`, "utf8");
+}
+
+function withoutMarkedBlock(lines: readonly string[], beginMarker: string, endMarker: string): string[] {
+  const result: string[] = [];
+  for (let index = 0; index < lines.length; index += 1) {
+    if (lines[index]?.trim() !== beginMarker) {
+      result.push(lines[index] ?? "");
+      continue;
+    }
+    while (index < lines.length && lines[index]?.trim() !== endMarker) {
+      index += 1;
+    }
+  }
+  while (result.length > 0 && !result[result.length - 1]?.trim()) {
+    result.pop();
+  }
+  return result;
+}
+
+function buildNotifyHookScript(): string {
+  return `#!/bin/bash
+# ${NOTIFY_HOOK_MARKER} v${NOTIFY_HOOK_VERSION}
+if [ -n "$1" ]; then
+  INPUT="$1"
+else
+  INPUT="$(cat)"
+fi
+
+SESSION_STATE_FILE="\${VSMUX_SESSION_STATE_FILE:-\${GHOSTEX_SESSION_STATE_FILE:-$ghostex_SESSION_STATE_FILE}}"
+HOOK_STATE_DIR="\${GHOSTEX_AGENT_HOOK_STATE_DIR:-$HOME/.ghostexterm}"
+if [ "\${GHOSTEX_INTERNAL_PROMPT_GENERATION:-}" = "1" ] || [ "\${GHOSTEX_INTERNAL_TITLE_GENERATION:-}" = "1" ]; then
+  printf '{"continue":true}'
+  exit 0
+fi
+if [ -z "$SESSION_STATE_FILE" ] && { [ -z "\${GHOSTEX_GLOBAL_SESSION_REF:-}" ] || [ -z "\${GHOSTEX_GXSERVER_BASE_URL:-}" ] || [ -z "\${GHOSTEX_GXSERVER_AUTH_TOKEN_FILE:-}" ]; }; then
+  printf '{"continue":true}'
+  exit 0
+fi
+
+/usr/bin/python3 - "$SESSION_STATE_FILE" "$INPUT" "$HOOK_STATE_DIR" <<'PY'
+import base64
+import datetime
+import json
+import os
+import pathlib
+import sys
+import time
+import urllib.request
+
+state_path = sys.argv[1]
+raw_input = sys.argv[2]
+hook_state_dir = pathlib.Path(sys.argv[3]).expanduser()
+has_state_path = bool(state_path.strip())
+try:
+    payload = json.loads(raw_input)
+except Exception:
+    payload = {}
+
+state = {}
+if has_state_path:
+    try:
+        with open(state_path, "r", encoding="utf-8") as handle:
+            for line in handle:
+                key, separator, value = line.partition("=")
+                if separator:
+                    state[key] = value.strip() if key in {"firstUserMessageBase64", "agentSessionPath"} else " ".join(value.strip().split())
+    except FileNotFoundError:
+        pass
+
+def first_string(*values):
+    for value in values:
+        if isinstance(value, str) and value.strip():
+            return " ".join(value.strip().split())
+    return ""
+
+def first_path(*values):
+    for value in values:
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+def decode_base64_text(value):
+    try:
+        return base64.b64decode((value or "").encode("ascii")).decode("utf-8").strip()
+    except Exception:
+        return ""
+
+def normalize_prompt_text(value):
+    return " ".join(str(value or "").strip().split())
+
+def normalized_agent_key(value):
+    normalized = " ".join(str(value or "").strip().lower().split())
+    aliases = {
+        "claude": "claude",
+        "claude code": "claude",
+        "codex": "codex",
+        "openai codex": "codex",
+        "codex cli": "codex",
+        "pi": "pi",
+        "π": "pi",
+        "opencode": "opencode",
+        "open code": "opencode",
+        "grok": "grok",
+        "grok build": "grok",
+        "amp": "amp",
+        "amp cli": "amp",
+        "cursor": "cursor",
+        "cursor agent": "cursor",
+        "cursor cli": "cursor",
+        "cursor-agent": "cursor",
+        "gemini": "gemini",
+        "gemini cli": "gemini",
+        "agy": "antigravity",
+        "antigravity": "antigravity",
+        "antigravity cli": "antigravity",
+        "copilot": "copilot",
+        "github copilot": "copilot",
+        "codebuddy": "codebuddy",
+        "code buddy": "codebuddy",
+        "droid": "droid",
+        "factory": "droid",
+        "factory droid": "droid",
+        "qoder": "qoder",
+        "qodercli": "qoder",
+        "rovo": "rovodev",
+        "rovo dev": "rovodev",
+        "rovodev": "rovodev",
+        "hermes": "hermes-agent",
+        "hermes agent": "hermes-agent",
+        "hermes-agent": "hermes-agent",
+    }
+    return aliases.get(normalized) or "".join(ch if ch.isalnum() or ch in {"-", "_"} else "-" for ch in normalized).strip("-") or "codex"
+
+def nested_get(source, *path):
+    current = source
+    for key in path:
+        if not isinstance(current, dict):
+            return None
+        current = current.get(key)
+    return current
+
+def parse_global_session_ref(value):
+    parts = str(value or "").strip().split(":")
+    if len(parts) == 3 and parts[1] and parts[2]:
+        return parts[1], parts[2]
+    return "", ""
+
+def now_iso():
+    return datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00", "Z")
+
+def write_state():
+    if not has_state_path:
+        return
+    keys = [
+        "status",
+        "statusUpdatedAt",
+        "attentionEventId",
+        "attentionAcknowledgedAt",
+        "attentionAcknowledgedEventId",
+        "agent",
+        "agentSessionId",
+        "agentSessionPath",
+        "firstUserMessageBase64",
+        "frozenAt",
+        "autoTitleFromFirstPrompt",
+        "historyBase64",
+        "lastActivityAt",
+        "pendingFirstPromptAutoRenamePrompt",
+        "title",
+    ]
+    path = pathlib.Path(state_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = path.with_suffix(path.suffix + ".tmp")
+    temp_path.write_text("".join(f"{key}={state.get(key, '')}\\n" for key in keys), encoding="utf-8")
+    temp_path.replace(path)
+
+def write_hook_store(agent_key, session_id, transcript_path):
+    workspace_id = first_string(os.environ.get("GHOSTEX_WORKSPACE_ID"), os.environ.get("VSMUX_WORKSPACE_ID"), os.environ.get("ghostex_WORKSPACE_ID"))
+    surface_id = first_string(os.environ.get("GHOSTEX_SESSION_ID"), os.environ.get("VSMUX_SESSION_ID"), os.environ.get("ghostex_SESSION_ID"))
+    if not workspace_id or not surface_id:
+        direct_project_id, direct_session_id = parse_global_session_ref(os.environ.get("GHOSTEX_GLOBAL_SESSION_REF", ""))
+        workspace_id = workspace_id or direct_project_id
+        surface_id = surface_id or direct_session_id
+    if not session_id or not workspace_id or not surface_id:
+        return
+    store_path = hook_state_dir / f"{agent_key}-hook-sessions.json"
+    try:
+        data = json.loads(store_path.read_text(encoding="utf-8"))
+    except Exception:
+        data = {}
+    if not isinstance(data, dict):
+        data = {}
+    sessions = data.get("sessions")
+    if not isinstance(sessions, dict):
+        sessions = {}
+    sessions[session_id] = {
+        "sessionId": session_id,
+        "workspaceId": workspace_id,
+        "surfaceId": surface_id,
+        "cwd": first_path(payload.get("cwd"), os.environ.get("GHOSTEX_WORKSPACE_ROOT"), os.environ.get("VSMUX_WORKSPACE_ROOT"), os.getcwd()),
+        "transcriptPath": transcript_path or None,
+        "pid": os.getppid(),
+        "isRestorable": True,
+        "updatedAt": time.time(),
+    }
+    data["version"] = 1
+    data["sessions"] = sessions
+    store_path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = store_path.with_suffix(store_path.suffix + ".tmp")
+    temp_path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\\n", encoding="utf-8")
+    temp_path.replace(store_path)
+
+def read_gxserver_auth_token():
+    token_file = first_path(os.environ.get("GHOSTEX_GXSERVER_AUTH_TOKEN_FILE"))
+    if not token_file:
+        return ""
+    try:
+        return pathlib.Path(token_file).expanduser().read_text(encoding="utf-8").strip()
+    except Exception:
+        return ""
+
+def post_gxserver_hook_event(agent_key, session_id, transcript_path, first_user_message, event_name):
+    base_url = first_string(os.environ.get("GHOSTEX_GXSERVER_BASE_URL")).rstrip("/")
+    project_id, surface_id = parse_global_session_ref(os.environ.get("GHOSTEX_GLOBAL_SESSION_REF", ""))
+    token = read_gxserver_auth_token()
+    if not base_url or not project_id or not surface_id or not token:
+        return
+    try:
+        protocol_version = int(first_string(os.environ.get("GHOSTEX_GXSERVER_PROTOCOL_VERSION"), "1"))
+    except Exception:
+        protocol_version = 1
+    params = {
+        "agentName": agent_key,
+        "eventName": event_name,
+        "projectId": project_id,
+        "rawEventName": event_name,
+        "sessionId": surface_id,
+    }
+    for key, value in {
+        "agentSessionId": session_id,
+        "agentSessionPath": transcript_path,
+        "firstUserMessage": first_user_message,
+        "status": state.get("status", ""),
+        "statusUpdatedAt": state.get("statusUpdatedAt", ""),
+        "title": state.get("title", ""),
+    }.items():
+        if value:
+            params[key] = value
+    body = json.dumps({"protocolVersion": protocol_version, "params": params}).encode("utf-8")
+    request = urllib.request.Request(
+        base_url + "/api/ingestAgentHookEvent",
+        data=body,
+        headers={
+            "Authorization": "Bearer " + token,
+            "Content-Type": "application/json",
+            "x-gxserver-protocol-version": str(protocol_version),
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=1.5) as response:
+            response.read(128)
+    except Exception:
+        pass
+
+def update_status(status):
+    timestamp = now_iso()
+    state["status"] = status
+    state["statusUpdatedAt"] = timestamp
+    state["lastActivityAt"] = timestamp
+    if status == "attention":
+        state["attentionEventId"] = f"{timestamp}:attention"
+        state["attentionAcknowledgedAt"] = ""
+        state["attentionAcknowledgedEventId"] = ""
+    elif status == "working":
+        state["attentionAcknowledgedAt"] = timestamp
+        state["attentionAcknowledgedEventId"] = state.get("attentionEventId", "")
+
+payload_agent = payload.get("agent")
+explicit_agent_name = first_string(payload_agent, os.environ.get("GHOSTEX_AGENT"), os.environ.get("ghostex_AGENT"))
+agent_name = first_string(explicit_agent_name, os.environ.get("VSMUX_AGENT"), state.get("agent"), "codex")
+agent_key = normalized_agent_key(agent_name)
+event_name = first_string(payload.get("hook_event_name"), payload.get("event"))
+session_id = first_string(
+    payload.get("session_id"),
+    payload.get("sessionId"),
+    payload.get("conversation_id"),
+    payload.get("conversationId"),
+    payload.get("thread_id"),
+    payload.get("threadId"),
+    nested_get(payload, "session", "id"),
+    nested_get(payload, "thread", "id"),
+    nested_get(payload, "properties", "sessionID"),
+    nested_get(payload, "properties", "sessionId"),
+    nested_get(payload, "properties", "session_id"),
+    nested_get(payload, "properties", "info", "id"),
+)
+transcript_path = first_path(payload.get("transcript_path"), payload.get("transcriptPath"), payload.get("log_path"), payload.get("logPath"))
+prompt = first_string(payload.get("prompt"), payload.get("text"), payload.get("message"), payload.get("input"), nested_get(payload, "prompt", "text"))
+
+state["status"] = state.get("status") or "idle"
+state["statusUpdatedAt"] = state.get("statusUpdatedAt") or state.get("lastActivityAt", "")
+state["agent"] = agent_key if explicit_agent_name else (state.get("agent") or agent_key)
+if session_id:
+    state["agentSessionId"] = session_id
+if transcript_path:
+    state["agentSessionPath"] = transcript_path
+if session_id:
+    write_hook_store(agent_key, session_id, transcript_path)
+
+if event_name in {"UserPromptSubmit", "BeforeAgent", "PreInvocation", "beforeSubmitPrompt", "beforeShellExecution", "pre_llm_call", "pre_tool_call", "agent_start"}:
+    update_status("working")
+elif event_name in {"Stop", "AfterAgent", "afterAgentResponse", "turn-completion", "Notification", "stop", "on_tool_permission", "PermissionRequest", "agent_end", "session.updated", "message.updated", "permission.updated"}:
+    update_status("attention")
+elif event_name in {"SessionEnd", "session_shutdown", "release", "on_session_end", "on_session_finalize", "on_session_reset"}:
+    update_status("idle")
+
+if event_name in {"UserPromptSubmit", "BeforeAgent", "PreInvocation", "beforeSubmitPrompt", "beforeShellExecution", "pre_llm_call", "pre_tool_call", "on_tool_permission", "agent_start"} and prompt:
+    state["firstUserMessageBase64"] = state.get("firstUserMessageBase64") or base64.b64encode(prompt.encode("utf-8")).decode("ascii")
+    state["lastActivityAt"] = state.get("lastActivityAt") or now_iso()
+    if agent_key not in {"claude", "cursor"} and state.get("autoTitleFromFirstPrompt") not in {"1", "true", "TRUE", "True"} and not state.get("pendingFirstPromptAutoRenamePrompt", "").strip():
+        first_prompt = normalize_prompt_text(decode_base64_text(state.get("firstUserMessageBase64", "")))
+        current_prompt = normalize_prompt_text(prompt)
+        state["pendingFirstPromptAutoRenamePrompt"] = normalize_prompt_text(first_prompt + "\\n" + current_prompt) if first_prompt and first_prompt != current_prompt else current_prompt
+
+first_user_message = first_string(state.get("pendingFirstPromptAutoRenamePrompt"), decode_base64_text(state.get("firstUserMessageBase64", "")), prompt)
+post_gxserver_hook_event(agent_key, session_id, transcript_path, first_user_message, event_name)
+write_state()
+PY
+
+printf '{"continue":true}'
+exit 0
+`;
+}
+
+function buildAmpPluginSource(notifyHookPath: string): string {
+  return `// ${AMP_PLUGIN_MARKER} v2
+import { spawn } from "node:child_process";
+
+function sendHook(eventName: string, event: any = {}, ctx: any = {}) {
+  const payload = {
+    agent: "amp",
+    cwd: ctx.cwd || process.cwd(),
+    event: eventName,
+    hook_event_name: eventName,
+    prompt: event.prompt || event.text || event.message,
+    session_id: event.session_id || event.sessionId || event.thread_id || event.threadId,
+  };
+  const child = spawn(${JSON.stringify(notifyHookPath)}, [], { stdio: ["pipe", "ignore", "ignore"], env: { ...process.env, GHOSTEX_AGENT: "amp" }, detached: true });
+  child.on("error", () => {});
+  child.stdin.on("error", () => {});
+  child.stdin.end(JSON.stringify(payload));
+  child.unref();
+}
+
+export default function ghostexAmpSessionPlugin(amp: any) {
+  amp.on("agent.start", async (event: any, ctx: any) => sendHook("UserPromptSubmit", event, ctx));
+  amp.on("agent.stop", async (event: any, ctx: any) => sendHook("Stop", event, ctx));
+  amp.on("session.end", async (event: any, ctx: any) => sendHook("SessionEnd", event, ctx));
+}
+`;
+}
+
+function buildPiExtensionSource(notifyHookPath: string): string {
+  return `// ${PI_EXTENSION_MARKER} v2
+import { spawn } from "node:child_process";
+import path from "node:path";
+import type { ExtensionAPI, ExtensionContext, InputEvent } from "@earendil-works/pi-coding-agent";
+
+const BRAILLE_FRAMES = ["⠸", "⠴", "⠼", "⠧", "⠦", "⠏", "⠋", "⠇", "⠙", "⠹"] as const;
+
+function sendHook(eventName: string, ctx: ExtensionContext, input?: string): void {
+  const payload = {
+    agent: "pi",
+    cwd: ctx.cwd || process.cwd(),
+    event: eventName,
+    hook_event_name: eventName,
+    prompt: input,
+    session_id: ctx.sessionManager.getSessionId() || undefined,
+    transcript_path: ctx.sessionManager.getSessionFile() || undefined,
+  };
+  const child = spawn(${JSON.stringify(notifyHookPath)}, [], { stdio: ["pipe", "ignore", "ignore"], env: { ...process.env, GHOSTEX_AGENT: "pi" }, detached: true });
+  child.on("error", () => {});
+  child.stdin.on("error", () => {});
+  child.stdin.end(JSON.stringify(payload));
+  child.unref();
+}
+
+function baseTitle(pi: ExtensionAPI, ctx: ExtensionContext): string {
+  const cwd = path.basename(ctx.cwd || process.cwd());
+  const session = pi.getSessionName();
+  return session ? "π - " + session + " - " + cwd : "π - " + cwd;
+}
+
+export default function (pi: ExtensionAPI) {
+  let timer: ReturnType<typeof setInterval> | undefined;
+  let frameIndex = 0;
+  function stopAnimation(ctx: ExtensionContext): void {
+    if (timer) clearInterval(timer);
+    timer = undefined;
+    frameIndex = 0;
+    ctx.ui.setTitle(baseTitle(pi, ctx));
+  }
+  function startAnimation(ctx: ExtensionContext): void {
+    stopAnimation(ctx);
+    timer = setInterval(() => {
+      ctx.ui.setTitle(BRAILLE_FRAMES[frameIndex % BRAILLE_FRAMES.length] + " " + baseTitle(pi, ctx));
+      frameIndex += 1;
+    }, 120);
+  }
+  pi.on("session_start", async (_event, ctx) => {
+    sendHook("SessionStart", ctx);
+    ctx.ui.setTitle(baseTitle(pi, ctx));
+  });
+  pi.on("input", async (event: InputEvent, ctx) => {
+    sendHook("UserPromptSubmit", ctx, event.text.trim());
+    return { action: "continue" };
+  });
+  pi.on("agent_start", async (_event, ctx) => {
+    sendHook("agent_start", ctx);
+    startAnimation(ctx);
+  });
+  pi.on("agent_end", async (_event, ctx) => {
+    sendHook("agent_end", ctx);
+    stopAnimation(ctx);
+  });
+  pi.on("session_shutdown", async (_event, ctx) => {
+    sendHook("session_shutdown", ctx);
+    stopAnimation(ctx);
+  });
+}
+`;
 }
 
 async function installOpenCodeHook(hookPaths: GxserverAgentHookPaths): Promise<void> {
@@ -290,6 +1039,66 @@ async function removeLegacyOpenCodeConfigPluginEntry(configPath: string): Promis
   await writeFile(configPath, `${JSON.stringify(data, null, 2)}\n`, "utf8");
 }
 
+async function listCodexProfileHookPaths(homeDir: string): Promise<string[]> {
+  const profilesPath = path.join(homeDir, ".codex-profiles");
+  const entries = await readdir(profilesPath, { withFileTypes: true }).catch(() => []);
+  return entries
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => path.join(profilesPath, entry.name, "hooks.json"))
+    .sort();
+}
+
+async function hookJsonContainsCommand(configPath: string, command: string): Promise<boolean> {
+  const data = readJsonObject(await readFileText(configPath));
+  return jsonContainsHookCommand(data, command);
+}
+
+function jsonContainsHookCommand(value: unknown, command: string): boolean {
+  if (isHookCommand(value, command)) {
+    return true;
+  }
+  if (Array.isArray(value)) {
+    return value.some((item) => jsonContainsHookCommand(item, command));
+  }
+  if (isObject(value)) {
+    return Object.values(value).some((item) => jsonContainsHookCommand(item, command));
+  }
+  return false;
+}
+
+function groupContainsHookCommand(group: unknown, command: string): boolean {
+  if (!isObject(group) || !Array.isArray(group.hooks)) {
+    return false;
+  }
+  return group.hooks.some((hook) => isHookCommand(hook, command));
+}
+
+function isHookCommand(value: unknown, command: string): boolean {
+  return isObject(value) && value.command === command;
+}
+
+function readJsonObject(text: string): Record<string, unknown> {
+  if (!text.trim()) {
+    return {};
+  }
+  try {
+    const parsed = JSON.parse(text) as unknown;
+    return isObject(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function ensureObjectProperty(record: Record<string, unknown>, key: string): Record<string, unknown> {
+  const value = record[key];
+  if (isObject(value)) {
+    return value;
+  }
+  const next: Record<string, unknown> = {};
+  record[key] = next;
+  return next;
+}
+
 async function resolveCommandPath(command: string, homeDir: string): Promise<string> {
   const commandEnvironment = withoutGxserverAgentHookColorDisablingEnvironment({
     ...process.env,
@@ -303,7 +1112,7 @@ async function resolveCommandPath(command: string, homeDir: string): Promise<str
     },
     timeout: 2_000,
   }).catch(() => ({ stdout: "" }));
-  return String(stdout).trim().split(/\r?\n/)[0] ?? "";
+  return String(stdout).trim().split(/\r?\n/u)[0] ?? "";
 }
 
 async function runLoginShellPathProbe(shellPath: string, environment: NodeJS.ProcessEnv): Promise<string[]> {
@@ -316,7 +1125,7 @@ async function runLoginShellPathProbe(shellPath: string, environment: NodeJS.Pro
     },
   ).catch(() => ({ stdout: "" }));
   const sentinelLine = String(stdout)
-    .split(/\r?\n/)
+    .split(/\r?\n/u)
     .reverse()
     .find((line) => line.startsWith(SHELL_PATH_SENTINEL));
   return sentinelLine ? splitPath(sentinelLine.slice(SHELL_PATH_SENTINEL.length)) : [];
@@ -332,6 +1141,9 @@ async function isExecutable(filePath: string): Promise<boolean> {
 }
 
 async function readFileText(filePath: string): Promise<string> {
+  if (!filePath) {
+    return "";
+  }
   return readFile(filePath, "utf8").catch(() => "");
 }
 
@@ -364,14 +1176,17 @@ function uniquePathEntries(entries: readonly string[]): string[] {
 }
 
 function displayPath(filePath: string, homeDir: string): string {
-  const relative = path.relative(homeDir, filePath);
-  return relative && !relative.startsWith("..") && !path.isAbsolute(relative)
-    ? `~/${relative}`
+  return filePath.startsWith(`${homeDir}${path.sep}`)
+    ? `~/${path.relative(homeDir, filePath)}`
     : filePath;
 }
 
 function shellQuote(value: string): string {
-  return `'${String(value).replace(/'/g, `'\\''`)}'`;
+  return `'${value.replace(/'/gu, "'\\''")}'`;
+}
+
+function yamlDoubleQuote(value: string): string {
+  return `"${value.replace(/\\/gu, "\\\\").replace(/"/gu, '\\"').replace(/\n/gu, "\\n")}"`;
 }
 
 function isObject(value: unknown): value is Record<string, unknown> {

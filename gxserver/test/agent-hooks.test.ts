@@ -19,6 +19,7 @@ test("OpenCode hook install is gxserver-owned and cleans legacy config registrat
   */
   const previousPath = process.env.PATH;
   const previousHome = process.env.HOME;
+  const previousZdotdir = process.env.ZDOTDIR;
   const homeDir = await mkdtemp(path.join(os.tmpdir(), "gxserver-opencode-hooks-"));
   try {
     const binDir = path.join(homeDir, "bin");
@@ -33,12 +34,16 @@ test("OpenCode hook install is gxserver-owned and cleans legacy config registrat
     );
     process.env.HOME = homeDir;
     process.env.PATH = `${binDir}:/usr/bin:/bin`;
+    process.env.ZDOTDIR = homeDir;
 
     const installResult = await installGxserverAgentHooks({ homeDir }, { agentIds: ["opencode"] });
 
     assert.equal(installResult.agents[0]?.agentId, "opencode");
     assert.equal(installResult.agents[0]?.status, "installed");
-    assert.equal(installResult.installedPaths.length, 1);
+    assert.equal(installResult.installedPaths.length, 2);
+    const notifyHook = await readFile(path.join(homeDir, ".ghostex", "hooks", "agent-shell-notify.sh"), "utf8");
+    assert.match(notifyHook, /ghostex-gxserver-agent-notify-hook-marker v2/);
+    assert.match(notifyHook, /\/api\/ingestAgentHookEvent/);
     const plugin = await readFile(path.join(homeDir, ".config", "opencode", "plugins", "ghostex-session.js"), "utf8");
     assert.match(plugin, /ghostex-opencode-session-plugin-marker/);
     assert.match(plugin, /return \{\s*event: async/s);
@@ -50,6 +55,11 @@ test("OpenCode hook install is gxserver-owned and cleans legacy config registrat
   } finally {
     process.env.PATH = previousPath;
     process.env.HOME = previousHome;
+    if (previousZdotdir === undefined) {
+      delete process.env.ZDOTDIR;
+    } else {
+      process.env.ZDOTDIR = previousZdotdir;
+    }
     await rm(homeDir, { force: true, recursive: true });
   }
 });

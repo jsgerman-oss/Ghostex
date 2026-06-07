@@ -39,6 +39,7 @@ test("zmx attach command preserves the renderer shell contract", () => {
   assert.match(command, /export GHOSTEX_GXSERVER_AUTH_TOKEN_FILE="\$zmx_gxserver_auth_token_file"/);
   assert.match(command, /export GHOSTEX_GXSERVER_BASE_URL="\$zmx_gxserver_base_url"/);
   assert.match(command, /export GHOSTEX_GXSERVER_PROTOCOL_VERSION="\$zmx_gxserver_protocol_version"/);
+  assert.match(command, /export GHOSTEX_ZMX_BIN="\$zmx_bin"/);
   assert.match(command, /S1a:P3a91:G8v20/);
   assert.match(command, /http:\/\/127\.0\.0\.1:58744/);
   assert.match(command, /\/Users\/test\/\.ghostex\/gxserver\/auth\/token/);
@@ -206,6 +207,7 @@ test("zmx run startup command is prefixed once for Atuin history ignore", () => 
   });
 
   assert.match(command, /zmx_startup_command=' codex resume abc'/);
+  assert.match(command, /export GHOSTEX_ZMX_BIN="\$zmx_bin"/);
   assert.match(command, /exec "\$zmx_bin" run "\$zmx_session" -d \/bin\/zsh -lc "\$zmx_startup_command"/);
 
   const alreadyPrefixed = buildZmxRunCommand({

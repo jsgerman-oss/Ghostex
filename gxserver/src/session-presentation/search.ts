@@ -6,7 +6,7 @@ import type {
   GxserverSessionDomainState,
 } from "../../protocol/index.js";
 import type { GxserverPresentationReadModel } from "./repository.js";
-import { isActivePresentationSession } from "./projector.js";
+import { isActivePresentationSession, resolvePresentationSessionLastActiveAt } from "./projector.js";
 import { projectSessionTitle } from "../session-title/projection.js";
 import { getTrustedResumeTitle } from "../session-title/trust.js";
 
@@ -55,6 +55,9 @@ export function searchGxserverPreviousSessions(
   /*
   CDXC:PreviousSessions 2026-06-04-20:21:
   The Previous Sessions modal is a restore surface, not a dump of every inactive gxserver row. Return stopped sessions with trusted resume titles plus explicitly pinned/favorited rows, so placeholder terminals created during migration or startup do not keep reappearing without useful activity metadata.
+
+  CDXC:PreviousSessions 2026-06-07-05:28:
+  Command-pane runs such as `bun run start` are reusable tool output, not restorable workspace history. Exclude the commands surface in gxserver before pin/favorite/title exceptions so every client receives the same Previous Sessions list without adding local modal filters.
   */
   return searchGxserverPresentationSessions(
     {
@@ -78,6 +81,9 @@ function toSearchResult(
   /*
   CDXC:GxserverPresentationSearch 2026-06-01-22:06:
   Previous Sessions uses the same session-card renderer as the live sidebar. Search results must carry gxserver's full title projection, not only `title`, so every client can suppress the unsynced `∗` marker for terminal-synced persisted titles and keep placeholders marked.
+
+  CDXC:GxserverPresentationActivity 2026-06-07-05:17:
+  Search rows also feed client sidebar/history cards. Return the same resolved lastActiveAt as the live presentation snapshot so clients do not reinterpret metadata updatedAt as recent user activity.
   */
   return {
     ...(session.agentId ? { agentId: session.agentId } : {}),
@@ -87,7 +93,7 @@ function toSearchResult(
     isPinned: session.isPinned,
     isPrimaryTitleTerminalTitle: titleProjection.isPrimaryTitleTerminalTitle,
     isTemporaryTitle: titleProjection.isTemporaryTitle,
-    ...(session.lastActiveAt ? { lastActiveAt: session.lastActiveAt } : {}),
+    lastActiveAt: resolvePresentationSessionLastActiveAt(session),
     lifecycleState: session.lifecycleState,
     match,
     projectId: session.projectId,
@@ -107,6 +113,9 @@ function toSearchResult(
 }
 
 function isPreviousSessionHistoryCandidate(session: GxserverSessionDomainState): boolean {
+  if (session.surface !== "workspace") {
+    return false;
+  }
   if (isActivePresentationSession(session)) {
     return false;
   }
@@ -148,7 +157,7 @@ function matchSession(
     { field: "id", value: session.globalRef },
     { field: "timestamp", value: session.createdAt },
     { field: "timestamp", value: session.updatedAt },
-    { field: "timestamp", value: session.lastActiveAt },
+    { field: "timestamp", value: resolvePresentationSessionLastActiveAt(session) },
   ];
   for (const field of fields) {
     if (field.value?.toLocaleLowerCase().includes(query)) {
@@ -159,8 +168,8 @@ function matchSession(
 }
 
 function compareSessionRecency(left: GxserverSessionDomainState, right: GxserverSessionDomainState): number {
-  const leftTime = left.lastActiveAt ?? left.updatedAt ?? left.createdAt;
-  const rightTime = right.lastActiveAt ?? right.updatedAt ?? right.createdAt;
+  const leftTime = resolvePresentationSessionLastActiveAt(left);
+  const rightTime = resolvePresentationSessionLastActiveAt(right);
   const byTime = rightTime.localeCompare(leftTime);
   return byTime || left.sessionId.localeCompare(right.sessionId);
 }
