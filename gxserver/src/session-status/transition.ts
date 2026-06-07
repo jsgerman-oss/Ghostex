@@ -45,21 +45,23 @@ export function applyAgentActivityTransition(input: GxserverAgentActivityInput):
   const titleSignal = classifyTerminalTitleStatus(input.title, input.agentId ?? previous.agentName);
   const titleTransition = resolveTitleTransition(input, previous, titleSignal, nowIso, nowMs);
   /*
-  CDXC:SessionStatus 2026-06-07-08:51:
-  Agent hooks are gxserver's authoritative working-state source. A plain terminal title change such as an editor command title must not downgrade explicit hook-driven working; only another explicit hook activity or a true attention title can change it.
+  CDXC:SessionStatus 2026-06-07-09:22:
+  Agent hooks are gxserver's authoritative working-state source. A plain terminal title change such as an editor command title must not downgrade explicit hook-driven working. A recognized same-title spinner stop is still trusted because Codex/Claude/Cursor/Pi expose completion by removing the title spinner rather than always sending a hook stop event.
   */
   if (
     input.event === "title" &&
     !hasExplicitActivity &&
     previous.activity === "working" &&
     previous.workingSource === "explicit" &&
-    titleSignal?.state !== "attention"
+    titleSignal?.state !== "attention" &&
+    !isTrustedSpinnerStopTitle(input, previous, titleSignal)
   ) {
+    const shouldTrackTitleWhilePreserving = titleSignal?.state === "working";
     return {
       ...previous,
       agentName: titleSignal?.agentName ?? normalizeStatusAgentName(input.agentId) ?? previous.agentName,
       lastChangedAt: previous.lastChangedAt ?? nowIso,
-      ...titleTransition,
+      ...(shouldTrackTitleWhilePreserving ? titleTransition : {}),
     };
   }
   if (
@@ -151,6 +153,7 @@ export function applyAgentActivityTransition(input: GxserverAgentActivityInput):
         activity: "idle",
         agentName,
         lastChangedAt: nowIso,
+        workingSource: undefined,
         workingStartedAt: undefined,
       };
     }
@@ -175,6 +178,33 @@ export function applyAgentActivityTransition(input: GxserverAgentActivityInput):
     workingSource: undefined,
     workingStartedAt: undefined,
   };
+}
+
+function isTrustedSpinnerStopTitle(
+  input: GxserverAgentActivityInput,
+  previous: GxserverAgentActivityState,
+  titleSignal: GxserverTitleStatusSignal | undefined,
+): boolean {
+  const title = input.event === "title" ? normalizeText(input.title) : undefined;
+  const agentName = titleSignal?.agentName ?? previous.agentName;
+  if (
+    !title ||
+    titleSignal?.state !== "idle" ||
+    !requiresObservedTitleTransitions(agentName) ||
+    !previous.lastTitle
+  ) {
+    return false;
+  }
+  const previousSignal = classifyTerminalTitleStatus(previous.lastTitle, agentName);
+  if (previousSignal?.state !== "working") {
+    return false;
+  }
+  const previousSignature = createTitleActivitySignature(previous.lastTitle, previousSignal);
+  const currentSignature = createTitleActivitySignature(title, {
+    agentName: previousSignal.agentName,
+    state: "working",
+  });
+  return previousSignature !== undefined && previousSignature === currentSignature;
 }
 
 export function getEffectiveAgentActivityState(

@@ -139,6 +139,7 @@ test("resume and fallback command construction follows current sidebar rules", (
     buildAgentResumeFallbackCommand(project, session) ?? "",
     /codex resume "\$CODEX_RESUME_SESSION_ID"/,
   );
+  assert.equal(buildAgentResumePlan(project, session).copyCommand, 'codex resume "6a6c2672-6b45-45fe-a1a8-a73f9a3a9c56"');
   const startupText = buildAgentResumeStartupText(project, session);
   assert.match(startupText ?? "", /Restoring session/);
   assert.match(startupText ?? "", /Exact resume failed; trying saved fallback resume command/);
@@ -162,6 +163,10 @@ test("resume startup commands apply Accept All at runtime without changing store
 
   assert.equal(
     buildAgentResumePlan(project, session).displayCommand,
+    'codex --yolo resume "6a6c2672-6b45-45fe-a1a8-a73f9a3a9c56"',
+  );
+  assert.equal(
+    buildAgentResumePlan(project, session).copyCommand,
     'codex --yolo resume "6a6c2672-6b45-45fe-a1a8-a73f9a3a9c56"',
   );
   assert.match(buildAgentResumeCommand(project, session) ?? "", /codex --yolo resume "\$CODEX_RESUME_SESSION_ID"/);
@@ -326,7 +331,7 @@ test("resume plan separates OpenCode lookup command from runtime Accept All comm
     /opencode --dangerously-skip-permissions -s "\$\(opencode session list --format json/,
   );
   assert.doesNotMatch(plan.primaryCommand ?? "", /opencode --dangerously-skip-permissions session list/);
-  assert.equal(plan.copyCommand, plan.primaryCommand);
+  assert.equal(plan.copyCommand, undefined);
 });
 
 test("temporary Search by Text titles are not trusted resume fallbacks", () => {

@@ -256,7 +256,7 @@ export interface GxserverUpdateAgentSettingsParams {
   agentAcceptAllEnabled?: boolean;
 }
 
-export type GxserverAgentHookStatus = "cliMissing" | "installed" | "missing";
+export type GxserverAgentHookStatus = "cliMissing" | "installed" | "missing" | "updateRequired";
 
 export interface GxserverAgentHookStatusRow {
   agentId: string;
@@ -270,10 +270,12 @@ export interface GxserverAgentHookStatusRow {
 
 export interface GxserverReadAgentHookStatusParams {
   agentIds?: readonly string[];
+  autoUpgradeInstalled?: boolean;
 }
 
 export interface GxserverReadAgentHookStatusResult {
   agents: readonly GxserverAgentHookStatusRow[];
+  autoUpgradedPaths?: readonly string[];
   generatedAt: string;
   hookStateDirectory: string;
   notifyHookPath: string;
@@ -510,6 +512,7 @@ export interface GxserverResolveGitRootForPathResult {
 }
 
 export interface GxserverRepositoryCloneOptions {
+  branchName?: string;
   cloneMainOnly?: boolean;
   shallowClone?: boolean;
 }
@@ -529,6 +532,7 @@ export interface GxserverRepositoryCloneJobParams {
 }
 
 export interface GxserverRepositoryClonePreviewResult {
+  branchName?: string;
   cloneMainOnly: boolean;
   cloneUrl: string;
   defaultFolderName: string;
@@ -923,6 +927,8 @@ export type GxserverSessionTitleSource =
   | "user";
 
 export interface GxserverSessionTitleProjection {
+  displayTitle?: string;
+  displayTitleTooltip?: string;
   isPrimaryTitleTerminalTitle: boolean;
   isTemporaryTitle: boolean;
   primaryTitle?: string;
@@ -1010,6 +1016,8 @@ export interface GxserverPresentationSession {
   sortKey: string;
   subtitle?: string;
   surface: GxserverSessionSurface;
+  displayTitle?: string;
+  displayTitleTooltip?: string;
   isPrimaryTitleTerminalTitle: boolean;
   isTemporaryTitle: boolean;
   primaryTitle?: string;
@@ -1094,6 +1102,8 @@ export interface GxserverPresentationSearchResult {
   agentId?: string;
   createdAt: string;
   cwd?: string;
+  displayTitle?: string;
+  displayTitleTooltip?: string;
   isFavorite: boolean;
   isPinned: boolean;
   isPrimaryTitleTerminalTitle: boolean;

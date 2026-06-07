@@ -125,6 +125,26 @@ test("projection exposes trusted resume title for durable titles", () => {
   assert.equal(projection.isTemporaryTitle, false);
 });
 
+test("projection emits final display title strings for all clients", () => {
+  const unsynced = projectSessionTitle(
+    sessionFixture({
+      runtimeSettings: { titleSource: "placeholder" },
+      title: "Placeholder work title",
+    }),
+  );
+  assert.equal(unsynced.displayTitle, "∗ Placeholder work title");
+  assert.equal(unsynced.displayTitleTooltip, "∗ Placeholder work title (Unsynced title)");
+
+  const synced = projectSessionTitle(
+    sessionFixture({
+      runtimeSettings: { titleSource: "terminal-auto" },
+      title: "Synced work title",
+    }),
+  );
+  assert.equal(synced.displayTitle, "Synced work title");
+  assert.equal(synced.displayTitleTooltip, "Synced work title");
+});
+
 function sessionFixture(
   partial: Partial<GxserverSessionDomainState>,
 ): GxserverSessionDomainState {

@@ -89,6 +89,8 @@ function toSearchResult(
     ...(session.agentId ? { agentId: session.agentId } : {}),
     createdAt: session.createdAt,
     ...(session.cwd ? { cwd: session.cwd } : {}),
+    displayTitle: titleProjection.displayTitle,
+    displayTitleTooltip: titleProjection.displayTitleTooltip,
     isFavorite: session.sessionTag === "favorite" || session.isFavorite,
     isPinned: session.isPinned,
     isPrimaryTitleTerminalTitle: titleProjection.isPrimaryTitleTerminalTitle,

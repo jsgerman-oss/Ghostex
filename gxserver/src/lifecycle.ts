@@ -8,6 +8,7 @@ import {
   type GxserverStatusResponse,
 } from "../protocol/index.js";
 import { readGxserverAuthToken } from "./auth.js";
+import { isGxserverBuildIdentityReusable } from "./build-identity.js";
 import { fetchServerHealth, requestServerStop, requestServerStopAll } from "./http-client.js";
 import { assertSupportedNodeVersion } from "./node-version.js";
 import { getGxserverPaths } from "./paths.js";
@@ -44,7 +45,29 @@ export async function startGxserverBackground(options: LifecycleOptions): Promis
   assertSupportedNodeVersion();
   const before = await getGxserverStatus(options);
   if (before.state === "running") {
-    return before;
+    if (isGxserverBuildIdentityReusable(before.health?.buildIdentity, options.buildIdentity)) {
+      return before;
+    }
+    /*
+    CDXC:GxserverLifecycle 2026-06-07-13:32:
+    `gxserver start` after an app update must not keep an older same-protocol daemon alive. Stop only the control plane on a definite build-identity mismatch so the replacement daemon runs the current migration and repair code without killing zmx provider sessions.
+    */
+    const paths = getGxserverPaths(options.homeDir);
+    const auth = await readGxserverAuthToken(paths);
+    await requestServerStop({ token: auth?.token, timeoutMs: 2000 });
+    const stopped = await waitForStopped(options, 5000);
+    if (stopped.state === "running") {
+      if (isGxserverBuildIdentityReusable(stopped.health?.buildIdentity, options.buildIdentity)) {
+        return stopped;
+      }
+      return {
+        ...before,
+        message:
+          "gxserver build identity changed, but the old control plane did not stop. Stop gxserver and start it again so the current migration code can run.",
+        ok: false,
+        state: "stopping",
+      };
+    }
   }
 
   const cliPath = fileURLToPath(import.meta.url).replace(/lifecycle\.js$/, "cli.js");

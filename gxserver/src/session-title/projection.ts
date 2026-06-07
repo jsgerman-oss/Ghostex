@@ -10,6 +10,9 @@ import {
 import { getSessionTitleSource, getTrustedResumeTitle } from "./trust.js";
 import type { GxserverSessionTitleProjection } from "./types.js";
 
+const TERMINAL_TITLE_MARKER = "∗";
+const UNSYNCED_TITLE_LABEL = "(Unsynced title)";
+
 export function projectSessionTitle(
   session: GxserverSessionDomainState,
   rawTerminalTitle?: string,
@@ -39,10 +42,29 @@ export function projectSessionTitle(
     : primaryCandidate && !shouldUseStoredTitleOverEllipsizedTerminalTitle
       ? visibleTerminalTitle
       : undefined;
+  const isPrimaryTitleTerminalTitle =
+    (Boolean(visibleTerminalTitle) && (!visiblePrimaryTitle || shouldPreferTerminalTitle)) ||
+    (!visibleTerminalTitle && trustedResumeTitle !== undefined);
+  /*
+  CDXC:GxserverSessionTitles 2026-06-07-09:33:
+  gxserver owns the final human title string for all clients. Publish the visible card title and tooltip title with the unsynced marker already applied so macOS, Electron, CLI, Android, iOS, TUI, Windows, and Linux clients render the same title instead of recomputing title provenance locally.
+  */
+  const displayTitle = formatDisplaySessionTitle({
+    isPrimaryTitleTerminalTitle,
+    primaryTitle,
+    terminalTitle,
+    title: session.title,
+  });
   return {
-    isPrimaryTitleTerminalTitle:
-      (Boolean(visibleTerminalTitle) && (!visiblePrimaryTitle || shouldPreferTerminalTitle)) ||
-      (!visibleTerminalTitle && trustedResumeTitle !== undefined),
+    displayTitle,
+    displayTitleTooltip: formatDisplaySessionTitle({
+      includeUnsyncedTitleLabel: true,
+      isPrimaryTitleTerminalTitle,
+      primaryTitle,
+      terminalTitle,
+      title: session.title,
+    }),
+    isPrimaryTitleTerminalTitle,
     isTemporaryTitle: titleSource === "placeholder" || isTemporarySessionTitle(session.title),
     primaryTitle,
     terminalTitle,
@@ -50,6 +72,40 @@ export function projectSessionTitle(
     titleSource,
     trustedResumeTitle,
   };
+}
+
+function formatDisplaySessionTitle({
+  includeUnsyncedTitleLabel = false,
+  isPrimaryTitleTerminalTitle,
+  primaryTitle,
+  terminalTitle,
+  title,
+}: {
+  includeUnsyncedTitleLabel?: boolean;
+  isPrimaryTitleTerminalTitle: boolean;
+  primaryTitle?: string;
+  terminalTitle?: string;
+  title: string;
+}): string {
+  const normalizedPrimaryTitle = normalizeDisplayTitle(primaryTitle);
+  const normalizedTerminalTitle = normalizeDisplayTitle(terminalTitle);
+  const normalizedTitle = normalizeDisplayTitle(title);
+  const baseTitle = normalizedPrimaryTitle ?? normalizedTitle ?? DEFAULT_TERMINAL_SESSION_TITLE;
+  if (
+    isPrimaryTitleTerminalTitle ||
+    !normalizedPrimaryTitle ||
+    normalizedPrimaryTitle === normalizedTerminalTitle
+  ) {
+    return baseTitle;
+  }
+  return includeUnsyncedTitleLabel
+    ? `${TERMINAL_TITLE_MARKER} ${baseTitle} ${UNSYNCED_TITLE_LABEL}`
+    : `${TERMINAL_TITLE_MARKER} ${baseTitle}`;
+}
+
+function normalizeDisplayTitle(title: string | undefined): string | undefined {
+  const normalized = title?.trim().replace(/\s+/g, " ");
+  return normalized || undefined;
 }
 
 function getSessionCardPrimaryTitle(title: string, agentName: string | undefined): string | undefined {

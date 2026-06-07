@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { constants as fsConstants } from "node:fs";
-import { access, chmod, mkdir, readFile, readdir, writeFile } from "node:fs/promises";
+import { access, chmod, mkdir, readFile, readdir, rename, unlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -15,7 +15,8 @@ import type { GxserverPaths } from "./paths.js";
 
 const execFileAsync = promisify(execFile);
 const NOTIFY_HOOK_MARKER = "ghostex-gxserver-agent-notify-hook-marker";
-const NOTIFY_HOOK_VERSION = 2;
+const NOTIFY_HOOK_VERSION = 3;
+const MACOS_NOTIFY_HOOK_EXECUTION_XATTRS = ["com.apple.quarantine", "com.apple.provenance"] as const;
 const OPENCODE_AGENT_ID = "opencode";
 const OPENCODE_PLUGIN_MARKER = "ghostex-opencode-session-plugin-marker";
 const OPENCODE_PLUGIN_SPEC = "./plugins/ghostex-session.js";
@@ -39,6 +40,11 @@ interface GxserverAgentHookDefinition {
   marker?: string;
   paths: (hookPaths: GxserverAgentHookPaths) => Promise<string[]> | string[];
 }
+
+type GxserverAgentHookInspection = {
+  currentHookInstalled: boolean;
+  ghostexHookPresent: boolean;
+};
 
 export interface GxserverAgentHookPaths {
   hookStateDirectory: string;
@@ -192,8 +198,20 @@ export async function readGxserverAgentHookStatus(
   params: GxserverReadAgentHookStatusParams = {},
 ): Promise<GxserverReadAgentHookStatusResult> {
   const hookPaths = createGxserverAgentHookPaths(paths);
+  const result = await readRequestedHookRows(hookPaths, params.agentIds, {
+    autoUpgradeInstalled: params.autoUpgradeInstalled !== false,
+  });
+  /*
+  CDXC:AgentHooks 2026-06-07-13:05:
+  First-time hook installation still requires the user to click Install Hooks,
+  but existing Ghostex-owned hooks are an update surface, not a new permission.
+  When gxserver can prove an older Ghostex hook is already installed, status
+  reads auto-upgrade that artifact so app updates do not leave users with broken
+  Codex hook exits or stale native/gxserver hook scripts.
+  */
   return {
-    agents: await readRequestedHookRows(hookPaths, params.agentIds),
+    agents: result.rows,
+    ...(result.autoUpgradedPaths.length > 0 ? { autoUpgradedPaths: result.autoUpgradedPaths } : {}),
     generatedAt: new Date().toISOString(),
     hookStateDirectory: hookPaths.hookStateDirectory,
     notifyHookPath: hookPaths.notifyHookPath,
@@ -354,16 +372,25 @@ export default async function ghostexSessionPlugin(ctx) {
 async function readRequestedHookRows(
   hookPaths: GxserverAgentHookPaths,
   requestedAgentIds: readonly string[] | undefined,
-): Promise<GxserverAgentHookStatusRow[]> {
+  options: { autoUpgradeInstalled: boolean },
+): Promise<{ autoUpgradedPaths: string[]; rows: GxserverAgentHookStatusRow[] }> {
   const agentIds = normalizeAgentIds(requestedAgentIds);
   const rows: GxserverAgentHookStatusRow[] = [];
+  const autoUpgradedPaths = new Set<string>();
   for (const agentId of agentIds) {
     const definition = HOOK_DEFINITIONS_BY_ID.get(agentId);
     if (definition) {
-      rows.push(await readHookStatus(definition, hookPaths));
+      let row = await readHookStatus(definition, hookPaths);
+      if (options.autoUpgradeInstalled && shouldAutoUpgradeInstalledHook(row)) {
+        for (const upgradedPath of await autoUpgradeInstalledAgentHook(definition, hookPaths)) {
+          autoUpgradedPaths.add(upgradedPath);
+        }
+        row = await readHookStatus(definition, hookPaths);
+      }
+      rows.push(row);
     }
   }
-  return rows;
+  return { autoUpgradedPaths: [...autoUpgradedPaths], rows };
 }
 
 function normalizeAgentIds(agentIds: readonly string[] | undefined): string[] {
@@ -381,9 +408,10 @@ async function readHookStatus(
 ): Promise<GxserverAgentHookStatusRow> {
   const cliInstalled = Boolean(await resolveCommandPath(definition.cliCommand, hookPaths.homeDir));
   const paths = await hookConfigPaths(definition, hookPaths);
-  const hookInstalled = await isAgentHookInstalled(definition, hookPaths, paths);
+  const hookInspection = await inspectAgentHookInstallation(definition, hookPaths, paths);
   const notifyHookCurrent = await isNotifyHookCurrent(hookPaths.notifyHookPath);
-  const isInstalled = hookInstalled && notifyHookCurrent;
+  const isInstalled = hookInspection.currentHookInstalled && notifyHookCurrent;
+  const updateRequired = !isInstalled && hookInspection.ghostexHookPresent;
   if (!cliInstalled) {
     return {
       agentId: definition.agentId,
@@ -395,19 +423,46 @@ async function readHookStatus(
       status: "cliMissing",
     };
   }
+  /*
+  CDXC:AgentHooks 2026-06-07-11:05:
+  Existing Ghostex hooks from the pre-gxserver installer should not be reported
+  as absent. Mark them updateRequired so users see an upgrade/repair action,
+  while the same install endpoint normalizes the provider config and shared
+  notify script to the current gxserver ingest contract.
+  */
   return {
     agentId: definition.agentId,
     cliCommand: definition.cliCommand,
     cliInstalled,
     detail: isInstalled
       ? `Installed in ${displayPath(paths[0] ?? hookPaths.notifyHookPath, hookPaths.homeDir)}`
-      : notifyHookCurrent
-        ? `Run Install Hooks to write ${displayPath(paths[0] ?? hookPaths.notifyHookPath, hookPaths.homeDir)}`
-        : `Run Install Hooks to update ${displayPath(hookPaths.notifyHookPath, hookPaths.homeDir)}`,
+      : updateRequired
+        ? notifyHookCurrent
+          ? `Run Update Hooks to repair ${displayPath(paths[0] ?? hookPaths.notifyHookPath, hookPaths.homeDir)}`
+          : `Run Update Hooks to update ${displayPath(hookPaths.notifyHookPath, hookPaths.homeDir)}`
+        : `Run Install Hooks to write ${displayPath(paths[0] ?? hookPaths.notifyHookPath, hookPaths.homeDir)}`,
     hookInstalled: isInstalled,
     paths,
-    status: isInstalled ? "installed" : "missing",
+    status: isInstalled ? "installed" : updateRequired ? "updateRequired" : "missing",
   };
+}
+
+function shouldAutoUpgradeInstalledHook(row: GxserverAgentHookStatusRow): boolean {
+  return row.cliInstalled && row.status === "updateRequired";
+}
+
+async function autoUpgradeInstalledAgentHook(
+  definition: GxserverAgentHookDefinition,
+  hookPaths: GxserverAgentHookPaths,
+): Promise<string[]> {
+  try {
+    const upgradedPaths = [hookPaths.notifyHookPath];
+    await installNotifyHook(hookPaths);
+    upgradedPaths.push(...await installAgentHook(definition, hookPaths));
+    return upgradedPaths;
+  } catch {
+    return [];
+  }
 }
 
 async function hookConfigPaths(definition: GxserverAgentHookDefinition, hookPaths: GxserverAgentHookPaths): Promise<string[]> {
@@ -419,25 +474,57 @@ async function isNotifyHookCurrent(notifyHookPath: string): Promise<boolean> {
   return text.includes(`${NOTIFY_HOOK_MARKER} v${NOTIFY_HOOK_VERSION}`);
 }
 
-async function isAgentHookInstalled(
+async function inspectAgentHookInstallation(
   definition: GxserverAgentHookDefinition,
   hookPaths: GxserverAgentHookPaths,
   configPaths: readonly string[],
-): Promise<boolean> {
+): Promise<GxserverAgentHookInspection> {
   if (definition.format === "opencode") {
-    return (await readFileText(hookPaths.opencodePluginPath)).includes(OPENCODE_PLUGIN_MARKER);
+    const pluginText = await readFileText(hookPaths.opencodePluginPath);
+    const configText = await readFileText(hookPaths.opencodeConfigPath);
+    const currentHookInstalled =
+      pluginText.includes(currentPluginMarker(OPENCODE_PLUGIN_MARKER)) &&
+      pluginText.includes(hookPaths.notifyHookPath);
+    return {
+      currentHookInstalled,
+      ghostexHookPresent: currentHookInstalled ||
+        pluginText.includes(OPENCODE_PLUGIN_MARKER) ||
+        configText.includes(OPENCODE_PLUGIN_SPEC),
+    };
   }
   if (definition.format === "pluginFile") {
     const marker = definition.marker;
-    return Boolean(marker && (await readFileText(configPaths[0] ?? "")).includes(marker));
+    const text = await readFileText(configPaths[0] ?? "");
+    const currentHookInstalled = Boolean(
+      marker && text.includes(currentPluginMarker(marker)) && text.includes(hookPaths.notifyHookPath),
+    );
+    return {
+      currentHookInstalled,
+      ghostexHookPresent: currentHookInstalled ||
+        Boolean(marker && text.includes(marker)) ||
+        textContainsGhostexOwnedHookCommand(text),
+    };
   }
   if (definition.format === "markedYaml") {
     const marker = definition.marker;
-    return Boolean(marker && (await readFileText(configPaths[0] ?? "")).includes(marker));
+    const text = await readFileText(configPaths[0] ?? "");
+    const currentHookInstalled = Boolean(marker && text.includes(marker) && text.includes(commandForAgent(definition, hookPaths.notifyHookPath)));
+    return {
+      currentHookInstalled,
+      ghostexHookPresent: currentHookInstalled ||
+        Boolean(marker && text.includes(marker)) ||
+        textContainsGhostexOwnedHookCommand(text),
+    };
   }
   if (definition.format === "antigravity") {
     const text = await readFileText(configPaths[0] ?? "");
-    return text.includes(commandForAgent(definition, hookPaths.notifyHookPath));
+    const currentHookInstalled = text.includes(commandForAgent(definition, hookPaths.notifyHookPath));
+    return {
+      currentHookInstalled,
+      ghostexHookPresent: currentHookInstalled ||
+        text.includes('"ghostex"') ||
+        textContainsGhostexOwnedHookCommand(text),
+    };
   }
   const command = commandForAgent(definition, hookPaths.notifyHookPath);
   const existingPaths = [];
@@ -448,17 +535,62 @@ async function isAgentHookInstalled(
   }
   const pathsToCheck = definition.agentId === "codex" && existingPaths.length > 0 ? existingPaths : configPaths.slice(0, 1);
   if (pathsToCheck.length === 0) {
-    return false;
+    return { currentHookInstalled: false, ghostexHookPresent: false };
   }
-  const checks = await Promise.all(pathsToCheck.map(async (configPath) => hookJsonContainsCommand(configPath, command)));
-  return definition.agentId === "codex" ? checks.every(Boolean) : checks.some(Boolean);
+  const inspections = await Promise.all(pathsToCheck.map(async (configPath) => inspectJsonHookConfig(configPath, command)));
+  return {
+    currentHookInstalled:
+      definition.agentId === "codex"
+        ? inspections.every((inspection) => inspection.currentHookInstalled)
+        : inspections.some((inspection) => inspection.currentHookInstalled),
+    ghostexHookPresent: inspections.some((inspection) => inspection.ghostexHookPresent),
+  };
 }
 
 async function installNotifyHook(hookPaths: GxserverAgentHookPaths): Promise<void> {
   await mkdir(path.dirname(hookPaths.notifyHookPath), { recursive: true });
-  await writeFile(hookPaths.notifyHookPath, buildNotifyHookScript(), "utf8");
-  await chmod(hookPaths.notifyHookPath, 0o755);
+  await writeExecutableNotifyHook(hookPaths.notifyHookPath, buildNotifyHookScript());
   await mkdir(hookPaths.hookStateDirectory, { recursive: true });
+}
+
+async function writeExecutableNotifyHook(filePath: string, contents: string): Promise<void> {
+  /*
+  CDXC:AgentHooks 2026-06-07-13:05:
+  Rewriting the canonical notify hook path in place can preserve a macOS execution state that kills direct shebang execution with status 137. Write a fresh executable next to it and atomically rename it over the old path so explicit hook repair replaces the inode Codex executes.
+  */
+  const tempPath = path.join(path.dirname(filePath), `.agent-shell-notify.${process.pid}.${Date.now()}.tmp`);
+  try {
+    await writeFile(tempPath, contents, "utf8");
+    await chmod(tempPath, 0o755);
+    await removeMacosNotifyHookExecutionAttributes(tempPath);
+    await rename(tempPath, filePath);
+    await chmod(filePath, 0o755);
+    await removeMacosNotifyHookExecutionAttributes(filePath);
+  } catch (error) {
+    try {
+      await unlink(tempPath);
+    } catch {
+      // The temp file may already have been renamed over the target.
+    }
+    throw error;
+  }
+}
+
+async function removeMacosNotifyHookExecutionAttributes(filePath: string): Promise<void> {
+  /*
+  CDXC:AgentHooks 2026-06-07-13:05:
+  macOS can preserve com.apple.provenance or quarantine metadata when gxserver rewrites the existing shared notify hook. Codex executes the hook path directly, so gxserver strips those execution-blocking attributes after every explicit hook install or repair instead of relying on users to remove them manually.
+  */
+  if (process.platform !== "darwin") {
+    return;
+  }
+  await Promise.all(MACOS_NOTIFY_HOOK_EXECUTION_XATTRS.map(async (attribute) => {
+    try {
+      await execFileAsync("/usr/bin/xattr", ["-d", attribute, filePath]);
+    } catch {
+      // Attribute absence is the normal case on fresh installs.
+    }
+  }));
 }
 
 async function installAgentHook(
@@ -511,29 +643,76 @@ async function mergeJsonHook(configPath: string, definition: GxserverAgentHookDe
     data.version = data.version || 1;
     for (const eventName of definition.events ?? []) {
       const entries = Array.isArray(hooks[eventName]) ? hooks[eventName] as unknown[] : [];
-      if (!entries.some((entry) => isHookCommand(entry, command))) {
-        entries.push({ command });
-      }
-      hooks[eventName] = entries;
+      hooks[eventName] = mergeFlatHookEntries(entries, command);
     }
   } else {
     const hooks = ensureObjectProperty(data, "hooks");
     for (const eventName of definition.events ?? []) {
       const groups = Array.isArray(hooks[eventName]) ? hooks[eventName] as unknown[] : [];
-      if (!groups.some((group) => groupContainsHookCommand(group, command))) {
+      const nextGroups = mergeNestedHookGroups(groups, command);
+      if (!nextGroups.some((group) => groupContainsHookCommand(group, command))) {
         const nextGroup: Record<string, unknown> = {
           hooks: [{ type: "command", command, ...(definition.commandAgent ? { timeout: 5000 } : {}) }],
         };
         if (definition.agentId === "claude") {
           nextGroup.matcher = "*";
         }
-        groups.push(nextGroup);
+        nextGroups.push(nextGroup);
       }
-      hooks[eventName] = groups;
+      hooks[eventName] = nextGroups;
     }
   }
   await mkdir(path.dirname(configPath), { recursive: true });
   await writeFile(configPath, `${JSON.stringify(data, null, 2)}\n`, "utf8");
+}
+
+function mergeFlatHookEntries(entries: readonly unknown[], command: string): unknown[] {
+  const nextEntries: unknown[] = [];
+  let hasCurrentCommand = false;
+  for (const entry of entries) {
+    if (isHookCommand(entry, command)) {
+      if (!hasCurrentCommand) {
+        nextEntries.push(entry);
+        hasCurrentCommand = true;
+      }
+      continue;
+    }
+    if (!isGhostexOwnedHookCommand(entry, command)) {
+      nextEntries.push(entry);
+    }
+  }
+  if (!hasCurrentCommand) {
+    nextEntries.push({ command });
+  }
+  return nextEntries;
+}
+
+function mergeNestedHookGroups(groups: readonly unknown[], command: string): unknown[] {
+  const nextGroups: unknown[] = [];
+  let hasCurrentCommand = false;
+  for (const group of groups) {
+    if (!isObject(group) || !Array.isArray(group.hooks)) {
+      nextGroups.push(group);
+      continue;
+    }
+    const nextHooks: unknown[] = [];
+    for (const hook of group.hooks) {
+      if (isHookCommand(hook, command)) {
+        if (!hasCurrentCommand) {
+          nextHooks.push(hook);
+          hasCurrentCommand = true;
+        }
+        continue;
+      }
+      if (!isGhostexOwnedHookCommand(hook, command)) {
+        nextHooks.push(hook);
+      }
+    }
+    if (nextHooks.length > 0) {
+      nextGroups.push({ ...group, hooks: nextHooks });
+    }
+  }
+  return nextGroups;
 }
 
 async function installMarkedYamlHook(configPath: string, agentId: string, command: string): Promise<void> {
@@ -588,13 +767,16 @@ function withoutMarkedBlock(lines: readonly string[], beginMarker: string, endMa
 }
 
 function buildNotifyHookScript(): string {
+  /*
+  CDXC:AgentHooks 2026-06-07-13:05:
+  Codex can invoke SessionStart and UserPromptSubmit close together and may keep hook stdin open during some phases. The shared gxserver notify hook must never block on shell cat or expose internal state-store write races as hook stderr; it reads stdin through Python fd 3 with a short readiness timeout and uses per-process temp files for concurrent status/store updates.
+
+  CDXC:AgentHooks 2026-06-07-13:05:
+  The notify hook artifact version must change when runtime behavior changes, not only when provider config shape changes. Users with pre-fix v2 hooks need gxserver status to report updateRequired so the explicit Install/Update Hooks action repairs broken Codex hook exits instead of silently treating the old script as current.
+  */
   return `#!/bin/bash
 # ${NOTIFY_HOOK_MARKER} v${NOTIFY_HOOK_VERSION}
-if [ -n "$1" ]; then
-  INPUT="$1"
-else
-  INPUT="$(cat)"
-fi
+INPUT_ARG="\${1:-}"
 
 SESSION_STATE_FILE="\${VSMUX_SESSION_STATE_FILE:-\${GHOSTEX_SESSION_STATE_FILE:-$ghostex_SESSION_STATE_FILE}}"
 HOOK_STATE_DIR="\${GHOSTEX_AGENT_HOOK_STATE_DIR:-$HOME/.ghostexterm}"
@@ -607,20 +789,43 @@ if [ -z "$SESSION_STATE_FILE" ] && { [ -z "\${GHOSTEX_GLOBAL_SESSION_REF:-}" ] |
   exit 0
 fi
 
-/usr/bin/python3 - "$SESSION_STATE_FILE" "$INPUT" "$HOOK_STATE_DIR" <<'PY'
+/usr/bin/python3 - "$SESSION_STATE_FILE" "$INPUT_ARG" "$HOOK_STATE_DIR" 3<&0 2>/dev/null <<'PY'
 import base64
 import datetime
 import json
 import os
 import pathlib
+import select
 import sys
 import time
 import urllib.request
 
 state_path = sys.argv[1]
-raw_input = sys.argv[2]
 hook_state_dir = pathlib.Path(sys.argv[3]).expanduser()
 has_state_path = bool(state_path.strip())
+
+def read_hook_input(argument):
+    if str(argument or "").strip():
+        return str(argument)
+    chunks = []
+    total = 0
+    try:
+        while True:
+            ready, _, _ = select.select([3], [], [], 0.05)
+            if not ready:
+                break
+            chunk = os.read(3, 65536)
+            if not chunk:
+                break
+            chunks.append(chunk)
+            total += len(chunk)
+            if total >= 1048576:
+                break
+    except Exception:
+        return ""
+    return b"".join(chunks).decode("utf-8", "replace")
+
+raw_input = read_hook_input(sys.argv[2] if len(sys.argv) > 2 else "")
 try:
     payload = json.loads(raw_input)
 except Exception:
@@ -718,6 +923,9 @@ def parse_global_session_ref(value):
 def now_iso():
     return datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00", "Z")
 
+def temp_path_for(path):
+    return path.with_name(f".{path.name}.{os.getpid()}.{time.time_ns()}.tmp")
+
 def write_state():
     if not has_state_path:
         return
@@ -739,10 +947,13 @@ def write_state():
         "title",
     ]
     path = pathlib.Path(state_path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temp_path = path.with_suffix(path.suffix + ".tmp")
-    temp_path.write_text("".join(f"{key}={state.get(key, '')}\\n" for key in keys), encoding="utf-8")
-    temp_path.replace(path)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temp_path = temp_path_for(path)
+        temp_path.write_text("".join(f"{key}={state.get(key, '')}\\n" for key in keys), encoding="utf-8")
+        temp_path.replace(path)
+    except Exception:
+        pass
 
 def write_hook_store(agent_key, session_id, transcript_path):
     workspace_id = first_string(os.environ.get("GHOSTEX_WORKSPACE_ID"), os.environ.get("VSMUX_WORKSPACE_ID"), os.environ.get("ghostex_WORKSPACE_ID"))
@@ -775,10 +986,13 @@ def write_hook_store(agent_key, session_id, transcript_path):
     }
     data["version"] = 1
     data["sessions"] = sessions
-    store_path.parent.mkdir(parents=True, exist_ok=True)
-    temp_path = store_path.with_suffix(store_path.suffix + ".tmp")
-    temp_path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\\n", encoding="utf-8")
-    temp_path.replace(store_path)
+    try:
+        store_path.parent.mkdir(parents=True, exist_ok=True)
+        temp_path = temp_path_for(store_path)
+        temp_path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\\n", encoding="utf-8")
+        temp_path.replace(store_path)
+    except Exception:
+        pass
 
 def read_gxserver_auth_token():
     token_file = first_path(os.environ.get("GHOSTEX_GXSERVER_AUTH_TOKEN_FILE"))
@@ -876,7 +1090,10 @@ if session_id:
 if transcript_path:
     state["agentSessionPath"] = transcript_path
 if session_id:
-    write_hook_store(agent_key, session_id, transcript_path)
+    try:
+        write_hook_store(agent_key, session_id, transcript_path)
+    except Exception:
+        pass
 
 if event_name in {"UserPromptSubmit", "BeforeAgent", "PreInvocation", "beforeSubmitPrompt", "beforeShellExecution", "pre_llm_call", "pre_tool_call", "agent_start"}:
     update_status("working")
@@ -894,8 +1111,14 @@ if event_name in {"UserPromptSubmit", "BeforeAgent", "PreInvocation", "beforeSub
         state["pendingFirstPromptAutoRenamePrompt"] = normalize_prompt_text(first_prompt + "\\n" + current_prompt) if first_prompt and first_prompt != current_prompt else current_prompt
 
 first_user_message = first_string(state.get("pendingFirstPromptAutoRenamePrompt"), decode_base64_text(state.get("firstUserMessageBase64", "")), prompt)
-post_gxserver_hook_event(agent_key, session_id, transcript_path, first_user_message, event_name)
-write_state()
+try:
+    post_gxserver_hook_event(agent_key, session_id, transcript_path, first_user_message, event_name)
+except Exception:
+    pass
+try:
+    write_state()
+except Exception:
+    pass
 PY
 
 printf '{"continue":true}'
@@ -1048,9 +1271,12 @@ async function listCodexProfileHookPaths(homeDir: string): Promise<string[]> {
     .sort();
 }
 
-async function hookJsonContainsCommand(configPath: string, command: string): Promise<boolean> {
+async function inspectJsonHookConfig(configPath: string, command: string): Promise<GxserverAgentHookInspection> {
   const data = readJsonObject(await readFileText(configPath));
-  return jsonContainsHookCommand(data, command);
+  return {
+    currentHookInstalled: jsonContainsHookCommand(data, command),
+    ghostexHookPresent: jsonContainsGhostexOwnedHookCommand(data, command),
+  };
 }
 
 function jsonContainsHookCommand(value: unknown, command: string): boolean {
@@ -1066,6 +1292,19 @@ function jsonContainsHookCommand(value: unknown, command: string): boolean {
   return false;
 }
 
+function jsonContainsGhostexOwnedHookCommand(value: unknown, command: string): boolean {
+  if (isGhostexOwnedHookCommand(value, command)) {
+    return true;
+  }
+  if (Array.isArray(value)) {
+    return value.some((item) => jsonContainsGhostexOwnedHookCommand(item, command));
+  }
+  if (isObject(value)) {
+    return Object.values(value).some((item) => jsonContainsGhostexOwnedHookCommand(item, command));
+  }
+  return false;
+}
+
 function groupContainsHookCommand(group: unknown, command: string): boolean {
   if (!isObject(group) || !Array.isArray(group.hooks)) {
     return false;
@@ -1075,6 +1314,36 @@ function groupContainsHookCommand(group: unknown, command: string): boolean {
 
 function isHookCommand(value: unknown, command: string): boolean {
   return isObject(value) && value.command === command;
+}
+
+function isGhostexOwnedHookCommand(value: unknown, command: string): boolean {
+  if (!isObject(value) || typeof value.command !== "string") {
+    return false;
+  }
+  return value.command === command || textContainsGhostexOwnedHookCommand(value.command);
+}
+
+function textContainsGhostexOwnedHookCommand(text: string): boolean {
+  /*
+  CDXC:AgentHooks 2026-06-07-11:05:
+  Hook repair must remove old Ghostex-owned hook commands without touching user
+  hooks. Match only durable Ghostex hook artifacts from native and gxserver
+  installers, then rewrite the current command through the same provider merge.
+  */
+  const normalized = text.toLowerCase();
+  return (
+    normalized.includes("agent-shell-notify") ||
+    normalized.includes(".ghostex/hooks") ||
+    normalized.includes(".ghostexterm") ||
+    normalized.includes("ghostex_notify_hook") ||
+    normalized.includes("ghostex-agent-notify") ||
+    normalized.includes("ghostex-session-plugin-marker") ||
+    normalized.includes("ghostex-session-extension-marker")
+  );
+}
+
+function currentPluginMarker(marker: string): string {
+  return `${marker} v2`;
 }
 
 function readJsonObject(text: string): Record<string, unknown> {
@@ -1105,7 +1374,14 @@ async function resolveCommandPath(command: string, homeDir: string): Promise<str
     HOME: homeDir,
   });
   const pathValue = await normalizeGxserverProcessPath(process.env.PATH, commandEnvironment);
-  const { stdout } = await execFileAsync("/bin/zsh", ["-lc", `command -v -- ${shellQuote(command)}`], {
+  /*
+  CDXC:AgentHooks 2026-06-07-11:05:
+  Command resolution already merges login-shell PATH entries in
+  normalizeGxserverProcessPath. Run the final command-v probe as a non-login
+  shell so /etc zprofile or user startup files cannot overwrite the normalized
+  PATH and make installed hook-capable CLIs look missing.
+  */
+  const { stdout } = await execFileAsync("/bin/zsh", ["-c", `command -v -- ${shellQuote(command)}`], {
     env: {
       ...commandEnvironment,
       PATH: pathValue,

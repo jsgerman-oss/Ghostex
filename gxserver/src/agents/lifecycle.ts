@@ -163,6 +163,9 @@ Fork is a gxserver-owned lifecycle action for macOS, Electron, CLI, Android, and
 
 CDXC:GxserverAgentLifecycle 2026-06-06-16:58:
 gxserver-generated launch, resume, and fork startup text is typed into interactive shells by macOS clients and by server-owned zmx run flows. Prefix one leading space at the shell-input boundary so automated commands do not enter Atuin history; keep display/copy commands unprefixed and leave in-agent slash commands to client-specific prompt flows.
+
+CDXC:GxserverAgentLifecycle 2026-06-07-10:01:
+Copy Resume is a clipboard affordance, not the automated restore path. It must copy only the agent-specific exact-id resume invocation while primary/startup commands keep the validation and title-lookup wrappers needed for reliable wake behavior.
 */
 export function buildAgentLaunchPlan(input: GxserverAgentLaunchInput): GxserverAgentLaunchPlan {
   const baseCommand = normalizeText(input.command) ?? resolveDefaultAgentCommand(input.agentId) ?? "";
@@ -360,13 +363,14 @@ export function buildAgentResumePlan(
   const primaryCommand = buildAgentResumeCommand(project, session, {}, agentSettings);
   const displayCommand = primaryCommand ? (buildAgentResumeCommand(project, session, { display: true }, agentSettings) ?? primaryCommand) : undefined;
   const fallbackCommand = buildAgentResumeFallbackCommand(project, session, agentSettings);
+  const copyCommand = buildAgentResumeCopyCommand(input);
   const startupText = primaryCommand
     ? asAtuinIgnoredShellInput(wrapRestoredTerminalResumeCommand(primaryCommand, displayCommand ?? primaryCommand, fallbackCommand))
     : undefined;
   return {
     agentId: normalizeText(input.agentId),
     baseCommand: normalizeText(input.agentLookupCommand),
-    copyCommand: primaryCommand,
+    copyCommand,
     displayCommand,
     fallbackCommand,
     lookupCommand: normalizeText(input.agentLookupCommand),
@@ -449,6 +453,52 @@ export function buildAgentResumeCommand(
         : buildOpenCodeResumeCommand(agentCommand, resumeTitle, agentLookupCommand);
     case "pi":
       return piReference ? `${agentCommand} --session ${quoteShellDoubleArg(piReference)}` : undefined;
+    case "rovodev":
+      return exactReference ? buildRovoDevResumeCommand(agentCommand, exactReference) : undefined;
+  }
+}
+
+function buildAgentResumeCopyCommand(input: GxserverAgentResumeInput): string | undefined {
+  const agentId = normalizeRestorableAgentId(input.agentId);
+  const agentCommand = input.agentCommand;
+  if (!agentId || !agentCommand) {
+    return undefined;
+  }
+  const exactReference = getExactAgentSessionReference(agentId, input);
+  switch (agentId) {
+    case "amp":
+      return exactReference ? `${agentCommand} threads continue ${quoteShellDoubleArg(exactReference)}` : undefined;
+    case "antigravity":
+      return exactReference ? `${agentCommand} --conversation ${quoteShellDoubleArg(exactReference)}` : undefined;
+    case "codebuddy":
+    case "copilot":
+    case "droid":
+    case "gemini":
+    case "hermes-agent":
+    case "qoder":
+      return exactReference ? `${agentCommand} --resume ${quoteShellDoubleArg(exactReference)}` : undefined;
+    case "grok":
+      return exactReference ? `${agentCommand} -r ${quoteShellDoubleArg(exactReference)}` : undefined;
+    case "codex": {
+      const codexReference = getCodexSessionReference(input);
+      return codexReference ? `${agentCommand} resume ${quoteShellDoubleArg(codexReference)}` : undefined;
+    }
+    case "claude": {
+      const claudeReference = getClaudeSessionReference(input);
+      return claudeReference ? `${agentCommand} --resume ${quoteShellDoubleArg(claudeReference)}` : undefined;
+    }
+    case "cursor": {
+      const cursorReference = getCursorSessionReference(input);
+      return cursorReference ? `${agentCommand} --resume ${quoteShellDoubleArg(cursorReference)}` : undefined;
+    }
+    case "opencode": {
+      const openCodeReference = getOpenCodeSessionReference(input);
+      return openCodeReference ? `${agentCommand} --session ${quoteShellDoubleArg(openCodeReference)}` : undefined;
+    }
+    case "pi": {
+      const piReference = getPiSessionReference(input);
+      return piReference ? `${agentCommand} --session ${quoteShellDoubleArg(piReference)}` : undefined;
+    }
     case "rovodev":
       return exactReference ? buildRovoDevResumeCommand(agentCommand, exactReference) : undefined;
   }
