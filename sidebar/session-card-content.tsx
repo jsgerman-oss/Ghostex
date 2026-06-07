@@ -287,6 +287,8 @@ export function getSessionCardTitleTooltip({
     | "alias"
     | "delayedSendRemainingLabel"
     | "detail"
+    | "displayTitle"
+    | "displayTitleTooltip"
     | "firstUserMessage"
     | "isFavorite"
     | "kind"
@@ -312,6 +314,8 @@ export function getSessionCardTitleTooltip({
 } {
   const headingText = formatSessionHeadingText({
     agentIcon: session.agentIcon,
+    displayTitle: session.displayTitle,
+    displayTitleTooltip: session.displayTitleTooltip,
     includeUnsyncedTitleLabel: false,
     kind: session.kind,
     isPrimaryTitleTerminalTitle: session.isPrimaryTitleTerminalTitle,
@@ -322,6 +326,8 @@ export function getSessionCardTitleTooltip({
   });
   const tooltipHeadingText = formatSessionHeadingText({
     agentIcon: session.agentIcon,
+    displayTitle: session.displayTitle,
+    displayTitleTooltip: session.displayTitleTooltip,
     includeUnsyncedTitleLabel: true,
     kind: session.kind,
     isPrimaryTitleTerminalTitle: session.isPrimaryTitleTerminalTitle,
@@ -463,6 +469,8 @@ function getFullSessionTooltipHeadingText({
 export function formatSessionHeadingText({
   agentIcon,
   alias,
+  displayTitle,
+  displayTitleTooltip,
   includeUnsyncedTitleLabel = false,
   kind,
   isPrimaryTitleTerminalTitle,
@@ -473,6 +481,8 @@ export function formatSessionHeadingText({
   SidebarSessionItem,
   | "agentIcon"
   | "alias"
+  | "displayTitle"
+  | "displayTitleTooltip"
   | "kind"
   | "isPrimaryTitleTerminalTitle"
   | "primaryTitle"
@@ -481,6 +491,17 @@ export function formatSessionHeadingText({
 > & {
   includeUnsyncedTitleLabel?: boolean;
 }): string {
+  const gxserverDisplayTitle = normalizeDisplayTitle(displayTitle);
+  if (gxserverDisplayTitle) {
+    /*
+    CDXC:GxserverSessionTitles 2026-06-07-09:33:
+    gxserver presentation rows are dumb-rendered title strings. When `displayTitle` is present, React must not compare titleSource, terminalTitle, or placeholder state locally; the server already applied the shared title rules and unsynced marker.
+    */
+    return includeUnsyncedTitleLabel
+      ? normalizeDisplayTitle(displayTitleTooltip) ?? gxserverDisplayTitle
+      : gxserverDisplayTitle;
+  }
+
   const primaryHeadingTitle = normalizeSessionCardHeadingTitle(primaryTitle);
   const terminalHeadingTitle = normalizeSessionCardHeadingTitle(terminalTitle);
   const aliasHeadingTitle = normalizeSessionCardHeadingTitle(alias);
@@ -504,6 +525,11 @@ export function formatSessionHeadingText({
   }
 
   return formatNonPersistentSessionHeadingText(baseHeadingText, includeUnsyncedTitleLabel);
+}
+
+function normalizeDisplayTitle(title: string | undefined): string | undefined {
+  const normalizedTitle = title?.trim().replace(/\s+/g, " ");
+  return normalizedTitle || undefined;
 }
 
 function formatNonPersistentSessionHeadingText(

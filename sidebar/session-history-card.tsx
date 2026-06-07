@@ -28,7 +28,7 @@ export function SessionHistoryCard({
   const aliasHeadingRef = useRef<HTMLDivElement>(null);
   const displayTitle = getSessionHistoryCardTitle(session);
   const displaySession =
-    session.primaryTitle?.trim() || !session.terminalTitle?.trim()
+    session.displayTitle?.trim() || session.primaryTitle?.trim() || !session.terminalTitle?.trim()
       ? session
       : {
           ...session,

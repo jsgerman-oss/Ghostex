@@ -1,5 +1,10 @@
 import { describe, expect, test } from "vitest";
-import { getSessionCardAccessibleLabel } from "./sortable-session-card";
+import type { SidebarSessionItem } from "../shared/session-grid-contract";
+import {
+  canSleepSidebarSession,
+  getSessionCardAccessibleLabel,
+  runSidebarBulkContextMenuActionInBackground,
+} from "./sortable-session-card";
 
 describe("getSessionCardAccessibleLabel", () => {
   test("keeps session row labels independent from focused styling", () => {
@@ -25,5 +30,75 @@ describe("getSessionCardAccessibleLabel", () => {
         title: " ",
       }),
     ).toBe("Session");
+  });
+});
+
+describe("runSidebarBulkContextMenuActionInBackground", () => {
+  test("defers each bulk target onto the scheduler", () => {
+    const queuedOperations: Array<() => void> = [];
+    const processedSessionIds: string[] = [];
+
+    runSidebarBulkContextMenuActionInBackground(
+      ["session-2", "session-3"],
+      (sessionId) => {
+        processedSessionIds.push(sessionId);
+      },
+      (operation) => {
+        queuedOperations.push(operation);
+      },
+    );
+
+    expect(processedSessionIds).toEqual([]);
+    expect(queuedOperations).toHaveLength(1);
+
+    queuedOperations.shift()?.();
+    expect(processedSessionIds).toEqual(["session-2"]);
+    expect(queuedOperations).toHaveLength(1);
+
+    queuedOperations.shift()?.();
+    expect(processedSessionIds).toEqual(["session-2", "session-3"]);
+    expect(queuedOperations).toHaveLength(0);
+  });
+
+  test("uses the clicked menu target list even if the caller mutates its array later", () => {
+    const queuedOperations: Array<() => void> = [];
+    const processedSessionIds: string[] = [];
+    const sessionIds = ["session-2"];
+
+    runSidebarBulkContextMenuActionInBackground(
+      sessionIds,
+      (sessionId) => {
+        processedSessionIds.push(sessionId);
+      },
+      (operation) => {
+        queuedOperations.push(operation);
+      },
+    );
+    sessionIds.push("session-3");
+
+    queuedOperations.shift()?.();
+
+    expect(processedSessionIds).toEqual(["session-2"]);
+    expect(queuedOperations).toHaveLength(0);
+  });
+});
+
+describe("canSleepSidebarSession", () => {
+  const baseSession: SidebarSessionItem = {
+    activity: "idle",
+    alias: "Session 1",
+    isRunning: true,
+    isSleeping: false,
+    kind: "terminal",
+    lifecycleState: "running",
+    primaryTitle: "Session 1",
+    sessionId: "session-1",
+    sessionKind: "terminal",
+  };
+
+  test("skips already sleeping sessions from bulk sleep actions", () => {
+    expect(canSleepSidebarSession(baseSession)).toBe(true);
+    expect(canSleepSidebarSession({ ...baseSession, isSleeping: true })).toBe(false);
+    expect(canSleepSidebarSession({ ...baseSession, lifecycleState: "sleeping" })).toBe(false);
   });
 });

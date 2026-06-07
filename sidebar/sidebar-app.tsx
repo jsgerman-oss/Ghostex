@@ -7,7 +7,6 @@ import {
   IconArrowRight,
   IconArrowsDiagonal2,
   IconArrowsDiagonalMinimize,
-  IconAlertTriangle,
   IconBookmark,
   IconCaretRightFilled,
   IconChevronDown,
@@ -17,6 +16,7 @@ import {
   IconDownload,
   IconEye,
   IconFilter2,
+  IconFileSearch,
   IconFolder,
   IconFolderOpen,
   IconGitBranch,
@@ -58,7 +58,6 @@ import { Button } from "@/components/ui/button";
 import {
   MAX_GROUP_COUNT,
   type SidebarActiveSessionsSortMode,
-  type SidebarAgentHookStatusMessage,
   type ExtensionToSidebarMessage,
   type SidebarPreviousSessionItem,
 } from "../shared/session-grid-contract";
@@ -149,6 +148,8 @@ import {
 import type { RemoteMachineSettings } from "../shared/ghostex-settings";
 import {
   readRenderedSidebarSessionSlotIds,
+  readRenderedSidebarSessionSlots,
+  resolveAdjacentRenderedSidebarSessionSlotId,
   resolveVisibleSidebarSessionSlotId,
 } from "./sidebar-visible-session-slots";
 
@@ -175,16 +176,6 @@ type RecentProjectContextMenuPosition = {
   x: number;
   y: number;
 };
-
-function hasMissingAgentHooksForInstalledCli(
-  agentHookStatus: SidebarAgentHookStatusMessage | undefined,
-): boolean {
-  return Boolean(
-    agentHookStatus &&
-      !agentHookStatus.errorMessage &&
-      agentHookStatus.agents.some((status) => status.cliInstalled && status.status === "missing"),
-  );
-}
 
 type SidebarGroupDragPreview = {
   groupId: string;
@@ -693,7 +684,6 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
     debuggingMode,
     groupOrder,
     groupsById,
-    hasMissingAgentHooks,
     previousSessions,
     recentProjects,
     settings,
@@ -711,7 +701,6 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
       debuggingMode: state.hud.debuggingMode,
       groupOrder: state.groupOrder,
       groupsById: state.groupsById,
-      hasMissingAgentHooks: hasMissingAgentHooksForInstalledCli(state.hud.agentHookStatus),
       previousSessions: state.previousSessions,
       recentProjects: state.hud.recentProjects,
       revision: state.revision,
@@ -1831,14 +1820,19 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
      * CDXC:Hotkeys 2026-06-05-21:17:
      * A user repro showed the state-derived slot list could reserve a number for a hidden row, so Cmd+5 selected the sixth visible session and Cmd+6 jumped much lower. Resolve the slot list from the rendered session-card DOM rows at key time so numbering follows the sidebar exactly as shown.
      */
-    const visibleSessionIds = readRenderedSidebarSessionSlotIds(
-      sessionGroupsContentRef.current ?? document,
-    );
-    const sessionId = resolveVisibleSidebarSessionSlotId({
-      focusedSessionId,
-      slotNumber,
-      visibleSessionIds,
-    });
+    const root = sessionGroupsContentRef.current ?? document;
+    const sessionId =
+      slotNumber === 0 || slotNumber === -1
+        ? resolveAdjacentRenderedSidebarSessionSlotId({
+            direction: slotNumber === 0 ? 1 : -1,
+            focusedSessionId,
+            slots: readRenderedSidebarSessionSlots(root),
+          })
+        : resolveVisibleSidebarSessionSlotId({
+            focusedSessionId,
+            slotNumber,
+            visibleSessionIds: readRenderedSidebarSessionSlotIds(root),
+          });
     if (!sessionId) {
       return;
     }
@@ -3031,22 +3025,16 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
     setIsOverflowMenuOpen(false);
     /**
      * CDXC:FirstLaunchSetup 2026-05-27-02:41:
-     * Tips & Tricks now routes to the first-launch setup modal because Ghostex
+     * Setup Wizard routes to the first-launch setup modal because Ghostex
      * should have one teaching/setup surface instead of separate guide and
      * onboarding dialogs.
+     *
+     * CDXC:SidebarSetupWizard 2026-06-07-12:35:
+     * The sidebar overflow menu should expose this teaching/setup surface as
+     * Setup Wizard. Keep it as the stable menu action even when agent hooks are
+     * missing; hook repair stays inside Settings and the setup flow itself.
      */
     openAppModal({ modal: "firstLaunchSetup", type: "open" });
-  };
-
-  const openAgentHooksSettings = () => {
-    setIsOverflowMenuOpen(false);
-    /**
-     * CDXC:AgentHooks 2026-06-07-08:51:
-     * The sidebar Tips & Tricks menu should warn when installed agent CLIs are
-     * missing gxserver-owned hooks. Clicking the warning opens Settings >
-     * Integrations where the user can explicitly choose Install Hooks.
-     */
-    openAppModal({ initialTab: "integrations", modal: "settings", type: "open" });
   };
 
   const openDiscord = () => {
@@ -3148,15 +3136,24 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
     openAppModal({ modal: "previousSessions", type: "open" });
   };
 
+  const searchPreviousSessionsByText = () => {
+    setIsOverflowMenuOpen(false);
+    setIsPinnedPromptsOpen(false);
+    setIsDaemonSessionsOpen(false);
+    setIsScratchPadOpen(false);
+    setIsSessionSearchSelectionVisible(false);
+    setIsSessionSearchOpen(false);
+    setSessionSearchQuery("");
+    vscode.postMessage({ type: "searchPreviousSessionsByText" });
+  };
+
   const topControlOptions = {
     isOverflowMenuOpen,
-    hasMissingAgentHooks,
     isPetOverlayEnabled: settings?.petOverlayEnabled === true,
     isPinnedPromptsOpen,
     isScratchPadOpen,
     onMoveSidebar: moveSidebar,
     onOpenDiscord: openDiscord,
-    onOpenAgentHooksSettings: openAgentHooksSettings,
     onOpenHelp: openWorkspaceWelcome,
     onOpenHotkeys: openHotkeys,
     onShowRunning: openRunningSessions,
@@ -3180,6 +3177,7 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
           onCreateSession={createReferenceSession}
           onOpenPlugins={openReferencePlugins}
           onOpenPreviousSessions={openPreviousSessions}
+          onSearchPreviousSessionsByText={searchPreviousSessionsByText}
           onSearch={toggleSessionSearch}
           onToggleMenu={toggleOverflowMenu}
           searchInputRef={searchInputRef}
@@ -3786,6 +3784,7 @@ function SidebarReferenceTopChrome({
   onOpenAgentsHub,
   onOpenPlugins,
   onOpenPreviousSessions,
+  onSearchPreviousSessionsByText,
   onSearch,
   onToggleMenu,
   searchInputRef,
@@ -3799,6 +3798,7 @@ function SidebarReferenceTopChrome({
   onOpenAgentsHub: () => void;
   onOpenPlugins: () => void;
   onOpenPreviousSessions: () => void;
+  onSearchPreviousSessionsByText: () => void;
   onSearch: () => void;
   onToggleMenu: (trigger: HTMLElement) => void;
   searchInputRef: RefObject<HTMLInputElement | null>;
@@ -3852,6 +3852,7 @@ function SidebarReferenceTopChrome({
           isOpen={isSessionSearchOpen}
           onCloseSearch={onCloseSearch}
           onOpenPreviousSessions={onOpenPreviousSessions}
+          onSearchPreviousSessionsByText={onSearchPreviousSessionsByText}
           onSearch={onSearch}
           query={sessionSearchQuery}
           setQuery={setSessionSearchQuery}
@@ -3903,6 +3904,7 @@ function SidebarReferenceSearchNavItem({
   isOpen,
   onCloseSearch,
   onOpenPreviousSessions,
+  onSearchPreviousSessionsByText,
   onSearch,
   query,
   setQuery,
@@ -3911,6 +3913,7 @@ function SidebarReferenceSearchNavItem({
   isOpen: boolean;
   onCloseSearch: () => void;
   onOpenPreviousSessions: () => void;
+  onSearchPreviousSessionsByText: () => void;
   onSearch: () => void;
   query: string;
   setQuery: (query: string) => void;
@@ -3929,6 +3932,25 @@ function SidebarReferenceSearchNavItem({
       ) : (
         <div className="reference-sidebar-nav-item">
           <SidebarReferenceNavButton icon={IconSearch} label="Search" onClick={onSearch} />
+          <button
+            aria-label="Search by Text"
+            className="reference-sidebar-hover-action reference-sidebar-hover-action-tooltip reference-sidebar-text-search-button"
+            data-tooltip="Search by Text"
+            onClick={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              onSearchPreviousSessionsByText();
+            }}
+            type="button"
+          >
+            {/*
+             * CDXC:SidebarSearch 2026-06-07-12:37:
+             * The Search row needs a second hover action immediately left of
+             * Previous Sessions so users can launch direct previous-session
+             * text search without opening the full history modal first.
+             */}
+            <IconFileSearch aria-hidden="true" size={15} stroke={1.9} />
+          </button>
           <button
             aria-label="Previous Sessions"
             className="reference-sidebar-hover-action reference-sidebar-hover-action-tooltip reference-sidebar-previous-sessions-button"
@@ -4702,13 +4724,11 @@ function getScratchPadMenuLabel(isScratchPadOpen: boolean): string {
 }
 
 type RenderSidebarTopControlsOptions = {
-  hasMissingAgentHooks: boolean;
   isOverflowMenuOpen: boolean;
   isPetOverlayEnabled: boolean;
   isPinnedPromptsOpen: boolean;
   isScratchPadOpen: boolean;
   onMoveSidebar: () => void;
-  onOpenAgentHooksSettings: () => void;
   onOpenDiscord: () => void;
   onOpenHelp: () => void;
   onOpenHotkeys: () => void;
@@ -4722,13 +4742,11 @@ type RenderSidebarTopControlsOptions = {
 };
 
 function renderFloatingOverflowMenu({
-  hasMissingAgentHooks,
   isOverflowMenuOpen,
   isPetOverlayEnabled,
   isPinnedPromptsOpen,
   isScratchPadOpen,
   onMoveSidebar: _onMoveSidebar,
-  onOpenAgentHooksSettings,
   onOpenDiscord,
   onOpenHelp,
   onOpenHotkeys,
@@ -4874,25 +4892,6 @@ function renderFloatingOverflowMenu({
                   />
                   Hotkeys
                 </button>
-                {hasMissingAgentHooks ? (
-                  <button
-                    className="session-context-menu-item sidebar-hook-warning-menu-item"
-                    onClick={onOpenAgentHooksSettings}
-                    role="menuitem"
-                    type="button"
-                  >
-                    <IconAlertTriangle
-                      aria-hidden="true"
-                      className="session-context-menu-icon"
-                      size={14}
-                      stroke={1.8}
-                    />
-                    <span className="sidebar-hook-warning-menu-copy">
-                      <span>Agent hooks missing</span>
-                      <span>Install hooks for reliable working statuses</span>
-                    </span>
-                  </button>
-                ) : null}
                 <button
                   className="session-context-menu-item"
                   onClick={onOpenHelp}
@@ -4905,7 +4904,7 @@ function renderFloatingOverflowMenu({
                     size={14}
                     stroke={1.8}
                   />
-                  Tips &amp; Tricks
+                  Setup Wizard
                 </button>
               </div>
               <div className="session-context-menu-divider" role="separator" />

@@ -246,6 +246,65 @@ describe("sidebar store", () => {
     expect(useSidebarStore.getState().localSessionSleepingOverrides).toEqual({});
   });
 
+  test("should apply bulk sleeping overrides in one store revision", () => {
+    useSidebarStore
+      .getState()
+      .applySidebarMessage(
+        createHydrateMessage([
+          createGroup("group-1", [
+            createSession("session-1", "groups"),
+            createSession("session-2", "notes"),
+            {
+              ...createSession("session-3", "sleeping"),
+              isRunning: false,
+              isSleeping: true,
+              lifecycleState: "sleeping",
+            },
+          ]),
+        ]),
+      );
+
+    const before = useSidebarStore.getState();
+    useSidebarStore.getState().setSessionsSleepingLocally(
+      ["session-1", "session-2", "session-3", "session-2"],
+      true,
+    );
+    const after = useSidebarStore.getState();
+
+    expect(after).not.toBe(before);
+    expect(after.sessionsById["session-1"]?.isSleeping).toBe(true);
+    expect(after.sessionsById["session-2"]?.isSleeping).toBe(true);
+    expect(after.sessionsById["session-3"]?.isSleeping).toBe(true);
+    expect(after.localSessionSleepingOverrides).toEqual({
+      "session-1": true,
+      "session-2": true,
+    });
+  });
+
+  test("should hide multiple sessions locally with one store update", () => {
+    useSidebarStore
+      .getState()
+      .applySidebarMessage(
+        createHydrateMessage([
+          createGroup("group-1", [
+            createSession("session-1", "groups"),
+            createSession("session-2", "notes"),
+            createSession("session-3", "logs"),
+          ]),
+        ]),
+      );
+
+    useSidebarStore.getState().hideSessionsLocally(["session-2", "session-3", "session-2"]);
+
+    expect(useSidebarStore.getState().sessionsById["session-2"]).toBeUndefined();
+    expect(useSidebarStore.getState().sessionsById["session-3"]).toBeUndefined();
+    expect(useSidebarStore.getState().sessionIdsByGroup["group-1"]).toEqual(["session-1"]);
+    expect(useSidebarStore.getState().localHiddenSessionIds).toEqual({
+      "session-2": true,
+      "session-3": true,
+    });
+  });
+
   test("should preserve unchanged HUD slice references across session snapshots", () => {
     useSidebarStore
       .getState()

@@ -146,6 +146,18 @@ export const ToolbarActions: Story = {
       expect(body.queryByRole("menuitem", { name: "Settings" })).toBeNull();
     });
 
+    await step("launch Search by Text from the Search row", async () => {
+      resetSidebarStoryMessages();
+      const searchRow = await findRequiredElement(
+        canvasElement.ownerDocument.body,
+        '.reference-sidebar-search-slot[data-active="false"] .reference-sidebar-nav-item',
+        "Search row",
+      );
+      fireEvent.mouseEnter(searchRow);
+      fireEvent.click(await body.findByRole("button", { name: "Search by Text" }));
+      await expectMessage({ type: "searchPreviousSessionsByText" });
+    });
+
     await step("open the scratch pad from the sidebar menu", async () => {
       await openSidebarMenuForStory(canvasElement.ownerDocument.body);
       const scratchPadItem = body.queryByRole("menuitem", { name: "Scratch Pad" });

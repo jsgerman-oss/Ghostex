@@ -2,21 +2,33 @@ import { describe, expect, test } from "vitest";
 import { PROJECT_SESSION_LIST_COLLAPSED_COUNT } from "./project-session-list-toggle";
 import {
   createRenderedSidebarSessionSlotIds,
+  createRenderedSidebarSessionSlots,
   createVisibleSidebarSessionSlotIds,
+  resolveAdjacentRenderedSidebarSessionSlotId,
   resolveVisibleSidebarSessionSlotId,
   type RenderedSidebarSessionSlotElement,
 } from "./sidebar-visible-session-slots";
 
 function renderedSlotElement({
   hidden = false,
+  sleeping = false,
   sessionId,
 }: {
   hidden?: boolean;
+  sleeping?: boolean;
   sessionId: string;
 }): RenderedSidebarSessionSlotElement {
   return {
     closest: () => (hidden ? ({} as Element) : null),
-    getAttribute: (name) => (name === "data-sidebar-session-id" ? sessionId : null),
+    getAttribute: (name) => {
+      if (name === "data-sidebar-session-id") {
+        return sessionId;
+      }
+      if (name === "data-sleeping") {
+        return String(sleeping);
+      }
+      return null;
+    },
   };
 }
 
@@ -78,6 +90,53 @@ describe("createRenderedSidebarSessionSlotIds", () => {
         renderedSlotElement({ sessionId: "visible-session-2" }),
       ]),
     ).toEqual(["visible-session-1", "visible-session-2"]);
+  });
+});
+
+describe("createRenderedSidebarSessionSlots", () => {
+  test("reads sleeping state from rendered session rows", () => {
+    expect(
+      createRenderedSidebarSessionSlots([
+        renderedSlotElement({ sessionId: "awake-session" }),
+        renderedSlotElement({ sessionId: "sleeping-session", sleeping: true }),
+      ]),
+    ).toEqual([
+      { isSleeping: false, sessionId: "awake-session" },
+      { isSleeping: true, sessionId: "sleeping-session" },
+    ]);
+  });
+});
+
+describe("resolveAdjacentRenderedSidebarSessionSlotId", () => {
+  test("walks rendered order while skipping sleeping sessions", () => {
+    const slots = [
+      { isSleeping: false, sessionId: "session-1" },
+      { isSleeping: true, sessionId: "sleeping-session-2" },
+      { isSleeping: false, sessionId: "session-3" },
+      { isSleeping: true, sessionId: "sleeping-session-4" },
+    ];
+
+    expect(
+      resolveAdjacentRenderedSidebarSessionSlotId({
+        direction: 1,
+        focusedSessionId: "session-1",
+        slots,
+      }),
+    ).toBe("session-3");
+    expect(
+      resolveAdjacentRenderedSidebarSessionSlotId({
+        direction: -1,
+        focusedSessionId: "session-3",
+        slots,
+      }),
+    ).toBe("session-1");
+    expect(
+      resolveAdjacentRenderedSidebarSessionSlotId({
+        direction: 1,
+        focusedSessionId: "sleeping-session-4",
+        slots,
+      }),
+    ).toBe("session-1");
   });
 });
 

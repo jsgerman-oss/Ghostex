@@ -910,6 +910,20 @@ body:focus-within .reference-sidebar-window-dot[data-window-dot="zoom"] {
   padding-right: 47px;
 }
 
+.sidebar-reference-layout[data-reference-sidebar="true"]
+  .reference-sidebar-search-slot[data-active="false"]
+  .reference-sidebar-nav-item:has(.reference-sidebar-text-search-button):is(:hover, :focus-within)
+  .reference-sidebar-nav-button {
+  /*
+   * CDXC:SidebarSearch 2026-06-07-12:37:
+   * The inactive Search row now exposes two hover actions: direct text search
+   * first, then Previous Sessions. Reserve enough right padding only while the
+   * buttons are visible so the primary Search label does not sit underneath
+   * either icon.
+   */
+  padding-right: 75px;
+}
+
 /*
  * CDXC:SidebarReference 2026-05-15-10:04:
  * The top New Session overflow trigger must not make the primary nav wider
@@ -979,6 +993,19 @@ body:focus-within .reference-sidebar-window-dot[data-window-dot="zoom"] {
     background-color 120ms ease,
     opacity 120ms ease;
   width: 26px;
+}
+
+.reference-sidebar-text-search-button {
+  /*
+   * CDXC:SidebarSearch 2026-06-07-12:37:
+   * The Search by Text action belongs immediately left of the existing
+   * Previous Sessions action in the Search row.
+   */
+  right: 37px;
+}
+
+.reference-sidebar-previous-sessions-button {
+  right: 9px;
 }
 
 .reference-sidebar-nav-item:hover .reference-sidebar-hover-action,

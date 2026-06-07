@@ -18,7 +18,7 @@ export type FilterPreviousSessionsOptions = {
 
 type SidebarSearchableSession = Pick<
   SidebarSessionItem,
-  "alias" | "detail" | "isFavorite" | "primaryTitle" | "sessionNumber" | "sessionTag" | "terminalTitle"
+  "alias" | "detail" | "displayTitle" | "isFavorite" | "primaryTitle" | "sessionNumber" | "sessionTag" | "terminalTitle"
 >;
 
 type SidebarSessionSearchRecord<T extends SidebarSearchableSession> = {
@@ -158,6 +158,7 @@ function createSidebarSessionSearchRecord<T extends SidebarSearchableSession>(
     itemIndex,
     searchText: [
       session.alias,
+      session.displayTitle,
       session.primaryTitle,
       session.terminalTitle,
       session.detail,

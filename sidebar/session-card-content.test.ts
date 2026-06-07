@@ -428,6 +428,28 @@ describe("SessionFloatingAgentIcon", () => {
 });
 
 describe("formatSessionHeadingText", () => {
+  test("should render gxserver display titles without recomputing title provenance", () => {
+    expect(
+      formatSessionHeadingText({
+        alias: "Session 1",
+        displayTitle: "MacOS session working status Fork",
+        displayTitleTooltip: "MacOS session working status Fork",
+        isPrimaryTitleTerminalTitle: false,
+        primaryTitle: "Placeholder stale local title",
+      }),
+    ).toBe("MacOS session working status Fork");
+    expect(
+      formatSessionHeadingText({
+        alias: "Session 1",
+        displayTitle: "∗ Local draft",
+        displayTitleTooltip: "∗ Local draft (Unsynced title)",
+        includeUnsyncedTitleLabel: true,
+        isPrimaryTitleTerminalTitle: true,
+        primaryTitle: "Local draft",
+      }),
+    ).toBe("∗ Local draft (Unsynced title)");
+  });
+
   test("should append the unsynced marker when the displayed title comes from the user title", () => {
     expect(
       formatSessionHeadingText({

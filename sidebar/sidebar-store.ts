@@ -55,7 +55,9 @@ type SidebarStoreActions = {
   applyOrderSyncResultMessage: (message: SidebarOrderSyncResultMessage) => void;
   applyLocalFocus: (groupId: string, sessionId: string) => void;
   hideSessionLocally: (sessionId: string) => void;
+  hideSessionsLocally: (sessionIds: readonly string[]) => void;
   setSessionSleepingLocally: (sessionId: string, sleeping: boolean) => void;
+  setSessionsSleepingLocally: (sessionIds: readonly string[], sleeping: boolean) => void;
   applySessionPresentationMessage: (message: SidebarSessionPresentationChangedMessage) => void;
   applySidebarMessage: (message: SidebarHydrateMessage | SidebarSessionStateMessage) => void;
   clearCommandRunState: (commandId: string) => void;
@@ -167,8 +169,14 @@ export const useSidebarStore = create<SidebarStoreState>((set) => ({
   hideSessionLocally: (sessionId) => {
     set((state) => hideSessionLocallyState(state, sessionId));
   },
+  hideSessionsLocally: (sessionIds) => {
+    set((state) => hideSessionsLocallyState(state, sessionIds));
+  },
   setSessionSleepingLocally: (sessionId, sleeping) => {
     set((state) => setSessionSleepingLocallyState(state, sessionId, sleeping));
+  },
+  setSessionsSleepingLocally: (sessionIds, sleeping) => {
+    set((state) => setSessionsSleepingLocallyState(state, sessionIds, sleeping));
   },
   applySessionPresentationMessage: (message) => {
     set((state) => applySessionPresentationMessageState(state, message));
@@ -382,6 +390,56 @@ function hideSessionLocallyState(
   };
 }
 
+function hideSessionsLocallyState(
+  state: SidebarStoreState,
+  sessionIds: readonly string[],
+): Partial<SidebarStoreState> | SidebarStoreState {
+  const hiddenSessionIds = Array.from(new Set(sessionIds));
+  if (hiddenSessionIds.length === 0) {
+    return state;
+  }
+
+  const existingTargetIds = hiddenSessionIds.filter(
+    (sessionId) => state.sessionsById[sessionId] || !state.localHiddenSessionIds[sessionId],
+  );
+  if (existingTargetIds.length === 0) {
+    return state;
+  }
+
+  /*
+  CDXC:SidebarContextMenu 2026-06-07-13:34:
+  Bulk context-menu actions such as Close below must update sidebar chrome once before native fan-out starts. Avoid one Zustand write per target because each write can re-render the session list and keep the menu/sidebar busy until every native close has been queued.
+  */
+  const targetIdSet = new Set(existingTargetIds);
+  const nextSessionsById = { ...state.sessionsById };
+  for (const sessionId of targetIdSet) {
+    delete nextSessionsById[sessionId];
+  }
+
+  let didChangeSessionOrder = false;
+  const nextSessionIdsByGroup: Record<string, string[]> = {};
+  for (const [groupId, groupSessionIds] of Object.entries(state.sessionIdsByGroup)) {
+    const nextGroupSessionIds = groupSessionIds.filter((sessionId) => !targetIdSet.has(sessionId));
+    nextSessionIdsByGroup[groupId] = nextGroupSessionIds;
+    if (nextGroupSessionIds.length !== groupSessionIds.length) {
+      didChangeSessionOrder = true;
+    }
+  }
+
+  return {
+    localHiddenSessionIds: {
+      ...state.localHiddenSessionIds,
+      ...Object.fromEntries(existingTargetIds.map((sessionId) => [sessionId, true] as const)),
+    },
+    pendingFocusedSessionId:
+      state.pendingFocusedSessionId && targetIdSet.has(state.pendingFocusedSessionId)
+        ? undefined
+        : state.pendingFocusedSessionId,
+    sessionIdsByGroup: didChangeSessionOrder ? nextSessionIdsByGroup : state.sessionIdsByGroup,
+    sessionsById: nextSessionsById,
+  };
+}
+
 function filterLocallyHiddenSidebarSessions(
   groups: readonly SidebarSessionGroup[],
   localHiddenSessionIds: Record<string, true>,
@@ -453,6 +511,54 @@ function setSessionSleepingLocallyState(
           [sessionId]: applyLocalSessionSleepingOverride(session, sleeping),
         }
       : state.sessionsById,
+  };
+}
+
+function setSessionsSleepingLocallyState(
+  state: SidebarStoreState,
+  sessionIds: readonly string[],
+  sleeping: boolean,
+): Partial<SidebarStoreState> | SidebarStoreState {
+  const targetSessionIds = Array.from(new Set(sessionIds));
+  if (targetSessionIds.length === 0) {
+    return state;
+  }
+
+  /*
+  CDXC:SidebarContextMenu 2026-06-07-13:34:
+  Sleep below can target many rows. Apply the local sleeping overlay to all awake targets in one store write so the context menu closes and the sidebar paints once while native session shutdown proceeds asynchronously.
+  */
+  let nextSessionSleepingOverrides: Record<string, boolean> | undefined;
+  let nextSessionsById: Record<string, SidebarSessionItem> | undefined;
+
+  for (const sessionId of targetSessionIds) {
+    const session = (nextSessionsById ?? state.sessionsById)[sessionId];
+    if (
+      session &&
+      session.isSleeping === sleeping &&
+      session.lifecycleState === (sleeping ? "sleeping" : "running")
+    ) {
+      continue;
+    }
+    if (!session && (nextSessionSleepingOverrides ?? state.localSessionSleepingOverrides)[sessionId] === sleeping) {
+      continue;
+    }
+
+    nextSessionSleepingOverrides ??= { ...state.localSessionSleepingOverrides };
+    nextSessionSleepingOverrides[sessionId] = sleeping;
+    if (session) {
+      nextSessionsById ??= { ...state.sessionsById };
+      nextSessionsById[sessionId] = applyLocalSessionSleepingOverride(session, sleeping);
+    }
+  }
+
+  if (!nextSessionSleepingOverrides && !nextSessionsById) {
+    return state;
+  }
+
+  return {
+    localSessionSleepingOverrides: nextSessionSleepingOverrides ?? state.localSessionSleepingOverrides,
+    sessionsById: nextSessionsById ?? state.sessionsById,
   };
 }
 
@@ -811,6 +917,8 @@ function haveSameSidebarSessionItem(left: SidebarSessionItem, right: SidebarSess
     left.delayedSendRemainingLabel === right.delayedSendRemainingLabel &&
     left.delayedSendRemainingMs === right.delayedSendRemainingMs &&
     left.detail === right.detail &&
+    left.displayTitle === right.displayTitle &&
+    left.displayTitleTooltip === right.displayTitleTooltip &&
     left.faviconDataUrl === right.faviconDataUrl &&
     left.isGeneratingFirstPromptTitle === right.isGeneratingFirstPromptTitle &&
     left.isReloading === right.isReloading &&

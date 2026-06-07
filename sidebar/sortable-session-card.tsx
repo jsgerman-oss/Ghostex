@@ -164,6 +164,45 @@ export function getSessionCardAccessibleLabel({
   return isFocused ? `${fallbackTitle}, current session` : fallbackTitle;
 }
 
+export type SidebarBulkContextMenuScheduler = (operation: () => void) => void;
+
+/**
+ * CDXC:SidebarContextMenu 2026-06-07-13:00:
+ * Sleep below and Close below can fan out to many native lifecycle messages.
+ * Run those targets from scheduled background tasks so the menu click returns
+ * immediately, the context menu can dismiss before lifecycle work starts, and
+ * the sidebar remains responsive between target operations.
+ *
+ * CDXC:SidebarContextMenu 2026-06-07-13:09:
+ * Bulk lifecycle menu items should still close like normal menu actions. Only
+ * the fan-out work runs in the background; menu visibility should not be used
+ * as an operation progress indicator.
+ */
+export function runSidebarBulkContextMenuActionInBackground(
+  sessionIds: readonly string[],
+  runForSessionId: (sessionId: string) => void,
+  scheduler: SidebarBulkContextMenuScheduler = (operation) => {
+    globalThis.setTimeout(operation, 0);
+  },
+): void {
+  const pendingSessionIds = [...sessionIds];
+  const runNext = () => {
+    const nextSessionId = pendingSessionIds.shift();
+    if (!nextSessionId) {
+      return;
+    }
+
+    runForSessionId(nextSessionId);
+    if (pendingSessionIds.length > 0) {
+      scheduler(runNext);
+    }
+  };
+
+  if (pendingSessionIds.length > 0) {
+    scheduler(runNext);
+  }
+}
+
 function clampContextMenuPosition(
   clientY: number,
   itemCount: number,
@@ -891,23 +930,22 @@ export function SortableSessionCard({
   };
 
   const requestSleepBelow = () => {
-    if (sleepableSessionIdsBelow.length === 0) {
+    const targetSessionIds = sessionIdsBelow.filter((candidateSessionId) =>
+      canSleepSidebarSession(useSidebarStore.getState().sessionsById[candidateSessionId]),
+    );
+    if (targetSessionIds.length === 0) {
       return;
     }
 
     flushSync(() => {
       setContextMenuPosition(undefined);
-      for (const targetSessionId of sleepableSessionIdsBelow) {
-        useSidebarStore.getState().setSessionSleepingLocally(targetSessionId, true);
-      }
+      useSidebarStore.getState().setSessionsSleepingLocally(targetSessionIds, true);
     });
-    for (const targetSessionId of sleepableSessionIdsBelow) {
-      vscode.postMessage({
-        sessionId: targetSessionId,
-        sleeping: true,
-        type: "setSessionSleeping",
-      });
-    }
+    vscode.postMessage({
+      sessionIds: targetSessionIds,
+      sleeping: true,
+      type: "setSessionsSleeping",
+    });
   };
 
   const requestCloseBelow = () => {
@@ -917,16 +955,12 @@ export function SortableSessionCard({
 
     flushSync(() => {
       setContextMenuPosition(undefined);
-      for (const targetSessionId of sessionIdsBelow) {
-        useSidebarStore.getState().hideSessionLocally(targetSessionId);
-      }
+      useSidebarStore.getState().hideSessionsLocally(sessionIdsBelow);
     });
-    for (const targetSessionId of sessionIdsBelow) {
-      vscode.postMessage({
-        sessionId: targetSessionId,
-        type: "closeSession",
-      });
-    }
+    vscode.postMessage({
+      sessionIds: [...sessionIdsBelow],
+      type: "closeSessions",
+    });
   };
 
   const requestSetSessionTag = (tag: SidebarSessionTag | undefined) => {
@@ -1667,8 +1701,18 @@ function getSessionRenameInitialTitle(session: SidebarSessionItem): string {
   return session.primaryTitle?.trim() || session.terminalTitle?.trim() || session.alias;
 }
 
-function canSleepSidebarSession(session: SidebarSessionItem | undefined): boolean {
-  return Boolean(session) && session?.sessionKind !== "browser" && session?.kind !== "browser";
+export function canSleepSidebarSession(session: SidebarSessionItem | undefined): boolean {
+  /*
+  CDXC:SidebarContextMenu 2026-06-07-13:34:
+  Sleep below must only target awake non-browser sessions. Some snapshots mark
+  an already parked row through lifecycleState before isSleeping is reconciled,
+  so check both fields to avoid sending duplicate sleep work to native.
+  */
+  return Boolean(session) &&
+    session?.sessionKind !== "browser" &&
+    session?.kind !== "browser" &&
+    session?.isSleeping !== true &&
+    session?.lifecycleState !== "sleeping";
 }
 
 function supportsResumeCommandCopy(session: SidebarSessionItem): boolean {

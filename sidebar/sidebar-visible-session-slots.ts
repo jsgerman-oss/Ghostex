@@ -119,10 +119,15 @@ export type RenderedSidebarSessionSlotElement = {
   getClientRects?: () => { length: number };
 };
 
-export function createRenderedSidebarSessionSlotIds(
+export type RenderedSidebarSessionSlot = {
+  isSleeping: boolean;
+  sessionId: string;
+};
+
+export function createRenderedSidebarSessionSlots(
   elements: readonly RenderedSidebarSessionSlotElement[],
-): string[] {
-  const visibleSessionIds: string[] = [];
+): RenderedSidebarSessionSlot[] {
+  const visibleSlots: RenderedSidebarSessionSlot[] = [];
 
   for (const element of elements) {
     const sessionId = element.getAttribute("data-sidebar-session-id");
@@ -138,10 +143,50 @@ export function createRenderedSidebarSessionSlotIds(
       continue;
     }
 
-    visibleSessionIds.push(sessionId);
+    visibleSlots.push({
+      isSleeping: element.getAttribute("data-sleeping") === "true",
+      sessionId,
+    });
   }
 
-  return visibleSessionIds;
+  return visibleSlots;
+}
+
+export function createRenderedSidebarSessionSlotIds(
+  elements: readonly RenderedSidebarSessionSlotElement[],
+): string[] {
+  return createRenderedSidebarSessionSlots(elements).map((slot) => slot.sessionId);
+}
+
+export function resolveAdjacentRenderedSidebarSessionSlotId({
+  direction,
+  focusedSessionId,
+  slots,
+}: {
+  direction: -1 | 1;
+  focusedSessionId?: string;
+  slots: readonly RenderedSidebarSessionSlot[];
+}): string | undefined {
+  const awakeSlots = slots.filter((slot) => !slot.isSleeping);
+  if (awakeSlots.length === 0) {
+    return undefined;
+  }
+
+  const focusedIndex = focusedSessionId
+    ? slots.findIndex((slot) => slot.sessionId === focusedSessionId)
+    : -1;
+  if (focusedIndex < 0) {
+    return direction > 0 ? awakeSlots[0]?.sessionId : awakeSlots.at(-1)?.sessionId;
+  }
+
+  for (let step = 1; step <= slots.length; step += 1) {
+    const candidate = slots[(focusedIndex + direction * step + slots.length) % slots.length];
+    if (candidate && !candidate.isSleeping) {
+      return candidate.sessionId;
+    }
+  }
+
+  return undefined;
 }
 
 export function readRenderedSidebarSessionSlotIds(root: ParentNode = document): string[] {
@@ -150,6 +195,20 @@ export function readRenderedSidebarSessionSlotIds(root: ParentNode = document): 
    * A user repro showed state-derived Cmd+number slots could include a hidden row, making Cmd+5 select the sixth visible session and Cmd+6 jump much lower in the sidebar. Read the rendered session-card rows at key time so slot numbers match the pixels shown in the sidebar and collapsed projects do not reserve indices.
    */
   return createRenderedSidebarSessionSlotIds(
+    Array.from(
+      root.querySelectorAll<HTMLElement>("[data-sidebar-session-id]"),
+    ),
+  );
+}
+
+export function readRenderedSidebarSessionSlots(
+  root: ParentNode = document,
+): RenderedSidebarSessionSlot[] {
+  /**
+   * CDXC:Hotkeys 2026-06-07-14:05:
+   * Cmd+Shift+[ / Cmd+Shift+] and Cmd+Shift+Tab / Cmd+Tab traverse sidebar rows exactly as rendered across expanded groups, but skip rows whose session card is sleeping. Read row state from the DOM so collapsed groups and filtered rows do not participate in navigation.
+   */
+  return createRenderedSidebarSessionSlots(
     Array.from(
       root.querySelectorAll<HTMLElement>("[data-sidebar-session-id]"),
     ),
