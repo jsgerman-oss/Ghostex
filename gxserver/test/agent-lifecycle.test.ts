@@ -378,10 +378,12 @@ test("agent activity transitions suppress bootstrap noise and require real worki
   assert.equal(launched.suppressedUntil, "2026-05-30T12:00:13.000Z");
 
   const suppressed = applyAgentActivityTransition({
-    activity: "working",
+    agentId: "codex",
+    event: "title",
     nowMs: Date.parse("2026-05-30T12:00:02.000Z"),
     nowIso: "2026-05-30T12:00:02.000Z",
     previous: launched,
+    title: "⠏ Bootstrapping",
   });
   assert.equal(suppressed.activity, "idle");
   assert.equal(suppressed.hasSeenWorking, false);
@@ -396,18 +398,22 @@ test("agent activity transitions suppress bootstrap noise and require real worki
   assert.equal(working.workingStartedAt, "2026-05-30T12:00:14.000Z");
 
   const tooFast = applyAgentActivityTransition({
-    activity: "attention",
+    agentId: "codex",
+    event: "title",
     nowMs: Date.parse("2026-05-30T12:00:15.000Z"),
     nowIso: "2026-05-30T12:00:15.000Z",
     previous: working,
+    title: "[ ! ] Action Required",
   });
   assert.equal(tooFast.activity, "idle");
 
   const attention = applyAgentActivityTransition({
-    activity: "attention",
+    agentId: "codex",
+    event: "title",
     nowMs: Date.parse("2026-05-30T12:00:20.000Z"),
     nowIso: "2026-05-30T12:00:20.000Z",
     previous: working,
+    title: "[ ! ] Action Required",
   });
   assert.equal(attention.activity, "attention");
 });

@@ -1183,7 +1183,7 @@ test("cancelled first-prompt auto-title retries after a later prompt", async () 
       );
       assert.equal(titledSession.title, "Auto Sleep Defaults");
       assert.equal(titledSession.runtimeSettings.firstUserMessage, laterPrompt);
-      assert.deepEqual(prompts, [firstPrompt, laterPrompt]);
+      assert.deepEqual(prompts, ["cancel this generated title before rename", laterPrompt]);
       assert.deepEqual(sendInputs, ["/rename Auto Sleep Defaults"]);
       assert.ok(zmxCalls.some((script) => script.includes('exec "$zmx_bin" send "$zmx_session"')));
     },

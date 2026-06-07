@@ -2639,7 +2639,7 @@ function claimGxserverFirstPromptAutoTitle(
     return { claimed: false };
   }
   const runtimeSettings = {
-    ...session.runtimeSettings,
+    ...clearGxserverFirstPromptAutoTitleCancellation(session.runtimeSettings),
     firstUserMessage: prompt,
     gxserverFirstPromptAutoTitleStatus: "running",
     gxserverFirstPromptAutoTitleStartedAt: new Date().toISOString(),
@@ -2647,6 +2647,9 @@ function claimGxserverFirstPromptAutoTitle(
   /*
   CDXC:GxserverSessionTitle 2026-06-04-04:05:
   First-prompt auto-title is a gxserver responsibility. Hooks and clients report observed agent identity plus first-user-message metadata; gxserver alone claims, generates, persists, and submits the rename command so macOS, Android, iOS, CLI, and future clients do not implement separate session-title flows.
+
+  CDXC:GxserverSessionTitle 2026-06-07-18:16:
+  Escape cancellation is scoped to the prompt that was cancelled. Clear cancellation metadata when a later prompt claims a fresh job so retries can run without preserving stale cancelled state.
   */
   const updated = repository.updateSession({
     projectId: session.projectId,
@@ -2676,15 +2679,20 @@ function cancelGxserverFirstPromptAutoTitle(
       session,
     };
   }
+  const cancelledPrompt = readRuntimeText(session.runtimeSettings, "firstUserMessage");
   /*
   CDXC:GxserverSessionTitle 2026-06-04-07:43:
   Escape cancellation is a gxserver state transition, not a local sidebar suppression. Mark the first-prompt title job as cancelled so presentation clears the terminal overlay and the background job can observe the terminal status before sending `/rename`.
+
+  CDXC:GxserverSessionTitle 2026-06-07-18:16:
+  Store the prompt associated with the cancelled job separately from `firstUserMessage`. Later session-state events may replace `firstUserMessage`, and gxserver must distinguish a stale retry of the same prompt from a new prompt that should start a new title job.
   */
   const updated = repository.updateSession({
     projectId: session.projectId,
     runtimeSettings: {
       ...session.runtimeSettings,
       gxserverFirstPromptAutoTitleCancelledAt: new Date().toISOString(),
+      ...(cancelledPrompt ? { gxserverFirstPromptAutoTitleCancelledPrompt: cancelledPrompt } : {}),
       gxserverFirstPromptAutoTitleReason: params.reason ?? "userCancelled",
       gxserverFirstPromptAutoTitleStatus: "cancelled",
     },
@@ -2942,9 +2950,13 @@ function decideGxserverFirstPromptAutoTitle(
 } {
   const status = readRuntimeText(session.runtimeSettings, "gxserverFirstPromptAutoTitleStatus");
   const normalizedPrompt = normalizeGxserverFirstPromptTitlePrompt(prompt);
-  const cancelledPrompt = normalizeGxserverFirstPromptTitlePrompt(
-    readRuntimeText(session.runtimeSettings, "firstUserMessage"),
-  );
+  const cancelledPrompt =
+    normalizeGxserverFirstPromptTitlePrompt(
+      readRuntimeText(session.runtimeSettings, "gxserverFirstPromptAutoTitleCancelledPrompt"),
+    ) ??
+    normalizeGxserverFirstPromptTitlePrompt(
+      readRuntimeText(session.runtimeSettings, "firstUserMessage"),
+    );
   const isCancelledRetryPrompt =
     status === "cancelled" &&
     normalizedPrompt !== undefined &&
@@ -2982,6 +2994,18 @@ function decideGxserverFirstPromptAutoTitle(
     return { normalizedPrompt, reason: "nonGenericCurrentTitle", shouldRun: false, strategy };
   }
   return { normalizedPrompt, reason: "eligible", shouldRun: true, strategy };
+}
+
+function clearGxserverFirstPromptAutoTitleCancellation(
+  runtimeSettings: Record<string, unknown>,
+): Record<string, unknown> {
+  const {
+    gxserverFirstPromptAutoTitleCancelledAt: _cancelledAt,
+    gxserverFirstPromptAutoTitleCancelledPrompt: _cancelledPrompt,
+    gxserverFirstPromptAutoTitleReason: _cancelledReason,
+    ...nextRuntimeSettings
+  } = runtimeSettings;
+  return nextRuntimeSettings;
 }
 
 function resolveGxserverFirstPromptAutoTitleStrategy(
