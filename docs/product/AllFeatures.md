@@ -11,6 +11,12 @@
 - Codex resume validates exact ids and falls back through filtered title lookup, avoiding internal `codex exec` title-generation transcripts.
 - Cancelling first-prompt title generation no longer lets a stale result rename the session, and a later user prompt can retry title generation.
 - Agent Auto Sleep waits when zmx title-observer health is starting, retrying, or failed instead of treating unavailable working-status detection as idle.
+- Agent hook installation covers supported CLIs through gxserver, and installed hooks can report working, attention, idle, first-prompt, and resume metadata directly to gxserver for more reliable status across clients.
+- Duplicate completion sounds and macOS notifications are suppressed when the same attention event is replayed from hook or gxserver state.
+- Full reload for zmx sessions reloads the clicked session in place instead of creating a duplicate sidebar row, and Ctrl+G prompt editing checks the bundled zmx binary instead of a stale PATH zmx.
+- Previous Sessions hides command-pane runs and ranks rows by true last activity instead of recent metadata refreshes.
+- Sidebar Last Active labels keep ticking from the client clock even when React Compiler caches the row render.
+- `gx find` / zehn history results are grouped by last-active day, show source session titles above matched prompt text, include compact last-active times, and stay quiet unless the user explicitly runs `zehn update`.
 - Ghostex-launched app, gxserver, zmx, agent-hook, Git, Beads, clone, and local dev subprocesses keep ANSI color capability even when the parent shell exports `NO_COLOR`.
 - Native sidebar web bundles use the React Compiler build path for smoother nightly sidebar interactions.
 - Support diagnostics avoid writing raw title previews, command output previews, session id lists, paths, and stderr snippets while keeping counts and timing useful for troubleshooting.

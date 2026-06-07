@@ -7,6 +7,7 @@
 <!-- CDXC:BetaDistribution 2026-06-07-00:09: Release notes for 4.0.0-beta.3 must describe the nightly beta as GitHub Releases and Homebrew DMG distribution only, with Sparkle automatic-update feeds left on the current public release. -->
 <!-- CDXC:BetaDistribution 2026-06-07-00:09: The beta.3 package includes sidebar focus stability, editor startup failure surfacing, title-storm throttling, packaged gxserver Node-runtime validation, native web bundle compiler support, and privacy-tightened debug logs, so release notes must stay user-facing while covering those shipped behaviors. -->
 <!-- CDXC:BetaDistribution 2026-06-07-02:47: The final beta.3 package also includes color-capable subprocess launches, internal Codex title-generation isolation, safer Codex resume lookup, zmx title-observer health for Auto Sleep, focused-agent auto-sleep protection, T3 startup retention, packaged T3 runtime path resolution, and native-only T3/browser sidebar row restoration. -->
+<!-- CDXC:BetaDistribution 2026-06-07-08:57: The final beta.3 package additionally includes gxserver-owned agent hook installation and hook-event ingestion, duplicate attention side-effect suppression, in-place zmx Full reload, bundled-zmx prompt-editor capability checks, Previous Sessions command filtering, client-clock relative-time ticking, and zehn day-grouped title rows. -->
 
 ## 4.0.0-beta.3 - 2026-06-07
 
@@ -20,6 +21,12 @@
 - Codex resume now validates exact ids and falls back through filtered title lookup, avoiding internal `codex exec` title-generation transcripts.
 - Cancelling first-prompt title generation no longer lets a stale result rename the session, and a later user prompt can retry title generation.
 - Agent Auto Sleep waits when zmx title-observer health is starting, retrying, or failed instead of treating unavailable working-status detection as idle.
+- Agent hook installation now covers supported CLIs through gxserver, and installed hooks can report working, attention, idle, first-prompt, and resume metadata directly to gxserver for more reliable status across clients.
+- Duplicate completion sounds and macOS notifications are suppressed when the same attention event is replayed from hook or gxserver state.
+- Full reload for zmx sessions now reloads the clicked session in place instead of creating a duplicate sidebar row, and Ctrl+G prompt editing checks the bundled zmx binary instead of a stale PATH zmx.
+- Previous Sessions hides command-pane runs and ranks rows by true last activity instead of recent metadata refreshes.
+- Sidebar Last Active labels keep ticking from the client clock even when React Compiler caches the row render.
+- `gx find` / zehn history results are grouped by last-active day, show source session titles above matched prompt text, include compact last-active times, and stay quiet unless the user explicitly runs `zehn update`.
 - Ghostex-launched app, gxserver, zmx, agent-hook, Git, Beads, clone, and local dev subprocesses keep ANSI color capability even when the parent shell exports `NO_COLOR`.
 - Native sidebar web bundles are compiled through the React Compiler build path for smoother nightly sidebar interactions.
 - Support diagnostics avoid writing raw title previews, command output previews, session id lists, paths, and stderr snippets while still keeping counts and timing useful for troubleshooting.
