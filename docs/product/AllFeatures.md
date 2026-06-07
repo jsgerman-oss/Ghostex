@@ -86,7 +86,7 @@
 - Project header diff stats can show larger four-digit changed-line counts before capping.
 - The bare `ghostex` and `gx` commands open the Ghostex terminal TUI by default, with direct attach still available through attach shortcuts.
 - Ghostex browser DevTools MCP lets agents inspect embedded browser panes, read console logs, take snapshots and screenshots, click, fill forms, press keys, and navigate pages through the bundled CLI skill.
-- First-launch setup includes CLI, mobile app, and browser-skill guidance, with installed-CLI detection so Homebrew users are not asked to reinstall unnecessarily.
+- First-launch setup explains the app-bundled CLI, mobile app access, and browser-skill guidance without asking users to install the CLI manually.
 - Browser pane feedback tooling honors the selected Agentation or React Grab setting, and Agentation opens directly into feedback mode from the browser toolbar.
 - Sleeping-session wake and focus behavior keeps pane tabs, command tabs, focus mode, and restored zmx/tmux/zellij sessions in the expected pane instead of reshuffling visible layouts.
 - Sidebar polish includes unified tooltip styling, closer Storybook/native layout matching, literal Show less limits for long project lists, and broader Sleep Inactive coverage for idle terminals.
@@ -146,7 +146,7 @@
 - Native macOS app shell for better performance (No node runtime)
 - Native Ghostty terminals for best compatibility with Agent CLIs and low cpu/ram use (No bugs due to xterm.js or ghostty-web)
 - The same Homebrew install command automatically selects Apple Silicon or Intel Mac builds.
-- The app installs both `ghostex` and `gx` CLI commands through Homebrew for listing, attaching, waking, focusing, and sleeping sessions.
+- The macOS app bundles the `ghostex` and `gx` CLI launchers and auto-links them on startup for direct DMG installs, while Homebrew casks link the same app-owned launchers.
 - Inspired by Codex App's UX
 - Embedded browser is chromium not webkit (unlike cmux). Includes devtools & profiles!
 - Auto sleep unused terminals to save ram (auto-restore when clicked)

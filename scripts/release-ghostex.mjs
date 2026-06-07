@@ -1429,11 +1429,17 @@ async function updateHomebrew(version, artifacts, options) {
  * 13.0 appcast requirement. Keep the explicit string form because older
  * Homebrew clients can parse the symbol shorthand as exact Ventura and block
  * newer macOS releases such as 26.x before Homebrew can install Ghostex.
+ *
+ * CDXC:CliInstall 2026-06-07-13:53:
+ * CLI resources now live under Contents/Resources/CLI. Normalize both old
+ * Web/cli casks and already-updated CLI casks before inserting the current
+ * ghostex/gx binary stanzas so the release script remains idempotent.
  */
 function normalizeGhostexCliCask(cask) {
-  const ghostexBinary = '  binary "#{appdir}/ghostex.app/Contents/Resources/Web/cli/ghostex"';
-  const gxBinary = '  binary "#{appdir}/ghostex.app/Contents/Resources/Web/cli/gx"';
+  const ghostexBinary = '  binary "#{appdir}/ghostex.app/Contents/Resources/CLI/ghostex"';
+  const gxBinary = '  binary "#{appdir}/ghostex.app/Contents/Resources/CLI/gx"';
   const cliPreflight = `  # CDXC:CliBranding 2026-05-26-15:11: Install gx only when another tool does not already own that command name.
+  # CDXC:CliInstall 2026-06-07-13:53: Homebrew links the app-owned CLI from Contents/Resources/CLI, matching direct DMG auto-linking.
   preflight do
     gx_candidates = [HOMEBREW_PREFIX/"bin/gx"]
     ENV.fetch("PATH", "").split(File::PATH_SEPARATOR).each do |entry|
@@ -1444,7 +1450,7 @@ function normalizeGhostexCliCask(cask) {
       next if [gx_path.exist?, gx_path.symlink?].none?
 
       gx_target = gx_path.symlink? ? gx_path.readlink.to_s : gx_path.to_s
-      next if gx_target.include?("ghostex.app/Contents/Resources/Web/cli/gx")
+      next if gx_target.include?("ghostex.app/Contents/Resources/CLI/gx")
 
       raise "Ghostex cannot install the gx CLI because #{gx_path} already exists. " \\
             "Remove or rename the existing gx command, then reinstall Ghostex."
@@ -1453,19 +1459,30 @@ function normalizeGhostexCliCask(cask) {
 
   let next = cask
     .replace(
-      /\n  # CDXC:CliBranding 2026-05-26-15:11: Install gx only when another tool does not already own that command name\.\n  preflight do[\s\S]*?\n  end(?=\n\n  zap trash:|\n  binary "#\{appdir\}\/ghostex\.app\/Contents\/Resources\/Web\/cli\/gx")/g,
+      /\n  # CDXC:CliBranding 2026-05-26-15:11: Install gx only when another tool does not already own that command name\.\n(?:  # CDXC:CliInstall 2026-06-07-13:53: Homebrew links the app-owned CLI from Contents\/Resources\/CLI, matching direct DMG auto-linking\.\n)?  preflight do[\s\S]*?\n  end(?=\n\n  zap trash:|\n  binary "#\{appdir\}\/ghostex\.app\/Contents\/Resources\/(?:Web\/cli|CLI)\/gx")/g,
       "",
     )
     .replace(/^  depends_on macos: :ventura$/m, '  depends_on macos: ">= :ventura"')
     .replace(/^  binary "#\{appdir\}\/ghostex\.app\/Contents\/Resources\/Web\/cli\/gtx"\n/gm, "")
-    .replace(/^  binary "#\{appdir\}\/ghostex\.app\/Contents\/Resources\/Web\/cli\/gx"\n/gm, "");
+    .replace(/^  binary "#\{appdir\}\/ghostex\.app\/Contents\/Resources\/Web\/cli\/gx"\n/gm, "")
+    .replace(/^  binary "#\{appdir\}\/ghostex\.app\/Contents\/Resources\/CLI\/gx"\n/gm, "");
+  next = next
+    .replace(
+      /^  binary "#\{appdir\}\/ghostex\.app\/Contents\/Resources\/Web\/cli\/ghostex"\n/gm,
+      `${ghostexBinary}\n`,
+    )
+    .replace(
+      /^  binary "#\{appdir\}\/ghostex\.app\/Contents\/Resources\/Web\/cli\/gx"\n/gm,
+      "",
+    );
 
   if (!next.includes(`${ghostexBinary}\n`)) {
     throw new ReleaseError("Ghostex cask is missing the primary ghostex CLI binary stanza.");
   }
 
   next = next.replace(`${ghostexBinary}\n`, `${ghostexBinary}\n${gxBinary}\n\n${cliPreflight}\n`);
-  if (!next.includes(gxBinary) || next.includes("/Web/cli/gtx")) {
+  next = next.replace(/\n{3,}(?=  zap trash:)/g, "\n\n");
+  if (!next.includes(gxBinary) || next.includes("/Resources/Web/cli")) {
     throw new ReleaseError("Failed to normalize Ghostex cask CLI binary aliases.");
   }
   if (!next.includes('depends_on macos: ">= :ventura"')) {

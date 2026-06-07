@@ -387,7 +387,8 @@ cask "ghostex" do
   depends_on macos: ">= :ventura"
 
   app "ghostex.app"
-  binary "#{appdir}/ghostex.app/Contents/Resources/Web/cli/ghostex"
+  binary "#{appdir}/ghostex.app/Contents/Resources/CLI/ghostex"
+  # CDXC:CliInstall 2026-06-07-13:53: Homebrew links the same app-owned CLI launchers that direct DMG installs auto-link on app startup.
   preflight do
     gx_candidates = [HOMEBREW_PREFIX/"bin/gx"]
     ENV.fetch("PATH", "").split(File::PATH_SEPARATOR).each do |entry|
@@ -398,13 +399,13 @@ cask "ghostex" do
       next unless gx_path.exist? || gx_path.symlink?
 
       gx_target = gx_path.symlink? ? gx_path.readlink.to_s : gx_path.to_s
-      next if gx_target.include?("ghostex.app/Contents/Resources/Web/cli/gx")
+      next if gx_target.include?("ghostex.app/Contents/Resources/CLI/gx")
 
       raise "Ghostex cannot install the gx CLI because #{gx_path} already exists. " \
             "Remove or rename the existing gx command, then reinstall Ghostex."
     end
   end
-  binary "#{appdir}/ghostex.app/Contents/Resources/Web/cli/gx"
+  binary "#{appdir}/ghostex.app/Contents/Resources/CLI/gx"
 
   zap trash: [
     "~/Library/Application Support/com.madda.ghostex.host",
@@ -426,7 +427,7 @@ brew fetch --cask --arch=x86_64 ./Casks/ghostex.rb
 
 If `brew fetch --cask --arch=...` is not available in the local Homebrew version, validate on real arm64 and Intel machines.
 If the tap also contains a `ghostex` cask or alias, update it in the same commit so both public install commands resolve to the same architecture-specific release.
-Keep both `binary` stanzas in the cask so Homebrew automatically installs the `ghostex` command and the `gx` short alias from the app bundle. Keep the `gx` preflight check so Homebrew fails clearly instead of taking over an existing non-Ghostex `gx` command.
+Keep both `binary` stanzas in the cask so Homebrew installs the same `ghostex` command and `gx` short alias from `Contents/Resources/CLI` that direct DMG installs auto-link on app startup. Keep the `gx` preflight check so Homebrew fails clearly instead of taking over an existing non-Ghostex `gx` command.
 
 Commit and push the tap only after both SHA values match the stapled DMGs:
 
