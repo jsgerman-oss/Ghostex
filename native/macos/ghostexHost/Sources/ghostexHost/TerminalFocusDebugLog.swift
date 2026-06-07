@@ -60,10 +60,24 @@ enum TerminalFocusDebugLog {
      warning/error/failure-like. Do not write routine forced/startup entries
      when Debugging Mode is off, so normal app use only persists warnings,
      errors, exceptions, and crashes.
+
+     CDXC:Hotkeys 2026-06-07-14:24:
+     A user-requested next/previous-session repro needs a narrow normal-mode
+     trace because Debugging Mode was off during the failed 14:14 shortcut
+     attempt. Allow only nativeHotkeys.navigationRepro entries through; their
+     payload is sanitized and limited to key/action/routing metadata.
+
+     CDXC:TerminalImageDrop 2026-06-07-16:15:
+     A terminal image-drop repro may fail before users can enable Debugging
+     Mode. Allow forced nativeWorkspace.terminalDrop events through in normal
+     mode so AppKit drag registration, pasteboard type classification, and
+     target routing can be diagnosed without persisting dropped paths or text.
      */
     let isStartupPaneLayoutEvent = event.hasPrefix("nativePaneLayoutStartup.")
+    let isHotkeyNavigationReproEvent = event.hasPrefix("nativeHotkeys.navigationRepro")
+    let isTerminalDropReproEvent = isNativePersistentTerminalDropReproEvent(event, force: force)
     let isImportantDiagnostic = isNativePersistentLogImportantDiagnostic(event)
-    guard isImportantDiagnostic || (NativeDebugLogging.isEnabled && (force || isStartupPaneLayoutEvent || !noisyEvents.contains(event))) else {
+    guard isImportantDiagnostic || isHotkeyNavigationReproEvent || isTerminalDropReproEvent || (NativeDebugLogging.isEnabled && (force || isStartupPaneLayoutEvent || !noisyEvents.contains(event))) else {
       return
     }
     let logsDirectory = GhostexAppStorage.logsDirectory
@@ -164,6 +178,10 @@ func isNativePersistentLogImportantDiagnostic(_ event: String) -> Bool {
       || normalized.contains("unhealthy")
       || normalized.contains("portbusy")
   )
+}
+
+func isNativePersistentTerminalDropReproEvent(_ event: String, force: Bool) -> Bool {
+  force && event.hasPrefix("nativeWorkspace.terminalDrop.")
 }
 
 enum NativeLogPrivacy {

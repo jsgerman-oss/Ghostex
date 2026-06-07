@@ -1119,7 +1119,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
     return value
   }
 
+  private func ghosttyConfigColor(_ key: String) -> NSColor? {
+    guard let color = ghosttyConfigRawColor(key) else {
+      return nil
+    }
+    return NSColor(
+      calibratedRed: CGFloat(color.r) / 255,
+      green: CGFloat(color.g) / 255,
+      blue: CGFloat(color.b) / 255,
+      alpha: 1)
+  }
+
   private func ghosttyConfigColorHex(_ key: String) -> String? {
+    guard let color = ghosttyConfigRawColor(key) else {
+      return nil
+    }
+    return String(format: "#%02X%02X%02X", color.r, color.g, color.b)
+  }
+
+  private func ghosttyConfigRawColor(_ key: String) -> ghostty_config_color_s? {
     guard let config = ghostty.config.config else {
       return nil
     }
@@ -1127,7 +1145,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
     guard ghostty_config_get(config, &color, key, UInt(key.lengthOfBytes(using: .utf8))) else {
       return nil
     }
-    return String(format: "#%02X%02X%02X", color.r, color.g, color.b)
+    return color
   }
 
   private static func appendGhosttyConfigLog(_ message: String) {
@@ -1748,7 +1766,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
   nonisolated func setSecureInput(_ mode: Ghostty.SetSecureInput) {}
 
   @MainActor
-  private func makeWindow() {
+  private func makeWindow(gxserverStatus: GxserverClientStatus? = nil) {
     let sessionStatusIndicatorController = SessionStatusIndicatorController(
       onActivationRequest: { [weak self] reason in
         self?.recordNativeActivationRequest(reason: reason)
@@ -1789,9 +1807,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
       })
     self.petOverlayController = petOverlayController
     petOverlayController.load(webAssets: ghostexRootView.resolveWebAssets())
+    /*
+     CDXC:WorkspaceLayout 2026-06-07-16:53:
+     Native workspace chrome should derive its automatic background from the same loaded Ghostty config as embedded terminals. Resolve the color after Ghostty initialization so themes and user config participate, with black only when Ghostty cannot provide a background.
+     */
     let root = ghostexRootView(
       ghostty: ghostty,
-      gxserverBootstrap: gxserverClient.webBootstrap(),
+      defaultWorkspaceBackgroundColor: ghosttyConfigColor("background") ?? .black,
+      gxserverBootstrap: gxserverClient.webBootstrap(status: gxserverStatus),
       sendEvent: { [weak self] event in
         self?.bridge?.send(event)
         (self?.window?.contentView as? ghostexRootView)?.postHostEvent(event)
@@ -1874,6 +1897,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
         root?.handleWindowMouseDownBeforeDispatch(event)
       }
       self?.logNativeActivationBoundaryInputEvent(event, phase: phase)
+    }
+    window.onTerminalPaneDropMouseEvent = { [weak root] event in
+      root?.handleTerminalPaneDropWindowEvent(event) ?? false
+    }
+    /*
+     CDXC:TerminalImageDrop 2026-06-07-16:58:
+     The 16:56 image-drop repro still produced no root, workspace, or surface drag callbacks. Register the NSWindow itself as the high-water drag destination and forward only workspace-frame drops into the terminal router, because child AppKit/CEF surfaces can prevent content/root views from becoming the selected drag receiver.
+     */
+    window.registerForDraggedTypes(root.workspaceView.terminalPaneDropRegisteredTypes)
+    root.workspaceView.logTerminalPaneDropRegistration(operationSource: "window")
+    window.onTerminalPaneDropDragOperation = { [weak root] sender, phase in
+      guard let root else { return [] }
+      return root.workspaceView.terminalPaneRootDragOperation(
+        for: sender,
+        rootView: root,
+        phase: phase,
+        operationSource: "window")
+    }
+    window.onTerminalPaneDropDraggingExited = { [weak root] sender in
+      guard let root else { return }
+      root.workspaceView.terminalPaneRootDraggingExited(
+        sender,
+        rootView: root,
+        operationSource: "window")
+    }
+    window.onTerminalPaneDropPerform = { [weak root] sender in
+      guard let root else { return false }
+      return root.workspaceView.performTerminalPaneRootDrop(
+        for: sender,
+        rootView: root,
+        operationSource: "window")
     }
     window.title = "Ghostex"
     window.titleVisibility = .hidden
@@ -2396,7 +2450,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
       guard let self else { return }
       let status = await self.gxserverClient.startOrReuse()
       await MainActor.run {
-        self.makeWindow()
+        /*
+         CDXC:GxserverBootstrap 2026-06-07-12:02:
+         The sidebar may miss the first native gxserverStatus host event while the WebKit document is still installing listeners. Seed the startup status into the injected bootstrap object so React sees a running daemon before it decides whether startup API work is allowed.
+         */
+        self.makeWindow(gxserverStatus: status)
         self.installAppHotkeyEventMonitor()
         self.startBridge()
         self.publishGxserverBootstrapStatus(status)
@@ -2817,7 +2875,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
         target: command.target,
         bundleIdentifier: bundleIdentifier)
       if failures.isEmpty {
-        showMessage(.init(level: .info, message: "Updated macOS OS Integration defaults."))
+        (window?.contentView as? ghostexRootView)?.presentAppToast(
+          level: "success",
+          title: "Updated macOS OS Integration defaults."
+        )
       } else {
         showMessage(.init(level: .error, message: "Could not set defaults: \(failures.joined(separator: ", "))"))
       }
@@ -3470,7 +3531,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
     var failures: [String] = []
     failures.append(contentsOf: Self.osIntegrationDefaultFailures(target: target, bundleIdentifier: bundleIdentifier))
     if failures.isEmpty {
-      showMessage(.init(level: .info, message: "Updated macOS OS Integration defaults."))
+      (window?.contentView as? ghostexRootView)?.presentAppToast(
+        level: "success",
+        title: "Updated macOS OS Integration defaults."
+      )
     } else {
       showMessage(.init(level: .error, message: "Could not set defaults: \(failures.joined(separator: ", "))"))
     }
@@ -3981,23 +4045,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
   }
 
   private func showMessage(_ command: ShowMessage) {
-    let alert = NSAlert()
-    switch command.level {
-    case .info:
-      alert.alertStyle = .informational
-    case .warning:
-      alert.alertStyle = .warning
-    case .error:
-      alert.alertStyle = .critical
-    }
-    alert.messageText = "Ghostex"
-    alert.informativeText = command.message
-    alert.addButton(withTitle: "OK")
-    if let window {
-      alert.beginSheetModal(for: window)
-    } else {
-      alert.runModal()
-    }
+    (window?.contentView as? ghostexRootView)?.presentAppToast(command)
   }
 
   private func openExternalUrl(_ command: OpenExternalUrl) {
@@ -4222,7 +4270,7 @@ private final class NativeSettingsStore {
      Plain Cmd+Arrow belongs to terminal and prompt text editing.
      Directional pane focus uses Cmd+Alt+Arrow so AppKit no longer intercepts common text navigation shortcuts.
     */
-    "createSession": "cmd+n",
+    "createSession": "cmd+t",
     /**
      CDXC:CommandPalette 2026-05-17-01:32:
      Pane context-menu actions also need configurable defaults at the AppKit
@@ -4267,7 +4315,7 @@ private final class NativeSettingsStore {
      Keep the native defaults in sync so AppKit matches and dispatches openCommandsPanel instead of filtering the action out of persisted hotkeys.
      */
     "openCommandsPanel": "f12",
-    "openBrowserPane": "ctrl+shift+b",
+    "openBrowserPane": "cmd+n",
     "openSettings": "cmd+,",
     "popOutPane": "ctrl+shift+o",
     /**
@@ -4296,12 +4344,24 @@ private final class NativeSettingsStore {
      */
     "splitMore": "cmd+d",
     "splitMoreDown": "cmd+shift+d",
+    /**
+     CDXC:Hotkeys 2026-06-07-14:24:
+     Terminal-focused AppKit dispatch must use the same default hotkey table as
+     the shared sidebar model. Cmd+T creates a terminal tab, Cmd+N creates a
+     browser tab, and Option+1..4 switch Agents, Source, GitHub, and Kanban
+     without depending on the sidebar WebKit DOM receiving the keydown.
+     */
+    "switchAgentsView": "alt+1",
+    "switchSourceView": "alt+2",
+    "switchGitHubView": "alt+3",
+    "switchKanbanView": "alt+4",
   ]
   fileprivate static let defaultHotkeyAliases: [String: [String]] = [
     "focusNextSession": ["cmd+shift+]"],
     "focusPreviousSession": ["cmd+shift+["],
   ]
   private static let retiredDefaultHotkeys: [String: [String]] = [
+    "createSession": ["cmd+n"],
     "focusDown": ["cmd+down"],
     "focusLeft": ["cmd+left"],
     "focusNextGroup": ["cmd+shift+]"],
@@ -4310,6 +4370,23 @@ private final class NativeSettingsStore {
     "focusPreviousSession": ["cmd+["],
     "focusRight": ["cmd+right"],
     "focusUp": ["cmd+up"],
+    "openBrowserPane": ["ctrl+shift+b"],
+  ]
+  private static let shiftedDigitHotkeyTextKeys: [String: String] = [
+    "!": "1",
+    "@": "2",
+    "#": "3",
+    "$": "4",
+    "%": "5",
+    "^": "6",
+    "&": "7",
+    "*": "8",
+    "(": "9",
+    ")": "0",
+  ]
+  private static let shiftedSymbolHotkeyTextKeys: [String: String] = [
+    "{": "[",
+    "}": "]",
   ]
 
   /**
@@ -4524,6 +4601,23 @@ private final class NativeSettingsStore {
       .replacingOccurrences(of: "control", with: "ctrl")
       .replacingOccurrences(of: "\\bmod\\b", with: "cmd", options: .regularExpression)
       .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+      .split(separator: " ")
+      .map { normalizeHotkeyChordText(String($0)) }
+      .joined(separator: " ")
+  }
+
+  private static func normalizeHotkeyChordText(_ chord: String) -> String {
+    var parts = chord.split(separator: "+").map(String.init).filter { !$0.isEmpty }
+    guard let key = parts.last else {
+      return chord
+    }
+    if parts.contains("shift"), let unshiftedDigit = shiftedDigitHotkeyTextKeys[key] {
+      parts[parts.count - 1] = unshiftedDigit
+    }
+    if parts.contains("shift"), let unshiftedSymbol = shiftedSymbolHotkeyTextKeys[key] {
+      parts[parts.count - 1] = unshiftedSymbol
+    }
+    return parts.joined(separator: "+")
   }
 
   private func settingsURL() -> URL {
@@ -4743,6 +4837,468 @@ final class WorkspaceInteractionShieldView: NSView {
   override func otherMouseDown(with event: NSEvent) {}
 }
 
+final class TerminalPaneDropOverlayView: NSView {
+  private weak var workspaceView: TerminalWorkspaceView?
+  private var lastHitTestSignature: String?
+  private var isCapturingPotentialFileDrop = false
+  private var isForwardingMouseEvent = false
+  private var activeDropEventNumber: Int?
+  private var releaseOnlyDropEventNumber: Int?
+  private var lastHandledDropEventNumber: Int?
+  private var lastHandledDragPasteboardChangeCount: Int?
+  private var ignoredDragPasteboardChangeCount: Int?
+  private var recentReleaseOnlyDragSignalTimestamp: TimeInterval?
+  private var recentReleaseOnlyDragSignalPasteboardChangeCount: Int?
+
+  override var acceptsFirstResponder: Bool { false }
+
+  init(workspaceView: TerminalWorkspaceView) {
+    self.workspaceView = workspaceView
+    super.init(frame: .zero)
+    wantsLayer = true
+    layer?.backgroundColor = NSColor.clear.cgColor
+    registerForDraggedTypes(workspaceView.terminalPaneDropRegisteredTypes)
+  }
+
+  required init?(coder: NSCoder) {
+    fatalError("init(coder:) is not supported")
+  }
+
+  func logRegistration() {
+    workspaceView?.logTerminalPaneDropRegistration(operationSource: "overlay")
+  }
+
+  override func hitTest(_ point: NSPoint) -> NSView? {
+    guard !isHidden, bounds.contains(point), let workspaceView else {
+      return nil
+    }
+    let dragPasteboard = NSPasteboard(name: .drag)
+    let dragPasteboardTypes = dragPasteboard.types
+    let currentEvent = NSApp.currentEvent
+    let eventType = currentEvent?.type
+    let eventTypeName = Self.eventTypeName(eventType)
+    let hasRelevantPayload = Self.hasRelevantDragPayload(
+      dragPasteboardTypes,
+      registeredTypes: workspaceView.terminalPaneDropRegisteredTypes)
+    if hasRelevantPayload, let currentEvent, Self.isReleaseOnlyDragSignalEvent(eventType) {
+      recentReleaseOnlyDragSignalTimestamp = currentEvent.timestamp
+      recentReleaseOnlyDragSignalPasteboardChangeCount = dragPasteboard.changeCount
+    }
+    let hasRecentReleaseOnlyDragSignal = Self.hasRecentReleaseOnlyDragSignal(
+      currentEvent: currentEvent,
+      pasteboardChangeCount: dragPasteboard.changeCount,
+      signalTimestamp: recentReleaseOnlyDragSignalTimestamp,
+      signalPasteboardChangeCount: recentReleaseOnlyDragSignalPasteboardChangeCount)
+    if Self.isMouseDownEvent(eventType) {
+      resetPotentialFileDropCapture()
+      if hasRelevantPayload, hasRecentReleaseOnlyDragSignal, Self.shouldArmReleaseOnlyDrop(
+        pasteboardChangeCount: dragPasteboard.changeCount,
+        ignoredChangeCount: ignoredDragPasteboardChangeCount,
+        lastHandledChangeCount: lastHandledDragPasteboardChangeCount)
+      {
+        releaseOnlyDropEventNumber = currentEvent?.eventNumber
+      }
+    }
+    let beginsCapture = hasRelevantPayload && Self.isDragMouseEvent(eventType)
+    if beginsCapture {
+      isCapturingPotentialFileDrop = true
+      activeDropEventNumber = currentEvent?.eventNumber
+    }
+    let eventMatchesCapture = activeDropEventNumber == nil
+      || currentEvent?.eventNumber == activeDropEventNumber
+    let shouldCapture =
+      beginsCapture
+      || (
+        isCapturingPotentialFileDrop && eventMatchesCapture && hasRelevantPayload
+          && Self.isCaptureContinuationEvent(eventType))
+
+    if (dragPasteboardTypes?.isEmpty == false) || lastHitTestSignature != nil {
+      let signature = "\(eventTypeName)|\(shouldCapture)|\((dragPasteboardTypes ?? []).map(\.rawValue).sorted().joined(separator: ","))"
+      if signature != lastHitTestSignature {
+        workspaceView.logTerminalPaneDropOverlayHitTest(
+          eventTypeName: eventTypeName,
+          dragPasteboardTypes: dragPasteboardTypes,
+          shouldCapture: shouldCapture)
+        lastHitTestSignature = signature
+      }
+    }
+
+    return shouldCapture ? self : nil
+  }
+
+  /*
+   CDXC:TerminalImageDrop 2026-06-07-17:08:
+   Logs from the 17:07 repro showed the transparent overlay captured Finder file payloads during leftMouseDragged but released hit testing on leftMouseUp before AppKit delivered a drag-destination perform callback. Keep the overlay active through the release and insert from the drag pasteboard at the mouse-up location; if the drag pasteboard is stale, forward the mouse event to the terminal below.
+   */
+  override func mouseDragged(with event: NSEvent) {
+    forwardMouseEvent(event)
+  }
+
+  override func rightMouseDragged(with event: NSEvent) {
+    forwardMouseEvent(event)
+  }
+
+  override func otherMouseDragged(with event: NSEvent) {
+    forwardMouseEvent(event)
+  }
+
+  override func mouseUp(with event: NSEvent) {
+    finishPotentialFileDrop(with: event)
+  }
+
+  override func rightMouseUp(with event: NSEvent) {
+    finishPotentialFileDrop(with: event)
+  }
+
+  override func otherMouseUp(with event: NSEvent) {
+    finishPotentialFileDrop(with: event)
+  }
+
+  func handleWindowMouseEvent(_ event: NSEvent) -> Bool {
+    guard Self.isMouseUpEvent(event.type), let workspaceView else {
+      return false
+    }
+    let pasteboard = NSPasteboard(name: .drag)
+    let hasRelevantPayload = Self.hasRelevantDragPayload(
+      pasteboard.types,
+      registeredTypes: workspaceView.terminalPaneDropRegisteredTypes)
+    let overlayPoint = convert(event.locationInWindow, from: nil)
+    let inBounds = !isHidden && bounds.contains(overlayPoint)
+    let eventMatchesCapture = isCapturingPotentialFileDrop && activeDropEventNumber == event.eventNumber
+    let eventMatchesReleaseOnlyDrop = releaseOnlyDropEventNumber == event.eventNumber
+    let shouldAttemptSyntheticDrop =
+      inBounds && hasRelevantPayload && (eventMatchesCapture || eventMatchesReleaseOnlyDrop)
+
+    if hasRelevantPayload || isCapturingPotentialFileDrop {
+      let releaseOnlyDragSignalAgeMs = Self.releaseOnlyDragSignalAgeMs(
+        currentEvent: event,
+        signalTimestamp: recentReleaseOnlyDragSignalTimestamp)
+      workspaceView.logTerminalPaneDropOverlayWindowEvent(
+        eventTypeName: Self.eventTypeName(event.type),
+        dragPasteboardTypes: pasteboard.types,
+        details: [
+          "activeDropEventNumber": activeDropEventNumber ?? -1,
+          "dragPasteboardChangeCount": pasteboard.changeCount,
+          "eventMatchesCapture": eventMatchesCapture,
+          "eventMatchesReleaseOnlyDrop": eventMatchesReleaseOnlyDrop,
+          "eventNumber": event.eventNumber,
+          "hasActiveDropEventNumber": activeDropEventNumber != nil,
+          "hasRelevantPayload": hasRelevantPayload,
+          "hasRecentReleaseOnlyDragSignal": Self.hasRecentReleaseOnlyDragSignal(
+            currentEvent: event,
+            pasteboardChangeCount: pasteboard.changeCount,
+            signalTimestamp: recentReleaseOnlyDragSignalTimestamp,
+            signalPasteboardChangeCount: recentReleaseOnlyDragSignalPasteboardChangeCount),
+          "hasReleaseOnlyDropEventNumber": releaseOnlyDropEventNumber != nil,
+          "ignoredDragPasteboardChangeCount": ignoredDragPasteboardChangeCount ?? -1,
+          "inBounds": inBounds,
+          "isCapturingPotentialFileDrop": isCapturingPotentialFileDrop,
+          "lastHandledDragPasteboardChangeCount": lastHandledDragPasteboardChangeCount ?? -1,
+          "releaseOnlyDragSignalAgeMs": releaseOnlyDragSignalAgeMs ?? -1,
+          "releaseOnlyDragSignalPasteboardChangeCount": recentReleaseOnlyDragSignalPasteboardChangeCount ?? -1,
+          "releaseOnlyDropEventNumber": releaseOnlyDropEventNumber ?? -1,
+          "willAttemptSyntheticDrop": shouldAttemptSyntheticDrop,
+        ])
+    }
+
+    guard shouldAttemptSyntheticDrop else {
+      if isCapturingPotentialFileDrop {
+        resetPotentialFileDropCapture()
+      }
+      return false
+    }
+    return finishPotentialFileDrop(
+      with: event,
+      operationSource: "overlayWindow",
+      shouldForwardOnFailure: false)
+  }
+
+  override func draggingEntered(_ sender: any NSDraggingInfo) -> NSDragOperation {
+    routeDragOperation(sender, phase: "entered")
+  }
+
+  override func draggingUpdated(_ sender: any NSDraggingInfo) -> NSDragOperation {
+    routeDragOperation(sender, phase: "updated")
+  }
+
+  override func draggingExited(_ sender: (any NSDraggingInfo)?) {
+    guard let workspaceView, let rootView = superview else {
+      return
+    }
+    workspaceView.terminalPaneRootDraggingExited(
+      sender,
+      rootView: rootView,
+      operationSource: "overlay")
+  }
+
+  override func prepareForDragOperation(_ sender: any NSDraggingInfo) -> Bool {
+    routeDragOperation(sender, phase: "prepare") == .copy
+  }
+
+  override func performDragOperation(_ sender: any NSDraggingInfo) -> Bool {
+    guard let workspaceView, let rootView = superview else {
+      return false
+    }
+    return workspaceView.performTerminalPaneRootDrop(
+      for: sender,
+      rootView: rootView,
+      operationSource: "overlay")
+  }
+
+  /*
+   CDXC:TerminalImageDrop 2026-06-07-17:16:
+   The 17:12 repro showed leftMouseUp hit-testing to TerminalPaneDropOverlayView while AppKit still skipped the overlay mouseUp override and never sent drag-destination perform callbacks. Complete the already-detected image drop once from NSWindow.sendEvent using the matching mouse event number, then reset capture state so stale drag pasteboard contents cannot trigger later terminal mouse drags.
+
+   CDXC:TerminalImageDrop 2026-06-07-17:25:
+   The 17:22 repro showed external file releases can arrive as leftMouseDown/leftMouseUp without a leftMouseDragged event, while stale drag pasteboard contents remain visible after previous drops. Arm one release-only drop when the drag pasteboard has changed since the ignored or handled payload, then clear that drag pasteboard after a successful synthetic drop so ordinary later terminal clicks cannot paste the old image.
+
+   CDXC:TerminalImageDrop 2026-06-07-17:29:
+   The 17:28 repro showed the release-only path was suppressed because the overlay initialized ignoredDragPasteboardChangeCount from the current drag pasteboard before Ghostex had handled anything. Treat the ignored count as empty until Ghostex clears a handled drop, otherwise the first real drop after launch can be mistaken for stale drag data.
+
+   CDXC:TerminalImageDrop 2026-06-07-17:43:
+   The 17:34 trace showed a normal terminal click can still see stale file types on the drag pasteboard. A release-only synthetic drop must require a very recent system drag signal before mouse-down, not only a file payload, so stale pasteboard contents cannot paste images during ordinary clicks.
+   */
+  @discardableResult
+  private func finishPotentialFileDrop(
+    with event: NSEvent,
+    operationSource: String = "overlay",
+    shouldForwardOnFailure: Bool = true
+  ) -> Bool {
+    defer {
+      resetPotentialFileDropCapture()
+    }
+    guard lastHandledDropEventNumber != event.eventNumber else {
+      if shouldForwardOnFailure {
+        forwardMouseEvent(event)
+      }
+      return false
+    }
+    let pasteboard = NSPasteboard(name: .drag)
+    let eventMatchesDrop =
+      (isCapturingPotentialFileDrop && activeDropEventNumber == event.eventNumber)
+      || releaseOnlyDropEventNumber == event.eventNumber
+    guard eventMatchesDrop,
+      let workspaceView,
+      let rootView = superview,
+      workspaceView.performTerminalPaneRootDrop(
+        pasteboard: pasteboard,
+        windowPoint: event.locationInWindow,
+        rootView: rootView,
+        operationSource: operationSource)
+    else {
+      if shouldForwardOnFailure {
+        forwardMouseEvent(event)
+      }
+      return false
+    }
+    lastHandledDropEventNumber = event.eventNumber
+    markDragPasteboardHandled(pasteboard)
+    return true
+  }
+
+  private func resetPotentialFileDropCapture() {
+    isCapturingPotentialFileDrop = false
+    activeDropEventNumber = nil
+    releaseOnlyDropEventNumber = nil
+    recentReleaseOnlyDragSignalTimestamp = nil
+    recentReleaseOnlyDragSignalPasteboardChangeCount = nil
+    lastHitTestSignature = nil
+  }
+
+  private func markDragPasteboardHandled(_ pasteboard: NSPasteboard) {
+    lastHandledDragPasteboardChangeCount = pasteboard.changeCount
+    let clearedChangeCount = pasteboard.clearContents()
+    ignoredDragPasteboardChangeCount = clearedChangeCount
+    lastHandledDragPasteboardChangeCount = clearedChangeCount
+  }
+
+  private func forwardMouseEvent(_ event: NSEvent) {
+    guard !isForwardingMouseEvent else { return }
+    guard let window, let contentView = window.contentView else { return }
+
+    isForwardingMouseEvent = true
+    isHidden = true
+    defer {
+      isHidden = false
+      isForwardingMouseEvent = false
+    }
+
+    let point = contentView.convert(event.locationInWindow, from: nil)
+    guard let target = contentView.hitTest(point), target !== self else {
+      return
+    }
+    switch event.type {
+    case .leftMouseDragged:
+      target.mouseDragged(with: event)
+    case .rightMouseDragged:
+      target.rightMouseDragged(with: event)
+    case .otherMouseDragged:
+      target.otherMouseDragged(with: event)
+    case .leftMouseUp:
+      target.mouseUp(with: event)
+    case .rightMouseUp:
+      target.rightMouseUp(with: event)
+    case .otherMouseUp:
+      target.otherMouseUp(with: event)
+    default:
+      break
+    }
+  }
+
+  private func routeDragOperation(_ sender: any NSDraggingInfo, phase: String) -> NSDragOperation {
+    guard let workspaceView, let rootView = superview else {
+      return []
+    }
+    return workspaceView.terminalPaneRootDragOperation(
+      for: sender,
+      rootView: rootView,
+      phase: phase,
+      operationSource: "overlay")
+  }
+
+  private static func hasRelevantDragPayload(
+    _ dragPasteboardTypes: [NSPasteboard.PasteboardType]?,
+    registeredTypes: [NSPasteboard.PasteboardType]
+  ) -> Bool {
+    guard let dragPasteboardTypes,
+      !Set(dragPasteboardTypes).isDisjoint(with: Set(registeredTypes))
+    else {
+      return false
+    }
+    return true
+  }
+
+  private static func shouldArmReleaseOnlyDrop(
+    pasteboardChangeCount: Int,
+    ignoredChangeCount: Int?,
+    lastHandledChangeCount: Int?
+  ) -> Bool {
+    if pasteboardChangeCount == ignoredChangeCount {
+      return false
+    }
+    if pasteboardChangeCount == lastHandledChangeCount {
+      return false
+    }
+    return true
+  }
+
+  private static func isDragMouseEvent(_ eventType: NSEvent.EventType?) -> Bool {
+    switch eventType {
+    case .leftMouseDragged, .rightMouseDragged, .otherMouseDragged:
+      return true
+    default:
+      return false
+    }
+  }
+
+  private static func isMouseDownEvent(_ eventType: NSEvent.EventType?) -> Bool {
+    switch eventType {
+    case .leftMouseDown, .rightMouseDown, .otherMouseDown:
+      return true
+    default:
+      return false
+    }
+  }
+
+  private static func isMouseUpEvent(_ eventType: NSEvent.EventType?) -> Bool {
+    switch eventType {
+    case .leftMouseUp, .rightMouseUp, .otherMouseUp:
+      return true
+    default:
+      return false
+    }
+  }
+
+  private static func isCaptureContinuationEvent(_ eventType: NSEvent.EventType?) -> Bool {
+    switch eventType {
+    case .leftMouseDragged, .rightMouseDragged, .otherMouseDragged,
+      .leftMouseUp, .rightMouseUp, .otherMouseUp,
+      .appKitDefined, .systemDefined:
+      return true
+    default:
+      return false
+    }
+  }
+
+  private static func isReleaseOnlyDragSignalEvent(_ eventType: NSEvent.EventType?) -> Bool {
+    guard let eventType else { return false }
+    if eventType == .systemDefined {
+      return true
+    }
+    return eventType.rawValue == 34
+  }
+
+  private static func hasRecentReleaseOnlyDragSignal(
+    currentEvent: NSEvent?,
+    pasteboardChangeCount: Int,
+    signalTimestamp: TimeInterval?,
+    signalPasteboardChangeCount: Int?
+  ) -> Bool {
+    guard let currentEvent,
+      let signalTimestamp,
+      signalPasteboardChangeCount == pasteboardChangeCount
+    else {
+      return false
+    }
+    return currentEvent.timestamp - signalTimestamp >= 0
+      && currentEvent.timestamp - signalTimestamp <= 0.5
+  }
+
+  private static func releaseOnlyDragSignalAgeMs(
+    currentEvent: NSEvent,
+    signalTimestamp: TimeInterval?
+  ) -> Int? {
+    guard let signalTimestamp else {
+      return nil
+    }
+    let ageSeconds = currentEvent.timestamp - signalTimestamp
+    guard ageSeconds >= 0 else {
+      return nil
+    }
+    return Int((ageSeconds * 1000).rounded())
+  }
+
+  private static func eventTypeName(_ eventType: NSEvent.EventType?) -> String {
+    guard let eventType else { return "none" }
+    switch eventType {
+    case .leftMouseDragged:
+      return "leftMouseDragged"
+    case .rightMouseDragged:
+      return "rightMouseDragged"
+    case .otherMouseDragged:
+      return "otherMouseDragged"
+    case .leftMouseUp:
+      return "leftMouseUp"
+    case .rightMouseUp:
+      return "rightMouseUp"
+    case .otherMouseUp:
+      return "otherMouseUp"
+    case .leftMouseDown:
+      return "leftMouseDown"
+    case .rightMouseDown:
+      return "rightMouseDown"
+    case .otherMouseDown:
+      return "otherMouseDown"
+    case .scrollWheel:
+      return "scrollWheel"
+    case .mouseMoved:
+      return "mouseMoved"
+    case .cursorUpdate:
+      return "cursorUpdate"
+    case .appKitDefined:
+      return "appKitDefined"
+    case .systemDefined:
+      return "systemDefined"
+    case .applicationDefined:
+      return "applicationDefined"
+    case .periodic:
+      return "periodic"
+    default:
+      return "other(\(eventType.rawValue))"
+    }
+  }
+}
+
 final class ghostexRootView: NSView {
   private static let logger = Logger(subsystem: "com.madda.ghostex.host", category: "webview")
 
@@ -4822,6 +5378,7 @@ final class ghostexRootView: NSView {
   private let modalHostView: AppModalHostWebView
   private let sidebarModalBackdropView = SidebarModalBackdropView(frame: .zero)
   private let workspaceInteractionShieldView = WorkspaceInteractionShieldView(frame: .zero)
+  private let terminalPaneDropOverlayView: TerminalPaneDropOverlayView
   private let titlebarChromeView: ReactTitlebarChromeView
   private let titlebarChromeWebView: WKWebView
   private let startupOverlayView = NSView(frame: .zero)
@@ -4899,6 +5456,7 @@ final class ghostexRootView: NSView {
    */
   init(
     ghostty: GhostexGhosttyApp,
+    defaultWorkspaceBackgroundColor: NSColor,
     gxserverBootstrap: [String: Any],
     sendEvent: @escaping (HostEvent) -> Void,
     syncGhosttyTerminalSettings: @escaping (SyncGhosttyTerminalSettings) -> Void,
@@ -4921,11 +5479,13 @@ final class ghostexRootView: NSView {
     self.workspaceView = TerminalWorkspaceView(
       ghostty: ghostty,
       sendEvent: sendEvent,
+      defaultWorkspaceBackgroundColor: defaultWorkspaceBackgroundColor,
       initialProjectEditorCompanionWidthRatio: storedSidebarChrome.projectEditorCompanionWidthRatio,
       persistProjectEditorCompanionWidthRatio: { widthRatio in
         settingsStore.persistProjectEditorCompanionWidthRatio(widthRatio)
       }
     )
+    self.terminalPaneDropOverlayView = TerminalPaneDropOverlayView(workspaceView: workspaceView)
     self.scriptBridge = SidebarScriptBridge(router: sidebarCommandRouter)
     self.syncGhosttyTerminalSettings = syncGhosttyTerminalSettings
     self.applyGhosttyConfigSettings = applyGhosttyConfigSettings
@@ -4960,6 +5520,7 @@ final class ghostexRootView: NSView {
     let workspaceName = URL(fileURLWithPath: cwd).lastPathComponent
     var bootstrap: [String: Any] = [
       "accessibilityPermissionGranted": AXIsProcessTrusted(),
+      "bundleIdentifier": Bundle.main.bundleIdentifier ?? "",
       "cwd": cwd,
       "gxserver": gxserverBootstrap,
       "homeDir": FileManager.default.homeDirectoryForCurrentUser.path,
@@ -4981,6 +5542,11 @@ final class ghostexRootView: NSView {
        state lives in the sidebar webview. Inject the native Accessibility
        grant state into both webviews so settings can show a short disabled
        notice without asking the React layer to infer macOS privacy state.
+
+       CDXC:CliInstall 2026-06-07-13:53:
+       Include the bundle identifier in the native bootstrap so the sidebar's
+       production-only CLI auto-linker does not let ghostex-dev local starts
+       overwrite the user's public ghostex/gx command symlinks.
        */
       configuration.userContentController.addUserScript(bootstrapScript)
       modalHostConfiguration.userContentController.addUserScript(bootstrapScript)
@@ -5031,6 +5597,13 @@ final class ghostexRootView: NSView {
 
     wantsLayer = true
     layer?.backgroundColor = ghostexReferenceSidebarChromeBackgroundColor.cgColor
+    /*
+     CDXC:TerminalImageDrop 2026-06-07-16:55:
+     Some macOS image drags do not select the nested Ghostty surface as the AppKit drag destination even though terminal clicks hit that surface. Register the root content view for the same terminal drop types and route only workspace-frame drops into TerminalWorkspaceView so file/image drops reach the active terminal pane without changing normal mouse hit testing.
+     */
+    registerForDraggedTypes(workspaceView.terminalPaneDropRegisteredTypes)
+    workspaceView.logTerminalPaneDropRegistration(operationSource: "root")
+    terminalPaneDropOverlayView.logRegistration()
     sidebarView.setValue(false, forKey: "drawsBackground")
     modalHostView.setValue(false, forKey: "drawsBackground")
     titlebarChromeWebView.setValue(false, forKey: "drawsBackground")
@@ -5047,6 +5620,11 @@ final class ghostexRootView: NSView {
      AppKit pane chrome without changing the visible layering.
      */
     addSubview(workspaceInteractionShieldView)
+    /*
+     CDXC:TerminalImageDrop 2026-06-07-17:03:
+     Root and window drag registration still missed the 17:01 image drop because embedded terminal/browser views can win AppKit drag-destination hit testing before the workspace router is considered. Keep a transparent workspace-only overlay above those panes during file/image drags and forward accepted drops into the same terminal insertion path.
+     */
+    addSubview(terminalPaneDropOverlayView)
     /**
      CDXC:NativeWorkspaceChrome 2026-04-26-05:40
      Ghostty surfaces can keep native subviews/layers that draw and receive
@@ -6193,6 +6771,21 @@ final class ghostexRootView: NSView {
       }
       payload["agentHookStatus"] = hookPayload
     }
+    if let ghostexCliStatus = command.ghostexCliStatus {
+      /**
+       CDXC:CliInstall 2026-06-07-15:26:
+       Titlebar Tips & Tricks only needs whether the app-owned CLI is
+       accessible. Forward booleans and timestamps, not command paths or status
+       detail text, so the isolated titlebar notice is actionable without
+       becoming a diagnostics surface.
+       */
+      payload["ghostexCliStatus"] = [
+        "generatedAt": ghostexCliStatus.generatedAt,
+        "gxUsable": ghostexCliStatus.gxUsable,
+        "installed": ghostexCliStatus.installed,
+        "type": ghostexCliStatus.type,
+      ] as [String: Any]
+    }
     if let resourceGroups = command.titlebarResourceGroups {
       /**
        CDXC:TitlebarResources 2026-06-02-15:27:
@@ -6768,7 +7361,7 @@ final class ghostexRootView: NSView {
         target: command.target,
         bundleIdentifier: bundleIdentifier)
       if failures.isEmpty {
-        showMessage(.init(level: .info, message: "Updated macOS OS Integration defaults."))
+        presentAppToast(level: "success", title: "Updated macOS OS Integration defaults.")
       } else {
         showMessage(.init(level: .error, message: "Could not set defaults: \(failures.joined(separator: ", "))"))
       }
@@ -7394,6 +7987,17 @@ final class ghostexRootView: NSView {
       return true
     }
     let hotkeyText = Self.hotkeyText(for: event)
+    if Self.isSessionNavigationHotkeyText(hotkeyText) {
+      logNativeHotkeyNavigationRepro(
+        "appKitObserved",
+        [
+          "hotkey": hotkeyText ?? "",
+          "keyCode": String(event.keyCode),
+          "modalActive": String(!modalHostView.isHidden || activeAppModalKind != nil),
+          "nativeEditable": String(isNativeEditableFirstResponder()),
+          "webChromeFirstResponder": String(isWebChromeFirstResponder()),
+        ])
+    }
     if isNativeEditableFirstResponder() {
       /**
        CDXC:NativeTerminalSearch 2026-05-20-10:45:
@@ -7436,7 +8040,36 @@ final class ghostexRootView: NSView {
        Settings and sidebar WebKit views need first chance at shortcut recording
        and editable controls. AppKit should only preempt key equivalents while
        Ghostty/native workspace surfaces own focus.
+
+       CDXC:Hotkeys 2026-06-07-14:24:
+       Cmd+Tab, Cmd+Shift+Tab, Cmd+Shift+[ and Cmd+Shift+] must work even when
+       the native sidebar webview owns focus. WebKit does not reliably deliver
+       those app-navigation chords, so AppKit may handle only the next/previous
+       session actions here when no modal/recorder surface is open.
        */
+      if let hotkeyText,
+        let actionId = matchedHotkeyActionId(for: hotkeyText)
+      {
+        logNativeHotkeyNavigationRepro(
+          "webChromeMatch",
+          [
+            "actionId": actionId,
+            "hotkey": hotkeyText,
+            "keyCode": String(event.keyCode),
+            "modalActive": String(!modalHostView.isHidden || activeAppModalKind != nil),
+          ])
+        if shouldHandleHotkeyWhileWebChromeOwnsFocus(actionId: actionId) {
+          logNativeHotkeyNavigationRepro(
+            "webChromeDispatch",
+            [
+              "actionId": actionId,
+              "hotkey": hotkeyText,
+              "keyCode": String(event.keyCode),
+            ])
+          dispatchNativeHotkey(actionId)
+          return true
+        }
+      }
       if Self.isCommandHorizontalArrowEvent(event) {
         logNativeHotkeyDebug(
           "nativeHotkeys.commandArrowAppKitWebChromeBypass",
@@ -7716,6 +8349,13 @@ final class ghostexRootView: NSView {
     sendHostEvent(.nativeHotkey(actionId: actionId))
   }
 
+  private func shouldHandleHotkeyWhileWebChromeOwnsFocus(actionId: String) -> Bool {
+    guard modalHostView.isHidden && activeAppModalKind == nil else {
+      return false
+    }
+    return Self.isSessionNavigationHotkeyActionId(actionId)
+  }
+
   private func logNativeHotkeyDebug(_ event: String, _ details: [String: String]) {
     /**
      CDXC:Hotkeys 2026-04-28-05:36
@@ -7725,6 +8365,24 @@ final class ghostexRootView: NSView {
     AppDelegate.appendTerminalFocusDebugLog(
       event: event,
       details: AppDelegate.jsonObjectString(details))
+  }
+
+  private func logNativeHotkeyNavigationRepro(_ phase: String, _ details: [String: Any]) {
+    /**
+     CDXC:Hotkeys 2026-06-07-14:24:
+     A 14:14 repro showed no persistent hotkey breadcrumb while Debugging Mode
+     was off. Persist this narrow next/previous-session repro stream in the
+     existing sanitized terminal-focus log so a repeated failure can prove
+     whether AppKit observed, matched, and dispatched the shortcut without
+     writing session titles, project names, paths, URLs, or terminal content.
+     */
+    var payload = details
+    payload["phase"] = phase
+    payload["source"] = "appkit"
+    TerminalFocusDebugLog.append(
+      event: "nativeHotkeys.navigationRepro",
+      details: payload,
+      force: true)
   }
 
   private static func hotkeyText(for event: NSEvent) -> String? {
@@ -7768,6 +8426,19 @@ final class ghostexRootView: NSView {
       (event.keyCode == 123 || event.keyCode == 124)
   }
 
+  private static func isSessionNavigationHotkeyActionId(_ actionId: String) -> Bool {
+    actionId == "focusNextSession" || actionId == "focusPreviousSession"
+  }
+
+  private static func isSessionNavigationHotkeyText(_ hotkeyText: String?) -> Bool {
+    guard let hotkeyText else {
+      return false
+    }
+    return hotkeyText == "cmd+tab" || hotkeyText == "cmd+shift+tab"
+      || hotkeyText == "cmd+shift+[" || hotkeyText == "cmd+shift+]"
+      || hotkeyText == "cmd+shift+{" || hotkeyText == "cmd+shift+}"
+  }
+
   private static func normalizedHotkeyKey(_ event: NSEvent) -> String? {
     switch event.keyCode {
     case 126:
@@ -7802,6 +8473,17 @@ final class ghostexRootView: NSView {
        */
       return unshiftedDigit
     }
+    if event.modifierFlags.intersection(.deviceIndependentFlagsMask).contains(.shift),
+      let unshiftedSymbol = shiftedSymbolHotkeyKeys[normalizedCharacters]
+    {
+      /**
+       CDXC:Hotkeys 2026-06-07-14:24:
+       Some native paths report shifted bracket keys as "{" or "}" instead of
+       the physical "[" or "]" key. Normalize the glyph before matching
+       Cmd+Shift+[ and Cmd+Shift+] next/previous-session aliases.
+       */
+      return unshiftedSymbol
+    }
     return normalizedCharacters
   }
 
@@ -7818,24 +8500,63 @@ final class ghostexRootView: NSView {
     ")": "0",
   ]
 
-  private func showMessage(_ command: ShowMessage) {
-    let alert = NSAlert()
-    switch command.level {
+  private static let shiftedSymbolHotkeyKeys: [String: String] = [
+    "{": "[",
+    "}": "]",
+  ]
+
+  func presentAppToast(_ command: ShowMessage) {
+    presentAppToast(level: Self.appToastLevel(for: command.level), title: command.message)
+  }
+
+  func presentAppToast(level: String, title: String, description: String? = nil, interactive: Bool = false) {
+    /**
+     CDXC:AppToasts 2026-06-07-12:20:
+     Native-host status feedback that previously used blocking NSAlert sheets should render through the shared bottom-center modal-host toast layer so Settings, OS Integration, and workspace actions stay non-modal like the sidebar webview.
+     */
+    guard isModalHostReady else {
+      return
+    }
+    var payload: [String: Any] = [
+      "type": "toast",
+      "level": level,
+      "title": title,
+    ]
+    if let description, !description.isEmpty {
+      payload["description"] = description
+    }
+    if interactive {
+      payload["interactive"] = true
+    }
+    dispatchModalHostMessage(payload)
+    if activeAppModalKind == nil {
+      if interactive {
+        modalHostView.setTopLeftHitRegions(appModalToastHitRegions())
+      } else {
+        modalHostView.setTopLeftHitRegions([])
+      }
+    }
+    modalHostView.isHidden = false
+    updateSidebarModalBackdrop()
+  }
+
+  private static func appToastLevel(for level: MessageLevel) -> String {
+    switch level {
     case .info:
-      alert.alertStyle = .informational
+      return "info"
     case .warning:
-      alert.alertStyle = .warning
+      return "warning"
     case .error:
-      alert.alertStyle = .critical
+      return "error"
     }
-    alert.messageText = "Ghostex"
-    alert.informativeText = command.message
-    alert.addButton(withTitle: "OK")
-    if let window {
-      alert.beginSheetModal(for: window)
-    } else {
-      alert.runModal()
-    }
+  }
+
+  private func showMessage(_ command: ShowMessage) {
+    presentAppToast(command)
+  }
+
+  func handleTerminalPaneDropWindowEvent(_ event: NSEvent) -> Bool {
+    terminalPaneDropOverlayView.handleWindowMouseEvent(event)
   }
 
   func setSidebarSide(_ side: SidebarSide) {
@@ -7878,6 +8599,7 @@ final class ghostexRootView: NSView {
     divider.frame = frames.divider
     workspaceView.frame = frames.workspace
     workspaceInteractionShieldView.frame = frames.workspace
+    terminalPaneDropOverlayView.frame = frames.workspace
     modalHostView.frame = frames.modalHost
     sidebarModalBackdropView.frame = frames.sidebar.union(frames.divider)
     sidebarWorkareaBorderView.frame = frames.sidebarWorkareaBorder
@@ -8040,6 +8762,11 @@ final class ghostexRootView: NSView {
       return hitView
     }
     if workspaceView.frame.contains(point),
+      let hitView = terminalPaneDropOverlayView.hitTest(convert(point, to: terminalPaneDropOverlayView))
+    {
+      return hitView
+    }
+    if workspaceView.frame.contains(point),
       let nativeChromeHitView = workspaceView.nativeChromeHitView(at: convert(point, to: workspaceView))
     {
       /**
@@ -8056,6 +8783,22 @@ final class ghostexRootView: NSView {
       return hitView
     }
     return super.hitTest(point)
+  }
+
+  override func draggingEntered(_ sender: any NSDraggingInfo) -> NSDragOperation {
+    workspaceView.terminalPaneRootDragOperation(for: sender, rootView: self, phase: "entered")
+  }
+
+  override func draggingUpdated(_ sender: any NSDraggingInfo) -> NSDragOperation {
+    workspaceView.terminalPaneRootDragOperation(for: sender, rootView: self, phase: "updated")
+  }
+
+  override func draggingExited(_ sender: (any NSDraggingInfo)?) {
+    workspaceView.terminalPaneRootDraggingExited(sender, rootView: self)
+  }
+
+  override func performDragOperation(_ sender: any NSDraggingInfo) -> Bool {
+    workspaceView.performTerminalPaneRootDrop(for: sender, rootView: self)
   }
 
   private func rootLayoutFrames() -> RootLayoutFrames {
@@ -9472,6 +10215,10 @@ final class ghostexFocusReportingWindow: NSWindow {
   var onKeyDownDispatch: ((NSEvent) -> Void)?
   var onKeyEquivalent: ((NSEvent) -> Bool)?
   var onActivationBoundaryEvent: ((NSEvent, String) -> Void)?
+  var onTerminalPaneDropMouseEvent: ((NSEvent) -> Bool)?
+  var onTerminalPaneDropDragOperation: (((any NSDraggingInfo), String) -> NSDragOperation)?
+  var onTerminalPaneDropDraggingExited: (((any NSDraggingInfo)?) -> Void)?
+  var onTerminalPaneDropPerform: (((any NSDraggingInfo)) -> Bool)?
 
   /**
    CDXC:NativeTerminalFocus 2026-04-26-21:32
@@ -9510,6 +10257,9 @@ final class ghostexFocusReportingWindow: NSWindow {
         return
       }
     }
+    if onTerminalPaneDropMouseEvent?(event) == true {
+      return
+    }
     super.sendEvent(event)
     if shouldReportActivationBoundaryEvent && Self.isMouseActivationBoundaryEvent(event) {
       onActivationBoundaryEvent?(event, "windowSendEvent.afterSuper")
@@ -9521,6 +10271,22 @@ final class ghostexFocusReportingWindow: NSWindow {
       return true
     }
     return super.performKeyEquivalent(with: event)
+  }
+
+  @objc func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+    onTerminalPaneDropDragOperation?(sender, "entered") ?? []
+  }
+
+  @objc func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
+    onTerminalPaneDropDragOperation?(sender, "updated") ?? []
+  }
+
+  @objc func draggingExited(_ sender: NSDraggingInfo?) {
+    onTerminalPaneDropDraggingExited?(sender)
+  }
+
+  @objc func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+    onTerminalPaneDropPerform?(sender) ?? false
   }
 
   private static func shouldReportActivationBoundaryEvent(_ event: NSEvent) -> Bool {

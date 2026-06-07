@@ -273,12 +273,19 @@ final class GxserverClient {
     return stoppedStatus()
   }
 
-  func webBootstrap() -> [String: Any] {
+  func webBootstrap(status: GxserverClientStatus? = nil) -> [String: Any] {
     var bootstrap: [String: Any] = [
       "baseUrl": Self.localBaseURL,
       "protocolVersion": Self.protocolVersion,
       "tokenFile": authTokenURL.path,
     ]
+    if let status {
+      /*
+       CDXC:GxserverBootstrap 2026-06-07-12:02:
+       Web bootstrap must include the first daemon state, not just endpoint config, because the host event carrying that same state can race WebKit listener setup during local starts.
+       */
+      bootstrap.merge(statusPayload(status)) { _, newValue in newValue }
+    }
     if let authToken = readAuthToken() {
       bootstrap["authToken"] = authToken
     }

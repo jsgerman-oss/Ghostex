@@ -626,6 +626,7 @@ struct SetActiveTerminalSet: Decodable {
   let showProjectEditorDiffFileCount: Bool?
   let sidebarActions: TitlebarSidebarActions?
   let agentHookStatus: TitlebarAgentHookStatus?
+  let ghostexCliStatus: TitlebarGhostexCliStatus?
   let sessionPersistenceProvider: String?
   let titlebarResourceGroups: [TitlebarResourceGroup]?
   let workspaceOpenTargets: TitlebarWorkspaceOpenTargets?
@@ -682,6 +683,13 @@ struct TitlebarAgentHookStatus: Decodable {
   let generatedAt: String
   let hookStateDirectory: String
   let notifyHookPath: String
+  let type: String
+}
+
+struct TitlebarGhostexCliStatus: Decodable {
+  let generatedAt: String
+  let gxUsable: Bool
+  let installed: Bool
   let type: String
 }
 
