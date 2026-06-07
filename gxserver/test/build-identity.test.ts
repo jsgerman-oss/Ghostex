@@ -3,10 +3,22 @@ import assert from "node:assert/strict";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { createSourceGxserverBuildIdentity, readGxserverBuildIdentity } from "../src/build-identity.js";
+import {
+  createSourceGxserverBuildIdentity,
+  isGxserverBuildIdentityReusable,
+  readGxserverBuildIdentity,
+} from "../src/build-identity.js";
 
 test("source gxserver build identity is deterministic for dev builds", () => {
   assert.equal(createSourceGxserverBuildIdentity("0.1.0-test"), "gxserver:0.1.0-test:source");
+});
+
+test("running gxserver build identity is reusable only when expected identity is absent or equal", () => {
+  assert.equal(isGxserverBuildIdentityReusable("gxserver:0.1.0:source", undefined), true);
+  assert.equal(isGxserverBuildIdentityReusable("gxserver:0.1.0:source", "  "), true);
+  assert.equal(isGxserverBuildIdentityReusable("gxserver:0.1.0:source", "gxserver:0.1.0:source"), true);
+  assert.equal(isGxserverBuildIdentityReusable("gxserver:0.1.0:source", "gxserver:0.1.1:source"), false);
+  assert.equal(isGxserverBuildIdentityReusable(undefined, "gxserver:0.1.1:source"), false);
 });
 
 test("packaged gxserver build identity is read from the CLI package root", async () => {

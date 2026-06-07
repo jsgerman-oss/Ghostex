@@ -453,6 +453,37 @@ test("presentation snapshot excludes unpinned stopped history but keeps pinned p
   assert.deepEqual(snapshot.sessions.map((session) => session.sessionId), ["G3run", "G2pin"]);
 });
 
+test("presentation snapshot treats existing provider rows as active when domain lifecycle is stale", () => {
+  const project = projectFixture({});
+  const tuiCreated = sessionFixture({
+    kind: "agent",
+    lifecycleState: "unknown",
+    providerState: { lifecycleState: "exists", zmxName: "S90-P3lv0-G24da" },
+    sessionId: "G24da",
+    title: "TUI session indicator placement",
+    zmxName: "S90-P3lv0-G24da",
+  });
+  const stoppedWithStaleProvider = sessionFixture({
+    lifecycleState: "stopped",
+    providerState: { lifecycleState: "exists", zmxName: "S90-P3lv0-G2old" },
+    sessionId: "G2old",
+    title: "Stopped With Stale Provider",
+    zmxName: "S90-P3lv0-G2old",
+  });
+
+  const snapshot = projectGxserverPresentationSnapshot({
+    projects: [project],
+    revision: 3 as GxserverPresentationRevision,
+    sessions: [stoppedWithStaleProvider, tuiCreated],
+  });
+
+  assert.deepEqual(snapshot.sessions.map((session) => session.sessionId), ["G24da"]);
+  assert.equal(snapshot.sessions[0]?.lifecycleState, "running");
+  assert.equal(snapshot.sessions[0]?.visibleInSidebarByDefault, true);
+  assert.equal(snapshot.sessions[0]?.actions.attach, true);
+  assert.equal(snapshot.sessions[0]?.actions.sendMessage, true);
+});
+
 test("presentation snapshot orders pinned project sessions by sidebar order", () => {
   const project = projectFixture({});
   const first = sessionFixture({

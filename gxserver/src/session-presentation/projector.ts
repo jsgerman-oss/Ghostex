@@ -109,6 +109,7 @@ export function projectPresentationSession(
   const agentName = readText(session.runtimeSettings.agentName) ?? session.agentId;
   const subtitle = session.cwd ?? project.path;
   const presentationLastActiveAt = resolvePresentationSessionLastActiveAt(session);
+  const lifecycleState = effectivePresentationLifecycleState(session);
   return {
     actions: presentationSessionActions(session, activityState.activity),
     activity: activityState.activity,
@@ -125,11 +126,13 @@ export function projectPresentationSession(
     */
     isGeneratingFirstPromptTitle: readText(session.runtimeSettings.gxserverFirstPromptAutoTitleStatus) === "running",
     isPinned: session.isPinned,
+    displayTitle: titleProjection.displayTitle,
+    displayTitleTooltip: titleProjection.displayTitleTooltip,
     isPrimaryTitleTerminalTitle: titleProjection.isPrimaryTitleTerminalTitle,
     isTemporaryTitle: titleProjection.isTemporaryTitle,
     kind: session.kind,
     lastActiveAt: presentationLastActiveAt,
-    lifecycleState: session.lifecycleState,
+    lifecycleState,
     ...(titleProjection.primaryTitle !== undefined ? { primaryTitle: titleProjection.primaryTitle } : {}),
     projectId: session.projectId,
     sessionId: session.sessionId,
@@ -161,10 +164,11 @@ function presentationSessionActions(
   with the presentation row so Android, iOS, TUI, CLI, and agent orchestration
   render and automate against the same gxserver-owned rules.
   */
-  const isRunning = session.lifecycleState === "running";
-  const isSleeping = session.lifecycleState === "sleeping";
-  const isStopped = session.lifecycleState === "stopped";
-  const providerExists = session.providerState.lifecycleState === "exists";
+  const lifecycleState = effectivePresentationLifecycleState(session);
+  const isRunning = lifecycleState === "running";
+  const isSleeping = lifecycleState === "sleeping";
+  const isStopped = lifecycleState === "stopped";
+  const providerExists = hasActiveProviderSession(session);
   const isLive = isRunning || providerExists;
   const canAttach = isRunning || isSleeping || providerExists;
   const canInteract = isLive && !isSleeping && !isStopped;
@@ -181,8 +185,25 @@ function presentationSessionActions(
   };
 }
 
+function effectivePresentationLifecycleState(
+  session: GxserverSessionDomainState,
+): GxserverSessionDomainState["lifecycleState"] {
+  /*
+  CDXC:GxserverSessionLifecycle 2026-06-07-17:56:
+  TUI, Android, and iOS create and attach sessions through gxserver, while macOS renders the shared presentation feed. A non-stopped zmx-backed row with providerState=exists must project as running even when an older client-created row still has domain lifecycle=unknown, so clients do not duplicate server repair logic.
+  */
+  if (hasActiveProviderSession(session)) {
+    return "running";
+  }
+  return session.lifecycleState;
+}
+
+function hasActiveProviderSession(session: GxserverSessionDomainState): boolean {
+  return session.lifecycleState !== "stopped" && session.providerState.lifecycleState === "exists";
+}
+
 export function isActivePresentationSession(session: GxserverSessionDomainState): boolean {
-  return ACTIVE_LIFECYCLE_STATES.has(session.lifecycleState);
+  return ACTIVE_LIFECYCLE_STATES.has(effectivePresentationLifecycleState(session));
 }
 
 export function isVisibleInWorkspaceSidebar(session: GxserverSessionDomainState): boolean {

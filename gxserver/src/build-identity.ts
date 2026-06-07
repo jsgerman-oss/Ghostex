@@ -15,6 +15,21 @@ export function createSourceGxserverBuildIdentity(version: string): string {
   return `gxserver:${version}:source`;
 }
 
+/*
+CDXC:GxserverRuntimeIdentity 2026-06-07-13:32:
+All gxserver launch paths must reject reuse of an older same-protocol daemon when the current package has a different build identity. The 3.x to 4.x migration and later repair logic live in the daemon process, so silently reusing an old build can leave upgraded users looking at stale or empty sidebar presentation.
+*/
+export function isGxserverBuildIdentityReusable(
+  runningBuildIdentity: unknown,
+  expectedBuildIdentity: string | undefined,
+): boolean {
+  const expected = expectedBuildIdentity?.trim();
+  if (!expected) {
+    return true;
+  }
+  return typeof runningBuildIdentity === "string" && runningBuildIdentity === expected;
+}
+
 export async function readGxserverBuildIdentity(cliDir: string, version: string): Promise<string> {
   const packageRoot = resolve(cliDir, "..", "..");
   const identityPath = resolve(packageRoot, "build-identity.json");

@@ -372,6 +372,63 @@ test("first-run import chooses richer WK localStorage projects and previous sess
   });
 });
 
+test("first-run import prefers shared terminal sessions over WK browser-only pane count", async () => {
+  await withLegacyImportFixture(async (fixture) => {
+    /*
+    CDXC:GxserverMigration 2026-06-07-13:32:
+    The 3.x to 4.x migration must choose the source with daemon-importable terminal sessions, not the source with the most macOS-local browser/T3 panes. Otherwise a stale WK snapshot can outscore the real shared terminal snapshot and make the gxserver sidebar presentation look empty after upgrade.
+    */
+    const browserOnlyProjects = JSON.parse(await readFile(fixture.sharedProjectsFile, "utf8")) as any;
+    for (const [projectIndex, project] of browserOnlyProjects.projects.entries()) {
+      project.commandsPanel.sessions = [];
+      delete project.commandsPanel.activeSessionId;
+      const snapshot = project.workspace.groups[0].snapshot;
+      snapshot.sessions = Array.from({ length: 8 }, (_, index) => ({
+        alias: `B${projectIndex}-${index}`,
+        browser: { url: `https://example.com/${projectIndex}/${index}` },
+        createdAt: "2026-05-30T09:06:00.000Z",
+        displayId: `B${index}`,
+        kind: "browser",
+        sessionId: `legacy-browser-${projectIndex}-${index}`,
+        slotIndex: index,
+        title: `Browser ${index}`,
+      }));
+      snapshot.visibleSessionIds = [snapshot.sessions[0].sessionId];
+    }
+    const browserOnlyExtraProject = JSON.parse(JSON.stringify(browserOnlyProjects.projects[0])) as any;
+    browserOnlyExtraProject.projectId = "legacy-browser-only-extra";
+    browserOnlyExtraProject.name = "Browser Only Extra";
+    browserOnlyExtraProject.path = path.join(fixture.paths.homeDir, "repo", "browser-only-extra");
+    browserOnlyExtraProject.workspace.groups[0].snapshot.sessions =
+      browserOnlyExtraProject.workspace.groups[0].snapshot.sessions.map((session: any, index: number) => ({
+        ...session,
+        sessionId: `legacy-browser-extra-${index}`,
+      }));
+    browserOnlyExtraProject.workspace.groups[0].snapshot.visibleSessionIds = ["legacy-browser-extra-0"];
+    browserOnlyProjects.projects.push(browserOnlyExtraProject);
+    fixture.legacyStorageValues["ghostex-native-projects"] = JSON.stringify(browserOnlyProjects);
+
+    const result = await runImport(fixture);
+
+    assert.equal(result.status.status, "completed");
+    assert.equal(result.status.projectsImported, 2);
+    assert.equal(result.status.sessionsImported, 4);
+
+    const db = openGxserverDatabase(fixture.paths);
+    try {
+      const repository = new GxserverDomainRepository(db, "S7k");
+      assert.deepEqual(
+        repository.listSessions().map((session) => session.sessionId).sort(),
+        ["G1z99", "G2abc", "G3def", "G8v20"],
+      );
+      const presentation = readGxserverPresentationSnapshot(db, "S7k", "2026-06-07T09:32:00.000Z");
+      assert.equal(presentation.sessions.length, 4);
+    } finally {
+      db.close();
+    }
+  });
+});
+
 test("first-run import chooses richer fresher WK localStorage database over stale-first enumeration", async () => {
   await withLegacyImportFixture(async (fixture) => {
     const freshProjects = await readFile(fixture.sharedProjectsFile, "utf8");
@@ -429,6 +486,126 @@ test("first-run import chooses richer fresher WK localStorage database over stal
         ["G1z99", "G2abc", "G3def", "G8v20"],
       );
       assert.equal(repository.getProject("P3a91")?.previousSessionHistory[0]?.historyId, "hist-1");
+    } finally {
+      db.close();
+    }
+  });
+});
+
+test("completed zero-project marker recovers 3.x projects when they become readable later", async () => {
+  await withLegacyImportFixture(async (fixture) => {
+    /*
+    CDXC:GxserverMigration 2026-06-07-13:32:
+    A release Ghostex profile can briefly expose settings/logs before project localStorage or shared project JSON is readable. A zero-project completed marker must not become permanent; later 4.x launches should import the now-visible 3.x projects and sessions.
+    */
+    const projectsText = await readFile(fixture.sharedProjectsFile, "utf8");
+    const previousSessionsText = await readFile(fixture.sharedPreviousSessionsFile, "utf8");
+    await rm(fixture.sharedProjectsFile, { force: true });
+    await rm(fixture.sharedPreviousSessionsFile, { force: true });
+
+    const settingsOnly = await runImport(fixture);
+
+    assert.equal(settingsOnly.status.status, "completed");
+    assert.equal(settingsOnly.status.projectsImported, 0);
+    assert.equal(settingsOnly.status.sessionsImported, 0);
+
+    await writeFile(fixture.sharedProjectsFile, projectsText, "utf8");
+    await writeFile(fixture.sharedPreviousSessionsFile, previousSessionsText, "utf8");
+
+    const recovered = await runImport(fixture);
+
+    assert.equal(recovered.status.status, "completed");
+    assert.equal(recovered.status.projectsImported, 2);
+    assert.equal(recovered.status.sessionsImported, 4);
+
+    const db = openGxserverDatabase(fixture.paths);
+    try {
+      const repository = new GxserverDomainRepository(db, "S7k");
+      assert.deepEqual(
+        repository.listProjects().map((project) => project.projectId),
+        ["P3a91", "P4b22"],
+      );
+      assert.deepEqual(
+        repository.listSessions().map((session) => session.sessionId).sort(),
+        ["G1z99", "G2abc", "G3def", "G8v20"],
+      );
+      const presentation = readGxserverPresentationSnapshot(db, "S7k", "2026-06-07T09:32:00.000Z");
+      assert.equal(presentation.projects.length, 2);
+      assert.equal(presentation.sessions.length, 4);
+    } finally {
+      db.close();
+    }
+  });
+});
+
+test("completed browser-only marker recovers later unmapped terminal projects", async () => {
+  await withLegacyImportFixture(async (fixture) => {
+    /*
+    CDXC:GxserverMigration 2026-06-07-13:32:
+    Users who already launched a buggy 4.x build can have a completed migration marker with browser-only projects and zero imported terminal sessions. Later launches must import currently readable unmapped 3.x terminal projects instead of treating the nonzero project count as final.
+    */
+    const projectsText = await readFile(fixture.sharedProjectsFile, "utf8");
+    const previousSessionsText = await readFile(fixture.sharedPreviousSessionsFile, "utf8");
+    await writeFile(
+      fixture.sharedProjectsFile,
+      JSON.stringify({
+        activeProjectId: "legacy-browser-only-project",
+        projects: [
+          {
+            commandsPanel: { sessions: [] },
+            name: "Browser Only",
+            path: path.join(fixture.paths.homeDir, "repo", "browser-only"),
+            projectId: "legacy-browser-only-project",
+            workspace: {
+              groups: [
+                {
+                  snapshot: {
+                    sessions: [
+                      {
+                        browser: { url: "https://example.com" },
+                        kind: "browser",
+                        sessionId: "legacy-browser-only-session",
+                        title: "Browser Only",
+                      },
+                    ],
+                    visibleSessionIds: ["legacy-browser-only-session"],
+                  },
+                },
+              ],
+            },
+          },
+        ],
+      }),
+      "utf8",
+    );
+    await writeFile(fixture.sharedPreviousSessionsFile, "[]", "utf8");
+
+    const browserOnly = await runImport(fixture);
+
+    assert.equal(browserOnly.status.status, "completed");
+    assert.equal(browserOnly.status.projectsImported, 1);
+    assert.equal(browserOnly.status.sessionsImported, 0);
+
+    await writeFile(fixture.sharedProjectsFile, projectsText, "utf8");
+    await writeFile(fixture.sharedPreviousSessionsFile, previousSessionsText, "utf8");
+    fixture.projectIds.push("P5fix" as GxserverProjectId);
+
+    const recovered = await runImport(fixture);
+
+    assert.equal(recovered.status.status, "completed");
+    assert.equal(recovered.status.projectsImported, 2);
+    assert.equal(recovered.status.sessionsImported, 4);
+
+    const db = openGxserverDatabase(fixture.paths);
+    try {
+      const repository = new GxserverDomainRepository(db, "S7k");
+      assert.equal(repository.listProjects().length, 3);
+      assert.deepEqual(
+        repository.listSessions().map((session) => session.sessionId).sort(),
+        ["G1z99", "G2abc", "G3def", "G8v20"],
+      );
+      const presentation = readGxserverPresentationSnapshot(db, "S7k", "2026-06-07T09:32:00.000Z");
+      assert.equal(presentation.sessions.length, 4);
     } finally {
       db.close();
     }

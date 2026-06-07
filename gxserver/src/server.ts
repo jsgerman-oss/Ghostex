@@ -30,7 +30,7 @@ import { GxserverEventHub } from "./events.js";
 import { resolveGitRootForExistingDirectory } from "./git-root.js";
 import { detectRegisteredGitWorktreeMetadata } from "./git-worktrees.js";
 import { isGxserverProjectId, isGxserverSessionId } from "./ids.js";
-import { fetchServerHealth } from "./http-client.js";
+import { fetchServerHealth, requestServerStop } from "./http-client.js";
 import { ensureGxserverIdentity } from "./identity.js";
 import { migrateLegacyMacosStateIntoGxserver } from "./legacy-macos-state-migration.js";
 import { createGxserverLogger, logLevelFromStatus, type GxserverLogger } from "./logger.js";
@@ -171,7 +171,7 @@ import type {
   GxserverFirstPromptTitleGenerationAgent,
   GxserverAgentActivityState,
 } from "../protocol/index.js";
-import { createSourceGxserverBuildIdentity } from "./build-identity.js";
+import { createSourceGxserverBuildIdentity, isGxserverBuildIdentityReusable } from "./build-identity.js";
 
 export interface GxserverForegroundOptions {
   buildIdentity?: string;
@@ -291,7 +291,23 @@ export async function runGxserverForeground(options: GxserverForegroundOptions):
   const existingAuth = await readGxserverAuthToken(paths);
   const existing = await fetchServerHealth({ token: existingAuth?.token });
   if (existing) {
-    return { reused: true };
+    if (isGxserverBuildIdentityReusable(existing.buildIdentity, buildIdentity)) {
+      return { reused: true };
+    }
+    /*
+    CDXC:GxserverLifecycle 2026-06-07-13:32:
+    Foreground launch is the macOS app's daemon entry point. If an older same-protocol gxserver is still bound to the fixed port after a Ghostex update, stop only that control plane and continue with the current package so legacy session migration and repair code actually runs.
+    */
+    await requestServerStop({ token: existingAuth?.token, timeoutMs: 2000 });
+    const stoppedState = await waitForMismatchedGxserverToStop(existingAuth?.token, buildIdentity);
+    if (stoppedState === "reusable") {
+      return { reused: true };
+    }
+    if (stoppedState !== "stopped") {
+      throw new Error(
+        "gxserver build identity changed, but the old control plane did not stop. Stop gxserver and launch Ghostex again so the current migration code can run.",
+      );
+    }
   }
 
   const storage = await initializeGxserverStorage(paths);
@@ -425,6 +441,32 @@ export async function runGxserverForeground(options: GxserverForegroundOptions):
   });
 
   return { reused: false };
+}
+
+async function waitForMismatchedGxserverToStop(
+  token: GxserverAuthToken | undefined,
+  expectedBuildIdentity: string,
+): Promise<"running" | "reusable" | "stopped"> {
+  const deadline = Date.now() + 5000;
+  while (Date.now() < deadline) {
+    await delay(100);
+    const health = await fetchServerHealth({ token, timeoutMs: 500 });
+    if (!health) {
+      return "stopped";
+    }
+    if (isGxserverBuildIdentityReusable(health.buildIdentity, expectedBuildIdentity)) {
+      return "reusable";
+    }
+  }
+  const health = await fetchServerHealth({ token, timeoutMs: 500 });
+  if (!health) {
+    return "stopped";
+  }
+  return isGxserverBuildIdentityReusable(health.buildIdentity, expectedBuildIdentity) ? "reusable" : "running";
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 export function createGxserverHttpServer(runtime: GxserverApiRuntime, listenerKind: GxserverListenerKind): http.Server {
@@ -3373,11 +3415,26 @@ async function probeAndCacheSessionProvider(
     zmxExecutablePath: zmx.executablePath,
   });
   const updated = repository.updateSession({
+    lifecycleState: reconcileDomainLifecycleFromProviderProbe(session.lifecycleState, probe.lifecycleState),
     projectId: session.projectId,
     providerState: providerStatePatch(session, probe),
     sessionId: session.sessionId,
   });
   return { probe, session: updated, zmx, zmxSessionName };
+}
+
+function reconcileDomainLifecycleFromProviderProbe(
+  currentLifecycleState: GxserverSessionDomainState["lifecycleState"],
+  providerLifecycleState: GxserverProviderProbeResult["lifecycleState"],
+): GxserverSessionDomainState["lifecycleState"] {
+  /*
+  CDXC:GxserverSessionLifecycle 2026-06-07-17:08:
+  TUI, Android, and iOS create and attach sessions through gxserver, while macOS renders only presentation-active domain lifecycle states. A successful shared zmx probe is the daemon-owned signal that a non-stopped client-created row is running, so promote it here instead of making each client duplicate macOS session-visibility logic.
+  */
+  if (providerLifecycleState === "exists" && currentLifecycleState !== "stopped") {
+    return "running";
+  }
+  return currentLifecycleState;
 }
 
 async function killAndCacheSessionProvider(

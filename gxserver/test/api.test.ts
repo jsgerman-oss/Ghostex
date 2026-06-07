@@ -1486,7 +1486,10 @@ test("zmx lifecycle APIs attach existing sessions without replay and create miss
         resumePlan.body.result.plan.displayCommand,
         'codex --yolo resume "6a6c2672-6b45-45fe-a1a8-a73f9a3a9c56"',
       );
-      assert.equal(resumePlan.body.result.plan.copyCommand, resumePlan.body.result.plan.primaryCommand);
+      assert.equal(
+        resumePlan.body.result.plan.copyCommand,
+        'codex --yolo resume "6a6c2672-6b45-45fe-a1a8-a73f9a3a9c56"',
+      );
 
       probeExitCode = 0;
       const existing = await requestJson(baseUrl, "/api/attachSessionMetadata", {
@@ -2112,6 +2115,115 @@ test("agent hook event API owns working state across suppression and plain termi
   );
 });
 
+test("terminal title API clears explicit working on same-title Codex spinner stop", async () => {
+  await withApiServer(
+    "local",
+    async ({ baseUrl, paths, token }) => {
+      const project = (
+        await requestJson(baseUrl, "/api/createProject", {
+          body: { params: { name: "Ghostex", path: paths.rootDir }, protocolVersion: GXSERVER_PROTOCOL_VERSION },
+          method: "POST",
+          token,
+        })
+      ).body.result.project;
+      const session = (
+        await requestJson(baseUrl, "/api/createAgentSession", {
+          body: {
+            params: {
+              agentId: "codex",
+              projectId: project.projectId,
+              runtimeSettings: { titleSource: "user" },
+              title: "Ghostex 4.0.0 Beta",
+            },
+            protocolVersion: GXSERVER_PROTOCOL_VERSION,
+          },
+          method: "POST",
+          token,
+        })
+      ).body.result.session;
+
+      /*
+      CDXC:SessionStatus 2026-06-07-09:22:
+      The terminal-title API must preserve hook-owned explicit working across unrelated titles, but a same-title Codex spinner stop is trusted completion evidence because Codex may not send a hook stop event for every completed turn.
+      */
+      const spinner = await requestJson(baseUrl, "/api/ingestTerminalTitleEvent", {
+        body: {
+          params: {
+            agentName: "codex",
+            projectId: project.projectId,
+            rawTitle: "⠏ Ghostex 4.0.0 Beta",
+            sessionId: session.sessionId,
+            sessionPersistenceProvider: "zmx",
+          },
+          protocolVersion: GXSERVER_PROTOCOL_VERSION,
+        },
+        method: "POST",
+        token,
+      });
+      assert.equal(spinner.status, 200);
+      assert.equal(spinner.body.result.activity.activity, "working");
+      assert.equal(spinner.body.result.activity.workingSource, "title");
+
+      const explicit = await requestJson(baseUrl, "/api/updateAgentActivity", {
+        body: {
+          params: {
+            activity: "working",
+            agentName: "codex",
+            projectId: project.projectId,
+            sessionId: session.sessionId,
+          },
+          protocolVersion: GXSERVER_PROTOCOL_VERSION,
+        },
+        method: "POST",
+        token,
+      });
+      assert.equal(explicit.status, 200);
+      assert.equal(explicit.body.result.activity.workingSource, "explicit");
+
+      const unrelated = await requestJson(baseUrl, "/api/ingestTerminalTitleEvent", {
+        body: {
+          params: {
+            agentName: "codex",
+            projectId: project.projectId,
+            rawTitle: "Monaco Ctrl+G Switch",
+            sessionId: session.sessionId,
+            sessionPersistenceProvider: "zmx",
+          },
+          protocolVersion: GXSERVER_PROTOCOL_VERSION,
+        },
+        method: "POST",
+        token,
+      });
+      assert.equal(unrelated.status, 200);
+      assert.equal(unrelated.body.result.activity.activity, "working");
+      assert.equal(unrelated.body.result.activity.workingSource, "explicit");
+      assert.equal(unrelated.body.result.activity.lastTitle, "⠏ Ghostex 4.0.0 Beta");
+
+      const stopped = await requestJson(baseUrl, "/api/ingestTerminalTitleEvent", {
+        body: {
+          params: {
+            agentName: "codex",
+            projectId: project.projectId,
+            rawTitle: "Ghostex 4.0.0 Beta",
+            sessionId: session.sessionId,
+            sessionPersistenceProvider: "zmx",
+          },
+          protocolVersion: GXSERVER_PROTOCOL_VERSION,
+        },
+        method: "POST",
+        token,
+      });
+      assert.equal(stopped.status, 200);
+      assert.equal(stopped.body.result.activity.activity, "idle");
+      assert.equal(stopped.body.result.activity.workingSource, undefined);
+      assert.equal(stopped.body.result.session.runtimeSettings.agentActivity.activity, "idle");
+    },
+    {
+      zmxLifecycle: fakeZmxLifecycle([], () => 0),
+    },
+  );
+});
+
 test("missing cwd blocks restore when the provider session is missing", async () => {
   await withApiServer(
     "local",
@@ -2645,6 +2757,72 @@ test("migrated zmx sessions use the canonical server-project-session zmx name", 
     },
     {
       zmxLifecycle: fakeZmxLifecycle(calls, () => 0),
+    },
+  );
+});
+
+test("attach metadata promotes existing client-created providers into the macOS presentation snapshot", async () => {
+  await withApiServer(
+    "local",
+    async ({ baseUrl, paths, token }) => {
+      const project = (
+        await requestJson(baseUrl, "/api/createProject", {
+          body: { params: { name: "Ghostex", path: paths.rootDir }, protocolVersion: GXSERVER_PROTOCOL_VERSION },
+          method: "POST",
+          token,
+        })
+      ).body.result.project;
+      const session = (
+        await requestJson(baseUrl, "/api/createSession", {
+          body: {
+            params: { projectId: project.projectId, title: "TUI-created terminal" },
+            protocolVersion: GXSERVER_PROTOCOL_VERSION,
+          },
+          method: "POST",
+          token,
+        })
+      ).body.result.session;
+      assert.equal(session.lifecycleState, "unknown");
+
+      const beforeAttach = await requestJson(baseUrl, "/api/readPresentationSnapshot", {
+        body: { params: {}, protocolVersion: GXSERVER_PROTOCOL_VERSION },
+        method: "POST",
+        token,
+      });
+      assert.equal(beforeAttach.status, 200);
+      assert.equal(
+        beforeAttach.body.result.snapshot.sessions.some(
+          (candidate: { sessionId: string }) => candidate.sessionId === session.sessionId,
+        ),
+        false,
+      );
+
+      const attach = await requestJson(baseUrl, "/api/attachSessionMetadata", {
+        body: {
+          params: { projectId: project.projectId, sessionId: session.sessionId },
+          protocolVersion: GXSERVER_PROTOCOL_VERSION,
+        },
+        method: "POST",
+        token,
+      });
+      assert.equal(attach.status, 200);
+      assert.equal(attach.body.result.attach.providerState.lifecycleState, "exists");
+      assert.equal(attach.body.result.attach.session.lifecycleState, "running");
+
+      const afterAttach = await requestJson(baseUrl, "/api/readPresentationSnapshot", {
+        body: { params: {}, protocolVersion: GXSERVER_PROTOCOL_VERSION },
+        method: "POST",
+        token,
+      });
+      assert.equal(afterAttach.status, 200);
+      const presentationSession = afterAttach.body.result.snapshot.sessions.find(
+        (candidate: { sessionId: string }) => candidate.sessionId === session.sessionId,
+      );
+      assert.equal(presentationSession?.lifecycleState, "running");
+      assert.equal(presentationSession?.visibleInSidebarByDefault, true);
+    },
+    {
+      zmxLifecycle: fakeZmxLifecycle([], () => 0),
     },
   );
 });

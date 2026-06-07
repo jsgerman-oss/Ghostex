@@ -35,8 +35,12 @@ const MAX_MIGRATED_STRING_CHARS = 100_000;
 const MAX_MIGRATED_ARRAY_ITEMS = 1_000;
 const MAX_MIGRATED_OBJECT_KEYS = 1_000;
 const MAX_MIGRATED_JSON_DEPTH = 10;
-const PROJECT_SNAPSHOT_PROJECT_SCORE = 10_000_000;
-const PROJECT_SNAPSHOT_SESSION_SCORE = 1_000_000;
+/*
+CDXC:GxserverMigration 2026-06-07-13:32:
+During the release Ghostex 3.x to 4.x cutover, session visibility is the critical migration signal. Weight daemon-importable terminal sessions above project count so a stale WK snapshot with extra browser-only projects cannot hide the user's terminal sessions from gxserver presentation.
+*/
+const PROJECT_SNAPSHOT_PROJECT_SCORE = 1_000_000;
+const PROJECT_SNAPSHOT_SESSION_SCORE = 10_000_000;
 const PROJECT_SNAPSHOT_BYTE_TIEBREAKER_LIMIT = 100_000;
 const PROJECT_ID_FIELDS = new Set(["activeProjectId", "parentProjectId", "projectId"]);
 const SESSION_ID_FIELDS = new Set([
@@ -151,7 +155,51 @@ export async function migrateLegacyMacosStateIntoGxserver(
     if (existing.status === "completed") {
       const repairedAt = options.now?.() ?? new Date().toISOString();
       const source = await readLegacyStateSnapshot(options);
-      const importResult = readLegacySnapshotImportResultFromDatabase(db);
+      let importResult = readLegacySnapshotImportResultFromDatabase(db);
+      if (shouldRecoverCompletedProjectImport(existing, source, importResult)) {
+        /*
+        CDXC:GxserverMigration 2026-06-07-13:32:
+        Some 3.x to 4.x upgrades can first record the legacy migration marker while project files are unreadable or while a stale browser-only WK snapshot wins source selection. If release app terminal projects become visible on a later launch, import unmapped projects instead of letting an incomplete completion marker permanently hide the user's old sessions from gxserver presentation.
+        */
+        importResult = importLegacySnapshotIntoDatabase(db, source, {
+          createProjectId: options.createProjectId,
+          createSessionId: options.createSessionId,
+          importedAt: repairedAt,
+          serverId: options.serverId,
+        });
+        const recoveredStatus: GxserverStateImportStatus = {
+          completedAt: repairedAt,
+          id: LEGACY_MACOS_STATE_IMPORT_ID,
+          ...(existing.logsImported ? { logsImported: existing.logsImported } : {}),
+          projectsImported: importResult.projectsImported,
+          sessionsImported: importResult.sessionsImported,
+          sourceFilesRead: source.sourceFilesRead,
+          status: "completed",
+        };
+        await rewriteSharedSidebarStateWithGxserverIds(options, source, importResult, repairedAt).catch(async (error) => {
+          await options.logger.log({
+            error: error instanceof Error ? error : String(error),
+            event: "migration.legacyMacosState.recoveredSharedSidebarRewriteFailed",
+            level: "warn",
+            serverId: options.serverId,
+            source: "legacyMacosStateMigration",
+            ts: repairedAt,
+          });
+        });
+        recordLegacyMacosStateImportStatus(db, recoveredStatus);
+        await options.logger.log({
+          details: {
+            projectCount: importResult.projectsImported,
+            sessionCount: importResult.sessionsImported,
+          },
+          event: "migration.legacyMacosState.recoveredAfterIncompleteProjectMarker",
+          level: "info",
+          serverId: options.serverId,
+          source: "legacyMacosStateMigration",
+          ts: repairedAt,
+        });
+        return { status: recoveredStatus };
+      }
       repairUnmappedLegacySessionsFromSnapshot(db, source, importResult, {
         createSessionId: options.createSessionId,
         importedAt: repairedAt,
@@ -271,6 +319,27 @@ function readLegacyMacosStateImportStatusFromDb(db: Database.Database): Gxserver
   } catch {
     return { id: LEGACY_MACOS_STATE_IMPORT_ID, status: "notRun" };
   }
+}
+
+function shouldRecoverCompletedProjectImport(
+  existing: GxserverStateImportStatus,
+  source: LegacyStateSnapshot,
+  importResult: LegacySnapshotImportResult,
+): boolean {
+  return (
+    ((existing.projectsImported ?? 0) === 0 && source.projects.length > 0) ||
+    source.projects.some((project) => isUnmappedLegacyTerminalProject(project, importResult))
+  );
+}
+
+function isUnmappedLegacyTerminalProject(project: JsonObject, importResult: LegacySnapshotImportResult): boolean {
+  const legacyProjectId = text(project.projectId);
+  return (
+    typeof legacyProjectId === "string" &&
+    !isGxserverProjectId(legacyProjectId) &&
+    importResult.projectIdByLegacyProjectId[legacyProjectId] === undefined &&
+    collectLegacyTerminalSessions(project).length > 0
+  );
 }
 
 function recordLegacyMacosStateImportStatus(db: Database.Database, status: GxserverStateImportStatus): void {
@@ -472,18 +541,24 @@ function projectSnapshotScore(payload: LegacyStoragePayload): number {
 function projectMigrationSessionWeight(project: unknown): number {
   const projectObject = normalizeObject(project);
   const commandsPanel = normalizeObject(projectObject.commandsPanel);
-  const commandPanelSessions = Array.isArray(commandsPanel.sessions) ? commandsPanel.sessions : [];
+  const commandPanelSessions = Array.isArray(commandsPanel.sessions)
+    ? commandsPanel.sessions.filter(isImportableLegacyTerminalSession)
+    : [];
   const activeCommandPanelSessionWeight = typeof commandsPanel.activeSessionId === "string" ? 1 : 0;
-  return projectWorkspaceSessionCount(projectObject) + commandPanelSessions.length + activeCommandPanelSessionWeight;
+  /*
+  CDXC:GxserverMigration 2026-06-07-13:32:
+  Source selection for the 3.x to 4.x cutover must rank daemon-importable terminal rows above browser/T3-only pane count. Browser and T3 panes remain macOS-local, so letting them outscore terminal sessions can make gxserver import zero visible sessions even though a shared snapshot still contains the user's terminals.
+  */
+  return projectWorkspaceTerminalSessionCount(projectObject) + commandPanelSessions.length + activeCommandPanelSessionWeight;
 }
 
-function projectWorkspaceSessionCount(project: unknown): number {
+function projectWorkspaceTerminalSessionCount(project: unknown): number {
   const workspace = normalizeObject(normalizeObject(project).workspace);
   const groups = Array.isArray(workspace.groups) ? workspace.groups : [];
   return groups.reduce((count, group) => {
     const snapshot = normalizeObject(normalizeObject(group).snapshot);
     const sessions = Array.isArray(snapshot.sessions) ? snapshot.sessions : [];
-    return count + sessions.length;
+    return count + sessions.filter(isImportableLegacyTerminalSession).length;
   }, 0);
 }
 
@@ -1446,18 +1521,40 @@ function collectLegacyTerminalSessions(legacyProject: JsonObject): JsonArray {
   for (const group of normalizeObjectArray(workspace.groups)) {
     const snapshot = normalizeObject(group.snapshot);
     for (const session of normalizeObjectArray(snapshot.sessions)) {
-      if (session.kind === "terminal") {
+      if (isImportableLegacyTerminalSession(session)) {
         sessions.push(session);
       }
     }
   }
   const commandsPanel = normalizeObject(legacyProject.commandsPanel);
   for (const session of normalizeObjectArray(commandsPanel.sessions)) {
-    if (session.kind === "terminal") {
+    if (isImportableLegacyTerminalSession(session)) {
       sessions.push(session);
     }
   }
   return sessions;
+}
+
+function isImportableLegacyTerminalSession(session: unknown): session is JsonObject {
+  const candidate = normalizeObject(session);
+  if (candidate.kind === "terminal") {
+    return true;
+  }
+  if (candidate.kind === "browser" || candidate.kind === "t3") {
+    return false;
+  }
+  if (isRecord(candidate.browser) || isRecord(candidate.t3)) {
+    return false;
+  }
+  return (
+    typeof candidate.agentName === "string" ||
+    typeof candidate.agentSessionId === "string" ||
+    typeof candidate.commandTitle === "string" ||
+    typeof candidate.sessionPersistenceProvider === "string" ||
+    typeof candidate.sessionPersistenceName === "string" ||
+    typeof candidate.terminalEngine === "string" ||
+    typeof candidate.tmuxSessionName === "string"
+  );
 }
 
 function insertProjectRow(db: Database.Database, row: ProjectInsertRow): void {
