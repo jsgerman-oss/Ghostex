@@ -1,6 +1,9 @@
 import type { ghostexSettings } from "./ghostex-settings";
 
 export const FIRST_LAUNCH_SETUP_SEEN_STORAGE_KEY = "ghostex-native-first-launch-setup-seen";
+export const FIRST_LAUNCH_SETUP_CURRENT_REVISION = "2026-06-07-first-launch-refresh";
+
+type FirstLaunchSetupSeenStorage = Pick<Storage, "getItem" | "setItem">;
 
 /**
  * CDXC:FirstLaunchSetup 2026-05-19-11:20:
@@ -17,6 +20,12 @@ export const FIRST_LAUNCH_SETUP_SEEN_STORAGE_KEY = "ghostex-native-first-launch-
  * The first-time defaults modal must also expose the first-prompt title
  * generation agent selector so new installs can choose Codex, Cursor, Claude,
  * Grok Build, or Custom before automatic session naming runs.
+ *
+ * CDXC:FirstLaunchSetup 2026-06-07-12:32:
+ * The first-time modal changed after the last release, so the seen marker is a
+ * revision string instead of a forever boolean. Legacy `true` values should
+ * reopen the refreshed setup once, then store this revision to avoid repeated
+ * prompts on later launches.
  */
 export type FirstLaunchSetupMainSettingKey =
   | keyof ghostexSettings
@@ -46,4 +55,18 @@ export function isFirstLaunchSetupMainSettingVisible(
   visibleSettings: ReadonlySet<FirstLaunchSetupMainSettingKey> = FIRST_LAUNCH_SETUP_VISIBLE_MAIN_SETTINGS,
 ): boolean {
   return visibleSettings.has(settingKey);
+}
+
+export function hasSeenCurrentFirstLaunchSetup(
+  storage: FirstLaunchSetupSeenStorage,
+  revision = FIRST_LAUNCH_SETUP_CURRENT_REVISION,
+): boolean {
+  return storage.getItem(FIRST_LAUNCH_SETUP_SEEN_STORAGE_KEY) === revision;
+}
+
+export function markCurrentFirstLaunchSetupSeen(
+  storage: FirstLaunchSetupSeenStorage,
+  revision = FIRST_LAUNCH_SETUP_CURRENT_REVISION,
+): void {
+  storage.setItem(FIRST_LAUNCH_SETUP_SEEN_STORAGE_KEY, revision);
 }

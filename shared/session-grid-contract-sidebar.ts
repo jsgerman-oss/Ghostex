@@ -69,7 +69,7 @@ export type AgentsHubCatalogMessage = {
   type: "agentsHubCatalog";
 };
 
-export type SidebarAgentHookStatus = "installed" | "missing" | "cliMissing" | "notRequired";
+export type SidebarAgentHookStatus = "installed" | "missing" | "cliMissing" | "notRequired" | "updateRequired";
 
 export type SidebarAgentHookStatusItem = {
   agentId: string;
@@ -216,6 +216,12 @@ export type SidebarSessionItem = {
   sessionNumber?: string;
   sessionPersistenceName?: string;
   sessionPersistenceProvider?: TerminalSessionPersistenceProvider;
+  /**
+   * CDXC:GxserverSessionTitles 2026-06-07-09:33:
+   * gxserver-owned rows carry the final visible title string. Sidebar clients render this directly so platform adapters do not duplicate terminal-title trust, placeholder, or unsynced-marker rules.
+   */
+  displayTitle?: string;
+  displayTitleTooltip?: string;
   primaryTitle?: string;
   isPrimaryTitleTerminalTitle?: boolean;
   terminalTitle?: string;
@@ -1079,7 +1085,13 @@ export type SidebarToExtensionMessage =
        * The full-window Clone Repository modal sends clone requests through the
        * native sidebar UI bridge, but gxserver owns preview, git clone execution,
        * cancellation, and the canonical project returned after clone success.
+       *
+       * CDXC:AddRepository 2026-06-07-16:06:
+       * Clone Repository carries an optional branch name through the same bridge.
+       * Empty means gxserver lets Git use the repository default branch; typed
+       * names are validated server-side before Git starts.
        */
+      branchName?: string;
       cloneMainOnly?: boolean;
       folderPath: string;
       newFolderName?: string;
@@ -1292,8 +1304,17 @@ export type SidebarToExtensionMessage =
       sessionId: string;
     }
   | {
+      type: "closeSessions";
+      sessionIds: string[];
+    }
+  | {
       type: "setSessionSleeping";
       sessionId: string;
+      sleeping: boolean;
+    }
+  | {
+      type: "setSessionsSleeping";
+      sessionIds: string[];
       sleeping: boolean;
     }
   | {

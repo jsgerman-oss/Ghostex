@@ -51,7 +51,7 @@ function SettingsModalStory({
     cuaDriverAccessibilityPermissionGranted: cuaPermissionsGranted,
     cuaDriverInstalled: cuaPermissionsGranted !== undefined,
     cuaDriverScreenRecordingPermissionGranted: cuaPermissionsGranted,
-    detail: "ghostex is available on PATH. Ghostex Browser Use and Ghostex Computer Use are not installed yet.",
+    detail: "Ghostex CLI is installed automatically with the app. Use ghostex for the full command. Ghostex Browser Use and Ghostex Computer Use are not installed yet.",
     generateTitleSkillInstalled: false,
     generatedAt: "2026-05-27T04:17:00.000Z",
     ghostexPath: "/opt/homebrew/bin/ghostex",

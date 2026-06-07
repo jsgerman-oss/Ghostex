@@ -200,4 +200,12 @@ describe("normalizeHotkeyText", () => {
     expect(normalizeHotkeyText("Ctrl+Shift+!")).toBe("ctrl+shift+1");
     expect(normalizeHotkeyText("Cmd+Ctrl+Shift+%")).toBe("cmd+ctrl+shift+5");
   });
+
+  test("normalizes shifted bracket glyphs to physical bracket hotkeys", () => {
+    expect(normalizeHotkeyText("Cmd+Shift+{")).toBe("cmd+shift+[");
+    expect(normalizeHotkeyText("Cmd+Shift+}")).toBe("cmd+shift+]");
+    expect(getghostexHotkeyActionIdForKey(DEFAULT_ghostex_HOTKEYS, "cmd+shift+}")).toBe(
+      "focusNextSession",
+    );
+  });
 });

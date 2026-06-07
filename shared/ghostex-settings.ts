@@ -635,7 +635,11 @@ export const DEFAULT_ghostex_SETTINGS: ghostexSettings = {
   useGteForCtrlGPromptEditing: false,
   hotkeys: DEFAULT_ghostex_HOTKEYS,
   workspaceActivePaneBorderColor: "#3b82f6",
-  workspaceBackgroundColor: "#151515",
+  /**
+   * CDXC:WorkspaceLayout 2026-06-07-16:53:
+   * Black is the fallback workspace background when Ghostty has no readable terminal background. Native layout sync treats this default as automatic so the macOS workarea can use the loaded Ghostty `background` color instead of forcing a separate app gray.
+   */
+  workspaceBackgroundColor: "#000000",
   /**
    * CDXC:TitlebarOpenIn 2026-05-11-00:22
    * The titlebar Open In menu is configurable: built-in editor targets can be

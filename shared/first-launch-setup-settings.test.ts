@@ -1,9 +1,27 @@
 import { describe, expect, test } from "vitest";
 import {
   FIRST_LAUNCH_PREFERENCES_MAIN_SETTING_KEYS,
+  FIRST_LAUNCH_SETUP_CURRENT_REVISION,
+  FIRST_LAUNCH_SETUP_SEEN_STORAGE_KEY,
   FIRST_LAUNCH_SETUP_VISIBLE_MAIN_SETTINGS,
+  hasSeenCurrentFirstLaunchSetup,
   isFirstLaunchSetupMainSettingVisible,
+  markCurrentFirstLaunchSetupSeen,
 } from "./first-launch-setup-settings";
+
+function createFirstLaunchSetupStorage(initialValue?: string) {
+  const values = new Map<string, string>();
+  if (initialValue !== undefined) {
+    values.set(FIRST_LAUNCH_SETUP_SEEN_STORAGE_KEY, initialValue);
+  }
+  return {
+    getItem: (key: string) => values.get(key) ?? null,
+    read: (key: string) => values.get(key),
+    setItem: (key: string, value: string) => {
+      values.set(key, value);
+    },
+  };
+}
 
 describe("first launch setup visible settings", () => {
   test("exposes keep awake when lid closed on the first-launch defaults step", () => {
@@ -40,5 +58,30 @@ describe("first launch setup visible settings", () => {
     expect(FIRST_LAUNCH_PREFERENCES_MAIN_SETTING_KEYS).toContain(
       "customSessionTitleGenerationCommand",
     );
+  });
+
+  test("treats legacy boolean seen markers as older first-launch setup revisions", () => {
+    /**
+     * CDXC:FirstLaunchSetup 2026-06-07-12:32:
+     * Users who saw the pre-refresh first-time modal stored the old boolean
+     * marker. The refreshed modal must open once for those installs, then write
+     * the current revision so the setup flow does not repeat every launch.
+     */
+    const storage = createFirstLaunchSetupStorage("true");
+
+    expect(hasSeenCurrentFirstLaunchSetup(storage)).toBe(false);
+
+    markCurrentFirstLaunchSetupSeen(storage);
+
+    expect(storage.read(FIRST_LAUNCH_SETUP_SEEN_STORAGE_KEY)).toBe(
+      FIRST_LAUNCH_SETUP_CURRENT_REVISION,
+    );
+    expect(hasSeenCurrentFirstLaunchSetup(storage)).toBe(true);
+  });
+
+  test("skips first-launch setup only after the current revision has been seen", () => {
+    const storage = createFirstLaunchSetupStorage(FIRST_LAUNCH_SETUP_CURRENT_REVISION);
+
+    expect(hasSeenCurrentFirstLaunchSetup(storage)).toBe(true);
   });
 });

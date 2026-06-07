@@ -1224,11 +1224,13 @@ button,
   color: var(--destructive);
 }
 
+.ghostex-settings-shadcn .first-launch-setup-hook-agent-update-required,
 .ghostex-settings-shadcn .first-launch-setup-hook-agent-cli-missing {
   background: color-mix(in srgb, #f59e0b 7%, var(--card));
   border-color: color-mix(in srgb, #f59e0b 22%, var(--border));
 }
 
+.ghostex-settings-shadcn .first-launch-setup-hook-agent-update-required .first-launch-setup-hook-agent-icon,
 .ghostex-settings-shadcn .first-launch-setup-hook-agent-cli-missing .first-launch-setup-hook-agent-icon {
   color: #fcd34d;
 }

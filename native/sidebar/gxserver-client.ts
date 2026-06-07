@@ -125,7 +125,7 @@ CDXC:GxserverSidebarClient 2026-05-30-15:39:
 The native React sidebar is no longer allowed to invent a second backend transport for shared project/session/agent/zmx/Git/log state. Keep gxserver HTTP auth, protocol headers, RPC envelope creation, and response validation in this wrapper so UI code consumes one hard-cutover client instead of mixing direct daemon ownership with compatibility paths.
 */
 export function createNativeSidebarGxserverClient(
-  bootstrap: NativeSidebarGxserverBootstrap | undefined,
+  bootstrap: NativeSidebarGxserverStatus | undefined,
 ) {
   let config: Required<Pick<NativeSidebarGxserverBootstrap, "baseUrl" | "protocolVersion">> &
     Omit<NativeSidebarGxserverBootstrap, "baseUrl" | "protocolVersion"> = {
@@ -135,9 +135,14 @@ export function createNativeSidebarGxserverClient(
     tokenFile: bootstrap?.tokenFile,
   };
   let currentStatus: NativeSidebarGxserverStatus = {
+    ...bootstrap,
     ...config,
-    alwaysStart: true,
-    state: "unknown",
+    /*
+    CDXC:GxserverBootstrap 2026-06-07-12:02:
+    Native injects the first daemon status into bootstrap so startup gating does not depend on receiving a separate host event before the WebKit listener is ready. Preserve those status fields instead of resetting the sidebar client to unknown.
+    */
+    alwaysStart: bootstrap?.alwaysStart ?? true,
+    state: bootstrap?.state ?? "unknown",
   };
 
   function applyNativeStatus(payloadJson: string): NativeSidebarGxserverStatus | undefined {

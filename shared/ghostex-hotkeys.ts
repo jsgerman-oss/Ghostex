@@ -242,8 +242,12 @@ export const GHOSTEX_HOTKEY_DEFINITIONS: readonly ghostexHotkeyDefinition[] = [
   {
     action: { id: "focusPreviousSession", kind: "focusSessionSlot", slotNumber: -1 },
     alternateDefaultKeys: ["cmd+shift+["],
+    /**
+     * CDXC:Hotkeys 2026-06-07-14:05:
+     * Cmd+Shift+[ and Cmd+Shift+] must remain supported alongside Cmd+Shift+Tab and Cmd+Tab. Both shortcut families traverse rendered sidebar order across expanded groups and skip sleeping sessions.
+     */
     defaultKey: "cmd+shift+tab",
-    description: "Focus the previous visible sidebar tab.",
+    description: "Focus the previous awake visible sidebar tab.",
     id: "focusPreviousSession",
     retiredDefaultKeys: ["cmd+["],
     title: "Previous Tab",
@@ -252,7 +256,7 @@ export const GHOSTEX_HOTKEY_DEFINITIONS: readonly ghostexHotkeyDefinition[] = [
     action: { id: "focusNextSession", kind: "focusSessionSlot", slotNumber: 0 },
     alternateDefaultKeys: ["cmd+shift+]"],
     defaultKey: "cmd+tab",
-    description: "Focus the next visible sidebar tab.",
+    description: "Focus the next awake visible sidebar tab.",
     id: "focusNextSession",
     retiredDefaultKeys: ["cmd+]"],
     title: "Next Tab",
@@ -409,6 +413,11 @@ const SHIFTED_DIGIT_KEYS: Record<string, string> = {
   ")": "0",
 };
 
+const SHIFTED_SYMBOL_KEYS: Record<string, string> = {
+  "{": "[",
+  "}": "]",
+};
+
 function normalizeHotkeyChordText(chord: string): string {
   const parts = chord.split("+").filter(Boolean);
   const key = parts.at(-1);
@@ -424,6 +433,16 @@ function normalizeHotkeyChordText(chord: string): string {
      * hotkeys run from sidebar, browser, and terminal focus without duplicate bindings.
      */
     parts[parts.length - 1] = SHIFTED_DIGIT_KEYS[key];
+  }
+  if (parts.includes("shift") && SHIFTED_SYMBOL_KEYS[key]) {
+    /**
+     * CDXC:Hotkeys 2026-06-07-14:24:
+     * WebKit reports Cmd+Shift+[ and Cmd+Shift+] as the shifted glyphs "{" and
+     * "}" when sidebar chrome owns focus. Normalize those back to the physical
+     * bracket keys so the alternate next/previous-session defaults match the
+     * same stored shortcut text as AppKit and Settings.
+     */
+    parts[parts.length - 1] = SHIFTED_SYMBOL_KEYS[key];
   }
   return parts.join("+");
 }

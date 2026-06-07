@@ -12,6 +12,24 @@ function sourceBetween(source: string, start: string, end: string): string {
 }
 
 describe("gxserver presentation local panes", () => {
+  test("joins local delayed-send timers onto gxserver presentation rows", () => {
+    /*
+    CDXC:DelayedSend 2026-06-07-16:34:
+    gxserver presentation rows must still receive native Delayed Send fields because the shared session icon renderer only shows the yellow clock when the row carries the active deadline or countdown label.
+    */
+    const presentationSessionProjection = sourceBetween(
+      nativeSidebarSource,
+      "function createPresentationSidebarSession",
+      "function createIdlePresentationProjectEditorState",
+    );
+    expect(presentationSessionProjection).toContain(
+      "const delayedSend = getDelayedSendProjectionForProjectSession(projectId, presentation.sessionId)",
+    );
+    expect(presentationSessionProjection).toContain("delayedSendDeadlineAt: delayedSend?.deadlineAt");
+    expect(presentationSessionProjection).toContain("delayedSendRemainingLabel: delayedSend?.remainingLabel");
+    expect(presentationSessionProjection).toContain("delayedSendRemainingMs: delayedSend?.remainingMs");
+  });
+
   test("keeps native-only T3 and browser panes visible in gxserver-owned project groups", () => {
     /*
     CDXC:T3Code 2026-06-07-01:17:

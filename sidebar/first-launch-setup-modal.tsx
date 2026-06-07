@@ -140,7 +140,7 @@ type FirstLaunchGuidePage = {
   title: string;
 };
 
-type FirstLaunchContinueWarning = "hooks" | "cli" | "browserControl" | "desktopCua";
+type FirstLaunchContinueWarning = "hooks" | "browserControl" | "desktopCua";
 
 const FIRST_LAUNCH_INTRO_BENEFITS: readonly FirstLaunchBenefit[] = [
   {
@@ -177,7 +177,6 @@ const FIRST_LAUNCH_SIDEBAR_PRESETS = FIRST_LAUNCH_SIDEBAR_PRESET_ORDER.flatMap((
   return preset ? [preset] : [];
 });
 
-const FIRST_LAUNCH_CLI_COMMAND = "brew install --cask maddada/tap/ghostex --force";
 /*
  * CDXC:FirstLaunchSetup 2026-05-31-07:15:
  * ZMU-72: Mobile download buttons must match README.md stable release URLs so
@@ -226,7 +225,7 @@ const FIRST_LAUNCH_GUIDE_PAGES: readonly FirstLaunchGuidePage[] = [
   {
     action: {
       description:
-        "Ghostex installs a local $ghostex-browser-use skill that teaches agents how to attach to embedded CEF panes. Install the Ghostex CLI first, then run ghostex browser install-skill or use the button below. After installation, agents add ghostex browser mcp to their MCP config so Ghostex can list pages, read console logs, take snapshots, click, fill, and capture screenshots while Ghostex is running.",
+        "Ghostex installs the ghostex CLI with the app and can install a local $ghostex-browser-use skill that teaches agents how to attach to embedded CEF panes. Run ghostex browser install-skill or use the button below. After installation, agents add ghostex browser mcp to their MCP config so Ghostex can list pages, read console logs, take snapshots, click, fill, and capture screenshots while Ghostex is running.",
       eyebrow: "Browser Use Installation Guide",
       examplesAtBottom: true,
       snippet: [
@@ -236,7 +235,7 @@ const FIRST_LAUNCH_GUIDE_PAGES: readonly FirstLaunchGuidePage[] = [
         "ghostex browser open https://example.com",
       ],
       subtitle:
-        "Make sure Ghostex Browser Use is installed on your Mac. If it is not ready yet, install the CLI and skill below.",
+        "Make sure Ghostex Browser Use is installed on your Mac. If it is not ready yet, install the skill below.",
     },
     icon: IconBrowser,
     items: [
@@ -548,13 +547,6 @@ const FIRST_LAUNCH_CONTINUE_WARNINGS: Record<
     installLabel: "Install Hooks",
     title: "Continue without agent hooks?",
   },
-  cli: {
-    actionLabel: "Continue without CLI",
-    description:
-      "Mobile apps, CLI-backed setup actions, and Ghostex Browser Use installation will not work until the Ghostex CLI is installed. You can install it later from Settings > Integrations or by launching this setup flow from the sidebar overflow menu.",
-    installLabel: "Install CLI",
-    title: "Continue without the Ghostex CLI?",
-  },
   browserControl: {
     actionLabel: "Continue without Ghostex Browser Use",
     description:
@@ -571,7 +563,7 @@ const FIRST_LAUNCH_CONTINUE_WARNINGS: Record<
   },
 };
 
-type FirstLaunchHookStatusGroupId = "installed" | "missing" | "cliMissing" | "unknown";
+type FirstLaunchHookStatusGroupId = "installed" | "updateRequired" | "missing" | "cliMissing" | "unknown";
 
 type FirstLaunchHookStatusGroup = {
   agents: typeof FIRST_LAUNCH_HOOK_SUPPORTED_AGENTS;
@@ -627,9 +619,13 @@ type FirstLaunchHookStatusGroup = {
  * stays on the left.
  *
  * CDXC:FirstLaunchSetup 2026-05-26-17:12:
- * The CLI page must not ask Homebrew users to reinstall when the `ghostex`
- * command already exists. Render the already-installed state from native CLI
- * status, and describe `gx` as usable only when Ghostex owns that alias.
+ * The CLI page renders native command status and describes `gx` as usable only
+ * when Ghostex owns that alias.
+ *
+ * CDXC:CliInstall 2026-06-07-13:53:
+ * The first-launch CLI page must not show Install CLI or Refresh controls.
+ * Production startup auto-links the app-bundled CLI, so onboarding should teach
+ * why ghostex/gx are useful instead of making CLI setup look manual.
  *
  * CDXC:BrowserAgentControl 2026-05-26-22:17:
  * The bundled skills page should expose the Ghostex Browser Use skill after CLI
@@ -653,11 +649,12 @@ type FirstLaunchHookStatusGroup = {
  * desktop app control without exposing a scary shell-first setup.
  *
  * CDXC:IntegrationsSetup 2026-05-27-04:17:
- * CLI, Ghostex Browser Use, hooks, and Ghostex Computer Use are optional onboarding
+ * Ghostex Browser Use, hooks, and Ghostex Computer Use are optional onboarding
  * integrations. If an integration is missing, Continue must show a warning
  * first and only advance after the user confirms they want to proceed without
  * it. Partial hook installs are acceptable; only zero installed hooks trigger
- * the hook warning.
+ * the hook warning. The Ghostex CLI itself is app-installed and should not be a
+ * first-launch warning branch.
  *
  * CDXC:ComputerAgentControl 2026-05-27-06:58:
  * Desktop Control setup must install Cua Driver and the `$ghostex-computer-use`
@@ -743,7 +740,6 @@ export function FirstLaunchSetupModal({
   onInstallComputerUseSkill,
   onInstallCuaDriver,
   onInstallGenerateTitleSkill,
-  onInstallGhostexCli,
   onOpenAccessibilityPreferences,
   onOpenScreenRecordingPreferences,
   onRequestAgentHookStatus,
@@ -863,8 +859,6 @@ export function FirstLaunchSetupModal({
             <FirstLaunchCliPage
               ghostexCliStatus={ghostexCliStatus}
               ghostexCliStatusLoading={ghostexCliStatusLoading}
-              onInstallGhostexCli={onInstallGhostexCli}
-              onRequestGhostexCliStatus={onRequestGhostexCliStatus}
               vscode={vscode}
             />
           ) : activePage === "skills" ? (
@@ -895,7 +889,6 @@ export function FirstLaunchSetupModal({
               onInstallAgentHooks={onInstallAgentHooks}
               onInstallBrowserControl={onInstallBrowserControl}
               onInstallCuaDriver={onInstallCuaDriver}
-              onInstallGhostexCli={onInstallGhostexCli}
             />
           ) : null}
         </div>
@@ -1279,6 +1272,9 @@ function FirstLaunchHooksPage({
   onInstallAgentHooks?: () => void;
   onRequestAgentHookStatus?: () => void;
 }) {
+  const hasUpdateRequiredHooks = [...hookStatusByAgentId.values()].some(
+    (status) => status.status === "updateRequired",
+  );
   return (
     <>
       <div className="first-launch-setup-main">
@@ -1339,8 +1335,13 @@ function FirstLaunchHooksPage({
            * agents except T3 Code, whose sessions are managed by Ghostex.
            *
            * CDXC:FirstLaunchSetup 2026-05-26-07:14:
-           * Group agents under Installed / Not installed / CLI missing headers so
+           * Group agents under Installed / Needs update / Not installed / CLI missing headers so
            * status words live in section titles instead of repeating inside each chip.
+           *
+           * CDXC:AgentHooks 2026-06-07-11:05:
+           * Old Ghostex hooks are update-required, not absent. First launch should
+           * show the migration state and let Install Hooks act as an idempotent
+           * update action, because gxserver is the source of truth for hook status.
            *
            * CDXC:FirstLaunchSetup 2026-05-26-07:22:
            * The grouped agent headers are the only visible readiness count on this
@@ -1390,7 +1391,7 @@ function FirstLaunchHooksPage({
               variant="outline"
             >
               <IconDownload aria-hidden="true" data-icon="inline-start" />
-              Install Hooks
+              {hasUpdateRequiredHooks ? "Update Hooks" : "Install Hooks"}
             </Button>
           </div>
         </div>
@@ -1405,24 +1406,20 @@ function FirstLaunchContinueWarningView({
   onInstallAgentHooks,
   onInstallBrowserControl,
   onInstallCuaDriver,
-  onInstallGhostexCli,
 }: {
   kind: FirstLaunchContinueWarning;
   onContinue: () => void;
   onInstallAgentHooks?: () => void;
   onInstallBrowserControl?: () => void;
   onInstallCuaDriver?: () => void;
-  onInstallGhostexCli?: () => void;
 }) {
   const warning = FIRST_LAUNCH_CONTINUE_WARNINGS[kind];
   const installAction =
     kind === "hooks"
       ? onInstallAgentHooks
-      : kind === "cli"
-        ? onInstallGhostexCli
-        : kind === "browserControl"
-          ? onInstallBrowserControl
-          : onInstallCuaDriver;
+      : kind === "browserControl"
+        ? onInstallBrowserControl
+        : onInstallCuaDriver;
 
   return (
     <section className="first-launch-setup-warning" role="alert">
@@ -1499,30 +1496,33 @@ function FirstLaunchSkillsPage({
 function FirstLaunchCliPage({
   ghostexCliStatus,
   ghostexCliStatusLoading,
-  onInstallGhostexCli,
-  onRequestGhostexCliStatus,
   vscode,
 }: {
   ghostexCliStatus?: SidebarGhostexCliStatusMessage;
   ghostexCliStatusLoading: boolean;
-  onInstallGhostexCli?: () => void;
-  onRequestGhostexCliStatus?: () => void;
   vscode?: WebviewApi;
 }) {
   const isInstalled = ghostexCliStatus?.installed === true;
   const isChecking = ghostexCliStatusLoading && !ghostexCliStatus;
+  /**
+   * CDXC:CliInstall 2026-06-07-13:53:
+   * First launch should present the Ghostex CLI as included with the macOS app.
+   * Production startup auto-repairs ghostex/gx symlinks to the bundled
+   * Resources/CLI runtime, so onboarding must explain what the commands unlock
+   * instead of showing install or refresh controls.
+   */
   const commandLabel = isChecking
-    ? "checking CLI status"
+    ? "checking command links"
     : isInstalled
-      ? "installed command"
-      : "macOS install command";
+      ? "available command"
+      : "command link needs attention";
   const commandText = isChecking
-    ? "Checking for ghostex..."
+    ? "Checking ghostex / gx..."
     : isInstalled
       ? ghostexCliStatus.gxUsable
         ? "ghostex / gx"
         : "ghostex"
-      : FIRST_LAUNCH_CLI_COMMAND;
+      : "ghostex";
 
   return (
     <div className="first-launch-setup-cli-page">
@@ -1531,14 +1531,12 @@ function FirstLaunchCliPage({
         className="first-launch-setup-cli-copy"
       >
         <h2 className="first-launch-setup-title" id="first-launch-cli-title">
-          {isInstalled
-            ? "Ghostex CLI is installed already."
-            : "Install the Ghostex CLI when you want mobile access."}
+          Ghostex CLI is installed with the app.
         </h2>
         <p className="first-launch-setup-description">
-          {isInstalled
-            ? "The CLI is ready. The next page lets you explicitly install the bundled Ghostex agent skills you want available in ~/agents/skills."
-            : "The Android and iOS apps connect back to your Mac through the Ghostex CLI. You can continue without it, but mobile access and CLI-backed integrations will not work until it is installed."}
+          The app keeps the ghostex command pointed at the current app build automatically.
+          Use it to list sessions, attach from another terminal, connect mobile clients, and install
+          Ghostex agent skills when you choose them.
         </p>
 
         <div className="first-launch-setup-command-card" data-installed={isInstalled}>
@@ -1554,26 +1552,6 @@ function FirstLaunchCliPage({
           {ghostexCliStatus?.detail ? (
             <p className="first-launch-setup-cli-status-detail">{ghostexCliStatus.detail}</p>
           ) : null}
-          <div className="first-launch-setup-command-actions">
-            <Button
-              disabled={ghostexCliStatusLoading || !onInstallGhostexCli}
-              onClick={onInstallGhostexCli}
-              type="button"
-              variant={isInstalled ? "outline" : "default"}
-            >
-              <IconDownload aria-hidden="true" data-icon="inline-start" />
-              {isInstalled ? "Reinstall CLI" : "Install CLI"}
-            </Button>
-            <Button
-              disabled={ghostexCliStatusLoading || !onRequestGhostexCliStatus}
-              onClick={onRequestGhostexCliStatus}
-              type="button"
-              variant="ghost"
-            >
-              <IconRefresh aria-hidden="true" data-icon="inline-start" />
-              Refresh
-            </Button>
-          </div>
         </div>
 
         <ul className="first-launch-setup-mobile-benefits" aria-label="CLI and browser agent features">
@@ -1829,6 +1807,7 @@ function getFirstLaunchHookStatusGroups(
 ): FirstLaunchHookStatusGroup[] {
   const groups: FirstLaunchHookStatusGroup[] = [
     { agents: [], id: "installed", title: "Installed" },
+    { agents: [], id: "updateRequired", title: "Needs update" },
     { agents: [], id: "missing", title: "Not installed" },
     { agents: [], id: "cliMissing", title: "CLI missing" },
     { agents: [], id: "unknown", title: "Not checked" },
@@ -1840,11 +1819,13 @@ function getFirstLaunchHookStatusGroups(
     const groupId =
       status?.status === "installed" || status?.status === "notRequired"
         ? "installed"
-        : status?.status === "missing"
-          ? "missing"
-          : status?.status === "cliMissing"
-            ? "cliMissing"
-            : "unknown";
+        : status?.status === "updateRequired"
+          ? "updateRequired"
+          : status?.status === "missing"
+            ? "missing"
+            : status?.status === "cliMissing"
+              ? "cliMissing"
+              : "unknown";
     groupById.get(groupId)?.agents.push(agent);
   }
 
@@ -1867,17 +1848,11 @@ function getFirstLaunchContinueWarning({
   if (activePage === "hooks" && agentHookStatus && installedHookCount === 0) {
     return "hooks";
   }
-  if (activePage === "cli" && !ghostexCliStatusLoading && ghostexCliStatus?.installed !== true) {
-    return "cli";
-  }
   if (
     activePage === "browserControl" &&
     !ghostexCliStatusLoading &&
     ghostexCliStatus?.browserSkillInstalled !== true
   ) {
-    if (ghostexCliStatus?.installed !== true) {
-      return "cli";
-    }
     return "browserControl";
   }
   if (
@@ -1908,6 +1883,8 @@ function getFirstLaunchHookTone(
     (agent) => agent.status === "installed" || agent.status === "notRequired",
   )
     ? "installed"
+    : agentHookStatus.agents.some((agent) => agent.status === "updateRequired")
+      ? "updateRequired"
     : "missing";
 }
 
@@ -1934,6 +1911,8 @@ function getFirstLaunchAgentHookStatusIcon(
           className="first-launch-setup-hook-agent-icon"
         />
       );
+    case "updateRequired":
+      return <IconAlertTriangle aria-hidden="true" className="first-launch-setup-hook-agent-icon" />;
     case "cliMissing":
       return <IconAlertTriangle aria-hidden="true" className="first-launch-setup-hook-agent-icon" />;
     case "missing":
@@ -1954,6 +1933,8 @@ function getFirstLaunchAgentHookStatusClassName(
   switch (groupId) {
     case "installed":
       return "first-launch-setup-hook-agent-installed";
+    case "updateRequired":
+      return "first-launch-setup-hook-agent-update-required";
     case "cliMissing":
       return "first-launch-setup-hook-agent-cli-missing";
     case "missing":

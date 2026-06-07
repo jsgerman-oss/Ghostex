@@ -143,6 +143,28 @@ describe("native sidebar gxserver client", () => {
     await expect(client.rpc("/api/listSessions")).rejects.toThrow(/Update Ghostex and gxserver/);
   });
 
+  test("uses native bootstrap daemon status before host events arrive", () => {
+    /*
+    CDXC:GxserverVerification 2026-06-07-12:02:
+    Local startup gating must see the first native daemon status from injected bootstrap data because the follow-up host event can arrive before the sidebar message listener is active.
+    */
+    const client = createNativeSidebarGxserverClient({
+      authToken: "token-123",
+      baseUrl: "http://127.0.0.1:60000",
+      message: "gxserver is running and uses the expected protocol.",
+      ok: true,
+      protocolVersion: 1,
+      state: "running",
+    });
+
+    expect(client.getCurrentStatus()).toMatchObject({
+      authToken: "token-123",
+      baseUrl: "http://127.0.0.1:60000",
+      ok: true,
+      state: "running",
+    });
+  });
+
   test("routes arbitrary path Git-root lookup through gxserver RPC", async () => {
     const requests: Array<{ body?: unknown; headers: Record<string, string>; method: string; url: string }> = [];
     vi.stubGlobal(

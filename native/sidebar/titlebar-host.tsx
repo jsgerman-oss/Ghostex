@@ -82,7 +82,10 @@ import {
   getDefaultSidebarAgentByIcon,
   type SidebarAgentIcon,
 } from "../../shared/sidebar-agents";
-import type { SidebarAgentHookStatusMessage } from "../../shared/session-grid-contract-sidebar";
+import type {
+  SidebarAgentHookStatusMessage,
+  SidebarGhostexCliStatusMessage,
+} from "../../shared/session-grid-contract-sidebar";
 import {
   KEEP_AWAKE_DURATION_OPTIONS,
   normalizeghostexSettings,
@@ -193,7 +196,7 @@ type TitlebarNotice = {
   body: string;
   icon: TitlebarTipIcon;
   id: string;
-  settingsTarget: "agentHooks" | "debuggingMode" | "sessionPersistence";
+  settingsTarget: "agentHooks" | "debuggingMode" | "ghostexCli" | "sessionPersistence";
   title: string;
 };
 
@@ -224,6 +227,7 @@ type TitlebarProjectState = {
   activeMode: TitlebarMode;
   browserTabs: TitlebarBrowserTabResource[];
   agentHookStatus?: SidebarAgentHookStatusMessage;
+  ghostexCliStatus?: SidebarGhostexCliStatusMessage;
   debuggingMode: boolean;
   diffStats: SidebarProjectDiffStats;
   editorIsOpen: boolean;
@@ -466,6 +470,30 @@ const TITLEBAR_DEBUGGING_MODE_NOTICE: TitlebarNotice = {
   title: "Debug mode is on",
 };
 
+function createTitlebarGhostexCliNotice(
+  ghostexCliStatus: SidebarGhostexCliStatusMessage | undefined,
+): TitlebarNotice | undefined {
+  /**
+   * CDXC:CliInstall 2026-06-07-15:26:
+   * Tips & Tricks should warn when either public CLI command is not accessible
+   * on PATH. Keep the description to three lines or less while naming concrete
+   * benefits: terminal commands, mobile attach, and agent integration skills.
+   */
+  if (
+    !ghostexCliStatus ||
+    (ghostexCliStatus.installed === true && ghostexCliStatus.gxUsable === true)
+  ) {
+    return undefined;
+  }
+  return {
+    body: "Install or repair the CLI to use ghostex/gx in any terminal, attach mobile clients, and install Browser/Computer/Orchestration agent skills.",
+    icon: "warning",
+    id: "ghostex-cli-not-accessible",
+    settingsTarget: "ghostexCli",
+    title: "Ghostex CLI is not accessible",
+  };
+}
+
 function createTitlebarMissingAgentHooksNotice(
   resourceGroups: TitlebarResourceGroup[],
   agentHookStatus: SidebarAgentHookStatusMessage | undefined,
@@ -477,6 +505,7 @@ function createTitlebarMissingAgentHooksNotice(
     agentHookStatus.agents.map((status) => [status.agentId, status]),
   );
   const missingLiveAgents = new Map<string, string>();
+  const outdatedLiveAgents = new Map<string, string>();
   for (const group of resourceGroups) {
     for (const session of group.sessions) {
       if (!isTitlebarLiveTerminalAgentSession(session)) {
@@ -490,10 +519,14 @@ function createTitlebarMissingAgentHooksNotice(
       if (!status || status.status === "installed" || status.status === "notRequired") {
         continue;
       }
-      missingLiveAgents.set(agent.agentId, agent.name);
+      if (status.status === "updateRequired") {
+        outdatedLiveAgents.set(agent.agentId, agent.name);
+      } else {
+        missingLiveAgents.set(agent.agentId, agent.name);
+      }
     }
   }
-  const agentNames = [...missingLiveAgents.values()];
+  const agentNames = [...outdatedLiveAgents.values(), ...missingLiveAgents.values()];
   if (agentNames.length === 0) {
     return undefined;
   }
@@ -505,15 +538,29 @@ function createTitlebarMissingAgentHooksNotice(
    * working/attention status transitions, exact resume metadata, and
    * first-message naming, so read-once tips are the wrong model while affected
    * sessions are still running.
+   *
+   * CDXC:AgentHooks 2026-06-07-11:05:
+   * gxserver now distinguishes old Ghostex hooks from absent hooks. The
+   * titlebar notice should ask users to update old hooks instead of saying they
+   * are not installed, because the reliable fix is migration to the current
+   * gxserver ingest hook rather than accepting stale native-era artifacts.
    */
   const formattedAgents = formatTitlebarNoticeNameList(agentNames);
   const plural = agentNames.length > 1;
+  const hasOutdatedHooks = outdatedLiveAgents.size > 0;
+  const hasMissingHooks = missingLiveAgents.size > 0;
+  const action = hasOutdatedHooks && hasMissingHooks ? "setup" : hasOutdatedHooks ? "update" : "install";
+  const actionVerb = action === "setup" ? "set up" : action === "update" ? "updated" : "installed";
   return {
-    body: `${formattedAgents} ${plural ? "are" : "is"} running without ${plural ? "their" : "its"} Ghostex ${plural ? "hooks" : "hook"}. Working/done statuses, attention state, resume metadata, and first-message session naming can be unreliable until hooks are installed.`,
+    body: `${formattedAgents} ${plural ? "need" : "needs"} ${plural ? "their" : "its"} Ghostex ${plural ? "hooks" : "hook"} ${actionVerb}. Working/done statuses, attention state, resume metadata, and first-message session naming can be unreliable until hooks are ${action === "setup" ? "installed or updated" : actionVerb}.`,
     icon: "warning",
-    id: `missing-agent-hooks-${[...missingLiveAgents.keys()].sort().join("-")}`,
+    id: `agent-hooks-${action}-${[...outdatedLiveAgents.keys(), ...missingLiveAgents.keys()].sort().join("-")}`,
     settingsTarget: "agentHooks",
-    title: plural ? "Install hooks for live agents" : `${formattedAgents} hook is missing`,
+    title: action === "setup"
+      ? "Set up hooks for live agents"
+      : action === "update"
+        ? plural ? "Update hooks for live agents" : `${formattedAgents} hook needs update`
+        : plural ? "Install hooks for live agents" : `${formattedAgents} hook is missing`,
   };
 }
 
@@ -554,6 +601,24 @@ const pendingProcessResults = new Map<
 
 function postNative(command: NativeTitlebarCommand): void {
   window.webkit?.messageHandlers?.ghostexNativeHost?.postMessage(command);
+}
+
+function postTitlebarSidebarCommand(message: { type: "requestAgentHookStatus" } | { type: "requestGhostexCliStatus" }): void {
+  /*
+  CDXC:AgentHooks 2026-06-07-11:05:
+  Opening Tips & Tricks should refresh gxserver hook status instead of relying
+  on the titlebar's cached layout snapshot. Route through the existing
+  app-modal sidebarCommand bridge so the native sidebar remains the owner of
+  authenticated gxserver requests and hook-status state publication.
+
+  CDXC:CliInstall 2026-06-07-15:26:
+  Tips & Tricks CLI notices must use the native sidebar's real PATH inspection
+  instead of probing from the isolated titlebar webview.
+  */
+  window.webkit?.messageHandlers?.ghostexAppModalHost?.postMessage({
+    message,
+    type: "sidebarCommand",
+  });
 }
 
 function appendTitlebarActionCrashDebugLog(event: string, details?: unknown): void {
@@ -765,6 +830,12 @@ function createResourceGroupViews(
   const orphanBundles = createOrphanBundles(processes, childrenByParent, claimedPids);
   return { browserBundles, groupViews, orphanBundles };
 }
+
+const EMPTY_RESOURCE_GROUP_VIEWS: ReturnType<typeof createResourceGroupViews> = {
+  browserBundles: [],
+  groupViews: [],
+  orphanBundles: [],
+};
 
 function createFirstOpenCollapsedResourceKeys(
   resourceViews: ReturnType<typeof createResourceGroupViews>,
@@ -1333,12 +1404,17 @@ function App() {
   const [optimisticMode, setOptimisticMode] = useState<TitlebarMode>();
   const rootRef = useRef<HTMLDivElement | null>(null);
   const lastCompanionHitRegionSignatureRef = useRef("");
+  const resourceRefreshGenerationRef = useRef(0);
+  const resourceRefreshInFlightRef = useRef(false);
   const resourcesFirstOpenActiveRef = useRef(false);
   const resourcesFirstOpenSeededRef = useRef(false);
   const activeMode = optimisticMode ?? projectState.activeMode;
   const resourceViews = useMemo(
-    () => createResourceGroupViews(projectState.browserTabs, projectState.resourceGroups, resourceProcesses),
-    [projectState.browserTabs, projectState.resourceGroups, resourceProcesses],
+    () =>
+      resourcesMenuOpen
+        ? createResourceGroupViews(projectState.browserTabs, projectState.resourceGroups, resourceProcesses)
+        : EMPTY_RESOURCE_GROUP_VIEWS,
+    [projectState.browserTabs, projectState.resourceGroups, resourceProcesses, resourcesMenuOpen],
   );
   const inactiveTerminalSleepSessionIds = useMemo(
     () => createInactiveTerminalSleepSessionIds(projectState.resourceGroups),
@@ -1356,15 +1432,25 @@ function App() {
     () => createTitlebarMissingAgentHooksNotice(projectState.resourceGroups, projectState.agentHookStatus),
     [projectState.agentHookStatus, projectState.resourceGroups],
   );
+  const ghostexCliNotice = useMemo(
+    () => createTitlebarGhostexCliNotice(projectState.ghostexCliStatus),
+    [projectState.ghostexCliStatus],
+  );
   const notices = useMemo(
     () => [
+      ...(ghostexCliNotice ? [ghostexCliNotice] : []),
       ...(projectState.sessionPersistenceProvider === "off"
         ? [TITLEBAR_PERSISTENCE_OFF_NOTICE]
         : []),
       ...(projectState.debuggingMode ? [TITLEBAR_DEBUGGING_MODE_NOTICE] : []),
       ...(missingAgentHooksNotice ? [missingAgentHooksNotice] : []),
     ],
-    [missingAgentHooksNotice, projectState.debuggingMode, projectState.sessionPersistenceProvider],
+    [
+      ghostexCliNotice,
+      missingAgentHooksNotice,
+      projectState.debuggingMode,
+      projectState.sessionPersistenceProvider,
+    ],
   );
   const markTipRead = useCallback((tipId: string) => {
     setReadTipIds((current) => {
@@ -1394,6 +1480,23 @@ function App() {
       return next;
     });
   }, []);
+  const requestRuntimeStatusForTips = useCallback(() => {
+    postTitlebarSidebarCommand({ type: "requestAgentHookStatus" });
+    postTitlebarSidebarCommand({ type: "requestGhostexCliStatus" });
+  }, []);
+  const openTipsMenuFromTitlebar = useCallback(() => {
+    requestRuntimeStatusForTips();
+    setTipsMenuOpen(true);
+  }, [requestRuntimeStatusForTips]);
+  const handleTipsMenuOpenChange = useCallback(
+    (open: boolean, details?: TitlebarDropdownOpenChangeDetails) => {
+      setTitlebarDropdownOpen(setTipsMenuOpen, open, details);
+      if (open) {
+        requestRuntimeStatusForTips();
+      }
+    },
+    [requestRuntimeStatusForTips],
+  );
 
   useEffect(() => {
     const suppressTitlebarWebviewContextMenu = (event: MouseEvent) => {
@@ -1659,6 +1762,7 @@ function App() {
               ? current.activeMode
               : normalizeTitlebarMode(state.activeMode),
           agentHookStatus: state.agentHookStatus ?? current.agentHookStatus,
+          ghostexCliStatus: state.ghostexCliStatus ?? current.ghostexCliStatus,
           debuggingMode: state.debuggingMode ?? current.debuggingMode,
           diffStats: state.diffStats ?? current.diffStats,
           git: state.git ?? current.git,
@@ -1709,11 +1813,20 @@ function App() {
     return () => window.removeEventListener("ghostex-native-host-event", handleHostEvent);
   }, []);
 
-  const refreshResources = useCallback(async () => {
+  const refreshResources = useCallback(async (generation: number) => {
+    if (resourceRefreshInFlightRef.current) {
+      return;
+    }
+    resourceRefreshInFlightRef.current = true;
     try {
-      setResourceProcesses(await readResourceProcesses());
+      const processes = await readResourceProcesses();
+      if (generation === resourceRefreshGenerationRef.current) {
+        setResourceProcesses(processes);
+      }
     } catch (error) {
       console.warn("Failed to refresh Ghostex resources", error);
+    } finally {
+      resourceRefreshInFlightRef.current = false;
     }
   }, []);
 
@@ -1726,12 +1839,23 @@ function App() {
      * The Resources dropdown should show live process CPU and memory without a
      * native push channel. Poll `ps` only while the wide dropdown is open so
      * the compact titlebar does not spend idle work on hidden diagnostics.
+     *
+     * CDXC:TitlebarResources 2026-06-07-16:20:
+     * Hidden Resources UI should hold no sampled process table and should never
+     * stack overlapping `ps` runs. Treat each open as a generation so slow native
+     * process replies cannot repopulate closed-menu state.
      */
-    void refreshResources();
+    const generation = resourceRefreshGenerationRef.current + 1;
+    resourceRefreshGenerationRef.current = generation;
+    void refreshResources(generation);
     const interval = window.setInterval(() => {
-      void refreshResources();
+      void refreshResources(generation);
     }, RESOURCE_POLL_INTERVAL_MS);
-    return () => window.clearInterval(interval);
+    return () => {
+      window.clearInterval(interval);
+      resourceRefreshGenerationRef.current += 1;
+      setResourceProcesses((current) => current.length === 0 ? current : []);
+    };
   }, [refreshResources, resourcesMenuOpen]);
 
   useEffect(() => {
@@ -1948,16 +2072,17 @@ function App() {
           .map((process) => [process.pid, process]),
       ).values(),
     );
+    const resourceRefreshGeneration = resourceRefreshGenerationRef.current;
     if (processes.length > 0) {
       void terminateResourceProcesses(processes).finally(() => {
         window.setTimeout(() => {
-          void refreshResources();
+          void refreshResources(resourceRefreshGeneration);
         }, 1_800);
       });
       return;
     }
     window.setTimeout(() => {
-      void refreshResources();
+      void refreshResources(resourceRefreshGeneration);
     }, 250);
   };
 
@@ -2092,6 +2217,22 @@ function App() {
     });
   };
 
+  const openGhostexCliSettings = () => {
+    /**
+     * CDXC:CliInstall 2026-06-07-15:26:
+     * The CLI-not-accessible Tips notice should deep-link to Settings where
+     * Repair CLI lives, so the notice is actionable without adding titlebar
+     * install controls.
+     */
+    setTipsMenuOpen(false);
+    window.webkit?.messageHandlers?.ghostexAppModalHost?.postMessage({
+      initialSearchQuery: "Ghostex CLI",
+      initialTab: "integrations",
+      modal: "settings",
+      type: "open",
+    });
+  };
+
   const openNoticeSettings = (target: TitlebarNotice["settingsTarget"]) => {
     if (target === "agentHooks") {
       openAgentHooksSettings();
@@ -2099,6 +2240,10 @@ function App() {
     }
     if (target === "debuggingMode") {
       openDebuggingModeSettings();
+      return;
+    }
+    if (target === "ghostexCli") {
+      openGhostexCliSettings();
       return;
     }
     openSessionPersistenceSettings();
@@ -2182,16 +2327,21 @@ function App() {
   }, [keepAwakeRuntime, stopKeepAwake]);
 
   useEffect(() => {
-    if (
-      !keepAwakeRuntime &&
-      !projectState.keepAwake.activateOnExternalDisplay &&
-      !projectState.keepAwake.deactivateBelowBatteryThreshold &&
-      !projectState.keepAwake.deactivateOnLowPowerMode
-    ) {
+    const shouldCheckExternalDisplay =
+      !keepAwakeRuntime && projectState.keepAwake.activateOnExternalDisplay;
+    const shouldCheckBattery =
+      Boolean(keepAwakeRuntime && projectState.keepAwake.deactivateBelowBatteryThreshold);
+    const shouldCheckLowPowerMode =
+      Boolean(keepAwakeRuntime && projectState.keepAwake.deactivateOnLowPowerMode);
+    if (!shouldCheckExternalDisplay && !shouldCheckBattery && !shouldCheckLowPowerMode) {
       return;
     }
     const checkPowerRules = async () => {
-      const snapshot = await readKeepAwakePowerSnapshot();
+      const snapshot = await readKeepAwakePowerSnapshot({
+        includeBattery: shouldCheckBattery,
+        includeExternalDisplay: shouldCheckExternalDisplay,
+        includeLowPowerMode: shouldCheckLowPowerMode,
+      });
       if (!snapshot) {
         return;
       }
@@ -2426,9 +2576,7 @@ function App() {
              * the mode switcher while power controls remain farther right.
              */}
             <DropdownMenu
-              onOpenChange={(open, details) =>
-                setTitlebarDropdownOpen(setTipsMenuOpen, open, details)
-              }
+              onOpenChange={handleTipsMenuOpenChange}
               open={tipsMenuOpen}
             >
               <ButtonGroup className="titlebar-open-group titlebar-tips-group" data-titlebar-hit-region>
@@ -2442,12 +2590,10 @@ function App() {
                             : "Tips and tricks"
                         }
                         className="titlebar-session-button titlebar-tips-button"
-                        onClick={() => {
-                          setTipsMenuOpen(true);
-                        }}
+                        onClick={openTipsMenuFromTitlebar}
                         onContextMenu={(event) => {
                           event.preventDefault();
-                          setTipsMenuOpen(true);
+                          openTipsMenuFromTitlebar();
                         }}
                         type="button"
                         variant="ghost"
@@ -2972,6 +3118,7 @@ function createInitialProjectState(bootstrap: Record<string, unknown>): Titlebar
   return {
     activeMode: resolveInitialTitlebarMode(bootstrap),
     agentHookStatus: undefined,
+    ghostexCliStatus: undefined,
     browserTabs: [],
     debuggingMode: settings.debuggingMode,
     diffStats: createDefaultSidebarProjectDiffStats(false),
@@ -3094,7 +3241,11 @@ async function applyKeepAwakeLidSleepPrevention(
   return true;
 }
 
-async function readKeepAwakePowerSnapshot(): Promise<
+async function readKeepAwakePowerSnapshot(options: {
+  includeBattery: boolean;
+  includeExternalDisplay: boolean;
+  includeLowPowerMode: boolean;
+}): Promise<
   | {
       batteryPercent?: number;
       externalDisplayConnected: boolean;
@@ -3103,12 +3254,25 @@ async function readKeepAwakePowerSnapshot(): Promise<
   | undefined
 > {
   try {
+    /*
+    CDXC:TitlebarKeepAwake 2026-06-07-16:20:
+    Keep Awake automation should not run heavyweight power probes just because
+    Keep Awake is active. Build the shell command from the enabled rules so
+    hidden checks skip system_profiler, pmset battery, or low-power reads when no
+    rule can act on that value.
+    */
     const result = await runNativeProcess("/bin/sh", [
       "-lc",
       [
-        "battery=$(/usr/bin/pmset -g batt 2>/dev/null | /usr/bin/awk -F';' '/InternalBattery/ {gsub(/[^0-9]/, \"\", $1); print $1; exit}')",
-        "low=$(/usr/bin/pmset -g 2>/dev/null | /usr/bin/awk '/lowpowermode/ {print $2; exit}')",
-        "displays=$(/usr/sbin/system_profiler SPDisplaysDataType 2>/dev/null | /usr/bin/awk '/Resolution:/ {count++} END {print count+0}')",
+        options.includeBattery
+          ? "battery=$(/usr/bin/pmset -g batt 2>/dev/null | /usr/bin/awk -F';' '/InternalBattery/ {gsub(/[^0-9]/, \"\", $1); print $1; exit}')"
+          : "battery=",
+        options.includeLowPowerMode
+          ? "low=$(/usr/bin/pmset -g 2>/dev/null | /usr/bin/awk '/lowpowermode/ {print $2; exit}')"
+          : "low=",
+        options.includeExternalDisplay
+          ? "displays=$(/usr/sbin/system_profiler SPDisplaysDataType 2>/dev/null | /usr/bin/awk '/Resolution:/ {count++} END {print count+0}')"
+          : "displays=0",
         "/bin/echo \"battery=${battery:-};low=${low:-};displays=${displays:-0}\"",
       ].join("; "),
     ]);
@@ -5186,6 +5350,15 @@ styleElement.textContent = `
   .titlebar-tip-row-notice .titlebar-tip-icon {
     background: rgba(245,158,11,0.14);
     color: rgba(251,191,36,0.95);
+  }
+  .titlebar-tip-row-notice .titlebar-tip-body {
+    /**
+     * CDXC:CliInstall 2026-06-07-15:26:
+     * Runtime notices can describe an action plus a short benefit list, but
+     * Tips & Tricks should remain dense. Clamp notice descriptions to three
+     * lines so the CLI accessibility warning cannot dominate the dropdown.
+     */
+    -webkit-line-clamp: 3;
   }
   .titlebar-tip-icon {
     align-items: center;

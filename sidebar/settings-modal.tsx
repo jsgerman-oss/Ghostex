@@ -3954,10 +3954,16 @@ function IntegrationsSettingsTab({
     agentHookStatus?.agents.filter(
       (status) => status.status === "installed" || status.status === "notRequired",
     ).length ?? 0;
+  const updateRequiredHookCount =
+    agentHookStatus?.agents.filter((status) => status.status === "updateRequired").length ?? 0;
+  const updateRequiredHookSummary =
+    updateRequiredHookCount === 1 ? "1 needs update" : `${updateRequiredHookCount} need update`;
   const hookSummary = agentHookStatus
     ? agentHookStatus.errorMessage
       ? "Unable to check"
-      : `${installedHookCount}/${AGENT_HOOK_SUPPORTED_DEFAULT_AGENTS.length} installed`
+      : updateRequiredHookCount > 0
+        ? updateRequiredHookSummary
+        : `${installedHookCount}/${AGENT_HOOK_SUPPORTED_DEFAULT_AGENTS.length} installed`
     : agentHookStatusLoading
       ? "Checking"
       : "Not checked";
@@ -4000,10 +4006,15 @@ function IntegrationsSettingsTab({
          * Bundled Ghostex skills are explicit per-skill installs in Settings,
          * not hidden side effects of CLI setup. Each row explains what the skill
          * teaches agents and remains disabled until the Ghostex CLI is present.
+         *
+         * CDXC:CliInstall 2026-06-07-13:53:
+         * Ghostex installs and repairs the app-bundled CLI automatically for
+         * DMG and Homebrew installs. Settings should expose a manual Repair CLI
+         * action for unusual PATH states, not a cask reinstall flow.
          */}
         <SettingsSection title="Integrations">
           <IntegrationSettingsRow
-            description="Install the Ghostex command-line bridge for mobile apps and CLI-backed integration setup. Ghostex Browser Use can also use gx when that alias is available and not taken by another command."
+            description="Ghostex keeps the app-bundled ghostex command linked automatically for mobile apps and CLI-backed integration setup. gx is linked when that alias is available and not taken by another command."
             icon={IconTerminal2}
             status={ghostexCliStatusLoading && !ghostexCliStatus ? "Checking" : cliReady ? "Installed" : "Not installed"}
             tone={cliReady ? "success" : "warning"}
@@ -4016,7 +4027,7 @@ function IntegrationsSettingsTab({
               variant={cliReady ? "outline" : "default"}
             >
               <IconDownload aria-hidden="true" data-icon="inline-start" />
-              {cliReady ? "Reinstall CLI" : "Install CLI"}
+              Repair CLI
             </Button>
             <Button
               disabled={ghostexCliStatusLoading || !onRequestGhostexCliStatus}
@@ -4077,7 +4088,7 @@ function IntegrationsSettingsTab({
               variant={installedHookCount > 0 ? "outline" : "default"}
             >
               <IconDownload aria-hidden="true" data-icon="inline-start" />
-              Install Hooks
+              {updateRequiredHookCount > 0 ? "Update Hooks" : "Install Hooks"}
             </Button>
             <Button
               disabled={agentHookStatusLoading || !onRequestAgentHookStatus}
@@ -4285,10 +4296,16 @@ function AgentsSettingsTab({
   );
   const installedHookCount =
     agentHookStatus?.agents.filter((status) => status.status === "installed").length ?? 0;
+  const updateRequiredHookCount =
+    agentHookStatus?.agents.filter((status) => status.status === "updateRequired").length ?? 0;
+  const updateRequiredHookSummary =
+    updateRequiredHookCount === 1 ? "1 needs update" : `${updateRequiredHookCount} need update`;
   const hookStatusSummary = agentHookStatus
     ? agentHookStatus.errorMessage
       ? "Unable to check hooks"
-      : `${installedHookCount}/${AGENT_HOOK_SUPPORTED_DEFAULT_AGENTS.length} hooks ready`
+      : updateRequiredHookCount > 0
+        ? `${installedHookCount}/${AGENT_HOOK_SUPPORTED_DEFAULT_AGENTS.length} hooks ready, ${updateRequiredHookSummary}`
+        : `${installedHookCount}/${AGENT_HOOK_SUPPORTED_DEFAULT_AGENTS.length} hooks ready`
     : agentHookStatusLoading
       ? "Checking hooks"
       : "Hook status not checked";
@@ -4390,7 +4407,7 @@ function AgentsSettingsTab({
                   variant="outline"
                 >
                   <IconDownload aria-hidden="true" data-icon="inline-start" />
-                  Install Hooks
+                  {updateRequiredHookCount > 0 ? "Update Hooks" : "Install Hooks"}
                 </Button>
                 <Button
                   disabled={!onRequestAgentHookStatus || agentHookStatusLoading}
@@ -4650,6 +4667,8 @@ function AgentHookStatusIcon({
   switch (status.status) {
     case "installed":
       return <IconCircleCheckFilled aria-hidden="true" className="size-3.5 text-emerald-400" />;
+    case "updateRequired":
+      return <IconAlertTriangle aria-hidden="true" className="size-3.5 text-amber-400" />;
     case "cliMissing":
       return <IconAlertTriangle aria-hidden="true" className="size-3.5 text-amber-400" />;
     case "notRequired":
@@ -4672,6 +4691,8 @@ function getAgentHookStatusText(
   switch (status.status) {
     case "installed":
       return "Installed";
+    case "updateRequired":
+      return "Needs update";
     case "cliMissing":
       return "CLI missing";
     case "notRequired":
@@ -4691,6 +4712,8 @@ function getAgentHookStatusClassName(
   switch (status.status) {
     case "installed":
       return "bg-emerald-500/10 text-emerald-300";
+    case "updateRequired":
+      return "bg-amber-500/10 text-amber-300";
     case "cliMissing":
       return "bg-amber-500/10 text-amber-300";
     case "notRequired":

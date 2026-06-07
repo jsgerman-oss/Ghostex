@@ -517,7 +517,7 @@ describe("normalizeghostexSettings", () => {
   });
 
   test("keeps the workspace background color setting", () => {
-    expect(DEFAULT_ghostex_SETTINGS.workspaceBackgroundColor).toBe("#151515");
+    expect(DEFAULT_ghostex_SETTINGS.workspaceBackgroundColor).toBe("#000000");
     expect(normalizeghostexSettings({ workspaceBackgroundColor: "#202020" })).toMatchObject({
       workspaceBackgroundColor: "#202020",
     });
