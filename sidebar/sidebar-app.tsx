@@ -7,6 +7,7 @@ import {
   IconArrowRight,
   IconArrowsDiagonal2,
   IconArrowsDiagonalMinimize,
+  IconAlertTriangle,
   IconBookmark,
   IconCaretRightFilled,
   IconChevronDown,
@@ -57,6 +58,7 @@ import { Button } from "@/components/ui/button";
 import {
   MAX_GROUP_COUNT,
   type SidebarActiveSessionsSortMode,
+  type SidebarAgentHookStatusMessage,
   type ExtensionToSidebarMessage,
   type SidebarPreviousSessionItem,
 } from "../shared/session-grid-contract";
@@ -173,6 +175,16 @@ type RecentProjectContextMenuPosition = {
   x: number;
   y: number;
 };
+
+function hasMissingAgentHooksForInstalledCli(
+  agentHookStatus: SidebarAgentHookStatusMessage | undefined,
+): boolean {
+  return Boolean(
+    agentHookStatus &&
+      !agentHookStatus.errorMessage &&
+      agentHookStatus.agents.some((status) => status.cliInstalled && status.status === "missing"),
+  );
+}
 
 type SidebarGroupDragPreview = {
   groupId: string;
@@ -681,6 +693,7 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
     debuggingMode,
     groupOrder,
     groupsById,
+    hasMissingAgentHooks,
     previousSessions,
     recentProjects,
     settings,
@@ -698,6 +711,7 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
       debuggingMode: state.hud.debuggingMode,
       groupOrder: state.groupOrder,
       groupsById: state.groupsById,
+      hasMissingAgentHooks: hasMissingAgentHooksForInstalledCli(state.hud.agentHookStatus),
       previousSessions: state.previousSessions,
       recentProjects: state.hud.recentProjects,
       revision: state.revision,
@@ -3024,6 +3038,17 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
     openAppModal({ modal: "firstLaunchSetup", type: "open" });
   };
 
+  const openAgentHooksSettings = () => {
+    setIsOverflowMenuOpen(false);
+    /**
+     * CDXC:AgentHooks 2026-06-07-08:51:
+     * The sidebar Tips & Tricks menu should warn when installed agent CLIs are
+     * missing gxserver-owned hooks. Clicking the warning opens Settings >
+     * Integrations where the user can explicitly choose Install Hooks.
+     */
+    openAppModal({ initialTab: "integrations", modal: "settings", type: "open" });
+  };
+
   const openDiscord = () => {
     setIsOverflowMenuOpen(false);
     /**
@@ -3125,11 +3150,13 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
 
   const topControlOptions = {
     isOverflowMenuOpen,
+    hasMissingAgentHooks,
     isPetOverlayEnabled: settings?.petOverlayEnabled === true,
     isPinnedPromptsOpen,
     isScratchPadOpen,
     onMoveSidebar: moveSidebar,
     onOpenDiscord: openDiscord,
+    onOpenAgentHooksSettings: openAgentHooksSettings,
     onOpenHelp: openWorkspaceWelcome,
     onOpenHotkeys: openHotkeys,
     onShowRunning: openRunningSessions,
@@ -4675,11 +4702,13 @@ function getScratchPadMenuLabel(isScratchPadOpen: boolean): string {
 }
 
 type RenderSidebarTopControlsOptions = {
+  hasMissingAgentHooks: boolean;
   isOverflowMenuOpen: boolean;
   isPetOverlayEnabled: boolean;
   isPinnedPromptsOpen: boolean;
   isScratchPadOpen: boolean;
   onMoveSidebar: () => void;
+  onOpenAgentHooksSettings: () => void;
   onOpenDiscord: () => void;
   onOpenHelp: () => void;
   onOpenHotkeys: () => void;
@@ -4693,11 +4722,13 @@ type RenderSidebarTopControlsOptions = {
 };
 
 function renderFloatingOverflowMenu({
+  hasMissingAgentHooks,
   isOverflowMenuOpen,
   isPetOverlayEnabled,
   isPinnedPromptsOpen,
   isScratchPadOpen,
   onMoveSidebar: _onMoveSidebar,
+  onOpenAgentHooksSettings,
   onOpenDiscord,
   onOpenHelp,
   onOpenHotkeys,
@@ -4843,6 +4874,25 @@ function renderFloatingOverflowMenu({
                   />
                   Hotkeys
                 </button>
+                {hasMissingAgentHooks ? (
+                  <button
+                    className="session-context-menu-item sidebar-hook-warning-menu-item"
+                    onClick={onOpenAgentHooksSettings}
+                    role="menuitem"
+                    type="button"
+                  >
+                    <IconAlertTriangle
+                      aria-hidden="true"
+                      className="session-context-menu-icon"
+                      size={14}
+                      stroke={1.8}
+                    />
+                    <span className="sidebar-hook-warning-menu-copy">
+                      <span>Agent hooks missing</span>
+                      <span>Install hooks for reliable working statuses</span>
+                    </span>
+                  </button>
+                ) : null}
                 <button
                   className="session-context-menu-item"
                   onClick={onOpenHelp}

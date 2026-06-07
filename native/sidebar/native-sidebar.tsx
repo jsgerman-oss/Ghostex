@@ -310,10 +310,12 @@ import {
 } from "./gxserver-presentation-cache";
 import { shouldSubmitStagedGeneratedFirstPromptTitle } from "./first-prompt-title-submit";
 import type {
+  GxserverAgentActivityState,
   GxserverAgentResumePlan,
   GxserverAgentSettings,
   GxserverAttachSessionMetadataResult,
   GxserverCancelFirstPromptAutoTitleResult,
+  GxserverIngestAgentHookEventResult,
   GxserverPresentationDelta,
   GxserverPresentationProject,
   GxserverPresentationSearchResponse,
@@ -1704,9 +1706,16 @@ type PendingNativeTerminalSurfaceCreationState = {
 };
 const pendingNativeTerminalSurfaceCreationBySessionId =
   new Map<string, PendingNativeTerminalSurfaceCreationState>();
+const NATIVE_IN_PLACE_RELOAD_CLOSE_EVENT_MS = 15_000;
+const nativeInPlaceReloadCloseBySessionId = new Map<
+  string,
+  { nativeSessionId: string; startedAt: number }
+>();
 const nativeActivitySuppressedUntilBySessionId = new Map<string, number>();
 const nativeWorkingStartedAtBySessionId = new Map<string, number>();
+const nativePersistedAgentHookEventSyncKeyBySessionId = new Map<string, string>();
 const nativeAttentionEnteredAtBySessionId = new Map<string, number>();
+const nativeAttentionEventIdBySessionId = new Map<string, string>();
 const nativeAttentionAcknowledgementTimeoutBySessionId = new Map<string, number>();
 const zmxFocusAttachExitRecoveryWindowMs = 2_500;
 const recentZmxFocusAttachAttemptsBySessionId = new Map<
@@ -1723,6 +1732,11 @@ const recoveredZmxAttachExitKeys = new Set<string>();
 const NATIVE_ATTENTION_NOTIFICATION_SESSION_COOLDOWN_MS = 20_000;
 const NATIVE_ATTENTION_NOTIFICATION_GLOBAL_WINDOW_MS = 60_000;
 const NATIVE_ATTENTION_NOTIFICATION_GLOBAL_LIMIT = 8;
+const NATIVE_ATTENTION_EVENT_CACHE_LIMIT = 2_048;
+const nativeAttentionSideEffectEventKeys = new Set<string>();
+const nativeAttentionSideEffectEventKeyOrder: string[] = [];
+const nativeLocallyAcknowledgedAttentionEventKeys = new Set<string>();
+const nativeLocallyAcknowledgedAttentionEventKeyOrder: string[] = [];
 const SIDEBAR_CARD_FOCUS_TRACE_WINDOW_MS = 5_000;
 const PREVIOUS_SESSION_RESTORE_TRACE_WINDOW_MS = 30_000;
 const previousSessionRestoreTraceStartedAtByNativeSessionId = new Map<string, number>();
@@ -1870,6 +1884,38 @@ function takeNativeTerminalSurfaceCreationPending(
 
 function clearNativeTerminalSurfaceCreationPending(sessionId: string): void {
   pendingNativeTerminalSurfaceCreationBySessionId.delete(sessionId);
+}
+
+function markNativeInPlaceReloadClosePending(sessionId: string, nativeSessionId: string): void {
+  /*
+  CDXC:SessionRestore 2026-06-07-06:50:
+  Full reload is an in-place runtime replacement. Closing the old AppKit surface
+  emits terminalExited, but that event must not mark the existing sidebar/G-session
+  done or clear the pending create for the replacement surface.
+  */
+  nativeInPlaceReloadCloseBySessionId.set(sessionId, {
+    nativeSessionId,
+    startedAt: Date.now(),
+  });
+}
+
+function consumeNativeInPlaceReloadCloseEvent(
+  sessionId: string,
+  nativeSessionId: string,
+): boolean {
+  const pendingReload = nativeInPlaceReloadCloseBySessionId.get(sessionId);
+  if (!pendingReload) {
+    return false;
+  }
+  if (
+    pendingReload.nativeSessionId !== nativeSessionId ||
+    Date.now() - pendingReload.startedAt > NATIVE_IN_PLACE_RELOAD_CLOSE_EVENT_MS
+  ) {
+    nativeInPlaceReloadCloseBySessionId.delete(sessionId);
+    return false;
+  }
+  nativeInPlaceReloadCloseBySessionId.delete(sessionId);
+  return true;
 }
 
 function noteNativeTerminalSurfaceMissingDuringPendingCreate(
@@ -5949,18 +5995,110 @@ function playNativeSound(sound: CompletionSoundSetting, volume = 0.5): void {
   });
 }
 
-function playNativeSessionCompletionSound(sessionId: string, source: string): void {
+function normalizeNativeAttentionEventId(value: string | undefined): string | undefined {
+  const trimmed = value?.trim();
+  return trimmed ? trimmed : undefined;
+}
+
+function getNativeAttentionEventKey(
+  sessionId: string,
+  attentionEventId: string | undefined,
+): string | undefined {
+  const normalizedAttentionEventId = normalizeNativeAttentionEventId(attentionEventId);
+  return normalizedAttentionEventId === undefined
+    ? undefined
+    : `${sessionId}\u001f${normalizedAttentionEventId}`;
+}
+
+function rememberNativeAttentionEventKey(
+  cache: Set<string>,
+  order: string[],
+  key: string,
+): boolean {
+  if (cache.has(key)) {
+    return false;
+  }
+  cache.add(key);
+  order.push(key);
+  while (order.length > NATIVE_ATTENTION_EVENT_CACHE_LIMIT) {
+    const staleKey = order.shift();
+    if (staleKey !== undefined) {
+      cache.delete(staleKey);
+    }
+  }
+  return true;
+}
+
+function rememberNativeSessionAttentionEventId(
+  sessionId: string,
+  attentionEventId: string | undefined,
+): string | undefined {
+  const normalizedAttentionEventId = normalizeNativeAttentionEventId(attentionEventId);
+  if (normalizedAttentionEventId !== undefined) {
+    nativeAttentionEventIdBySessionId.set(sessionId, normalizedAttentionEventId);
+  }
+  return normalizedAttentionEventId;
+}
+
+function shouldRunNativeAttentionSideEffects(
+  sessionId: string,
+  attentionEventId: string | undefined,
+): boolean {
+  const eventKey = getNativeAttentionEventKey(sessionId, attentionEventId);
+  return eventKey === undefined ||
+    rememberNativeAttentionEventKey(
+      nativeAttentionSideEffectEventKeys,
+      nativeAttentionSideEffectEventKeyOrder,
+      eventKey,
+    );
+}
+
+function markNativeAttentionEventLocallyAcknowledged(
+  sessionId: string,
+  attentionEventId: string | undefined,
+): void {
+  const eventKey = getNativeAttentionEventKey(sessionId, attentionEventId);
+  if (eventKey === undefined) {
+    return;
+  }
+  rememberNativeAttentionEventKey(
+    nativeLocallyAcknowledgedAttentionEventKeys,
+    nativeLocallyAcknowledgedAttentionEventKeyOrder,
+    eventKey,
+  );
+}
+
+function isNativeAttentionEventLocallyAcknowledged(
+  sessionId: string,
+  attentionEventId: string | undefined,
+): boolean {
+  const eventKey = getNativeAttentionEventKey(sessionId, attentionEventId);
+  return eventKey !== undefined && nativeLocallyAcknowledgedAttentionEventKeys.has(eventKey);
+}
+
+function playNativeSessionCompletionSound(
+  sessionId: string,
+  source: string,
+  attentionEventId?: string,
+): void {
   /**
    * CDXC:NativeSound 2026-04-29-16:30
    * Session completion sounds follow the completion bell setting and play when
    * a terminal first enters attention/done state. Native playback uses the
    * configured completion sound instead of the sidebar webview audio path.
+   *
+   * CDXC:NativeSound 2026-06-07-03:40
+   * Completion audio is keyed by attentionEventId when the source provides one.
+   * A restored or stale hook file can re-emit the same attention state after
+   * local activity was cleared; that must update UI state without replaying the
+   * sound for the same completion event.
    */
   if (!settings.completionBellEnabled) {
     return;
   }
 
   appendAgentDetectionDebugLog("nativeSidebar.completionSound.session", {
+    attentionEventId,
     sessionId,
     sound: settings.completionSound,
     source,
@@ -5968,7 +6106,15 @@ function playNativeSessionCompletionSound(sessionId: string, source: string): vo
   playNativeSound(settings.completionSound);
 }
 
-function handleNativeSessionEnteredAttention(sessionId: string, source: string): void {
+function handleNativeSessionEnteredAttention(
+  sessionId: string,
+  source: string,
+  attentionEventId?: string,
+): void {
+  const normalizedAttentionEventId = rememberNativeSessionAttentionEventId(
+    sessionId,
+    attentionEventId,
+  );
   clearNativeSessionAttentionAcknowledgementTimer(sessionId);
   nativeAttentionEnteredAtBySessionId.set(sessionId, Date.now());
   persistTerminalSessionRestoreActivity(sessionId, "attention");
@@ -5977,8 +6123,17 @@ function handleNativeSessionEnteredAttention(sessionId: string, source: string):
    * Attention transitions fan out to both optional sounds and optional macOS
    * banners. Keep this on the transition edge rather than every publish so
    * long-running title/bell updates do not repeatedly notify the user.
+   *
+   * CDXC:SessionAttentionNotifications 2026-06-07-03:40
+   * The transition edge is the attention event, not merely the local
+   * idle/working/attention value changing again after hydration. Replayed
+   * attentionEventId values should keep the session green without repeating
+   * sound or banner side effects.
    */
-  playNativeSessionCompletionSound(sessionId, source);
+  if (!shouldRunNativeAttentionSideEffects(sessionId, normalizedAttentionEventId)) {
+    return;
+  }
+  playNativeSessionCompletionSound(sessionId, source, normalizedAttentionEventId);
   showNativeSessionAttentionNotification(sessionId, source);
 }
 
@@ -5994,6 +6149,7 @@ function clearNativeSessionAttentionAcknowledgementTimer(sessionId: string): voi
 function clearNativeSessionAttentionTracking(sessionId: string): void {
   clearNativeSessionAttentionAcknowledgementTimer(sessionId);
   nativeAttentionEnteredAtBySessionId.delete(sessionId);
+  nativeAttentionEventIdBySessionId.delete(sessionId);
 }
 
 function markNativeSessionSemanticActivityAt(
@@ -14881,6 +15037,7 @@ function buildSidebarMessage(): SidebarHydrateMessage {
         settings.renameSessionOnDoubleClick,
         getNativeSidebarCommandSessionIndicators(commands),
       ),
+      agentHookStatus: latestNativeAgentHookStatus,
       customThemeColor: normalizeWorkspaceThemeColor(project.themeColor),
       projectSettingsProjects: createSidebarProjectSettingsProjects(),
       recentProjects: createSidebarRecentProjects(),
@@ -16151,8 +16308,24 @@ function createNativeAgentSessionEnvironment(args: {
     ghostex_WORKSPACE_ROOT: args.project.path,
   };
   if (globalSessionRef) {
+    const tokenFile =
+      currentGxserverStatus.tokenFile?.trim() ||
+      window.__ghostex_NATIVE_HOST__?.gxserver?.tokenFile?.trim();
+    const protocolVersion =
+      currentGxserverStatus.protocolVersion ??
+      window.__ghostex_NATIVE_HOST__?.gxserver?.protocolVersion;
+    /*
+    CDXC:AgentHooks 2026-06-07-08:51:
+    Installed hooks post working/attention/idle events directly to gxserver. Native launches must provide only the daemon address, auth-token file, protocol version, and canonical S:P:G session ref so the macOS app stays a renderer/input surface instead of owning hook status logic.
+    */
     environment.GHOSTEX_GLOBAL_SESSION_REF = globalSessionRef;
     environment.GHOSTEX_GXSERVER_BASE_URL = nativeGxserverBaseUrl();
+    if (tokenFile) {
+      environment.GHOSTEX_GXSERVER_AUTH_TOKEN_FILE = tokenFile;
+    }
+    if (typeof protocolVersion === "number" && Number.isFinite(protocolVersion)) {
+      environment.GHOSTEX_GXSERVER_PROTOCOL_VERSION = String(protocolVersion);
+    }
   }
   if (
     settings.promptEditorBackend === "monaco" ||
@@ -16279,9 +16452,14 @@ async function ensureNativeAgentFirstPromptHooks(): Promise<void> {
 
 async function installNativeAgentHooksFromSettings(): Promise<void> {
   try {
-    await ensureNativeAgentFirstPromptHooks();
-    await gxserverClient.installAgentHooks(["opencode"]);
-    showAppToast("success", "Agent hooks installed", "Reliable resume hooks were installed or repaired.");
+    /*
+    CDXC:AgentHooks 2026-06-07-08:51:
+    Hook installation must only happen after the user clicks Install Hooks in
+    first-launch setup or Settings. The click calls gxserver for all supported
+    agents; macOS must not auto-install or write provider hook files itself.
+    */
+    await gxserverClient.installAgentHooks();
+    showAppToast("success", "Agent hooks installed", "Agent status hooks were installed or repaired.");
   } catch (error) {
     showNativeMessage(
       "error",
@@ -16294,54 +16472,20 @@ async function installNativeAgentHooksFromSettings(): Promise<void> {
 
 async function requestNativeAgentHookStatus(): Promise<void> {
   /**
-   * CDXC:AgentHookSettings 2026-05-23-10:05:
-   * Settings -> Agents status must inspect the same reliable-resume hook files that startup installation mutates. Keep this native-side so React does not own shell paths, and keep title-based restore untouched when a hook is missing.
-   *
-   * CDXC:AgentHooks 2026-06-03-20:28:
-   * OpenCode plugin detection moved to gxserver with the nightly ownership
-   * split. Merge the daemon-owned OpenCode row into the existing native status
-   * payload so Settings stays a view over hook state instead of owning plugin
-   * marker/config logic.
+   * CDXC:AgentHooks 2026-06-07-08:51:
+   * Agent hook status is gxserver-owned. Settings, first launch, and Tips &
+   * Tricks render this daemon status directly instead of mixing native Python
+   * filesystem probes with server-owned provider rows.
    */
   if (nativeAgentHookStatusRequestInFlight) {
     return;
   }
   nativeAgentHookStatusRequestInFlight = true;
   try {
-    const result = await runNativeProcess("/usr/bin/python3", [
-      "-c",
-      getNativeAgentHookStatusPythonScript(),
-      nativeHomeDirectory(),
-      ghostex_AGENT_NOTIFY_HOOK_PATH,
-      GHOSTEX_AGENT_HOOK_STATE_DIR,
-      NATIVE_PI_EXTENSION_PATH,
-    ]);
-
-    if (result.exitCode !== 0) {
-      const errorMessage =
-        result.stderr.trim() || result.stdout.trim() || "Unable to inspect agent hook status.";
-      showNativeMessage(
-        "error",
-        errorMessage,
-      );
-      postAgentHookStatus(createNativeAgentHookStatusErrorMessage(errorMessage));
-      return;
-    }
-
-    const nativeStatus = JSON.parse(result.stdout) as SidebarAgentHookStatusMessage;
-    try {
-      const openCodeStatus = await gxserverClient.readAgentHookStatus(["opencode"]);
-      postAgentHookStatus(mergeAgentHookStatusMessages(nativeStatus, openCodeStatus as SidebarAgentHookStatusMessage));
-    } catch (gxserverError) {
-      showNativeMessage(
-        "error",
-        gxserverError instanceof Error ? gxserverError.message : "Unable to inspect OpenCode hook status through gxserver.",
-      );
-      postAgentHookStatus(nativeStatus);
-    }
+    postAgentHookStatus((await gxserverClient.readAgentHookStatus()) as SidebarAgentHookStatusMessage);
   } catch (error) {
     const errorMessage =
-      error instanceof Error ? error.message : "Unable to parse agent hook status.";
+      error instanceof Error ? error.message : "Unable to inspect agent hook status.";
     showNativeMessage(
       "error",
       errorMessage,
@@ -19799,6 +19943,57 @@ async function syncGxserverSessionStateEvent(
   }
 }
 
+async function syncGxserverAgentHookEvent(
+  sessionId: string,
+  params: {
+    agentName?: string;
+    agentSessionId?: string;
+    agentSessionPath?: string;
+    firstUserMessage?: string;
+    status?: "attention" | "idle" | "working";
+    statusUpdatedAt?: string;
+    title?: string;
+  },
+): Promise<void> {
+  const reference = resolveSidebarSessionReference(sessionId);
+  try {
+    const result = await gxserverClient.rpc<GxserverIngestAgentHookEventResult>(
+      "/api/ingestAgentHookEvent",
+      {
+        ...params,
+        eventName: "legacy-session-state",
+        projectId: reference.project.projectId,
+        sessionId: reference.sessionId,
+      },
+    );
+    applyGxserverAgentHookEventResult(reference.project.projectId, reference.sessionId, result);
+  } catch (error) {
+    appendAgentDetectionDebugLog("nativeSidebar.gxserver.agentHookEventFailed", {
+      message: error instanceof Error ? error.message : String(error),
+      sessionId,
+    });
+  }
+}
+
+function applyGxserverAgentHookEventResult(
+  projectId: string,
+  sessionId: string,
+  result: GxserverIngestAgentHookEventResult,
+): void {
+  applyGxserverSessionStateEventResult(
+    projectId,
+    sessionId,
+    result as unknown as GxserverSessionStateEventResult,
+  );
+  if (result.activity && applyGxserverSessionActivityResult(sessionId, {
+    activity: result.activity,
+    enteredAttention: result.enteredAttention,
+    session: result.session,
+  }, "agent-hook-event")) {
+    publish();
+  }
+}
+
 function applyGxserverSessionStateEventResult(
   projectId: string,
   sessionId: string,
@@ -19925,7 +20120,20 @@ function applyGxserverSessionActivityResult(
     return false;
   }
   let didChange = false;
-  const nextActivity = result.activity.activity;
+  const reportedActivity = result.activity.activity;
+  const attentionEventId = getNativeGxserverAttentionEventId(result.activity);
+  /*
+  CDXC:SessionAttention 2026-06-07-03:40:
+  gxserver and hook files can briefly re-publish an attention event after the
+  native user already acknowledged it. Keep the local cleared state for the
+  same attentionEventId instead of letting a stale server/file replay restore
+  attention UI and completion side effects.
+  */
+  const nextActivity =
+    reportedActivity === "attention" &&
+    isNativeAttentionEventLocallyAcknowledged(sessionId, attentionEventId)
+      ? "idle"
+      : reportedActivity;
   const previousActivity = terminalState.activity;
   if (result.activity.agentName && terminalState.agentName !== result.activity.agentName) {
     terminalState.agentName = result.activity.agentName;
@@ -19948,7 +20156,7 @@ function applyGxserverSessionActivityResult(
     }
   } else if (nextActivity === "attention") {
     if (result.enteredAttention) {
-      handleNativeSessionEnteredAttention(sessionId, source);
+      handleNativeSessionEnteredAttention(sessionId, source, attentionEventId);
     } else if (previousActivity !== "attention") {
       persistTerminalSessionRestoreActivity(sessionId, "attention");
     }
@@ -20018,6 +20226,34 @@ type NativePersistedSessionState = {
   statusUpdatedAt?: string;
   title?: string;
 };
+
+function getNativeGxserverAttentionEventId(
+  activity: Pick<GxserverAgentActivityState, "activity" | "attentionEventId" | "lastChangedAt">,
+): string | undefined {
+  /*
+  CDXC:SessionAttention 2026-06-07-03:40:
+  Some attention projections, especially stale title-derived working, may not
+  carry an explicit attentionEventId. Use the attention transition timestamp as
+  the stable event key so those replays are still deduped and locally
+  acknowledged without muting future attention events.
+  */
+  if (activity.activity !== "attention") {
+    return undefined;
+  }
+  return normalizeNativeAttentionEventId(activity.attentionEventId) ??
+    normalizeNativeAttentionEventId(activity.lastChangedAt);
+}
+
+function getNativePersistedAttentionEventId(
+  persistedState: NativePersistedSessionState,
+): string | undefined {
+  if (persistedState.status !== "attention") {
+    return undefined;
+  }
+  return normalizeNativeAttentionEventId(persistedState.attentionEventId) ??
+    normalizeNativeAttentionEventId(persistedState.statusUpdatedAt) ??
+    normalizeNativeAttentionEventId(persistedState.lastActivityAt);
+}
 
 function readGxserverFirstPromptTitleGenerationRunning(
   runtimeSettings: Record<string, unknown> | undefined,
@@ -20372,167 +20608,33 @@ function syncNativePersistedAgentActivity(
   }
 
   /*
-  CDXC:GhostexTui 2026-05-26-12:22:
-  GTX TUI attaches through zmx, so the macOS app may not receive fresh terminal
-  title events while an agent is viewed from the TUI. The shared session-state
-  file is the source for cross-surface working/attention visibility, but
-  attention must be event/acknowledgement based so clicking a desktop card or
-  attaching from the TUI marks the same event seen everywhere.
-
-  CDXC:GhostexTui 2026-05-26-12:58:
-  Persisted working is only authoritative while fresh. A stale working file can
-  otherwise keep both the macOS sidebar and GTX TUI orange after a hook missed
-  the final idle/attention event. Live terminal-title working remains valid even
-  when the persisted heartbeat ages out.
-
-  CDXC:SharedSessionStatus 2026-05-31-14:36:
-  gxserver owns live title-derived status. The macOS sidebar may still hydrate
-  persisted hook status, but it must not locally reinterpret terminal titles
-  into working or attention because that duplicates server transition rules.
+  CDXC:SharedSessionStatus 2026-06-07-10:06:
+  The legacy session-state file is now only a compatibility observation bridge.
+  macOS must not locally decide working/attention/idle from `.env`; forward each
+  new persisted hook status to gxserver and apply the daemon response so every
+  client shares the same status state machine.
   */
-  if (persistedState.status === "working") {
-    if (!isNativePersistedWorkingFresh(persistedState)) {
-      if (terminalState.activity === "working") {
-        terminalState.activity = "idle";
-        nativeWorkingStartedAtBySessionId.delete(sessionId);
-        persistTerminalSessionRestoreActivity(sessionId, undefined);
-        appendAgentDetectionDebugLog("nativeSidebar.persistedActivity.workingExpired", {
-          sessionId,
-          statusUpdatedAt: persistedState.statusUpdatedAt,
-        });
-        return true;
-      }
-      return false;
-    }
-
-    const suppressedUntil = getNativeActivitySuppressedUntil(sessionId);
-    if (
-      suppressedUntil !== undefined &&
-      Number.isFinite(suppressedUntil) &&
-      Date.now() < suppressedUntil
-    ) {
-      if (terminalState.activity !== "idle") {
-        terminalState.activity = "idle";
-        persistTerminalSessionRestoreActivity(sessionId, undefined);
-        appendAgentDetectionDebugLog("nativeSidebar.persistedActivity.workingSuppressed", {
-          sessionId,
-          suppressedUntil: new Date(suppressedUntil).toISOString(),
-        });
-        return true;
-      }
-      return false;
-    }
-
-    const previousActivity = terminalState.activity;
-    if (!nativeWorkingStartedAtBySessionId.has(sessionId)) {
-      nativeWorkingStartedAtBySessionId.set(sessionId, Date.now());
-    }
-    if (previousActivity === "working") {
-      return false;
-    }
-    terminalState.activity = "working";
-    clearNativeSessionAttentionTracking(sessionId);
-    persistTerminalSessionRestoreActivity(sessionId, "working");
-    appendAgentDetectionDebugLog("nativeSidebar.persistedActivity.working", {
-      previousActivity,
-      sessionId,
-    });
-    return true;
+  const syncKey = [
+    persistedState.status,
+    persistedState.statusUpdatedAt ?? persistedState.lastActivityAt ?? "",
+    persistedState.agentName ?? terminalState.agentName ?? "",
+    persistedState.agentSessionId ?? "",
+    persistedState.agentSessionPath ?? "",
+    persistedState.title ?? "",
+  ].join("\u001f");
+  if (nativePersistedAgentHookEventSyncKeyBySessionId.get(sessionId) === syncKey) {
+    return false;
   }
-
-  const previousActivity = terminalState.activity;
-  if (persistedState.status === "attention") {
-    if (isNativePersistedAttentionAcknowledged(persistedState)) {
-      nativeWorkingStartedAtBySessionId.delete(sessionId);
-      if (previousActivity === "attention") {
-        terminalState.activity = "idle";
-        persistTerminalSessionRestoreActivity(sessionId, undefined);
-        clearNativeSessionAttentionTracking(sessionId);
-        appendAgentDetectionDebugLog("nativeSidebar.persistedActivity.attentionAcknowledged", {
-          attentionEventId: persistedState.attentionEventId,
-          sessionId,
-        });
-        return true;
-      }
-      return false;
-    }
-
-    const suppressedUntil = getNativeActivitySuppressedUntil(sessionId);
-    if (
-      suppressedUntil !== undefined &&
-      Number.isFinite(suppressedUntil) &&
-      Date.now() < suppressedUntil
-    ) {
-      /*
-      CDXC:SessionAttention 2026-05-28-06:10:
-      Resume suppression applies to persisted attention as well as title and
-      bell events. During the wake grace window, a stale unacknowledged
-      session-state attention event should be acknowledged and kept idle
-      instead of re-entering attention and notifying the user for the restore
-      command itself.
-      */
-      nativeWorkingStartedAtBySessionId.delete(sessionId);
-      clearNativeSessionAttentionTracking(sessionId);
-      if (terminalState.sessionStateFilePath) {
-        void persistNativeSessionAttentionAcknowledged(
-          terminalState.sessionStateFilePath,
-          new Date().toISOString(),
-          sessionId,
-          "persisted-attention-suppressed",
-        );
-      }
-      const hadRestoreActivity =
-        session.restoreActivity === "attention" || session.restoreActivity === "working";
-      if (previousActivity !== "idle" || hadRestoreActivity) {
-        terminalState.activity = "idle";
-        persistTerminalSessionRestoreActivity(sessionId, undefined);
-        appendAgentDetectionDebugLog("nativeSidebar.persistedActivity.attentionSuppressed", {
-          attentionEventId: persistedState.attentionEventId,
-          hadRestoreActivity,
-          previousActivity,
-          sessionId,
-          suppressedUntil: new Date(suppressedUntil).toISOString(),
-        });
-        return true;
-      }
-      return false;
-    }
-
-    nativeWorkingStartedAtBySessionId.delete(sessionId);
-    if (previousActivity === "attention") {
-      return false;
-    }
-    terminalState.activity = "attention";
-    handleNativeSessionEnteredAttention(sessionId, "persisted-session-state");
-    appendAgentDetectionDebugLog("nativeSidebar.persistedActivity.attention", {
-      attentionEventId: persistedState.attentionEventId,
-      previousActivity,
-      sessionId,
-    });
-    return true;
-  }
-
-  if (previousActivity === "working") {
-    nativeWorkingStartedAtBySessionId.delete(sessionId);
-    terminalState.activity = "idle";
-    persistTerminalSessionRestoreActivity(sessionId, undefined);
-    appendAgentDetectionDebugLog("nativeSidebar.persistedActivity.idle", {
-      previousActivity,
-      sessionId,
-    });
-    return true;
-  }
-
-  nativeWorkingStartedAtBySessionId.delete(sessionId);
-  if (previousActivity !== "idle") {
-    terminalState.activity = "idle";
-    persistTerminalSessionRestoreActivity(sessionId, undefined);
-    appendAgentDetectionDebugLog("nativeSidebar.persistedActivity.idle", {
-      previousActivity,
-      sessionId,
-    });
-    return true;
-  }
+  nativePersistedAgentHookEventSyncKeyBySessionId.set(sessionId, syncKey);
+  void syncGxserverAgentHookEvent(sessionId, {
+    agentName: persistedState.agentName || terminalState.agentName,
+    agentSessionId: persistedState.agentSessionId || terminalState.agentSessionId,
+    agentSessionPath: persistedState.agentSessionPath || terminalState.agentSessionPath,
+    firstUserMessage: persistedState.firstUserMessage,
+    status: persistedState.status,
+    statusUpdatedAt: persistedState.statusUpdatedAt ?? persistedState.lastActivityAt,
+    title: persistedState.title,
+  });
   return false;
 }
 
@@ -20560,6 +20662,17 @@ function isNativePersistedAttentionAcknowledged(
     persistedState.statusUpdatedAt ?? persistedState.lastActivityAt,
   );
   return acknowledgedAt > 0 && updatedAt > 0 && acknowledgedAt >= updatedAt;
+}
+
+function isNativePersistedAttentionAcknowledgedForSession(
+  sessionId: string,
+  persistedState: NativePersistedSessionState,
+  attentionEventId: string | undefined,
+): boolean {
+  return (
+    isNativePersistedAttentionAcknowledged(persistedState) ||
+    isNativeAttentionEventLocallyAcknowledged(sessionId, attentionEventId)
+  );
 }
 
 function syncNativePersistedAgentSessionState(
@@ -20621,7 +20734,8 @@ function syncNativePersistedAgentSessionState(
 }
 
 function getStampNativeSessionSemanticActivityScript(): string {
-  return `import pathlib
+  return `import os
+import pathlib
 import sys
 from datetime import datetime
 
@@ -20687,14 +20801,18 @@ elif activity == "idle":
     state["attentionAcknowledgedAt"] = timestamp
     state["attentionAcknowledgedEventId"] = state.get("attentionEventId", "")
 state_path.parent.mkdir(parents=True, exist_ok=True)
-temp_path = state_path.with_suffix(state_path.suffix + ".tmp")
+# CDXC:SessionAttention 2026-06-07-03:40:
+# Concurrent hook/ack writes for the same session-state file must not share one
+# temp path; use a per-process temp file so atomic replace stays race-safe.
+temp_path = state_path.with_name(f"{state_path.name}.{os.getpid()}.tmp")
 temp_path.write_text("".join(f"{key}={state.get(key, '')}\\n" for key in keys), encoding="utf-8")
 temp_path.replace(state_path)
 `;
 }
 
 function getAcknowledgeNativeSessionAttentionScript(): string {
-  return `import pathlib
+  return `import os
+import pathlib
 import sys
 
 state_path = pathlib.Path(sys.argv[1])
@@ -20735,7 +20853,11 @@ if state.get("status") != "attention":
 state["attentionAcknowledgedAt"] = timestamp
 state["attentionAcknowledgedEventId"] = state.get("attentionEventId", "")
 state_path.parent.mkdir(parents=True, exist_ok=True)
-temp_path = state_path.with_suffix(state_path.suffix + ".tmp")
+# CDXC:SessionAttention 2026-06-07-03:40:
+# Acknowledgement can be requested from focus, restore, and sidebar paths at the
+# same time. Use a unique temp path per process so one ack cannot remove another
+# ack's pending replace source.
+temp_path = state_path.with_name(f"{state_path.name}.{os.getpid()}.tmp")
 temp_path.write_text("".join(f"{key}={state.get(key, '')}\\n" for key in keys), encoding="utf-8")
 temp_path.replace(state_path)
 `;
@@ -22644,6 +22766,10 @@ function completeNativeTerminalAttentionAcknowledgement(
     "attention-acknowledge",
   );
   persistTerminalSessionRestoreActivity(sessionId, undefined);
+  markNativeAttentionEventLocallyAcknowledged(
+    sessionId,
+    nativeAttentionEventIdBySessionId.get(sessionId),
+  );
   void syncNativeSessionActivityWithGxserver(sessionId, { event: "acknowledge" }, "attention-acknowledge");
   if (terminalState.sessionStateFilePath) {
     void persistNativeSessionAttentionAcknowledged(
@@ -24254,16 +24380,51 @@ function handleNativeTerminalRestoreBlocked(
   setNativeSessionSleeping(createCombinedProjectSessionId(reference.project.projectId, reference.sessionId), true);
 }
 
+function prepareGxserverZmxSessionForInPlaceReload(
+  reference: ReturnType<typeof resolveSidebarSessionReference>,
+): boolean {
+  /*
+  CDXC:SessionRestore 2026-06-07-06:50:
+  zmx Full reload must stop the existing provider before reattaching the same
+  G-session. If the provider remains live, gxserver correctly discards startup
+  text to protect the running shell, which would turn Full reload into a focus
+  operation instead of a real resume.
+  */
+  try {
+    const result = gxserverClient.transitionSessionSync({
+      action: "sleep",
+      projectId: reference.project.projectId as never,
+      reason: "fullReloadSession",
+      sessionId: reference.sessionId as never,
+    });
+    rememberGxserverProviderSessionState(result.session);
+    if (result.session.providerState.lifecycleState !== "missing") {
+      appendTerminalLaunchDebugLog("nativeSidebar.fullReloadSession.zmxStopIncomplete", {
+        lifecycleState: result.session.lifecycleState,
+        projectId: reference.project.projectId,
+        providerLifecycleState: result.session.providerState.lifecycleState,
+        sessionId: reference.sessionId,
+      });
+      showNativeMessage("error", "Full reload could not stop the existing zmx session.");
+      return false;
+    }
+    return true;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    appendTerminalLaunchDebugLog("nativeSidebar.fullReloadSession.zmxStopFailed", {
+      messageLength: message.length,
+      projectId: reference.project.projectId,
+      sessionId: reference.sessionId,
+    });
+    showNativeMessage("error", message);
+    return false;
+  }
+}
+
 function restartNativeSession(sessionId: string): void {
   const reference = resolveSidebarSessionReference(sessionId);
   const session = findTerminalSessionInProject(reference.project, reference.sessionId);
-  const groupId = findSessionGroupId(sessionId);
   if (!session) {
-    return;
-  }
-  const initialInput = buildNativeRestoredTerminalInitialInput(session);
-  if (!initialInput.trim()) {
-    replaceNativeTerminalWithFreshSession(reference, session, "fullReloadNonRestorable");
     return;
   }
   /**
@@ -24271,75 +24432,51 @@ function restartNativeSession(sessionId: string): void {
    * Right-click Full reload follows agent-tiler semantics in native ghostex:
    * recreate the terminal as the same agent type, then immediately send the
    * agent-specific resume command instead of opening a fresh shell.
+   *
+   * CDXC:SessionRestore 2026-06-07-06:50:
+   * Sidebar Full reload must reload the clicked session in place. Preserve the
+   * existing sidebar/G-session id and native durable session id instead of
+   * allocating a new gxserver terminal record, because the presentation sidebar
+   * would otherwise render the old row plus the replacement row as duplicates.
    */
   if (activeProjectId !== reference.project.projectId) {
     focusProject(reference.project.projectId);
   }
   const sessionPersistenceProvider = resolveTerminalSessionPersistenceProvider();
-  if (reference.project.isChat === true) {
-    closeTerminal(reference.sessionId, { preservePersistenceSession: true });
-    createTerminal(
-      session.title || DEFAULT_TERMINAL_SESSION_TITLE,
-      initialInput,
-      groupId,
-      session.agentName,
-      {
-        agentSessionId: session.agentSessionId,
-        queueProviderStartupText: true,
-        sessionPersistenceName: sessionPersistenceNameForProvider(
-          sessionPersistenceProvider,
-          session,
-        ),
-        sessionPersistenceProvider,
-      },
-    );
-    return;
-  }
-  const nativeSessionId = forgetNativeSessionMappingForProject(
+  const nativeSessionId = rememberNativeSessionMapping(
     reference.project.projectId,
     reference.sessionId,
   );
-  /**
-   * CDXC:SessionRestore 2026-05-15-03:23:
-   * Reload Session must replace the clicked terminal in its existing pane/tab
-   * slot. Create the replacement while the original session is still present
-   * so paneLayout can swap the target leaf/tab member instead of appending the
-   * reloaded terminal as a new split pane after close removes the placement
-   * anchor.
-   */
-  const replacementSession = createTerminal(
-    session.title || DEFAULT_TERMINAL_SESSION_TITLE,
-    initialInput,
-    groupId,
-    session.agentName,
-    {
-      agentSessionId: session.agentSessionId,
-      queueProviderStartupText: true,
-      sessionPersistenceName: sessionPersistenceNameForProvider(
-        sessionPersistenceProvider,
-        session,
-      ),
-      sessionPersistenceProvider,
-      visiblePlacement: { kind: "replace", targetSessionId: reference.sessionId },
-    },
-  );
-  if (!replacementSession) {
-    rememberNativeSessionMapping(reference.project.projectId, reference.sessionId);
+  markNativeInPlaceReloadClosePending(reference.sessionId, nativeSessionId);
+  if (
+    sessionPersistenceProvider === "zmx" &&
+    !prepareGxserverZmxSessionForInPlaceReload(reference)
+  ) {
+    nativeInPlaceReloadCloseBySessionId.delete(reference.sessionId);
     return;
   }
-  clearNativeSidebarCommandSessionBySessionId(reference.sessionId);
-  terminalStateById.delete(reference.sessionId);
   pendingNativeTerminalStartupTextBySessionId.delete(reference.sessionId);
   nativeActivitySuppressedUntilBySessionId.delete(reference.sessionId);
   nativeWorkingStartedAtBySessionId.delete(reference.sessionId);
   clearNativeSessionAttentionTracking(reference.sessionId);
   nativeAttentionNotificationLastSentAtBySessionId.delete(reference.sessionId);
   clearDelayedSendTimer(reference.sessionId, reference.project.projectId);
-  updateProjectWorkspace(
-    reference.project.projectId,
-    (workspace) => removeSessionInSimpleWorkspace(workspace, reference.sessionId).snapshot,
+  postNative({
+    preservePersistenceSession: sessionPersistenceProvider === "zmx",
+    sessionId: nativeSessionId,
+    type: "closeTerminal",
+  });
+  restoreNativeTerminalSession(
+    reference.project,
+    session,
+    sessionPersistenceProvider === "zmx" ? "full-reload-wake" : "full-reload",
+    {
+      focusAfterReady: {
+        reason: "fullReloadSession",
+        surface: "workspaceTerminal",
+      },
+    },
   );
-  postNative({ preservePersistenceSession: true, sessionId: nativeSessionId, type: "closeTerminal" });
   publish();
 }
 
@@ -36908,6 +37045,13 @@ window.addEventListener("ghostex-native-host-event", (event) => {
         return;
       }
     } else if (hostEvent.type === "terminalExited") {
+      if (consumeNativeInPlaceReloadCloseEvent(sidebarSessionId, hostEvent.sessionId)) {
+        appendTerminalLaunchDebugLog("nativeSidebar.fullReloadSession.closeEventConsumed", {
+          nativeSessionId: hostEvent.sessionId,
+          sessionId: sidebarSessionId,
+        });
+        return;
+      }
       clearNativeTerminalSurfaceCreationPending(sidebarSessionId);
       if (
         handleRecentZmxAttachExitWithFullReload(
@@ -36954,6 +37098,7 @@ window.addEventListener("ghostex-native-host-event", (event) => {
       }
       void syncNativeSessionActivityWithGxserver(sidebarSessionId, { event: "bell" }, "terminal-bell");
     } else if (hostEvent.type === "terminalReady") {
+      nativeInPlaceReloadCloseBySessionId.delete(sidebarSessionId);
       const pendingSurfaceCreate = takeNativeTerminalSurfaceCreationPending(sidebarSessionId);
       nativeTerminalReadyAtBySessionId.set(sidebarSessionId, Date.now());
       resolveNativeTerminalReadyWaiters(sidebarSessionId);

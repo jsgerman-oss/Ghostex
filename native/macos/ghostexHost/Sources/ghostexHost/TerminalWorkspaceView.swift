@@ -847,13 +847,23 @@ private func nativeEnsurePromptEditorWrapper(at wrapperURL: URL) {
    zehn and other editor callers execute EDITOR as argv[0], so command strings
    such as `Ghostex floating-monaco-editor` fail before the CLI can choose
    Monaco or gte.
+
+   CDXC:PromptEditor 2026-06-07-08:09:
+   Already-running zmx shells can invoke this wrapper with old PATH state.
+   Export the bundled zmx path at wrapper runtime so the prompt-editor
+   capability check does not query a stale Homebrew zmx before opening Monaco.
    */
   let executablePath =
     Bundle.main.executableURL?.path.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
   let launcher = executablePath.isEmpty ? "ghostex" : executablePath
+  let bundledZmxPath = nativeBundledZmxExecutablePath() ?? ""
   let contents = """
     #!/bin/zsh
     # CDXC:PromptEditor 2026-05-31-11:58: EDITOR is a single executable wrapper; the Ghostex CLI decides Monaco vs gte from runtime client/session environment.
+    ghostex_zmx_bin=\(nativeShellQuote(bundledZmxPath))
+    if [ -x "$ghostex_zmx_bin" ]; then
+      export GHOSTEX_ZMX_BIN="$ghostex_zmx_bin"
+    fi
     exec \(nativeShellQuote(launcher)) prompt-editor "$@"
     """
   do {
@@ -968,6 +978,7 @@ private func nativeRemoveStaleSshPromptEditorEnvironment(_ environment: inout [S
     "GHOSTEX_DEBUGGING_MODE",
     "GHOSTEX_CUSTOM_PROMPT_EDITOR_COMMAND",
     "GHOSTEX_GTE_PROMPT_EDITOR_LOG",
+    "GHOSTEX_ZMX_BIN",
     "ZDOTDIR",
     "GHOSTEX_ORIGINAL_ZDOTDIR",
   ] {
@@ -1087,6 +1098,7 @@ private func nativeGhosttyFloatingEditorEnvironment(
     "GHOSTEX_ORIGINAL_ZDOTDIR",
     "GHOSTEX_PROMPT_EDITOR_BACKEND",
     "GHOSTEX_PROMPT_EDITOR_CLIENT",
+    "GHOSTEX_ZMX_BIN",
     "GHOSTEX_PROMPT_EDITING_ENABLED",
     "GHOSTEX_RICH_PROMPT_EDITING_WITH_GTE",
     "GHOSTEX_CUSTOM_PROMPT_EDITOR_COMMAND",
@@ -1134,6 +1146,7 @@ private func nativeApplyGtePromptEditingEnvironment(_ environment: inout [String
   environment["VISUAL"] = promptEditor
   environment["GHOSTEX_PROMPT_EDITOR_BACKEND"] = promptEditorBackend
   environment["GHOSTEX_PROMPT_EDITOR_CLIENT"] = "macos-app"
+  environment["GHOSTEX_ZMX_BIN"] = nativeBundledZmxExecutablePath() ?? ""
   environment["GHOSTEX_DEBUGGING_MODE"] = NativeDebugLogging.isEnabled ? "1" : "0"
   environment["GHOSTEX_GTE_PROMPT_EDITOR_LOG"] = nativeGtePromptEditorLogURL().path
   if let appVariant = ProcessInfo.processInfo.environment["GHOSTEX_APP_VARIANT"], !appVariant.isEmpty {
@@ -15434,16 +15447,18 @@ private enum NativeSessionPersistenceMode {
   }
 
   private static func zmxExecutableShellSetup() -> String {
-    let bundledZmxPath =
-      Bundle.main.resourceURL?
-      .appendingPathComponent("Web/bin/zmx", isDirectory: false)
-      .path ?? ""
+    let bundledZmxPath = nativeBundledZmxExecutablePath() ?? ""
     /**
      CDXC:ZmxPersistence 2026-05-20-09:57:
      Ghostex-managed zmx sessions require the bundled zmx build because the pane
      refresh protocol is implemented by zmx itself. Do not fall back to an older
      PATH zmx here; using a binary without the refresh protocol can leak the
      private refresh sequence into the user's shell.
+
+     CDXC:PromptEditor 2026-06-07-08:09:
+     zmx shells need the bundled zmx path in their environment so Ctrl+G can
+     ask the current leader client for Monaco support without resolving a stale
+     zmx from PATH.
      */
     return """
       zmx_bin=\(shellQuote(bundledZmxPath))
@@ -15451,6 +15466,7 @@ private enum NativeSessionPersistenceMode {
         printf '%s\\n' 'session persistence is set to zmx, but Ghostex bundled zmx was not found.'
         exit 127
       fi
+      export GHOSTEX_ZMX_BIN="$zmx_bin"
       """
   }
 

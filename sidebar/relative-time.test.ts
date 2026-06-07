@@ -26,6 +26,27 @@ describe("formatRelativeTime", () => {
     });
   });
 
+  test("should allow callers to provide the render tick clock", () => {
+    expect(
+      formatRelativeTime("2026-04-06T12:00:00.000Z", {
+        allowJustNow: false,
+        nowMs: new Date("2026-04-06T12:00:00.000Z").getTime(),
+      }),
+    ).toEqual({
+      suffix: "ago",
+      value: "0s",
+    });
+    expect(
+      formatRelativeTime("2026-04-06T12:00:00.000Z", {
+        allowJustNow: false,
+        nowMs: new Date("2026-04-06T12:01:01.000Z").getTime(),
+      }),
+    ).toEqual({
+      suffix: "ago",
+      value: "1m",
+    });
+  });
+
   test("should format seconds, minutes, hours, and days with compact suffixes", () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-04-06T12:00:00.000Z"));

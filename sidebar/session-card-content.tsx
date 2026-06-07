@@ -123,11 +123,16 @@ export function SessionCardContent({
     !hideHeaderAgentIcon &&
     !shouldAllowFullWidthTitle &&
     (Boolean(session.agentIcon) || showTerminalSessionIcon || showHeaderLoadingSpinner);
-  useRelativeTimeTick(hasLastInteractionTime);
+  /*
+  CDXC:SidebarRelativeTime 2026-06-07-06:27:
+  Session-card Last Active labels must keep aging from the client clock after the row is rendered. Pass the relative-time tick into the formatter so React Compiler cannot cache the first label, such as a newly created session's 0s, until gxserver publishes an unrelated row update.
+  */
+  const relativeTimeTick = useRelativeTimeTick(hasLastInteractionTime);
   const lastInteractionLabel =
     hasLastInteractionTime && session.lastInteractionAt
       ? formatRelativeTime(session.lastInteractionAt, {
           allowJustNow: false,
+          nowMs: relativeTimeTick,
         }).value
       : undefined;
   /**

@@ -68,6 +68,35 @@
   white-space: nowrap;
 }
 
+.sidebar-hook-warning-menu-item {
+  /*
+   * CDXC:AgentHooks 2026-06-07-08:51:
+   * Missing hook notices in the sidebar Tips & Tricks menu need one compact
+   * explanatory line so users understand working statuses can be unreliable
+   * before opening Settings to explicitly install hooks.
+   */
+  align-items: flex-start;
+  color: #f5c46b;
+  white-space: normal;
+}
+
+.sidebar-hook-warning-menu-copy {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.sidebar-hook-warning-menu-copy > span:first-child {
+  color: inherit;
+  font-weight: 500;
+}
+
+.sidebar-hook-warning-menu-copy > span:last-child {
+  color: color-mix(in srgb, currentColor 72%, transparent);
+  font-size: 11px;
+  line-height: 1.25;
+}
+
 .session-context-menu-trailing-icon {
   margin-left: auto;
 }

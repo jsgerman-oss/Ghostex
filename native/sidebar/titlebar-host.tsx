@@ -499,16 +499,17 @@ function createTitlebarMissingAgentHooksNotice(
   }
 
   /**
-   * CDXC:AgentHookSettings 2026-06-04-03:05:
+   * CDXC:AgentHookSettings 2026-06-07-08:51:
    * Live supported agents without installed Ghostex hooks should surface in
-   * Tips & Tricks as non-dismissable runtime notices. Hooks power exact resume
-   * metadata, attention state, and first-message naming, so read-once tips are
-   * the wrong model while affected sessions are still running.
+   * Tips & Tricks as non-dismissable runtime notices. Hooks power gxserver's
+   * working/attention status transitions, exact resume metadata, and
+   * first-message naming, so read-once tips are the wrong model while affected
+   * sessions are still running.
    */
   const formattedAgents = formatTitlebarNoticeNameList(agentNames);
   const plural = agentNames.length > 1;
   return {
-    body: `${formattedAgents} ${plural ? "are" : "is"} running without ${plural ? "their" : "its"} Ghostex ${plural ? "hooks" : "hook"}. Resume metadata, attention state, and first-message session naming can be unreliable until hooks are installed.`,
+    body: `${formattedAgents} ${plural ? "are" : "is"} running without ${plural ? "their" : "its"} Ghostex ${plural ? "hooks" : "hook"}. Working/done statuses, attention state, resume metadata, and first-message session naming can be unreliable until hooks are installed.`,
     icon: "warning",
     id: `missing-agent-hooks-${[...missingLiveAgents.keys()].sort().join("-")}`,
     settingsTarget: "agentHooks",
@@ -2067,14 +2068,15 @@ function App() {
 
   const openAgentHooksSettings = () => {
     /**
-     * CDXC:AgentHookSettings 2026-06-04-03:05:
+     * CDXC:AgentHookSettings 2026-06-07-08:51:
      * Missing-hook Tips notices are actionable runtime warnings. Clicking one
-     * should open Settings on the Agents tab because that tab owns hook status,
-     * refresh, and Install Hooks actions for supported live agents.
+     * should open Settings on the Integrations tab because that page exposes
+     * the direct Agent Hooks install row without requiring an expanded details
+     * panel.
      */
     setTipsMenuOpen(false);
     window.webkit?.messageHandlers?.ghostexAppModalHost?.postMessage({
-      initialTab: "agents",
+      initialTab: "integrations",
       modal: "settings",
       type: "open",
     });

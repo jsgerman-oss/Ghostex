@@ -259,24 +259,30 @@ export function createNativeSidebarGxserverClient(
     return result.settings;
   }
 
-  async function readAgentHookStatus(agentIds: readonly string[] = ["opencode"]): Promise<GxserverReadAgentHookStatusResult> {
+  async function readAgentHookStatus(agentIds?: readonly string[]): Promise<GxserverReadAgentHookStatusResult> {
     /*
-    CDXC:AgentHooks 2026-06-03-20:28:
-    OpenCode plugin setup is gxserver-owned after the nightly split. The sidebar
-    asks the daemon for hook status instead of embedding OpenCode marker,
-    opencode.json, or login-shell PATH rules in React.
+    CDXC:AgentHooks 2026-06-07-08:51:
+    Hook status is gxserver-owned for every supported agent. Native clients ask
+    for the shared daemon status instead of inspecting Codex/Claude/Pi/OpenCode
+    files or merging provider-specific rows locally.
     */
-    return rpc<GxserverReadAgentHookStatusResult>("/api/readAgentHookStatus", { agentIds });
+    return rpc<GxserverReadAgentHookStatusResult>(
+      "/api/readAgentHookStatus",
+      agentIds ? { agentIds } : {},
+    );
   }
 
-  async function installAgentHooks(agentIds: readonly string[] = ["opencode"]): Promise<GxserverInstallAgentHooksResult> {
+  async function installAgentHooks(agentIds?: readonly string[]): Promise<GxserverInstallAgentHooksResult> {
     /*
-    CDXC:AgentHooks 2026-06-03-20:28:
-    Settings remains the user-facing install button, but gxserver owns the
-    OpenCode plugin write/update and legacy config cleanup so clients do not
-    reintroduce app-owned integration scripts.
+    CDXC:AgentHooks 2026-06-07-08:51:
+    Settings and first-launch remain the only user-facing install triggers, but
+    gxserver writes every supported hook so macOS, TUI, CLI, mobile, and future
+    desktop clients do not carry duplicate installation logic.
     */
-    return rpc<GxserverInstallAgentHooksResult>("/api/installAgentHooks", { agentIds });
+    return rpc<GxserverInstallAgentHooksResult>(
+      "/api/installAgentHooks",
+      agentIds ? { agentIds } : {},
+    );
   }
 
   async function fetchPresentationSnapshot(): Promise<GxserverPresentationSnapshot> {
