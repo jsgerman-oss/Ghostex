@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { parseRepositoryCloneInput } from "./repository-clone";
+import { isRepositoryCloneBranchNameInputValid, parseRepositoryCloneInput } from "./repository-clone";
 
 describe("parseRepositoryCloneInput", () => {
   test.each([
@@ -29,4 +29,20 @@ describe("parseRepositoryCloneInput", () => {
       repositoryName: "zehn",
     });
   });
+});
+
+describe("isRepositoryCloneBranchNameInputValid", () => {
+  test.each(["", "main", "master", "feature/branch-picker", "release/v4.0.0-beta.3"])(
+    "accepts %s",
+    (branchName) => {
+      expect(isRepositoryCloneBranchNameInputValid(branchName)).toBe(true);
+    },
+  );
+
+  test.each([" feature branch ", "-main", "feature..branch", "feature@{1}", ".hidden", "release.lock"])(
+    "rejects %s",
+    (branchName) => {
+      expect(isRepositoryCloneBranchNameInputValid(branchName)).toBe(false);
+    },
+  );
 });

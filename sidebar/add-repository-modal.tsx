@@ -12,7 +12,7 @@ import {
 import { Field, FieldDescription, FieldGroup, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import type { GxserverRepositoryClonePreviewResult } from "../shared/gxserver-protocol";
-import { parseRepositoryCloneInput } from "../shared/repository-clone";
+import { isRepositoryCloneBranchNameInputValid, parseRepositoryCloneInput } from "../shared/repository-clone";
 import { AppTooltip, TooltipProvider } from "./app-tooltip";
 import { postAppModalHostMessage } from "./app-modal-host-bridge";
 import { canSubmitAddRepositoryClone } from "./add-repository-modal-state";
@@ -28,6 +28,7 @@ const ADD_REPOSITORY_OPTION_HELP_TOOLTIP_STYLE = {
 } satisfies CSSProperties;
 
 type AddRepositoryCloneRequest = {
+  branchName: string;
   cloneMainOnly: boolean;
   folderPath: string;
   newFolderName: string;
@@ -99,17 +100,17 @@ export function AddRepositoryModal({
   const repositoryId = useId();
   const folderId = useId();
   const newFolderId = useId();
+  const branchId = useId();
   const cloneMainOnlyId = useId();
   const shallowCloneId = useId();
   const repositoryRef = useRef<HTMLInputElement>(null);
   const activeRequestIdRef = useRef<string | undefined>(undefined);
-  const hasEditedNewFolderNameRef = useRef(false);
   const previewRequestIdRef = useRef<string | undefined>(undefined);
   const [cloneMainOnly, setCloneMainOnly] = useState(false);
   const [repositoryInput, setRepositoryInput] = useState("");
   const [folderPath, setFolderPath] = useState(readLastRepositoryLocation);
   const [newFolderName, setNewFolderName] = useState("");
-  const [hasEditedNewFolderName, setHasEditedNewFolderName] = useState(false);
+  const [branchName, setBranchName] = useState("");
   const [clonePreview, setClonePreview] = useState<GxserverRepositoryClonePreviewResult | undefined>(undefined);
   const [previewErrorMessage, setPreviewErrorMessage] = useState<string | undefined>(undefined);
   const [shallowClone, setShallowClone] = useState(false);
@@ -132,8 +133,7 @@ export function AddRepositoryModal({
     setCloneMainOnly(false);
     setShallowClone(false);
     setNewFolderName("");
-    setHasEditedNewFolderName(false);
-    hasEditedNewFolderNameRef.current = false;
+    setBranchName("");
     setClonePreview(undefined);
     setPreviewErrorMessage(undefined);
     setErrorMessage(undefined);
@@ -150,10 +150,6 @@ export function AddRepositoryModal({
       window.cancelAnimationFrame(animationFrame);
     };
   }, [isOpen, isRemoteClone]);
-
-  useEffect(() => {
-    hasEditedNewFolderNameRef.current = hasEditedNewFolderName;
-  }, [hasEditedNewFolderName]);
 
   useEffect(() => {
     if (!isOpen || isCloning) {
@@ -213,9 +209,6 @@ export function AddRepositoryModal({
         const preview = isRepositoryClonePreview(message.preview) ? message.preview : undefined;
         setClonePreview(preview);
         setPreviewErrorMessage(undefined);
-        if (preview && !hasEditedNewFolderNameRef.current) {
-          setNewFolderName(preview.destinationFolderName);
-        }
         return;
       }
       if (!isRepositoryCloneResultMessage(message)) {
@@ -248,8 +241,10 @@ export function AddRepositoryModal({
   }
 
   const hasInvalidRepositoryInput = repositoryInput.trim().length > 0 && Boolean(previewErrorMessage);
+  const hasInvalidBranchName = branchName.trim().length > 0 && !isRepositoryCloneBranchNameInputValid(branchName);
   const destinationWarning = clonePreview?.destinationExists ? clonePreview.warning : undefined;
   const canClone = canSubmitAddRepositoryClone({
+    branchName,
     clonePreview,
     folderPath,
     isCloning,
@@ -267,12 +262,12 @@ export function AddRepositoryModal({
       setErrorMessage("Enter a Git repository to clone.");
       return;
     }
-    if (!normalizedFolderPath) {
-      setErrorMessage("Choose a folder location.");
+    if (!isRepositoryCloneBranchNameInputValid(branchName)) {
+      setErrorMessage("Enter a valid Git branch name.");
       return;
     }
-    if (!newFolderName.trim()) {
-      setErrorMessage("Enter a new folder name.");
+    if (!normalizedFolderPath) {
+      setErrorMessage("Choose a folder location.");
       return;
     }
     if (clonePreview?.destinationExists) {
@@ -293,6 +288,7 @@ export function AddRepositoryModal({
     activeRequestIdRef.current = requestId;
     setIsCloning(true);
     onClone({
+      branchName: branchName.trim(),
       cloneMainOnly,
       folderPath: normalizedFolderPath,
       newFolderName: newFolderName.trim(),
@@ -336,8 +332,7 @@ export function AddRepositoryModal({
                 onChange={(event) => {
                   setRepositoryInput(event.currentTarget.value);
                   setNewFolderName("");
-                  setHasEditedNewFolderName(false);
-                  hasEditedNewFolderNameRef.current = false;
+                  setBranchName("");
                   setClonePreview(undefined);
                   setPreviewErrorMessage(undefined);
                   setErrorMessage(undefined);
@@ -394,6 +389,9 @@ export function AddRepositoryModal({
               {/*
               CDXC:AddRepository 2026-06-01-11:18:
               The modal needs an explicit editable new-folder name because gxserver now blocks clone start when the resolved destination already exists. Keep the warning tied to server preview results so all clients enforce the same destination rule.
+
+              CDXC:AddRepository 2026-06-07-16:01:
+              The field must remain empty by default so users can clone with the repository name as the destination folder. Only typed text should override gxserver's repo-name default.
               */}
               <FieldLabel htmlFor={newFolderId}>New folder</FieldLabel>
               <Input
@@ -403,17 +401,39 @@ export function AddRepositoryModal({
                 id={newFolderId}
                 onChange={(event) => {
                   setNewFolderName(event.currentTarget.value);
-                  setHasEditedNewFolderName(true);
-                  hasEditedNewFolderNameRef.current = true;
                   setClonePreview(undefined);
                   setPreviewErrorMessage(undefined);
                   setErrorMessage(undefined);
                 }}
-                placeholder="Repository folder name"
+                placeholder="Leave empty to use the Repo's name as the folder name"
                 value={newFolderName}
               />
               <FieldDescription>
                 {clonePreview?.destinationPath ?? "The repository will be cloned into this folder."}
+              </FieldDescription>
+            </Field>
+            <Field data-invalid={hasInvalidBranchName ? true : undefined}>
+              {/*
+              CDXC:AddRepository 2026-06-07-16:06:
+              Branch input is optional. Empty keeps Git on the repository default branch, usually main or master, while typed text asks gxserver to clone and check out that branch by name.
+              */}
+              <FieldLabel htmlFor={branchId}>Branch</FieldLabel>
+              <Input
+                aria-invalid={hasInvalidBranchName ? true : undefined}
+                className="h-10 px-3 text-sm md:text-sm"
+                disabled={isCloning}
+                id={branchId}
+                onChange={(event) => {
+                  setBranchName(event.currentTarget.value);
+                  setErrorMessage(undefined);
+                }}
+                placeholder="Leave empty to clone main/master"
+                value={branchName}
+              />
+              <FieldDescription>
+                {hasInvalidBranchName
+                  ? "Enter a valid Git branch name."
+                  : "Type a branch name only when you do not want the repository default."}
               </FieldDescription>
             </Field>
             <TooltipProvider delayDuration={300}>
@@ -424,6 +444,9 @@ export function AddRepositoryModal({
 
                 CDXC:AddRepository 2026-06-02-20:12:
                 Clone option help tooltips must wrap within a 230px maximum width so explanatory copy stays readable and does not span across the modal.
+
+                CDXC:AddRepository 2026-06-07-16:06:
+                Branch-only clone scope now follows the Branch field. If Branch is empty, Git clones only the repository default branch; if Branch is typed, Git clones only that branch.
                 */}
                 <label className="add-repository-option" htmlFor={cloneMainOnlyId}>
                   <input
@@ -434,13 +457,13 @@ export function AddRepositoryModal({
                     onChange={(event) => setCloneMainOnly(event.currentTarget.checked)}
                     type="checkbox"
                   />
-                  <span className="add-repository-option-label">Clone main only</span>
+                  <span className="add-repository-option-label">Clone branch only</span>
                   <AppTooltip
-                    content="Use for repos you mostly want as references. This fetches only the main branch, so avoid it for repos you plan to work on heavily across branches."
+                    content="Use for repos you mostly want as references. This fetches only the selected branch, or the default branch when Branch is empty, so avoid it for repos you plan to work on heavily across branches."
                     contentStyle={ADD_REPOSITORY_OPTION_HELP_TOOLTIP_STYLE}
                   >
                     <span
-                      aria-label="Clone main only help"
+                      aria-label="Clone branch only help"
                       className="add-repository-option-info"
                       role="img"
                       tabIndex={0}

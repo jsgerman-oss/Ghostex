@@ -3,6 +3,7 @@ export type ParsedRepositoryCloneInput = {
   repositoryName: string;
 };
 
+const MAX_REPOSITORY_BRANCH_NAME_LENGTH = 255;
 const DEFAULT_REPOSITORY_HOST = "github.com";
 const REPOSITORY_BROWSER_PATH_STOP_SEGMENTS = new Set([
   "-",
@@ -77,6 +78,36 @@ export function parseRepositoryCloneInput(input: string): ParsedRepositoryCloneI
     cloneUrl: `https://${DEFAULT_REPOSITORY_HOST}/${shorthandPath}`,
     repositoryName: repositoryNameFromPath(shorthandPath),
   };
+}
+
+/*
+CDXC:AddRepository 2026-06-07-16:06:
+The Clone Repository modal accepts an optional branch name. Empty means Git
+uses the repository default branch, usually main or master; typed names must be
+valid ref-like branch names before the modal enables Clone & Add.
+*/
+export function isRepositoryCloneBranchNameInputValid(input: string): boolean {
+  const branchName = input.trim();
+  if (!branchName) {
+    return true;
+  }
+  if (
+    branchName.length > MAX_REPOSITORY_BRANCH_NAME_LENGTH ||
+    branchName === "@" ||
+    branchName.startsWith("-") ||
+    branchName.startsWith("/") ||
+    branchName.endsWith("/") ||
+    branchName.endsWith(".") ||
+    branchName.includes("..") ||
+    branchName.includes("@{") ||
+    /[\s~^:?*[\\\x00-\x1F\x7F]/.test(branchName)
+  ) {
+    return false;
+  }
+
+  return branchName.split("/").every((segment) => {
+    return Boolean(segment) && !segment.startsWith(".") && !segment.endsWith(".lock");
+  });
 }
 
 function extractRepositoryInputToken(input: string): string | undefined {

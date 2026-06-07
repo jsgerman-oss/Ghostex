@@ -1913,10 +1913,9 @@ function AppModalHost() {
     }
     /**
      * CDXC:FirstLaunchSetup 2026-05-26-17:12:
-     * The production first-launch modal should reflect an existing Homebrew CLI
-     * install before asking the user to install again. Request native PATH
-     * inspection when the setup flow opens and render Storybook through the same
-     * status prop.
+     * The production first-launch modal should reflect the app-bundled CLI that
+     * native auto-links on startup. Request native PATH inspection when the setup
+     * flow opens and render Storybook through the same status prop.
      *
      * CDXC:FirstLaunchSetup 2026-05-27-02:41:
      * Tips & Tricks now opens the first-launch modal, so the legacy modal id must
@@ -2477,6 +2476,7 @@ function AppModalHost() {
            * owns clone progress and final success/error toasts after this message.
            */
           vscode.postMessage({
+            branchName: request.branchName,
             cloneMainOnly: request.cloneMainOnly,
             folderPath: request.folderPath,
             newFolderName: request.newFolderName,

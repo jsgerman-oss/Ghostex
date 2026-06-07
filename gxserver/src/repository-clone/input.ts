@@ -12,6 +12,7 @@ export type ParsedRepositoryCloneInput = {
 };
 
 export type NormalizedRepositoryCloneInput = {
+  branchName?: string;
   cloneMainOnly: boolean;
   destinationFolderName: string;
   parentPath: string;
@@ -20,6 +21,7 @@ export type NormalizedRepositoryCloneInput = {
 };
 
 const DEFAULT_REPOSITORY_HOST = "github.com";
+const MAX_REPOSITORY_BRANCH_NAME_LENGTH = 255;
 const REPOSITORY_BROWSER_PATH_STOP_SEGMENTS = new Set([
   "-",
   "branches",
@@ -37,6 +39,9 @@ const REPOSITORY_BROWSER_PATH_STOP_SEGMENTS = new Set([
 /*
 CDXC:RepositoryClone 2026-06-01-11:18:
 Repository clone parsing, destination naming, existing-folder detection, and Git option normalization must live in gxserver because macOS, TUI/CLI, mobile, Windows, and Linux clients all initiate the same clone flow. Clients may render forms and toasts, but gxserver owns the filesystem decision that blocks cloning into an existing default folder.
+
+CDXC:RepositoryClone 2026-06-07-16:06:
+Branch selection must also normalize in gxserver. Empty branch names mean Git uses the repository default branch, while typed branch names are validated and passed as argv to `git clone --branch`.
 */
 export async function previewRepositoryClone(
   params: Record<string, unknown>,
@@ -50,6 +55,7 @@ export async function previewRepositoryClone(
 
   const destination = await readDestinationStatus(destinationPath);
   return {
+    ...(input.branchName ? { branchName: input.branchName } : {}),
     cloneMainOnly: input.cloneMainOnly,
     cloneUrl: input.parsedRepository.cloneUrl,
     defaultFolderName,
@@ -90,6 +96,7 @@ export function normalizeRepositoryCloneInput(params: Record<string, unknown>): 
   const defaultFolderName = normalizeRepositoryDestinationFolderName(parsedRepository.repositoryName, "repository");
   const requestedFolderName = params.destinationFolderName ?? params.newFolderName;
   return {
+    branchName: normalizeRepositoryBranchName(params.branchName),
     cloneMainOnly: params.cloneMainOnly === true,
     destinationFolderName: normalizeRepositoryDestinationFolderName(requestedFolderName, defaultFolderName),
     parentPath,
@@ -99,14 +106,18 @@ export function normalizeRepositoryCloneInput(params: Record<string, unknown>): 
 }
 
 export function buildRepositoryCloneGitArgs(input: {
+  branchName?: string;
   cloneMainOnly: boolean;
   cloneUrl: string;
   destinationFolderName: string;
   shallowClone: boolean;
 }): string[] {
   const args = ["clone"];
+  if (input.branchName) {
+    args.push("--branch", input.branchName);
+  }
   if (input.cloneMainOnly) {
-    args.push("--branch", "main", "--single-branch");
+    args.push("--single-branch");
   }
   if (input.shallowClone) {
     args.push("--depth", "1");
@@ -210,6 +221,42 @@ function readRequiredString(value: unknown, field: string): string {
     throw new GxserverRepositoryCloneError("badRequest", `${field} must be a non-empty string.`);
   }
   return value.trim();
+}
+
+function normalizeRepositoryBranchName(input: unknown): string | undefined {
+  if (input === undefined || input === null) {
+    return undefined;
+  }
+  if (typeof input !== "string") {
+    throw new GxserverRepositoryCloneError("badRequest", "branchName must be a string.");
+  }
+  const branchName = input.trim();
+  if (!branchName) {
+    return undefined;
+  }
+  if (!isRepositoryBranchNameValid(branchName)) {
+    throw new GxserverRepositoryCloneError("badRequest", "branchName must be a valid Git branch name.");
+  }
+  return branchName;
+}
+
+function isRepositoryBranchNameValid(branchName: string): boolean {
+  if (
+    branchName.length > MAX_REPOSITORY_BRANCH_NAME_LENGTH ||
+    branchName === "@" ||
+    branchName.startsWith("-") ||
+    branchName.startsWith("/") ||
+    branchName.endsWith("/") ||
+    branchName.endsWith(".") ||
+    branchName.includes("..") ||
+    branchName.includes("@{") ||
+    /[\s~^:?*[\\\x00-\x1F\x7F]/.test(branchName)
+  ) {
+    return false;
+  }
+  return branchName.split("/").every((segment) => {
+    return Boolean(segment) && !segment.startsWith(".") && !segment.endsWith(".lock");
+  });
 }
 
 function extractRepositoryInputToken(input: string): string | undefined {

@@ -110,6 +110,7 @@ export class GxserverRepositoryCloneJobManager {
 
   async #run(runtime: GxserverRepositoryCloneRuntime, job: MutableRepositoryCloneJob): Promise<void> {
     const args = buildRepositoryCloneGitArgs({
+      branchName: job.preview.branchName,
       cloneMainOnly: job.preview.cloneMainOnly,
       cloneUrl: job.preview.cloneUrl,
       destinationFolderName: job.preview.destinationFolderName,
@@ -117,9 +118,16 @@ export class GxserverRepositoryCloneJobManager {
     });
     await runtime.logger.log({
       details: {
-        args,
-        destinationPath: job.preview.destinationPath,
+        /*
+        CDXC:RepositoryClone 2026-06-07-16:06:
+        Clone job logs must stay support-bundle safe. Do not persist clone URLs,
+        branch names, destination names, paths, stdout/stderr, or raw argv; keep
+        only booleans and stable ids that explain the selected clone mode.
+        */
+        branchSpecified: Boolean(job.preview.branchName),
+        cloneMainOnly: job.preview.cloneMainOnly,
         jobId: job.jobId,
+        shallowClone: job.preview.shallowClone,
       },
       event: "repositoryClone.started",
       level: "info",
@@ -160,7 +168,6 @@ export class GxserverRepositoryCloneJobManager {
       job.state = "completed";
       await runtime.logger.log({
         details: {
-          destinationPath: job.preview.destinationPath,
           jobId: job.jobId,
           projectId: project.projectId,
         },
@@ -181,9 +188,8 @@ export class GxserverRepositoryCloneJobManager {
       job.state = "failed";
       await runtime.logger.log({
         details: {
-          destinationPath: job.preview.destinationPath,
+          errorCode: error instanceof GxserverRepositoryCloneError ? error.code : "unknown",
           jobId: job.jobId,
-          message,
         },
         event: "repositoryClone.failed",
         level: "warn",
