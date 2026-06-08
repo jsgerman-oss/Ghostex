@@ -225,8 +225,15 @@ export function buildZmxRunCommand(input: GxserverZmxRunCommandInput): string {
   /*
   CDXC:GxserverRemoteAgents 2026-06-03-02:18:
   Remote gxserver can create agent sessions without a local macOS renderer, so it also needs a bounded way to start the backing zmx provider. This command launches only the named session with server-owned startup text, cwd, bundled zmx, and gxserver identity; it does not expose generic process execution.
+
+  CDXC:GxserverSessionRestore 2026-06-08-20:49:
+  macOS zmx restore/startup now runs through provider creation instead of post-ready terminal input. Keep the provider shell alive after the foreground agent exits by appending a login shell to the startup command; do not `exec` the agent command because ending the agent must return the user to a shell rather than close the terminal.
+
+  CDXC:GxserverSessionRestore 2026-06-08-21:18:
+  `zmx run` normally sends command text through the provider PTY, which makes large restore wrappers appear in scrollback. Use zmx's initial-command mode so the missing provider execs the zsh wrapper as its first process instead of typing it into a shell.
   */
   const startupCommand = withAtuinIgnoredShellHistoryPrefix(input.startupText.replace(/[\r\n]+$/u, ""));
+  const providerShellCommand = `${startupCommand}\nexec /bin/zsh -li`;
   return `
 zmx_session=${shellQuote(input.sessionName)}
 zmx_cwd=${shellQuote(input.cwd)}
@@ -234,14 +241,15 @@ zmx_global_session_ref=${shellQuote(input.globalSessionRef ?? "")}
 zmx_gxserver_auth_token_file=${shellQuote(input.gxserverAuthTokenFile ?? "")}
 zmx_gxserver_base_url=${shellQuote(input.gxserverBaseUrl ?? "")}
 zmx_gxserver_protocol_version=${shellQuote(String(input.gxserverProtocolVersion ?? ""))}
-zmx_startup_command=${shellQuote(startupCommand)}
+zmx_startup_text=${shellQuote(startupCommand)}
+zmx_startup_command=${shellQuote(providerShellCommand)}
 zmx_bin=${shellQuote(input.zmxExecutablePath)}
 if [ ! -x "$zmx_bin" ]; then
   printf '%s\\n' 'session persistence is set to zmx, but Ghostex bundled zmx was not found.' >&2
   exit 127
 fi
 export GHOSTEX_ZMX_BIN="$zmx_bin"
-if [ -z "$zmx_startup_command" ]; then
+if [ -z "$zmx_startup_text" ]; then
   printf '%s\\n' 'gxserver startSessionProvider requires startup text.' >&2
   exit 64
 fi
@@ -259,7 +267,7 @@ if [ -n "$zmx_gxserver_protocol_version" ]; then
   export GHOSTEX_GXSERVER_PROTOCOL_VERSION="$zmx_gxserver_protocol_version"
 fi
 cd "$zmx_cwd" || exit
-exec "$zmx_bin" run "$zmx_session" -d /bin/zsh -lc "$zmx_startup_command"
+exec "$zmx_bin" run "$zmx_session" -d --initial-command /bin/zsh -lic "$zmx_startup_command"
 `.trim();
 }
 

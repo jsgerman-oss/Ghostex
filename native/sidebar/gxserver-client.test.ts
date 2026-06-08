@@ -215,6 +215,78 @@ describe("native sidebar gxserver client", () => {
     });
   });
 
+  test("starts a missing zmx provider through the typed local gxserver RPC", async () => {
+    /*
+    CDXC:GxserverVerification 2026-06-08-20:49:
+    Local macOS zmx restore must start missing providers through gxserver before native attaches Ghostty. Pin the sidebar client envelope so restore code can use a typed `/api/startSessionProvider` call instead of queuing startup scripts for terminalReady.
+    */
+    const requests: Array<{ body?: unknown; headers: Record<string, string>; method: string; url: string }> = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const bodyText = typeof init?.body === "string" ? init.body : undefined;
+        requests.push({
+          body: bodyText ? JSON.parse(bodyText) : undefined,
+          headers: normalizeHeaders(init?.headers),
+          method: init?.method ?? "GET",
+          url: String(input),
+        });
+        return jsonResponse({
+          ok: true,
+          product: "gxserver",
+          protocolVersion: 1,
+          requestId: "start-provider",
+          result: {
+            provider: "zmx",
+            providerState: {
+              lifecycleState: "exists",
+              probedAt: "2026-06-08T16:49:00.000Z",
+              zmxName: "S1a-P1a-G1a",
+            },
+            session: {
+              createdAt: "2026-06-08T16:49:00.000Z",
+              kind: "terminal",
+              lifecycleState: "running",
+              projectId: "P1a",
+              sessionId: "G1a",
+              surface: "workspace",
+              title: "Codex",
+              updatedAt: "2026-06-08T16:49:00.000Z",
+            },
+            started: true,
+            startupTextDisposition: "queueAfterTerminalReady",
+            zmxName: "S1a-P1a-G1a",
+          },
+        });
+      }),
+    );
+
+    const client = createNativeSidebarGxserverClient({
+      authToken: "token-123",
+      baseUrl: "http://127.0.0.1:60000",
+    });
+    const result = await client.startSessionProvider({
+      projectId: "P1a" as never,
+      sessionId: "G1a" as never,
+      startupText: " codex resume abc\r",
+    });
+
+    expect(result.started).toBe(true);
+    expect(requests).toHaveLength(1);
+    expect(requests[0].url).toBe("http://127.0.0.1:60000/api/startSessionProvider");
+    expect(requests[0].method).toBe("POST");
+    expect(requests[0].headers.authorization).toBe("Bearer token-123");
+    expect(requests[0].headers["x-gxserver-protocol-version"]).toBe("1");
+    expect(requests[0].body).toEqual({
+      params: {
+        projectId: "P1a",
+        sessionId: "G1a",
+        startupText: " codex resume abc\r",
+      },
+      protocolVersion: 1,
+    });
+  });
+
   test("formats WebKit Load failed as a user-facing gxserver action error", async () => {
     /*
     CDXC:GxserverVerification 2026-06-08-19:24:

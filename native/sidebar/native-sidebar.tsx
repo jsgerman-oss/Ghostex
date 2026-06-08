@@ -1386,6 +1386,7 @@ type NativeProject = {
   isChat?: boolean;
   isQuick?: boolean;
   isRecentProject?: boolean;
+  isRemoteAttachCarrier?: boolean;
   name: string;
   path: string;
   projectEditorCompanionPaneHidden?: boolean;
@@ -1415,6 +1416,10 @@ type NativeProject = {
 
 function isQuickProject(project: Pick<NativeProject, "isChat" | "isQuick">): boolean {
   return project.isQuick === true || project.isChat === true;
+}
+
+function isRemoteAttachCarrierProject(project: Pick<NativeProject, "isRemoteAttachCarrier">): boolean {
+  return project.isRemoteAttachCarrier === true;
 }
 
 function quickKindForProject(
@@ -3522,6 +3527,18 @@ function providerSessionStateFromGxserverAttach(
   }
 }
 
+function shouldStartZmxProviderBeforeNativeAttach(
+  attach: GxserverAttachSessionMetadataResult,
+): boolean {
+  /*
+  CDXC:GxserverTerminalRestore 2026-06-08-20:49:
+  zmx restore/startup text is a provider-start responsibility, not terminal-ready input. A missing zmx provider with gxserver-approved startup text must be started through `/api/startSessionProvider` before Swift creates the attach surface so resume scripts never traverse an already-live interactive terminal.
+  */
+  return attach.providerState.lifecycleState === "missing" &&
+    attach.startupTextDisposition === "queueAfterTerminalReady" &&
+    Boolean(attach.startupText?.trim());
+}
+
 function markNativeTerminalCreateFailed(
   projectId: string,
   sessionId: string,
@@ -3627,17 +3644,20 @@ async function postNativeCreateTerminalWithGxserverAttach(
 
   CDXC:GxserverTerminalWake 2026-06-01-12:07:
   Sleeping-session clicks are gxserver wake requests. Use `/api/wakeSession` for those restores so gxserver marks the shared session running and returns the daemon-built resume command instead of relying on macOS-local resume parsing.
+
+  CDXC:GxserverTerminalRestore 2026-06-08-20:49:
+  When gxserver reports a missing zmx provider with startup text, start that provider through gxserver before creating the native Ghostty attach surface. Do not queue zmx restore text for terminalReady because the ready event only proves the renderer exists, not that an idle shell is safe for injected input.
   */
   let attach: GxserverAttachSessionMetadataResult;
+  const attachParams = {
+    projectId: project.projectId as never,
+    sessionId: sidebarSessionId as never,
+    startupText,
+  };
   try {
-    const params = {
-      projectId: project.projectId as never,
-      sessionId: sidebarSessionId as never,
-      startupText,
-    };
     attach = options.intent === "wake"
-      ? await gxserverClient.fetchWakeSessionMetadata(params)
-      : await gxserverClient.fetchAttachSessionMetadata(params);
+      ? await gxserverClient.fetchWakeSessionMetadata(attachParams)
+      : await gxserverClient.fetchAttachSessionMetadata(attachParams);
   } catch (error) {
     markNativeTerminalCreateFailed(
       project.projectId,
@@ -3647,6 +3667,65 @@ async function postNativeCreateTerminalWithGxserverAttach(
     return;
   }
 
+  if (attach.restoreBlocked) {
+    handleNativeTerminalRestoreBlocked({
+      cwd: attach.restoreBlocked.cwd ?? command.cwd,
+      reason: attach.restoreBlocked.reason,
+      sessionId: command.sessionId,
+      type: "terminalRestoreBlocked",
+    });
+    return;
+  }
+  if (shouldStartZmxProviderBeforeNativeAttach(attach)) {
+    try {
+      const provider = await gxserverClient.startSessionProvider({
+        projectId: project.projectId as never,
+        sessionId: sidebarSessionId as never,
+        startupText: attach.startupText,
+      });
+      appendTerminalLaunchDebugLog("nativeSidebar.gxserverProviderStart.resolved", {
+        projectId: project.projectId,
+        providerState: provider.providerState.lifecycleState,
+        sessionId: sidebarSessionId,
+        started: provider.started,
+        startupTextDisposition: provider.startupTextDisposition,
+        zmxName: provider.zmxName,
+      });
+      attach = await gxserverClient.fetchAttachSessionMetadata(attachParams);
+    } catch (error) {
+      markNativeTerminalCreateFailed(
+        project.projectId,
+        sidebarSessionId,
+        error instanceof Error ? error.message : String(error),
+      );
+      return;
+    }
+    if (attach.restoreBlocked) {
+      handleNativeTerminalRestoreBlocked({
+        cwd: attach.restoreBlocked.cwd ?? command.cwd,
+        reason: attach.restoreBlocked.reason,
+        sessionId: command.sessionId,
+        type: "terminalRestoreBlocked",
+      });
+      return;
+    }
+  }
+  if (!attach.attachCommand?.trim()) {
+    markNativeTerminalCreateFailed(
+      project.projectId,
+      sidebarSessionId,
+      "gxserver did not return a zmx attach command for this session.",
+    );
+    return;
+  }
+  if (attach.startupTextDisposition === "queueAfterTerminalReady" && attach.startupText?.trim()) {
+    markNativeTerminalCreateFailed(
+      project.projectId,
+      sidebarSessionId,
+      "gxserver did not confirm the zmx provider started before terminal attach.",
+    );
+    return;
+  }
   rememberProviderSessionState(
     project.projectId,
     sidebarSessionId,
@@ -3659,27 +3738,6 @@ async function postNativeCreateTerminalWithGxserverAttach(
   if (terminalState) {
     terminalState.sessionPersistenceName = attach.zmxName;
     terminalState.sessionPersistenceProvider = "zmx";
-  }
-
-  if (attach.restoreBlocked) {
-    handleNativeTerminalRestoreBlocked({
-      cwd: attach.restoreBlocked.cwd ?? command.cwd,
-      reason: attach.restoreBlocked.reason,
-      sessionId: command.sessionId,
-      type: "terminalRestoreBlocked",
-    });
-    return;
-  }
-  if (!attach.attachCommand?.trim()) {
-    markNativeTerminalCreateFailed(
-      project.projectId,
-      sidebarSessionId,
-      "gxserver did not return a zmx attach command for this session.",
-    );
-    return;
-  }
-  if (attach.startupTextDisposition === "queueAfterTerminalReady" && attach.startupText?.trim()) {
-    queueNativeTerminalStartupText(sidebarSessionId, attach.startupText);
   }
   appendTerminalLaunchDebugLog("nativeSidebar.gxserverAttach.resolved", {
     persistenceSessionCreated: attach.persistenceSessionCreated,
@@ -8005,8 +8063,14 @@ function readStoredProjects(): { activeProjectId: string; projects: NativeProjec
     const localProjectsJson = localStorage.getItem(PROJECTS_STORAGE_KEY);
     const candidate = JSON.parse(localProjectsJson || "null");
     const candidateProjects: NativeProject[] = Array.isArray(candidate?.projects)
-      ? candidate.projects.flatMap((project: unknown) => normalizeStoredNativeProject(project))
+      ? candidate.projects
+        .flatMap((project: unknown) => normalizeStoredNativeProject(project))
+        .filter((project: NativeProject) => !isRemoteAttachCarrierProject(project))
       : [];
+    /*
+     * CDXC:RemoteAttach 2026-06-08-20:50:
+     * Remote attach carriers are native renderer implementation details, not restorable local workspaces. Drop any persisted carrier rows on startup so remote sessions never reopen under local Projects or Recent Projects after an app restart.
+     */
     const visibleCandidateProjects = removeEmptyStoredQuickTerminalProjects(candidateProjects);
     const projects = ensureVisibleWorktreeParentProjects(
       visibleCandidateProjects.length > 0 ? visibleCandidateProjects : [fallbackProject],
@@ -8645,6 +8709,7 @@ function normalizeStoredNativeProject(candidate: unknown): NativeProject[] {
       isChat: project.isChat === true || isNativeChatProjectPath(path),
       isQuick: project.isQuick === true || project.isChat === true || isNativeChatProjectPath(path),
       isRecentProject: project.isRecentProject === true,
+      isRemoteAttachCarrier: project.isRemoteAttachCarrier === true,
       name: project.name?.trim() || projectNameFromPath(path),
       path,
       projectEditorCompanionPaneHidden: project.projectEditorCompanionPaneHidden === true,
@@ -14321,6 +14386,7 @@ function createSidebarRecentProjects(): SidebarRecentProject[] {
     .filter(
       (project) =>
         project.isChat !== true &&
+        !isRemoteAttachCarrierProject(project) &&
         project.isRecentProject === true &&
         isNativeProjectKnownToGxserverInventory(project),
     )
@@ -14362,6 +14428,7 @@ function createSidebarProjectSettingsProjects() {
         if (
           localProject?.isRecentProject === true ||
           localProject?.isChat === true ||
+          localProject?.isRemoteAttachCarrier === true ||
           (localProject ? isQuickProject(localProject) : false)
         ) {
           return [];
@@ -14395,6 +14462,7 @@ function createSidebarProjectSettingsProjects() {
     .filter(
       (project) =>
         !isQuickProject(project) &&
+        !isRemoteAttachCarrierProject(project) &&
         project.isRecentProject !== true &&
         project.worktree === undefined,
     )
@@ -14844,7 +14912,7 @@ function createPresentationSidebarGroups(
       CDXC:SidebarChats 2026-06-01-19:58:
       Projects under Ghostex chat roots are projectless chat containers. Render their terminal sessions inside the synthetic Chats group and exclude those project rows from the main Projects list so gxserver presentation keeps the pre-cutover Quick/Chats behavior.
       */
-      if (localProject?.isRecentProject === true) {
+      if (localProject?.isRecentProject === true || localProject?.isRemoteAttachCarrier === true) {
         return undefined;
       }
       return createPresentationProjectSidebarGroup(
@@ -14864,6 +14932,7 @@ function createPresentationSidebarGroups(
           (project) =>
             project.projectId === activeProjectId &&
             project.isRecentProject !== true &&
+            !isRemoteAttachCarrierProject(project) &&
             isQuickProject(project),
         ),
       isChatCollection: true,
@@ -27845,22 +27914,99 @@ async function openRemoteAttachTerminalForTarget(target: RemoteAttachTarget): Pr
    * Attach Command while making sidebar click behavior open a usable terminal
    * pane.
    */
-  const session = await createNativeQuickTerminal({
-    forceSessionPersistenceOff: true,
-    shellCommand: buildRemoteAttachTerminalProcessCommand(plan.sshCommand),
-    title: createRemoteAttachTerminalTitle(plan.remoteMachine, plan.session),
-  });
-  if (!session) {
+  const carrier = await createNativeRemoteAttachCarrierTerminal(target, plan);
+  if (!carrier) {
     showAppToast("error", "Remote attach failed", "Ghostex could not create a local terminal for the remote session.");
     return;
   }
   /*
-   * CDXC:RemoteAttach 2026-06-08-19:53:
-   * The native renderer still needs a local Ghostty carrier for the SSH process, but the user's sidebar ownership model is remote-first. Hide the carrier's gxserver row from local/Quick presentation and keep a focus map so the remote machine row remains the visible identity.
+   * CDXC:RemoteAttach 2026-06-08-20:50:
+   * The native renderer still needs a local Ghostty carrier for the SSH process, but the user's sidebar ownership model is remote-first. Hide the carrier's gxserver project/session rows and keep a focus map so the remote machine row remains the visible identity.
    */
-  hideGxserverPresentationSessionLocally(activeProjectId, session.sessionId, "remote-attach-carrier");
-  rememberRemoteAttachLocalSession(target, createCombinedProjectSessionId(activeProjectId, session.sessionId));
+  hideGxserverPresentationProjectLocally(carrier.projectId, "remote-attach-carrier");
+  hideGxserverPresentationSessionLocally(carrier.projectId, carrier.session.sessionId, "remote-attach-carrier");
+  rememberRemoteAttachLocalSession(target, createCombinedProjectSessionId(carrier.projectId, carrier.session.sessionId));
   publish();
+}
+
+async function createNativeRemoteAttachCarrierTerminal(
+  target: RemoteAttachTarget,
+  plan: RemoteAttachCommandPlan,
+): Promise<{ projectId: string; session: TerminalSessionRecord } | undefined> {
+  const title = createRemoteAttachTerminalTitle(plan.remoteMachine, plan.session);
+  const carrierProject = await ensureNativeRemoteAttachCarrierProject();
+  if (!carrierProject) {
+    return undefined;
+  }
+  activeProjectId = carrierProject.projectId;
+  /*
+   * CDXC:RemoteAttach 2026-06-08-20:50:
+   * Remote attach panes need a native Ghostty owner, but creating that owner in the active local project makes the remote session appear under the wrong sidebar section. Use a dedicated hidden carrier project for the AppKit surface and project the focused identity back to the remote machine row.
+   */
+  const session = createTerminal(title, "", undefined, undefined, {
+    forceSessionPersistenceOff: true,
+    shellCommand: buildRemoteAttachTerminalProcessCommand(plan.sshCommand),
+  });
+  if (!session) {
+    return undefined;
+  }
+  const projectId = activeProjectId;
+  markNativeRemoteAttachCarrierProject(projectId);
+  appendTerminalLaunchDebugLog("nativeSidebar.remoteAttach.carrierCreated", {
+    hasSession: true,
+    machineId: target.machineId,
+    projectId,
+    remoteProjectIdLength: target.projectId.length,
+    remoteSessionIdLength: target.sessionId.length,
+    sessionId: session.sessionId,
+  });
+  return { projectId, session };
+}
+
+async function ensureNativeRemoteAttachCarrierProject(): Promise<NativeProject | undefined> {
+  const carrierPath = `${nativeGhostexHomeDirectory().replace(/\/+$/u, "")}/remote-attach-carriers`;
+  const existingProject = projects.find((project) =>
+    isRemoteAttachCarrierProject(project) &&
+    normalizeNativePathForProjectComparison(project.path) === normalizeNativePathForProjectComparison(carrierPath),
+  );
+  if (existingProject) {
+    return existingProject;
+  }
+  const mkdirResult = await runNativeProcess("/bin/mkdir", ["-p", carrierPath], {
+    timeoutMs: 5_000,
+  });
+  if (mkdirResult.exitCode !== 0) {
+    appendTerminalLaunchDebugLog("nativeSidebar.remoteAttach.carrierDirectoryFailed", {
+      exitCode: mkdirResult.exitCode,
+      hasStderr: mkdirResult.stderr.trim().length > 0,
+      hasStdout: mkdirResult.stdout.trim().length > 0,
+    });
+    return undefined;
+  }
+  const project: NativeProject = {
+    commandsPanel: createProjectCommandsPanelState(),
+    isRecentProject: true,
+    isRemoteAttachCarrier: true,
+    name: "Remote Attach",
+    path: carrierPath,
+    projectId: createProjectId("remote-attach-carrier"),
+    theme: resolveSidebarTheme(settings.sidebarTheme, "dark"),
+    workspace: createDefaultGroupedSessionWorkspaceSnapshot(),
+  };
+  projects = orderNativeProjectsForSidebar([...projects, project]);
+  return project;
+}
+
+function markNativeRemoteAttachCarrierProject(projectId: string): void {
+  projects = projects.map((project) =>
+    project.projectId === projectId
+      ? {
+          ...project,
+          isRecentProject: true,
+          isRemoteAttachCarrier: true,
+        }
+      : project,
+  );
 }
 
 function buildRemoteSshShellCommand(
@@ -27892,7 +28038,12 @@ function buildRemoteGhostexAttachCommand(target: RemoteAttachTarget): string {
 }
 
 function buildRemoteLoginShellCommand(remoteCommand: string): string {
-  return `/bin/zsh -lc ${quoteNativeShellArg(remoteCommand)}`;
+  /*
+   * CDXC:RemoteAttach 2026-06-08-20:50:
+   * Android allocates a PTY and starts a shell before writing the attach command, so user-managed Node paths from zsh startup files are present. The macOS OpenSSH path must invoke zsh as login+interactive too; otherwise Homebrew/mise `ghostex` shims can fail with `env: node: No such file or directory`.
+   */
+  const quotedCommand = quoteNativeShellArg(remoteCommand);
+  return `if [ -x /bin/zsh ]; then exec /bin/zsh -lic ${quotedCommand}; elif command -v zsh >/dev/null 2>&1; then exec zsh -lic ${quotedCommand}; else exec /bin/sh -lc ${quotedCommand}; fi`;
 }
 
 function buildRemoteSshCommand(

@@ -35,6 +35,8 @@ import {
   type GxserverSessionDomainState,
   type GxserverSessionTransitionParams,
   type GxserverSessionTransitionResult,
+  type GxserverStartSessionProviderParams,
+  type GxserverStartSessionProviderResult,
   type GxserverTypedOperationResult,
 } from "../../shared/gxserver-protocol";
 
@@ -440,6 +442,19 @@ export function createNativeSidebarGxserverClient(
     return attach;
   }
 
+  async function startSessionProvider(
+    params: GxserverStartSessionProviderParams,
+  ): Promise<GxserverStartSessionProviderResult> {
+    /*
+    CDXC:GxserverTerminalRestore 2026-06-08-20:49:
+    Missing zmx providers must run gxserver-approved startup text through `/api/startSessionProvider` before native creates the Ghostty attach surface. This keeps restore/resume commands out of post-ready terminal input while preserving the daemon-owned startup decision.
+    */
+    return rpc<GxserverStartSessionProviderResult>(
+      "/api/startSessionProvider",
+      params as unknown as Record<string, unknown>,
+    );
+  }
+
   function fetchAgentLaunchPlanSync(
     params: GxserverAgentLaunchPlanParams,
   ): GxserverAgentLaunchPlan {
@@ -598,6 +613,7 @@ export function createNativeSidebarGxserverClient(
     runGitHubAction,
     runWorktreeAction,
     searchSessions,
+    startSessionProvider,
     subscribePresentation,
     transitionSessionSync,
     updateAgentSettings,

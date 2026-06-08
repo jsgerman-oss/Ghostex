@@ -34,6 +34,9 @@ Remote project Git diff refresh now calls the owning machine's `/api/runGitActio
 CDXC:RemoteGxserver 2026-06-08-19:53:
 Remote session card clicks now open a local Ghostty terminal that runs the same attach contract as Android/iOS: `ssh -tt` to the saved machine, remote login shell, and `ghostex attach --session-id --project-id`. The local Ghostty carrier is hidden from Quick/local sidebar presentation so the visible session remains under its owning remote machine. Explicit Copy Attach Command actions copy the same stable-id SSH command for external terminals.
 
+CDXC:RemoteGxserver 2026-06-08-20:50:
+Remote attach carriers must not be created inside Quick or the active local project. They use a dedicated hidden local carrier project only for the native Ghostty surface, while the sidebar focus and visible ownership stay on the remote machine/project/session row. The SSH command invokes zsh as login+interactive so user-managed Node paths match the Android shell-channel attach behavior.
+
 CDXC:RemoteGxserver 2026-06-03-00:24:
 Remote session cards can now copy SSH-wrapped resume commands by asking the owning gxserver for `/api/readAgentResumePlan`, then executing the returned copy command in the remote project directory over the saved SSH connection. Resume syntax stays server-owned and bearer tokens remain native-only.
 
@@ -214,7 +217,7 @@ Implemented in the first pass:
 - Previous Sessions search includes connected Remote machines, and remote previous-session delete/restore routes through the owning machine's gxserver.
 - Remote session lifecycle uses the owning machine's `/api/sleepSession`, `/api/wakeSession`, and `/api/killSession`; remote Full Reload restarts the provider by kill-then-wake through gxserver.
 - Remote project header Git diff refresh uses the owning machine's typed `/api/runGitAction` calls and renders stats under the scoped remote project id.
-- Remote session card clicks open local SSH attach terminals using the Android/iOS stable-id attach contract, and the local Ghostty carrier stays hidden from Quick so the visible card remains under the owning remote machine. Explicit Copy Attach Command copies the same SSH-wrapped `ghostex attach --session-id --project-id` command using saved SSH settings.
+- Remote session card clicks open local SSH attach terminals using the Android/iOS stable-id attach contract. The native Ghostty carrier lives in a dedicated hidden local carrier project, not Quick or the active local project, while the visible card remains under the owning remote machine. Explicit Copy Attach Command copies the same SSH-wrapped `ghostex attach --session-id --project-id` command using saved SSH settings.
 - Remote session cards copy SSH-wrapped resume commands from the owning machine's gxserver resume plan.
 - Remote Git direct actions support clean-tree Push and View PR by routing Git/GitHub typed operations through the owning machine's gxserver.
 - Remote Git commit/push/PR review opens the shared Git review modal for remote projects, scopes confirmation by pending request id, opens remote file diffs through gxserver, stages selected files remotely, generates blank commit messages from remote staged diffs with the local prompt agent, commits through remote `/api/runGitAction`, pushes through remote Git, and creates PRs with remote `/api/runGitHubAction`.

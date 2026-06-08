@@ -197,6 +197,10 @@ test("zmx session interaction commands use bundled zmx for history and raw input
 });
 
 test("zmx run startup command is prefixed once for Atuin history ignore", () => {
+  /*
+  CDXC:GxserverVerification 2026-06-08-20:49:
+  Provider-start restore must keep startup commands out of post-ready terminal input while preserving the user's shell after the agent exits. Assert the generated zmx run command starts an interactive login zsh, keeps the single Atuin-ignore prefix, and appends a login shell instead of execing the agent.
+  */
   const command = buildZmxRunCommand({
     cwd: "/repo/ghostex",
     globalSessionRef: "S1a:P3a91:G8v20",
@@ -208,9 +212,10 @@ test("zmx run startup command is prefixed once for Atuin history ignore", () => 
     zmxExecutablePath: "/bundle/zmx",
   });
 
-  assert.match(command, /zmx_startup_command=' codex resume abc'/);
+  assert.match(command, /zmx_startup_text=' codex resume abc'/);
+  assert.match(command, /zmx_startup_command=' codex resume abc\nexec \/bin\/zsh -li'/);
   assert.match(command, /export GHOSTEX_ZMX_BIN="\$zmx_bin"/);
-  assert.match(command, /exec "\$zmx_bin" run "\$zmx_session" -d \/bin\/zsh -lc "\$zmx_startup_command"/);
+  assert.match(command, /exec "\$zmx_bin" run "\$zmx_session" -d --initial-command \/bin\/zsh -lic "\$zmx_startup_command"/);
 
   const alreadyPrefixed = buildZmxRunCommand({
     cwd: "/repo/ghostex",
@@ -218,7 +223,7 @@ test("zmx run startup command is prefixed once for Atuin history ignore", () => 
     startupText: " codex resume abc\r",
     zmxExecutablePath: "/bundle/zmx",
   });
-  assert.match(alreadyPrefixed, /zmx_startup_command=' codex resume abc'/);
+  assert.match(alreadyPrefixed, /zmx_startup_text=' codex resume abc'/);
   assert.doesNotMatch(alreadyPrefixed, /zmx_startup_command='  codex/);
 });
 

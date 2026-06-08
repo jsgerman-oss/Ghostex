@@ -1634,9 +1634,10 @@ test("zmx lifecycle API starts missing providers through detached zmx run withou
       assert.equal(start.body.result.startupTextDisposition, "queueAfterTerminalReady");
       assert.equal(start.body.result.session.lifecycleState, "running");
       assert.equal(start.body.result.providerState.lifecycleState, "exists");
-      const runScript = calls.find((script) => script.includes('run "$zmx_session" -d /bin/zsh -lc "$zmx_startup_command"'));
+      const runScript = calls.find((script) => script.includes('run "$zmx_session" -d --initial-command /bin/zsh -lic "$zmx_startup_command"'));
       assert.ok(runScript);
-      assert.match(runScript, /zmx_startup_command=' codex --yolo'/);
+      assert.match(runScript, /zmx_startup_text=' codex --yolo'/);
+      assert.match(runScript, /zmx_startup_command=' codex --yolo[\s\S]*exec \/bin\/zsh -li'/);
       assert.match(runScript, /export GHOSTEX_GLOBAL_SESSION_REF=/);
       assert.match(runScript, /cd "\$zmx_cwd" \|\| exit/);
 
