@@ -846,11 +846,20 @@ async function latestSparkleVersion() {
 }
 
 async function findSparkleBinDir() {
+  /*
+   CDXC:ReleaseAutomation 2026-06-08-16:33:
+   Dual-architecture release builds use per-arch derived data under build/arm64 and build/x86_64. Locate Sparkle's tools in those SwiftPM artifact folders before falling back to older shared and DerivedData paths, otherwise a fully notarized release can stop before appcast generation.
+   */
+  const searchRoots = [
+    path.join(repoRoot, "build/arm64/SourcePackages/artifacts/sparkle"),
+    path.join(repoRoot, "build/x86_64/SourcePackages/artifacts/sparkle"),
+    path.join(repoRoot, "build/SourcePackages/artifacts/sparkle"),
+    "/tmp/ghostex-xcodebuild/SourcePackages/artifacts/sparkle",
+    path.join(process.env.HOME ?? "", "Library/Developer/Xcode/DerivedData"),
+  ];
   const command = [
     "find",
-    shellQuote(path.join(repoRoot, "build/SourcePackages/artifacts/sparkle")),
-    shellQuote("/tmp/ghostex-xcodebuild/SourcePackages/artifacts/sparkle"),
-    shellQuote(path.join(process.env.HOME ?? "", "Library/Developer/Xcode/DerivedData")),
+    ...searchRoots.map((root) => shellQuote(root)),
     "-path '*/Sparkle/bin/generate_appcast' -print -quit 2>/dev/null | xargs dirname",
   ].join(" ");
   const sparkleBinDir = await capture(command);
