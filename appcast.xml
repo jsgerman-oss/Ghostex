@@ -8,6 +8,31 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
         <link>https://github.com/maddada/Ghostex/releases</link>
         <description>Sparkle appcast for Ghostex macOS releases.</description>
         <item>
+            <title>4.0.3</title>
+            <pubDate>Mon, 08 Jun 2026 20:32:21 +0400</pubDate>
+            <sparkle:fullReleaseNotesLink>https://github.com/maddada/Ghostex/releases/tag/v4.0.3</sparkle:fullReleaseNotesLink>
+            <sparkle:version>40003</sparkle:version>
+            <sparkle:shortVersionString>4.0.3</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <description sparkle:format="markdown"><![CDATA[# Ghostex 4.0.3
+
+- Remote session and group clicks now open a local Ghostty terminal that SSH-attaches to the selected remote session with the stable `ghostex attach` contract, while Copy Attach Command still copies the SSH command for external terminals.
+- Remote attach carrier terminals stay hidden from the local Quick section, so focus and active styling remain on the owning remote machine row.
+- Remote machine setup and gxserver request failures now show more actionable stage-specific messages for SSH, install, token, tunnel, streaming, and transport problems instead of raw loopback or WebKit errors.
+- Remote settings are easier to scan, with compact saved-machine cards, inline Tailscale setup help, and clearer optional SSH identity-file guidance.
+- The Quick section header can launch the selected agent directly, with the same agent picker used by project headers and new Quick agent chats kept projectless.
+- The titlebar now disables GitHub mode when the active project has no GitHub remote and disables GitHub/Kanban mode for Quick sessions.
+- Embedded code-server editor panes now use Ghostex-owned bundled settings by default, start with the Dark 2026 theme on new profiles, and keep local VS Code settings as an explicit opt-in.
+- Sparkle update checks repeat quietly while Ghostex is running, the titlebar update button can appear on first render, and update download/extraction progress windows stay hidden while the release notes and relaunch prompts remain available.
+- The native sidebar/workarea divider keeps its resize cursor and visible separator aligned during hover and live resizing.
+- Installed macOS app bundles are smaller because release packaging prunes duplicate Beads payloads, wrong-architecture node-pty prebuilds, and T3 Code source maps before notarization.
+
+[Full release notes](https://github.com/maddada/Ghostex/releases/tag/v4.0.3)
+]]></description>
+            <enclosure url="https://github.com/maddada/Ghostex/releases/download/v4.0.3/ghostex-4.0.3-arm64.dmg" length="514623198" type="application/octet-stream" sparkle:edSignature="FJ3KQp/CcHW0iVlJIapVmy3faL6+xoNUZKLrKj16mlfaeKskVedp830Ih9NM0vku75F6nMOic/Tzg7938HzFAA=="/>
+        </item>
+        <item>
             <title>4.0.2</title>
             <pubDate>Mon, 08 Jun 2026 17:30:52 +0400</pubDate>
             <sparkle:fullReleaseNotesLink>https://github.com/maddada/Ghostex/releases/tag/v4.0.2</sparkle:fullReleaseNotesLink>
@@ -94,19 +119,9 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
             <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
             <enclosure url="https://github.com/maddada/Ghostex/releases/download/v3.26.0/ghostex-3.26.0-arm64.dmg" length="187129513" type="application/octet-stream" sparkle:edSignature="7gV2lKijXs5YolMdVGzc2ztmexSh7RAi5R/Fy8kb+yi4/gmsRql2+FksG7eMajaBN/5IfBc8D3zOm9JnO39jCw=="/>
         </item>
-        <item>
-            <title>3.25.0</title>
-            <pubDate>Sat, 30 May 2026 08:47:09 +0400</pubDate>
-            <sparkle:fullReleaseNotesLink>https://github.com/maddada/Ghostex/releases/tag/v3.25.0</sparkle:fullReleaseNotesLink>
-            <sparkle:version>32500</sparkle:version>
-            <sparkle:shortVersionString>3.25.0</sparkle:shortVersionString>
-            <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
-            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
-            <enclosure url="https://github.com/maddada/Ghostex/releases/download/v3.25.0/ghostex-3.25.0-arm64.dmg" length="186517019" type="application/octet-stream" sparkle:edSignature="VxG1Xv3iTTHzvjk6sappYLj9rqBVtmZjwuDcUPFUihj8AAeSk8X2Ym2o8L/7S9fk+WHggw/hY152uvjQsYNuAA=="/>
-        </item>
     </channel>
 </rss>
 <!-- sparkle-signatures:
-edSignature: tgamKDMpBWEug5CwGLkmZExdstP1IgH/e5pnrUaiJInGNyBMzpYcBDE7tvHKtwKLzDuraHmsGJ0WHwUXmP/4Dg==
-length: 10078
+edSignature: v1Lw33Hm6YyxMsaxDD3OXOQiltQmwVKY8nn/HByL+Ce9E9fzksktkZNp+iSrm+9cST2SXBcLhHFNgFhic/bYDQ==
+length: 12032
 -->
