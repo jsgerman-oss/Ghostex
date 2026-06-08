@@ -6,9 +6,11 @@ PROJECT_PATH="$SCRIPT_DIR/ghostex.xcodeproj"
 CONFIGURATION="${CONFIGURATION:-Debug}"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 WEB_DIR="$SCRIPT_DIR/Web"
+CLI_DIR="$SCRIPT_DIR/CLI"
 GHOSTTY_ROOT="${GHOSTTY_ROOT:-}"
 ZMX_ROOT="${ZMX_ROOT:-$REPO_ROOT/zmx}"
 ZEHN_ROOT="${ZEHN_ROOT:-$REPO_ROOT/zehn}"
+TUI_ROOT="${TUI_ROOT:-$REPO_ROOT/tui}"
 GXSERVER_REQUIRED_NODE_MAJOR="22"
 GHOSTEX_MACOS_ARCH="${GHOSTEX_MACOS_ARCH:-$(uname -m)}"
 case "$GHOSTEX_MACOS_ARCH" in
@@ -23,6 +25,41 @@ case "$GHOSTEX_MACOS_ARCH" in
 		exit 1
 		;;
 esac
+BUILD_CACHE_DIR="${GHOSTEX_BUILD_CACHE_DIR:-$REPO_ROOT/build/$GHOSTEX_MACOS_ARCH/build-cache}"
+
+# CDXC:LocalStartFast 2026-06-07-16:23: Local starts should rebuild expensive bundled resources only when their runtime inputs change. Store content-hash stamps under build/<arch> so repeated `bun run start` calls do not churn source files or rely on generated folders that may be deleted by other build steps.
+fingerprint_inputs() {
+	"${GXSERVER_NODE_BIN:-node}" "$REPO_ROOT/scripts/fingerprint-build-inputs.mjs" "$@"
+}
+
+cache_stamp_path() {
+	printf '%s/%s.sha256\n' "$BUILD_CACHE_DIR" "$1"
+}
+
+cache_matches() {
+	local key="$1"
+	local digest="$2"
+	shift 2
+	local stamp
+	stamp="$(cache_stamp_path "$key")"
+	if [[ ! -f "$stamp" || "$(<"$stamp")" != "$digest" ]]; then
+		return 1
+	fi
+	local output_path
+	for output_path in "$@"; do
+		if [[ ! -e "$output_path" ]]; then
+			return 1
+		fi
+	done
+	return 0
+}
+
+write_cache_stamp() {
+	local key="$1"
+	local digest="$2"
+	mkdir -p "$BUILD_CACHE_DIR"
+	printf '%s\n' "$digest" >"$(cache_stamp_path "$key")"
+}
 
 resolve_gxserver_node() {
 	local home
@@ -112,7 +149,6 @@ resolve_t3code_node() {
 
 resolve_t3code_root() {
 	local configured="${T3CODE_ROOT:-${VSMUX_T3CODE_REPO_ROOT:-${ghostex_T3CODE_REPO_ROOT:-}}}"
-	local candidate
 	if [[ -n "$configured" ]]; then
 		if [[ -f "$configured/apps/server/package.json" ]]; then
 			(cd "$configured" && pwd)
@@ -120,16 +156,11 @@ resolve_t3code_root() {
 		fi
 		return 1
 	fi
-	for candidate in \
-		"$REPO_ROOT/../t3code-embed" \
-		"$REPO_ROOT/../t3code" \
-		"$HOME/dev/_active/t3code-embed" \
-		"$HOME/dev/_active/t3code"; do
-		if [[ -f "$candidate/apps/server/package.json" ]]; then
-			(cd "$candidate" && pwd)
-			return 0
-		fi
-	done
+	# CDXC:T3CodeSubmodule 2026-06-07-13:00: Package T3 Code from the root `t3code` submodule by default so app builds use the parent-pinned fork commit instead of unreviewed sibling checkouts.
+	if [[ -f "$REPO_ROOT/t3code/apps/server/package.json" ]]; then
+		(cd "$REPO_ROOT/t3code" && pwd)
+		return 0
+	fi
 	return 1
 }
 
@@ -138,12 +169,27 @@ package_t3code_server() {
 	local node_bin="$2"
 	local npm_bin="$3"
 	local target_dir="$WEB_DIR/t3code-server"
+	local node_identity npm_version package_digest
 
-	# CDXC:T3CodePackaging 2026-06-06-05:50: T3 Code is a core advertised pane type, so release builds must ship the managed server runtime under Web/t3code-server instead of letting installed apps fall through to a developer-only ~/dev/_active/t3code-embed checkout and fail with a network-looking pane error.
-	(
-		cd "$t3_root"
-		env PATH="$(dirname "$node_bin"):$PATH" bun run build
-	)
+	# CDXC:T3CodePackaging 2026-06-06-05:50: T3 Code is a core advertised pane type, so release builds must ship the managed server runtime under Web/t3code-server instead of letting installed apps fall through to a developer-only source checkout and fail with a network-looking pane error.
+	#
+	# CDXC:LocalStartFast 2026-06-07-16:23: `bun run start` already treats T3 Code as a packaged runtime, so the build should not run the T3 monorepo build and production npm install on every app relaunch. Reuse the package when the T3 source tree, packager script, and selected Node/npm runtime are unchanged.
+	node_identity="$("$node_bin" -p 'process.version + ":" + process.versions.modules')"
+	npm_version="$("$npm_bin" --version 2>/dev/null || true)"
+	package_digest="$(fingerprint_inputs \
+		--value "t3code-package-v1" \
+		--value "arch=$GHOSTEX_MACOS_ARCH" \
+		--value "node=$node_identity" \
+		--value "npm=$npm_version" \
+		--path "$t3_root" \
+		--path "$REPO_ROOT/scripts/build-t3code-if-needed.mjs" \
+		--path "$REPO_ROOT/scripts/package-t3code-server.mjs")"
+	if cache_matches "t3code-server-package-$GHOSTEX_MACOS_ARCH" "$package_digest" "$target_dir/dist/bin.mjs" "$target_dir/package.json" "$target_dir/node_modules"; then
+		echo "T3 Code package is current; skipping package rebuild."
+		return 0
+	fi
+
+	env VSMUX_T3CODE_REPO_ROOT="$t3_root" ghostex_T3CODE_REPO_ROOT="$t3_root" PATH="$(dirname "$node_bin"):$PATH" bun "$REPO_ROOT/scripts/build-t3code-if-needed.mjs"
 	rm -rf "$target_dir"
 	mkdir -p "$target_dir"
 	cp -R "$t3_root/apps/server/dist" "$target_dir/dist"
@@ -155,6 +201,115 @@ package_t3code_server() {
 		env PATH="$(dirname "$node_bin"):$PATH" "$npm_bin" install --omit=dev --no-audit --no-fund
 		env PATH="$(dirname "$node_bin"):$PATH" "$node_bin" dist/bin.mjs --help >/dev/null
 	)
+	write_cache_stamp "t3code-server-package-$GHOSTEX_MACOS_ARCH" "$package_digest"
+}
+
+build_zmx_if_needed() {
+	local output_path="$ZMX_ROOT/zig-out/bin/zmx"
+	local build_digest
+	build_digest="$(fingerprint_inputs \
+		--value "zmx-build-v1" \
+		--value "target=$ZMX_TARGET" \
+		--value "zig=$ZIG_VERSION" \
+		--path "$ZMX_ROOT/src" \
+		--path "$ZMX_ROOT/build.zig" \
+		--path "$ZMX_ROOT/build.zig.zon")"
+	if cache_matches "zmx-$GHOSTEX_MACOS_ARCH" "$build_digest" "$output_path"; then
+		echo "zmx is current; skipping Zig build."
+		return 0
+	fi
+
+	(
+		cd "$ZMX_ROOT"
+		# CDXC:ZmxPersistence 2026-05-20-10:23: Zig 0.15.2 currently resolves the native build runner through the selected macOS 26 Xcode SDK on this machine, which can fail before zmx compilation starts. Scope the Command Line Tools developer dir to the zmx submodule build only; the zmx artifact itself is still built for the explicit deployment target above.
+		ZMX_BUILD_ENV=(env -u LDFLAGS ZIG="$ZIG_BIN")
+		if [[ -z "${ZMX_BUILD_DEVELOPER_DIR:-}" && -d /Library/Developer/CommandLineTools ]]; then
+			ZMX_BUILD_DEVELOPER_DIR=/Library/Developer/CommandLineTools
+		fi
+		if [[ -n "${ZMX_BUILD_DEVELOPER_DIR:-}" ]]; then
+			ZMX_BUILD_ENV+=(DEVELOPER_DIR="$ZMX_BUILD_DEVELOPER_DIR")
+		fi
+		"${ZMX_BUILD_ENV[@]}" "$ZIG_BIN" build -Doptimize=ReleaseSafe -Dtarget="$ZMX_TARGET"
+	)
+	write_cache_stamp "zmx-$GHOSTEX_MACOS_ARCH" "$build_digest"
+}
+
+build_tui_if_needed() {
+	local output_path="$TUI_ROOT/target/$TUI_CARGO_TARGET/release/ghostex-tui"
+	local cargo_version build_digest
+	cargo_version="$("$TUI_CARGO_BIN" --version 2>/dev/null || true)"
+	build_digest="$(fingerprint_inputs \
+		--value "ghostex-tui-build-v1" \
+		--value "target=$TUI_CARGO_TARGET" \
+		--value "cargo=$cargo_version" \
+		--value "zig=$ZIG_VERSION" \
+		--path "$TUI_ROOT/src" \
+		--path "$TUI_ROOT/Cargo.toml" \
+		--path "$TUI_ROOT/Cargo.lock")"
+	if cache_matches "ghostex-tui-$GHOSTEX_MACOS_ARCH" "$build_digest" "$output_path"; then
+		echo "ghostex-tui is current; skipping Cargo build."
+		return 0
+	fi
+
+	env ZIG="$ZIG_BIN" "$TUI_CARGO_BIN" build --release --bin ghostex-tui --manifest-path "$TUI_ROOT/Cargo.toml" --target "$TUI_CARGO_TARGET"
+	write_cache_stamp "ghostex-tui-$GHOSTEX_MACOS_ARCH" "$build_digest"
+}
+
+build_zehn_if_needed() {
+	local output_path="$ZEHN_ROOT/zig-out/bin/zehn"
+	local build_digest
+	build_digest="$(fingerprint_inputs \
+		--value "zehn-build-v1" \
+		--value "target=$ZEHN_TARGET" \
+		--value "zig=$ZEHN_ZIG_VERSION" \
+		--path "$ZEHN_ROOT/src" \
+		--path "$ZEHN_ROOT/build.zig" \
+		--path "$ZEHN_ROOT/build.zig.zon")"
+	if cache_matches "zehn-$GHOSTEX_MACOS_ARCH" "$build_digest" "$output_path"; then
+		echo "zehn is current; skipping Zig build."
+		return 0
+	fi
+
+	(
+		cd "$ZEHN_ROOT"
+		env ZIG="$ZEHN_ZIG_BIN" "$ZEHN_ZIG_BIN" build -Doptimize=ReleaseFast -Dtarget="$ZEHN_TARGET"
+	)
+	write_cache_stamp "zehn-$GHOSTEX_MACOS_ARCH" "$build_digest"
+}
+
+package_gxserver_if_needed() {
+	local package_dir="$REPO_ROOT/gxserver/dist/server-package"
+	local target_dir="$WEB_DIR/gxserver"
+	local package_digest
+	# CDXC:GxserverPackaging 2026-05-30-15:49: The macOS app bundles the same gxserver server package used by standalone installs. The app only starts/reuses gxserver through system Node and does not own shutdown, so app resources must include compiled gxserver JS plus pinned zmx/zehn artifacts without bundling Node or Beads.
+	#
+	# CDXC:LocalStartFast 2026-06-07-16:23: gxserver packaging copies production node_modules and rebuilds native better-sqlite3 for the selected Node ABI. Skip that work when gxserver runtime sources, package metadata, packager code, bundled zmx/zehn binaries, and the selected Node ABI are unchanged.
+	package_digest="$(fingerprint_inputs \
+		--value "gxserver-package-v1" \
+		--value "arch=$GHOSTEX_MACOS_ARCH" \
+		--value "node=$GXSERVER_NODE_BIN:$GXSERVER_NODE_VERSION:$GXSERVER_NODE_MODULE_VERSION" \
+		--path "$REPO_ROOT/gxserver/src" \
+		--path "$REPO_ROOT/gxserver/protocol" \
+		--path "$REPO_ROOT/gxserver/package.json" \
+		--path "$REPO_ROOT/gxserver/package-lock.json" \
+		--path "$REPO_ROOT/gxserver/tsconfig.json" \
+		--path "$REPO_ROOT/gxserver/scripts/package-gxserver.mjs" \
+		--path "$WEB_DIR/bin/zmx" \
+		--path "$WEB_DIR/bin/zehn")"
+	if cache_matches "gxserver-package-$GHOSTEX_MACOS_ARCH" "$package_digest" "$package_dir/build-identity.json" "$target_dir/build-identity.json" "$target_dir/native-runtime.json"; then
+		echo "gxserver package is current; skipping package rebuild."
+		return 0
+	fi
+
+	(
+		cd "$REPO_ROOT/gxserver"
+		echo "Packaging gxserver with $GXSERVER_NODE_BIN ($GXSERVER_NODE_VERSION, NODE_MODULE_VERSION $GXSERVER_NODE_MODULE_VERSION)"
+		env PATH="$GXSERVER_NODE_DIR:$PATH" "$GXSERVER_NPM_BIN" run build
+		env PATH="$GXSERVER_NODE_DIR:$PATH" "$GXSERVER_NPM_BIN" run package:app -- --zmx-bin "$WEB_DIR/bin/zmx" --zehn-bin "$WEB_DIR/bin/zehn" --native-node "$GXSERVER_NODE_BIN" --native-npm "$GXSERVER_NPM_BIN"
+	)
+	rm -rf "$target_dir"
+	cp -R "$package_dir" "$target_dir"
+	write_cache_stamp "gxserver-package-$GHOSTEX_MACOS_ARCH" "$package_digest"
 }
 
 # CDXC:GxserverPackaging 2026-06-01-16:11: The packaged gxserver native modules must be built with the same system Node that GxserverClient will use at runtime. Rebuild better-sqlite3 through that Node/npm before staging app resources so local starts do not ship a Node-ABI mismatch into /Applications/Ghostex.app.
@@ -229,7 +384,7 @@ if [[ -z "$T3CODE_ROOT" ]]; then
 T3 Code source is required to package the embedded runtime.
 
 Set T3CODE_ROOT or VSMUX_T3CODE_REPO_ROOT to a t3code checkout, or place it at:
-  ~/dev/_active/t3code-embed
+  $REPO_ROOT/t3code
 EOF
 	exit 1
 fi
@@ -374,12 +529,12 @@ EOF
 fi
 
 mkdir -p "$WEB_DIR"
-cp "$REPO_ROOT/native/sidebar/index.html" "$WEB_DIR/index.html"
 cp "$REPO_ROOT/native/sidebar/floating-monaco-editor.html" "$WEB_DIR/floating-monaco-editor.html"
 rm -rf "$WEB_DIR/cli"
-mkdir -p "$WEB_DIR/cli"
+rm -rf "$CLI_DIR"
+mkdir -p "$CLI_DIR"
 # CDXC:CliSessions 2026-05-10-03:28: Shells resolve the installed macOS
-# executable as a terminal command. Bundle the Node CLI beside the web assets
+# executable as a terminal command. Bundle the Node CLI in app resources
 # so main.swift can proxy command argv before the AppKit app starts.
 # CDXC:CliBranding 2026-05-26-15:11: Public CLI commands are now `ghostex`
 # and `gx`; the bundled script filename follows the long public CLI name while
@@ -387,10 +542,11 @@ mkdir -p "$WEB_DIR/cli"
 # details. The macOS app bundle should ship executable `ghostex` and `gx`
 # launchers automatically so Homebrew can install both public commands without
 # asking users to add shell aliases by hand.
-cp "$REPO_ROOT/scripts/ghostex-cli.mjs" "$WEB_DIR/cli/ghostex-cli.mjs"
-cp "$REPO_ROOT/scripts/ghostex-cli-launcher.sh" "$WEB_DIR/cli/ghostex"
-cp "$REPO_ROOT/scripts/ghostex-cli-launcher.sh" "$WEB_DIR/cli/gx"
-chmod 755 "$WEB_DIR/cli/ghostex" "$WEB_DIR/cli/gx"
+# CDXC:CliInstall 2026-06-07-13:53: The app CLI is not a web asset. Stage it under Contents/Resources/CLI so DMG and Homebrew installs can symlink public commands to one app-owned runtime while Web remains only the sidebar/runtime asset folder.
+cp "$REPO_ROOT/scripts/ghostex-cli.mjs" "$CLI_DIR/ghostex-cli.mjs"
+cp "$REPO_ROOT/scripts/ghostex-cli-launcher.sh" "$CLI_DIR/ghostex"
+cp "$REPO_ROOT/scripts/ghostex-cli-launcher.sh" "$CLI_DIR/gx"
+chmod 755 "$CLI_DIR/ghostex" "$CLI_DIR/gx"
 # CDXC:BrowserAgentControl 2026-05-26-22:17: First launch and Settings install
 # the Ghostex Browser Use skill only after the user explicitly chooses that skill.
 # Bundle the skill beside the CLI so `ghostex browser install-skill` can copy the
@@ -415,12 +571,12 @@ chmod 755 "$WEB_DIR/cli/ghostex" "$WEB_DIR/cli/gx"
 # CDXC:ProjectBoardBeads 2026-06-04-03:32: Bundle `$ghostex-manage-beads` with
 # the app CLI resources so agents can install project-board bead workflow
 # guidance from the same released Ghostex build that provides the other skills.
-mkdir -p "$WEB_DIR/cli/skills"
-cp -R "$REPO_ROOT/scripts/skills/ghostex-browser-use" "$WEB_DIR/cli/skills/ghostex-browser-use"
-cp -R "$REPO_ROOT/scripts/skills/ghostex-computer-use" "$WEB_DIR/cli/skills/ghostex-computer-use"
-cp -R "$REPO_ROOT/scripts/skills/ghostex-agent-orchestration" "$WEB_DIR/cli/skills/ghostex-agent-orchestration"
-cp -R "$REPO_ROOT/scripts/skills/ghostex-generate-title" "$WEB_DIR/cli/skills/ghostex-generate-title"
-cp -R "$REPO_ROOT/scripts/skills/ghostex-manage-beads" "$WEB_DIR/cli/skills/ghostex-manage-beads"
+mkdir -p "$CLI_DIR/skills"
+cp -R "$REPO_ROOT/scripts/skills/ghostex-browser-use" "$CLI_DIR/skills/ghostex-browser-use"
+cp -R "$REPO_ROOT/scripts/skills/ghostex-computer-use" "$CLI_DIR/skills/ghostex-computer-use"
+cp -R "$REPO_ROOT/scripts/skills/ghostex-agent-orchestration" "$CLI_DIR/skills/ghostex-agent-orchestration"
+cp -R "$REPO_ROOT/scripts/skills/ghostex-generate-title" "$CLI_DIR/skills/ghostex-generate-title"
+cp -R "$REPO_ROOT/scripts/skills/ghostex-manage-beads" "$CLI_DIR/skills/ghostex-manage-beads"
 # CDXC:ZmxPersistence 2026-05-20-09:57: zmx pane refresh is now a zmx IPC feature, so Ghostex must bundle the pinned submodule binary instead of depending on whichever zmx happens to be on PATH. Build the submodule for the requested macOS architecture and copy it into app resources where TerminalWorkspaceView can launch it directly.
 if [[ ! -f "$ZMX_ROOT/build.zig" ]]; then
 	cat >&2 <<EOF
@@ -440,22 +596,45 @@ case "$GHOSTEX_MACOS_ARCH" in
 		ZMX_TARGET="x86_64-macos.13.0"
 		;;
 esac
-(
-	cd "$ZMX_ROOT"
-	# CDXC:ZmxPersistence 2026-05-20-10:23: Zig 0.15.2 currently resolves the native build runner through the selected macOS 26 Xcode SDK on this machine, which can fail before zmx compilation starts. Scope the Command Line Tools developer dir to the zmx submodule build only; the zmx artifact itself is still built for the explicit deployment target above.
-	ZMX_BUILD_ENV=(env -u LDFLAGS ZIG="$ZIG_BIN")
-	if [[ -z "${ZMX_BUILD_DEVELOPER_DIR:-}" && -d /Library/Developer/CommandLineTools ]]; then
-		ZMX_BUILD_DEVELOPER_DIR=/Library/Developer/CommandLineTools
-	fi
-	if [[ -n "${ZMX_BUILD_DEVELOPER_DIR:-}" ]]; then
-		ZMX_BUILD_ENV+=(DEVELOPER_DIR="$ZMX_BUILD_DEVELOPER_DIR")
-	fi
-	"${ZMX_BUILD_ENV[@]}" "$ZIG_BIN" build -Doptimize=ReleaseSafe -Dtarget="$ZMX_TARGET"
-)
+build_zmx_if_needed
 rm -rf "$WEB_DIR/bin"
 mkdir -p "$WEB_DIR/bin"
 cp "$ZMX_ROOT/zig-out/bin/zmx" "$WEB_DIR/bin/zmx"
 chmod 755 "$WEB_DIR/bin/zmx"
+# CDXC:GhostexTui 2026-06-07-12:13: The public installed `gx` command must open the TUI from any working directory, so the macOS app bundle ships the arch-specific Ghostex TUI beside pinned zmx/zehn tools under Web/bin instead of relying on a source checkout or PATH fallback.
+if [[ ! -f "$TUI_ROOT/Cargo.toml" ]]; then
+	cat >&2 <<EOF
+Ghostex TUI source is missing:
+  $TUI_ROOT
+
+Initialize or provide the TUI source before building the app bundle.
+EOF
+	exit 1
+fi
+case "$GHOSTEX_MACOS_ARCH" in
+	arm64)
+		TUI_CARGO_TARGET="aarch64-apple-darwin"
+		;;
+	x86_64)
+		TUI_CARGO_TARGET="x86_64-apple-darwin"
+		;;
+esac
+TUI_CARGO_BIN="${CARGO:-}"
+if [[ -z "$TUI_CARGO_BIN" ]]; then
+	TUI_CARGO_BIN="$(command -v cargo || true)"
+fi
+if [[ -z "$TUI_CARGO_BIN" ]]; then
+	cat >&2 <<EOF
+Cargo is required to build bundled ghostex-tui.
+
+Install Rust, then rerun this script:
+  rustup toolchain install stable
+EOF
+	exit 1
+fi
+build_tui_if_needed
+cp "$TUI_ROOT/target/$TUI_CARGO_TARGET/release/ghostex-tui" "$WEB_DIR/bin/ghostex-tui"
+chmod 755 "$WEB_DIR/bin/ghostex-tui"
 # CDXC:AgentHistorySearch 2026-05-29-12:27: Ghostex bundles the pinned zehn submodule as Web/bin/zehn so `gx find` and `gx f` run the reviewed prompt-history search tool even when the user's PATH contains no zehn or a different zehn build. `gx s` is intentionally left as the existing sessions alias, and `gx search` is not a public alias.
 if [[ ! -f "$ZEHN_ROOT/build.zig" ]]; then
 	cat >&2 <<EOF
@@ -505,33 +684,35 @@ case "$GHOSTEX_MACOS_ARCH" in
 		ZEHN_TARGET="x86_64-macos.13.0"
 		;;
 esac
-(
-	cd "$ZEHN_ROOT"
-	env ZIG="$ZEHN_ZIG_BIN" "$ZEHN_ZIG_BIN" build -Doptimize=ReleaseFast -Dtarget="$ZEHN_TARGET"
-)
+build_zehn_if_needed
 cp "$ZEHN_ROOT/zig-out/bin/zehn" "$WEB_DIR/bin/zehn"
 chmod 755 "$WEB_DIR/bin/zehn"
-# CDXC:GxserverPackaging 2026-05-30-15:49: The macOS app bundles the same gxserver server package used by standalone installs. The app only starts/reuses gxserver through system Node and does not own shutdown, so app resources must include compiled gxserver JS plus pinned zmx/zehn artifacts without bundling Node or Beads.
-(
-	cd "$REPO_ROOT/gxserver"
-	echo "Packaging gxserver with $GXSERVER_NODE_BIN ($GXSERVER_NODE_VERSION, NODE_MODULE_VERSION $GXSERVER_NODE_MODULE_VERSION)"
-	env PATH="$GXSERVER_NODE_DIR:$PATH" "$GXSERVER_NPM_BIN" run build
-	env PATH="$GXSERVER_NODE_DIR:$PATH" "$GXSERVER_NPM_BIN" run package:app -- --zmx-bin "$WEB_DIR/bin/zmx" --zehn-bin "$WEB_DIR/bin/zehn" --native-node "$GXSERVER_NODE_BIN" --native-npm "$GXSERVER_NPM_BIN"
-)
-rm -rf "$WEB_DIR/gxserver"
-cp -R "$REPO_ROOT/gxserver/dist/server-package" "$WEB_DIR/gxserver"
+package_gxserver_if_needed
 package_t3code_server "$T3CODE_ROOT" "$T3CODE_NODE_BIN" "$T3CODE_NPM_BIN"
-mkdir -p "$WEB_DIR/cli/node_modules"
-cp -R "$REPO_ROOT/node_modules/ws" "$WEB_DIR/cli/node_modules/ws"
-rm -rf "$WEB_DIR/monaco"
-mkdir -p "$WEB_DIR/monaco"
-cp -R "$REPO_ROOT/node_modules/monaco-editor/min/vs" "$WEB_DIR/monaco/vs"
-rm -rf "$WEB_DIR/sounds"
+mkdir -p "$CLI_DIR/node_modules"
+rsync -a --delete "$REPO_ROOT/node_modules/ws/" "$CLI_DIR/node_modules/ws/"
+mkdir -p "$WEB_DIR/monaco/vs"
+rsync -a --delete "$REPO_ROOT/node_modules/monaco-editor/min/vs/" "$WEB_DIR/monaco/vs/"
 mkdir -p "$WEB_DIR/sounds"
 # CDXC:NativeSound 2026-04-29-16:30: Bundle completion sound assets beside
 # the native Web resources so AVFoundation playback works from installed apps
 # without relying on repository-relative media paths.
-cp "$REPO_ROOT"/media/sounds/*.mp3 "$WEB_DIR/sounds/"
+rsync -a --delete "$REPO_ROOT/media/sounds/" "$WEB_DIR/sounds/"
+NATIVE_WEB_CACHE_KEY="native-web-$GHOSTEX_MACOS_ARCH"
+NATIVE_WEB_DIGEST="$(fingerprint_inputs \
+	--value "native-web-bundles-v1" \
+	--path "$REPO_ROOT/scripts/build-native-web-bundles.mjs" \
+	--path "$REPO_ROOT/native/sidebar" \
+	--path "$REPO_ROOT/sidebar" \
+	--path "$REPO_ROOT/shared" \
+	--path "$REPO_ROOT/components" \
+	--path "$REPO_ROOT/lib" \
+	--path "$REPO_ROOT/src/assets" \
+	--path "$REPO_ROOT/package.json" \
+	--path "$REPO_ROOT/bun.lock")"
+if cache_matches "$NATIVE_WEB_CACHE_KEY" "$NATIVE_WEB_DIGEST" "$WEB_DIR/index.html" "$WEB_DIR/modal-host.html" "$WEB_DIR/titlebar-host.html" "$WEB_DIR/tasks-placeholder.html" "$WEB_DIR/pet-host.html" "$WEB_DIR/native-sidebar.js" "$WEB_DIR/native-sidebar.css"; then
+	echo "Native web bundles are current; skipping Bun bundle build."
+else
 # CDXC:NativeSidebarBuild 2026-04-27-09:32
 # The native sidebar is loaded by WKWebView as a classic script, while
 # Storybook imports some sidebar components as ES modules. Force the packaged
@@ -546,6 +727,7 @@ cp "$REPO_ROOT"/media/sounds/*.mp3 "$WEB_DIR/sounds/"
 # CDXC:ReactCompiler 2026-06-06-21:20: Build all native WKWebView React bundles
 # through the repository helper so React Compiler runs before Bun bundles and
 # the host still receives the same classic-script filenames it inlines below.
+# CDXC:LocalStartFast 2026-06-07-16:23: Cache native web bundle generation by source content so no-op starts do not rewrite identical WKWebView assets, which would invalidate the signed app resources and force a pointless re-sign.
 bun "$REPO_ROOT/scripts/build-native-web-bundles.mjs" \
 	--outdir "$WEB_DIR" \
 	"$REPO_ROOT/native/sidebar/native-sidebar.tsx" \
@@ -736,6 +918,8 @@ ${escapedPetJs}
 </html>
 `);
 JS
+write_cache_stamp "$NATIVE_WEB_CACHE_KEY" "$NATIVE_WEB_DIGEST"
+fi
 
 # CDXC:PublicRelease 2026-04-27-05:36: Public builds must not encode a
 # maintainer-specific Ghostty checkout path; project.yml reads GHOSTTY_ROOT
@@ -749,62 +933,12 @@ export GHOSTEX_HOME_DIRECTORY_NAME
 export GHOSTEX_SHARED_HOME_DIRECTORY_NAME
 export GHOSTEX_MACOS_ARCH
 export CEF_ROOT
-mkdir -p "$SCRIPT_DIR/build"
-xcodegen generate --spec "$SCRIPT_DIR/project.yml"
-
-STALE_APP_PATH="$DERIVED_DATA/Build/Products/$CONFIGURATION/$GHOSTEX_APP_NAME.app"
-if [[ -d "$STALE_APP_PATH/Contents/Frameworks" ]]; then
-	# CDXC:ChromiumBrowserPanes 2026-05-04-17:00
-	# CEF is copied after Xcode validation because the Spotify minimal framework
-	# layout does not satisfy Xcode's generic framework validator. Incremental
-	# builds must remove only the generated CEF payload before xcodebuild, then
-	# copy and sign the runtime again after the app bundle is produced.
-	# CDXC:Distribution 2026-05-15-15:16: Ghostex release builds must also
-	# remove pre-rename zmux CEF helper bundles from incremental DerivedData
-	# outputs so notarized DMGs do not ship obsolete helper app names.
-	rm -rf \
-		"$STALE_APP_PATH/Contents/Frameworks/Chromium Embedded Framework.framework" \
-		"$STALE_APP_PATH"/Contents/Frameworks/ghostex\ Helper*.app \
-		"$STALE_APP_PATH"/Contents/Frameworks/zmux\ Helper*.app
-fi
-
-xcodebuild \
-	-project "$PROJECT_PATH" \
-	-scheme ghostex \
-	-configuration "$CONFIGURATION" \
-	-destination "$XCODE_DESTINATION" \
-	-derivedDataPath "$DERIVED_DATA" \
-	ARCHS="$GHOSTEX_MACOS_ARCH" \
-	ONLY_ACTIVE_ARCH=NO \
-	build
-
-APP_PATH="$(
-	xcodebuild \
-		-project "$PROJECT_PATH" \
-		-scheme ghostex \
-		-configuration "$CONFIGURATION" \
-		-destination "$XCODE_DESTINATION" \
-		-derivedDataPath "$DERIVED_DATA" \
-		ARCHS="$GHOSTEX_MACOS_ARCH" \
-		ONLY_ACTIVE_ARCH=NO \
-		-showBuildSettings 2>/dev/null |
-		awk -F' = ' '/BUILT_PRODUCTS_DIR/ { print $2; exit }'
-)/$GHOSTEX_APP_NAME.app"
+BUILT_PRODUCTS_DIR="$DERIVED_DATA/Build/Products/$CONFIGURATION"
+APP_PATH="$BUILT_PRODUCTS_DIR/$GHOSTEX_APP_NAME.app"
 
 copy_lid_sleep_helper() {
 	local app_path="$1"
-	local helper_source="$(
-		xcodebuild \
-			-project "$PROJECT_PATH" \
-			-scheme ghostex \
-			-configuration "$CONFIGURATION" \
-			-destination "$XCODE_DESTINATION" \
-			-derivedDataPath "$DERIVED_DATA" \
-			ARCHS="$GHOSTEX_MACOS_ARCH" \
-			ONLY_ACTIVE_ARCH=NO \
-			-showBuildSettings 2>/dev/null |
-			awk -F' = ' '/BUILT_PRODUCTS_DIR/ { print $2; exit }'
-	)/$GHOSTEX_LID_SLEEP_HELPER_LABEL"
+	local helper_source="$BUILT_PRODUCTS_DIR/$GHOSTEX_LID_SLEEP_HELPER_LABEL"
 	local helper_dir="$app_path/Contents/Library/LaunchServices"
 	# CDXC:TitlebarKeepAwake 2026-05-28-19:28: Bundle the narrow lid-sleep privileged helper inside the app. The main app installs it to launchd only after the user enables closed-lid keep-awake and approves macOS administrator authorization.
 	mkdir -p "$helper_dir"
@@ -862,17 +996,110 @@ copy_cef_runtime() {
 </dict>
 </plist>
 EOF_HELPER
-	done
+		done
 }
 
-copy_cef_runtime "$APP_PATH"
-copy_lid_sleep_helper "$APP_PATH"
+path_identity() {
+	local candidate="$1"
+	if [[ -e "$candidate" ]]; then
+		stat -f '%m:%z:%N' "$candidate"
+	else
+		printf 'missing:%s\n' "$candidate"
+	fi
+}
 
-# CDXC:BetaDistribution 2026-06-06-01:04: The 4.0 beta release must run the Developer ID signing helper reliably from temporary release worktrees. Invoke the helper through bash explicitly because direct shebang execution can be killed by macOS provenance checks on this machine even though the same script succeeds under /bin/bash.
-/bin/bash "$SCRIPT_DIR/codesign-ghostex-host.sh" "$APP_PATH"
+local_adhoc_build_signing() {
+	[[ "${GHOSTEX_CODE_SIGN_IDENTITY:--}" == "-" && "${GHOSTEX_CODE_SIGN_TIMESTAMP_FLAG:---timestamp=none}" == "--timestamp=none" ]]
+}
+
+build_native_app_digest() {
+	fingerprint_inputs \
+		--value "native-app-v1" \
+		--value "configuration=$CONFIGURATION" \
+		--value "arch=$GHOSTEX_MACOS_ARCH" \
+		--value "app=$GHOSTEX_APP_NAME|$GHOSTEX_APP_DISPLAY_NAME|$GHOSTEX_BUNDLE_ID|$GHOSTEX_HOME_DIRECTORY_NAME|$GHOSTEX_SHARED_HOME_DIRECTORY_NAME|$GHOSTEX_LID_SLEEP_HELPER_LABEL" \
+		--value "sparkle=$GHOSTEX_SPARKLE_FEED_URL|$GHOSTEX_SPARKLE_PUBLIC_ED_KEY" \
+		--value "cef-root=$(path_identity "$CEF_ROOT")" \
+		--value "cef-helper=$(path_identity "$SCRIPT_DIR/build/cef-$GHOSTEX_MACOS_ARCH/ghostex-cef-helper")" \
+		--value "ghostty-kit=$(path_identity "$GHOSTTY_KIT")" \
+		--path "$SCRIPT_DIR/Sources" \
+		--path "$SCRIPT_DIR/Resources" \
+		--path "$SCRIPT_DIR/CEF" \
+		--path "$SCRIPT_DIR/AppInfo.plist" \
+		--path "$SCRIPT_DIR/HelperInfo.plist" \
+		--path "$SCRIPT_DIR/project.yml" \
+		--path "$SCRIPT_DIR/vendor-cef.sh"
+}
+
+sync_built_app_resources() {
+	local resources_dir="$APP_PATH/Contents/Resources"
+	mkdir -p "$resources_dir"
+	rsync -a --delete "$WEB_DIR/" "$resources_dir/Web/"
+	rsync -a --delete "$CLI_DIR/" "$resources_dir/CLI/"
+}
+
+sign_built_app_if_needed() {
+	if local_adhoc_build_signing && codesign --verify --deep --strict "$APP_PATH" >/dev/null 2>&1; then
+		echo "Built $GHOSTEX_APP_NAME signature is current; skipping build app re-sign."
+		return 0
+	fi
+	# CDXC:BetaDistribution 2026-06-06-01:04: The 4.0 beta release must run the Developer ID signing helper reliably from temporary release worktrees. Invoke the helper through bash explicitly because direct shebang execution can be killed by macOS provenance checks on this machine even though the same script succeeds under /bin/bash.
+	/bin/bash "$SCRIPT_DIR/codesign-ghostex-host.sh" "$APP_PATH"
+}
+
+NATIVE_APP_CACHE_KEY="native-app-$GHOSTEX_APP_VARIANT-$GHOSTEX_MACOS_ARCH-$CONFIGURATION"
+NATIVE_APP_DIGEST="$(build_native_app_digest)"
+NATIVE_APP_REBUILT=0
+if local_adhoc_build_signing && cache_matches "$NATIVE_APP_CACHE_KEY" "$NATIVE_APP_DIGEST" "$APP_PATH/Contents/MacOS/$GHOSTEX_APP_NAME" "$APP_PATH/Contents/Frameworks/Chromium Embedded Framework.framework" "$APP_PATH/Contents/Frameworks/ghostex Helper.app" "$APP_PATH/Contents/Library/LaunchServices/$GHOSTEX_LID_SLEEP_HELPER_LABEL"; then
+	# CDXC:LocalStartFast 2026-06-07-16:23: Debug/local starts should not invoke Xcode when native Swift/ObjC++, project metadata, CEF helper identity, and GhosttyKit identity are unchanged. Reuse the existing app shell, then sync current Web/CLI resources and let signature verification decide whether signing is needed.
+	echo "Native app shell is current; skipping Xcode build."
+else
+	mkdir -p "$SCRIPT_DIR/build"
+	xcodegen generate --spec "$SCRIPT_DIR/project.yml"
+
+	STALE_APP_PATH="$APP_PATH"
+	if [[ -d "$STALE_APP_PATH/Contents/Frameworks" ]]; then
+		# CDXC:ChromiumBrowserPanes 2026-05-04-17:00
+		# CEF is copied after Xcode validation because the Spotify minimal framework
+		# layout does not satisfy Xcode's generic framework validator. Incremental
+		# builds must remove only the generated CEF payload before xcodebuild, then
+		# copy and sign the runtime again after the app bundle is produced.
+		# CDXC:Distribution 2026-05-15-15:16: Ghostex release builds must also
+		# remove pre-rename zmux CEF helper bundles from incremental DerivedData
+		# outputs so notarized DMGs do not ship obsolete helper app names.
+		rm -rf \
+			"$STALE_APP_PATH/Contents/Frameworks/Chromium Embedded Framework.framework" \
+			"$STALE_APP_PATH"/Contents/Frameworks/ghostex\ Helper*.app \
+			"$STALE_APP_PATH"/Contents/Frameworks/zmux\ Helper*.app
+	fi
+
+	xcodebuild \
+		-project "$PROJECT_PATH" \
+		-scheme ghostex \
+		-configuration "$CONFIGURATION" \
+		-destination "$XCODE_DESTINATION" \
+		-derivedDataPath "$DERIVED_DATA" \
+		ARCHS="$GHOSTEX_MACOS_ARCH" \
+		ONLY_ACTIVE_ARCH=NO \
+		build
+
+	copy_cef_runtime "$APP_PATH"
+	copy_lid_sleep_helper "$APP_PATH"
+	NATIVE_APP_REBUILT=1
+fi
+
+sync_built_app_resources
+sign_built_app_if_needed
+if [[ "$NATIVE_APP_REBUILT" == "1" ]]; then
+	write_cache_stamp "$NATIVE_APP_CACHE_KEY" "$NATIVE_APP_DIGEST"
+fi
 
 APP_VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP_PATH/Contents/Info.plist")"
 printf '%s\n' "$APP_PATH" >"/tmp/ghostex-$APP_VERSION-$GHOSTEX_MACOS_ARCH-app-path"
+if [[ -n "${GHOSTEX_BUILT_APP_PATH_FILE:-}" ]]; then
+	mkdir -p "$(dirname "$GHOSTEX_BUILT_APP_PATH_FILE")"
+	printf '%s\n' "$APP_PATH" >"$GHOSTEX_BUILT_APP_PATH_FILE"
+fi
 
 cat <<EOF
 
