@@ -11,6 +11,19 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
             <title>3.26.0</title>
             <pubDate>Sat, 30 May 2026 09:56:15 +0400</pubDate>
             <sparkle:fullReleaseNotesLink>https://github.com/maddada/Ghostex/releases/tag/v3.26.0</sparkle:fullReleaseNotesLink>
+            <description sparkle:format="markdown">
+                <![CDATA[# Ghostex 3.26.0
+
+- Project board adds a Backlog swim lane before Todo, per-lane + ticket creation, status selects with friendly labels, and more reliable Create & Start that launches the agent session before secondary board refresh work.
+- Start Work prompts now ask agents to leave bead comments after each turn and include backlog/in-progress/test/review workflow commands.
+- Starting work from the Kanban page focuses the created agent session immediately, matching sidebar session-card behavior.
+- Command pane defaults restore to 125px (up from the prior smaller default), can grow up to 90% of the workspace height, and native Beads updates accept the backlog status.
+- Dropdowns, selects, popovers, and tooltips share the same visible border as sidebar tooltips.
+- Titlebar Tips & Tricks copy was refreshed for pinning sessions and using the Kanban board with agents.
+
+[Full release notes](https://github.com/maddada/Ghostex/releases/tag/v3.26.0)
+]]>
+            </description>
             <sparkle:version>32600</sparkle:version>
             <sparkle:shortVersionString>3.26.0</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
@@ -20,6 +33,17 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
             <title>3.25.0</title>
             <pubDate>Sat, 30 May 2026 08:47:12 +0400</pubDate>
             <sparkle:fullReleaseNotesLink>https://github.com/maddada/Ghostex/releases/tag/v3.25.0</sparkle:fullReleaseNotesLink>
+            <description sparkle:format="markdown">
+                <![CDATA[# Ghostex 3.25.0
+
+- Added a titlebar Tips & Tricks menu with unread tracking, read-all, and persistent read state for built-in workflow hints.
+- Project board filtering now uses Priority and Estimate controls instead of lane status, with the search icon inside the search field and cleaner ticket metadata layout.
+- Ghostty terminal scrollbars and scroll-to-top/bottom overlay buttons are square instead of rounded.
+- Session rows show only one Delayed Send countdown clock in the leading identity slot instead of duplicating it in the header agent area.
+
+[Full release notes](https://github.com/maddada/Ghostex/releases/tag/v3.25.0)
+]]>
+            </description>
             <sparkle:version>32500</sparkle:version>
             <sparkle:shortVersionString>3.25.0</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
@@ -29,6 +53,18 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
             <title>3.24.0</title>
             <pubDate>Sat, 30 May 2026 08:26:54 +0400</pubDate>
             <sparkle:fullReleaseNotesLink>https://github.com/maddada/Ghostex/releases/tag/v3.24.0</sparkle:fullReleaseNotesLink>
+            <description sparkle:format="markdown">
+                <![CDATA[# Ghostex 3.24.0
+
+- Collapsed macOS agent and priority selects now show friendly labels instead of raw persisted values in Git commit review, session rename, worktree creation, agent configuration, settings, and Project board dialogs.
+- Project name hovers in the sidebar now show a richer tooltip with project kind, path, git file counts, and current session/worktree totals.
+- Native workarea, commands pane, and titlebar button separators use a subtler shared boundary color for cleaner chrome alignment.
+- The Commands pane footer tooltip opens to the left of its icon so it no longer covers footer controls while the rest of the sidebar keeps below-trigger labels.
+- First-prompt title generation overlay copy now reads "Generating title" without trailing ellipsis.
+
+[Full release notes](https://github.com/maddada/Ghostex/releases/tag/v3.24.0)
+]]>
+            </description>
             <sparkle:version>32400</sparkle:version>
             <sparkle:shortVersionString>3.24.0</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
@@ -38,6 +74,22 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
             <title>3.23.0</title>
             <pubDate>Sat, 30 May 2026 07:32:47 +0400</pubDate>
             <sparkle:fullReleaseNotesLink>https://github.com/maddada/Ghostex/releases/tag/v3.23.0</sparkle:fullReleaseNotesLink>
+            <description sparkle:format="markdown">
+                <![CDATA[# Ghostex 3.23.0
+
+- Migrated the sidebar to Base UI and refreshed the app theme styling for a more consistent control surface across modals, menus, and session chrome.
+- Added a first-launch preferences page so new installs can set common defaults before opening sessions.
+- Improved Git workflows with Sync with Main, a split Git menu by action type, prompt-agent Git PR review, and a unified merge flow.
+- Added first-prompt title generation with a native terminal overlay, tighter auto-rename behavior for agents and slash commands, and sidebar wiring for the new flow.
+- Improved Git and worktree status toasts with persistent running notices, spinner styling, success/error tints, and clearer completion when sessions close or worktrees delete.
+- Removed the macOS Pane Gap setting and tightened native workspace chrome with flush tab bars, square status indicators, workarea separators, and zero default pane spacing.
+- Improved sidebar and project-header tooltips so labels open below their triggers with a consistent square bordered surface.
+- Refined session working/attention indicators so they sit closer to the row edge and the working spinner renders as a rounded ring again.
+- Improved the titlebar update tooltip placement and aligned right-side titlebar controls flush with the window edge.
+
+[Full release notes](https://github.com/maddada/Ghostex/releases/tag/v3.23.0)
+]]>
+            </description>
             <sparkle:version>32300</sparkle:version>
             <sparkle:shortVersionString>3.23.0</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
@@ -47,6 +99,15 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
             <title>3.22.0</title>
             <pubDate>Fri, 29 May 2026 21:10:58 +0400</pubDate>
             <sparkle:fullReleaseNotesLink>https://github.com/maddada/Ghostex/releases/tag/v3.22.0</sparkle:fullReleaseNotesLink>
+            <description sparkle:format="markdown">
+                <![CDATA[# Ghostex 3.22.0
+
+- Fixed Homebrew installs on newer macOS releases by keeping the Ghostex cask minimum requirement at macOS Ventura (`>= :ventura`) instead of an exact Ventura match that blocked installation on later systems.
+- Improved the titlebar update button tooltip so it opens to the side and no longer sits under the promoted sidebar layer.
+
+[Full release notes](https://github.com/maddada/Ghostex/releases/tag/v3.22.0)
+]]>
+            </description>
             <sparkle:version>32200</sparkle:version>
             <sparkle:shortVersionString>3.22.0</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
@@ -56,6 +117,18 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
             <title>3.21.0</title>
             <pubDate>Fri, 29 May 2026 20:42:38 +0400</pubDate>
             <sparkle:fullReleaseNotesLink>https://github.com/maddada/Ghostex/releases/tag/v3.21.0</sparkle:fullReleaseNotesLink>
+            <description sparkle:format="markdown">
+                <![CDATA[# Ghostex 3.21.0
+
+- Added Cursor Agent support for prompt generation so session rename, Git review, worktree prompts, and Project board title generation work when Cursor is the selected prompt agent.
+- Improved agent prompt staging so Ghostex waits for the terminal to be ready and uses consistent step delays before sending rename and prompt commands.
+- Fixed Search by Text in Previous Sessions so it opens in the active project instead of the Quick/projectless terminal area.
+- Improved project header action tooltips with portaled labels that stay visible inside narrow sidebar webviews.
+- Shortened the Commands Pane footer hover label while keeping the full accessible button name.
+
+[Full release notes](https://github.com/maddada/Ghostex/releases/tag/v3.21.0)
+]]>
+            </description>
             <sparkle:version>32100</sparkle:version>
             <sparkle:shortVersionString>3.21.0</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
@@ -64,6 +137,6 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
     </channel>
 </rss>
 <!-- sparkle-signatures:
-edSignature: hBou2hQjWstjp7OmIYrmGINDkZmnmfqkVM+YLb052XTBJSdiDxL18o4iltr+Am8orkFHT/YwSpIrHxc37XFGCw==
-length: 5059
+edSignature: WV9zWo4mJfs7kDFXhqcqy1M1Efl+gmYpL9oLnyOPxkKp6iDx5SX5/dGv+jyANB+fhcu9mR5ADkatwxZd96RfDg==
+length: 10728
 -->
