@@ -1040,6 +1040,10 @@ enum NativeTerminalLayout: Decodable {
 
 enum HostEvent: Encodable {
   case hostReady
+  case appShotCaptured(
+    appName: String?, bundleIdentifier: String?, imagePath: String, text: String?, title: String?,
+    trigger: String)
+  case appShotCaptureFailed(message: String)
   case nativeHotkey(actionId: String)
   case terminalReady(
     sessionId: String, ttyName: String?, foregroundPid: Int?, sessionPersistenceName: String?,
@@ -1091,14 +1095,18 @@ enum HostEvent: Encodable {
     case protocolVersion
     case action
     case agentId
+    case appName
     case beadDisplayId
     case beadId
+    case bundleIdentifier
+    case imagePath
     case placement
     case actionId
     case sessionId
     case stderr
     case stdout
     case title
+    case trigger
     case faviconDataUrl
     case url
     case projectId
@@ -1135,6 +1143,18 @@ enum HostEvent: Encodable {
     case .hostReady:
       try container.encode("hostReady", forKey: .type)
       try container.encode(1, forKey: .protocolVersion)
+    case .appShotCaptured(
+      let appName, let bundleIdentifier, let imagePath, let text, let title, let trigger):
+      try container.encode("appShotCaptured", forKey: .type)
+      try container.encodeIfPresent(appName, forKey: .appName)
+      try container.encodeIfPresent(bundleIdentifier, forKey: .bundleIdentifier)
+      try container.encode(imagePath, forKey: .imagePath)
+      try container.encodeIfPresent(text, forKey: .text)
+      try container.encodeIfPresent(title, forKey: .title)
+      try container.encode(trigger, forKey: .trigger)
+    case .appShotCaptureFailed(let message):
+      try container.encode("appShotCaptureFailed", forKey: .type)
+      try container.encode(message, forKey: .message)
     case .nativeHotkey(let actionId):
       /**
        CDXC:Hotkeys 2026-04-28-06:15

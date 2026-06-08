@@ -361,6 +361,19 @@ export type NativeGhosttyHostCommand =
 
 export type NativeGhosttyHostEvent =
   | {
+      appName?: string;
+      bundleIdentifier?: string;
+      imagePath: string;
+      text?: string;
+      title?: string;
+      trigger: string;
+      type: "appShotCaptured";
+    }
+  | {
+      message: string;
+      type: "appShotCaptureFailed";
+    }
+  | {
       foregroundPid?: number;
       persistenceSessionCreated?: boolean;
       sessionId: string;
