@@ -21,6 +21,7 @@ import {
   type SessionTitleSource,
   type TerminalEngine,
   type TerminalSessionPersistenceProvider,
+  type SidebarSessionTag,
   type T3SessionMetadata,
   type TerminalViewMode,
   type VisibleSessionCount,
@@ -42,12 +43,15 @@ type CreateSessionResult = {
   snapshot: GroupedSessionWorkspaceSnapshot;
 };
 
+type SessionPaneTabInsertPosition = "after" | "append" | "before";
+
 export type VisibleSessionPlacement =
   | {
       kind: "appendFullWidth";
     }
   | {
       kind: "appendToTabGroup";
+      position?: SessionPaneTabInsertPosition;
       targetSessionId: string;
     }
   | {
@@ -151,10 +155,21 @@ export function createSessionInSimpleWorkspace(
     return { snapshot: normalizedSnapshot };
   }
 
-  const sessionId = createTimestampedSessionId([
+  const usedSessionIds = [
     ...getWorkspaceSessionIds(normalizedSnapshot),
     ...(createOptions?.usedSessionIds ?? []),
-  ]);
+  ];
+  /*
+  CDXC:GxserverSessionIdentity 2026-05-30-18:20:
+  gxserver-generated session IDs must be preserved when the macOS sidebar creates the local layout record after daemon allocation. The shared workspace helper may still mint timestamp IDs for non-daemon panes, but an explicit sessionId is authoritative and duplicate use is a caller bug rather than a recoverable layout decision.
+  */
+  const requestedSessionId = typeof options?.sessionId === "string" && options.sessionId.trim()
+    ? options.sessionId.trim()
+    : undefined;
+  if (requestedSessionId && usedSessionIds.includes(requestedSessionId)) {
+    throw new Error(`Session ${requestedSessionId} already exists in this workspace.`);
+  }
+  const sessionId = requestedSessionId ?? createTimestampedSessionId(usedSessionIds);
   const nextSession = createSessionRecord(
     normalizedSnapshot.nextSessionNumber,
     activeGroup.snapshot.sessions.length,
@@ -428,6 +443,62 @@ export function focusSessionExclusivelyInSimpleWorkspace(
   snapshot: GroupedSessionWorkspaceSnapshot,
   sessionId: string,
 ): WorkspaceMutationResult {
+  const normalizedSnapshot = normalizeSimpleGroupedSessionWorkspaceSnapshot(snapshot);
+  const directOwningGroup = getGroupForSession(normalizedSnapshot, sessionId);
+  const directGroupSnapshot = directOwningGroup?.snapshot;
+  const directPaneLayout = directGroupSnapshot
+    ? setActiveSessionInPaneLayout(directGroupSnapshot.paneLayout, sessionId)
+    : undefined;
+  if (
+    directOwningGroup &&
+    directGroupSnapshot &&
+    directPaneLayout &&
+    paneLayoutContainsSession(directPaneLayout, sessionId)
+  ) {
+    const nextSessions = directGroupSnapshot.sessions.map((session) =>
+      session.sessionId === sessionId ? { ...session, isSleeping: false } : session,
+    );
+    const selectedSnapshot = normalizeGroupSnapshot({
+      ...directGroupSnapshot,
+      focusedSessionId: sessionId,
+      paneLayout: directPaneLayout,
+      sessions: nextSessions,
+    });
+    if (!hasMultiplePaneOwners(selectedSnapshot)) {
+      return {
+        changed: !areGroupSnapshotsEqual(directGroupSnapshot, selectedSnapshot),
+        snapshot: updateGroup(normalizedSnapshot, directOwningGroup.groupId, (group) => ({
+          ...group,
+          snapshot: selectedSnapshot,
+        })),
+      };
+    }
+    const restoreVisibleCount =
+      selectedSnapshot.fullscreenRestoreVisibleCount ??
+      (selectedSnapshot.visibleCount > 1
+        ? clampSupportedVisibleCount(selectedSnapshot.visibleCount)
+        : undefined);
+    const nextSnapshot = updateGroup(normalizedSnapshot, directOwningGroup.groupId, (group) => ({
+      ...group,
+      snapshot: normalizeGroupSnapshot({
+        ...selectedSnapshot,
+        /*
+         * CDXC:SessionFocusMode 2026-06-04-20:37:
+         * Double-click Focus targets the paneLayout tab group that already owns the clicked native tab.
+         * Preserve the full split tree and only mark the clicked tab active before zooming, because using generic hidden-session focus can move sibling pane tabs into one tab group and leave Exit focus with no split tree to restore.
+         */
+        fullscreenRestoreVisibleCount: restoreVisibleCount,
+        visibleCount: 1,
+        visibleSessionIds: [sessionId],
+      }),
+    }));
+
+    return {
+      changed: !areSnapshotsEqual(normalizedSnapshot, nextSnapshot),
+      snapshot: nextSnapshot,
+    };
+  }
+
   const focusedResult = focusSessionInSimpleWorkspace(snapshot, sessionId);
   const focusedSnapshot = focusedResult.snapshot;
   const owningGroup = getGroupForSession(focusedSnapshot, sessionId);
@@ -529,14 +600,55 @@ export function removeSessionInSimpleWorkspace(
     return { changed: false, snapshot: normalizedSnapshot };
   }
 
+  const replacementSessionId = getClosingPaneTabReplacementSessionId(
+    owningGroup.snapshot.paneLayout,
+    sessionId,
+  );
+  const shouldPromoteReplacementSession =
+    replacementSessionId !== undefined &&
+    owningGroup.snapshot.sessions.some((session) => session.sessionId === replacementSessionId) &&
+    isActivePaneLayoutSession(owningGroup.snapshot.paneLayout, sessionId);
+  const paneLayoutWithoutSession = owningGroup.snapshot.paneLayout
+    ? removeSessionFromPaneLayout(
+        owningGroup.snapshot.paneLayout,
+        sessionId,
+        shouldPromoteReplacementSession ? replacementSessionId : undefined,
+      )
+    : undefined;
+  const visibleSessionIdsWithoutSession = getVisibleSessionIdsAfterSessionClose(
+    owningGroup.snapshot.visibleSessionIds,
+    sessionId,
+    shouldPromoteReplacementSession ? replacementSessionId : undefined,
+  );
+  const visibleCountAfterClose = paneLayoutWithoutSession
+    ? clampSupportedVisibleCount(Math.max(1, countPaneLayoutOwnerSlots(paneLayoutWithoutSession)))
+    : owningGroup.snapshot.visibleCount;
   const snapshotWithoutSession = updateGroup(normalizedSnapshot, owningGroup.groupId, (group) => ({
     ...group,
     snapshot: normalizeGroupSnapshot({
       ...group.snapshot,
-      sessions: group.snapshot.sessions.filter((session) => session.sessionId !== sessionId),
-      visibleSessionIds: group.snapshot.visibleSessionIds.filter((id) => id !== sessionId),
+      /*
+       * CDXC:PaneTabs 2026-06-06-04:32:
+       * Closing the active tab in a split pane should select the tab immediately to its right in the same pane before publish-time virtual-tab materialization runs.
+       * If that tab was parked, wake it so native sync still has a concrete pane owner and does not collapse the split into the other pane.
+       * When the closed tab was the pane's only tab, there is no replacement; remove that split branch and reduce the visible pane count so the remaining pane can show the project's tabs as one stack.
+       */
       focusedSessionId:
-        group.snapshot.focusedSessionId === sessionId ? undefined : group.snapshot.focusedSessionId,
+        group.snapshot.focusedSessionId === sessionId && shouldPromoteReplacementSession
+          ? replacementSessionId
+          : group.snapshot.focusedSessionId === sessionId
+            ? undefined
+            : group.snapshot.focusedSessionId,
+      paneLayout: paneLayoutWithoutSession,
+      sessions: group.snapshot.sessions
+        .filter((session) => session.sessionId !== sessionId)
+        .map((session) =>
+          shouldPromoteReplacementSession && session.sessionId === replacementSessionId
+            ? { ...session, isPoppedOut: undefined, isSleeping: false }
+            : session,
+        ),
+      visibleCount: visibleCountAfterClose,
+      visibleSessionIds: visibleSessionIdsWithoutSession,
     }),
   }));
   const shouldSwitchGroups =
@@ -737,6 +849,38 @@ export function setSessionFavoriteInSimpleWorkspace(
   return updateSession(normalizedSnapshot, sessionId, (session) => ({
     ...session,
     isFavorite: favorite,
+  }));
+}
+
+export function setSessionTagInSimpleWorkspace(
+  snapshot: GroupedSessionWorkspaceSnapshot,
+  sessionId: string,
+  sessionTag: SidebarSessionTag | undefined,
+): WorkspaceMutationResult {
+  const normalizedSnapshot = normalizeSimpleGroupedSessionWorkspaceSnapshot(snapshot);
+  const owningGroup = getGroupForSession(normalizedSnapshot, sessionId);
+  if (!owningGroup) {
+    return { changed: false, snapshot: normalizedSnapshot };
+  }
+
+  const currentSession = owningGroup.snapshot.sessions.find(
+    (session) => session.sessionId === sessionId,
+  );
+  if (!currentSession || currentSession.sessionTag === sessionTag) {
+    return { changed: false, snapshot: normalizedSnapshot };
+  }
+
+  /**
+   * CDXC:SessionTags 2026-06-05-12:30:
+   * Local workspace snapshots store the expanded session tag while deriving
+   * legacy `isFavorite` only from the Favorite tag. This lets old Favorite rows
+   * keep their behavior without treating High Priority, Research, Todo, Low
+   * Priority, On Hold, or Done as favorites.
+   */
+  return updateSession(normalizedSnapshot, sessionId, (session) => ({
+    ...session,
+    isFavorite: sessionTag === "favorite" ? true : undefined,
+    sessionTag,
   }));
 }
 
@@ -2266,6 +2410,7 @@ function getNextPaneLayoutForCreatedSession(
       seededLayout,
       placement.targetSessionId,
       nextSessionId,
+      placement.position,
     );
     return normalizeCreatedPaneLayout(
       tabbedLayout ?? createPaneLayoutFromVisibleIds(nextVisibleSessionIds),
@@ -2519,6 +2664,7 @@ function setActiveSessionInPaneLayout(
 function removeSessionFromPaneLayout(
   layout: SessionPaneLayoutNode,
   sessionId: string,
+  replacementSessionId?: string,
 ): SessionPaneLayoutNode | undefined {
   if (layout.kind === "leaf") {
     return layout.sessionId === sessionId ? undefined : layout;
@@ -2531,17 +2677,21 @@ function removeSessionFromPaneLayout(
     if (sessionIds.length === 1) {
       return { kind: "leaf", sessionId: sessionIds[0]! };
     }
+    const fallbackActiveSessionId =
+      replacementSessionId && sessionIds.includes(replacementSessionId)
+        ? replacementSessionId
+        : sessionIds[0];
     return {
       ...layout,
       activeSessionId:
         layout.activeSessionId && sessionIds.includes(layout.activeSessionId)
           ? layout.activeSessionId
-          : sessionIds[0],
+          : fallbackActiveSessionId,
       sessionIds,
     };
   }
   const children = layout.children
-    .map((child) => removeSessionFromPaneLayout(child, sessionId))
+    .map((child) => removeSessionFromPaneLayout(child, sessionId, replacementSessionId))
     .filter((child): child is SessionPaneLayoutNode => child !== undefined);
   if (children.length === 0) {
     return undefined;
@@ -2552,12 +2702,94 @@ function removeSessionFromPaneLayout(
   return flattenPaneLayoutSplit({ ...layout, children });
 }
 
+function getClosingPaneTabReplacementSessionId(
+  layout: SessionPaneLayoutNode | undefined,
+  sessionId: string,
+): string | undefined {
+  if (!layout) {
+    return undefined;
+  }
+  if (layout.kind === "leaf") {
+    return undefined;
+  }
+  if (layout.kind === "tabs") {
+    return getAdjacentPaneTabSessionId(layout.sessionIds, sessionId);
+  }
+  for (const child of layout.children) {
+    const replacementSessionId = getClosingPaneTabReplacementSessionId(child, sessionId);
+    if (replacementSessionId) {
+      return replacementSessionId;
+    }
+  }
+  return undefined;
+}
+
+function getAdjacentPaneTabSessionId(
+  sessionIds: readonly string[],
+  sessionId: string,
+): string | undefined {
+  const index = sessionIds.indexOf(sessionId);
+  if (index < 0 || sessionIds.length <= 1) {
+    return undefined;
+  }
+  /*
+   * CDXC:PaneTabs 2026-06-06-04:32:
+   * Closing a selected tab follows browser-style selection: prefer the tab immediately to the right, then use the left sibling only when the closed tab was rightmost.
+   */
+  return sessionIds[index + 1] ?? sessionIds[index - 1];
+}
+
+function isActivePaneLayoutSession(
+  layout: SessionPaneLayoutNode | undefined,
+  sessionId: string,
+): boolean {
+  if (!layout) {
+    return false;
+  }
+  if (layout.kind === "leaf") {
+    return layout.sessionId === sessionId;
+  }
+  if (layout.kind === "tabs") {
+    return (layout.activeSessionId ?? layout.sessionIds[0]) === sessionId;
+  }
+  return layout.children.some((child) => isActivePaneLayoutSession(child, sessionId));
+}
+
+function getVisibleSessionIdsAfterSessionClose(
+  visibleSessionIds: readonly string[],
+  sessionId: string,
+  replacementSessionId: string | undefined,
+): string[] {
+  const nextVisibleSessionIds: string[] = [];
+  for (const visibleSessionId of visibleSessionIds) {
+    if (visibleSessionId === sessionId) {
+      if (replacementSessionId && !nextVisibleSessionIds.includes(replacementSessionId)) {
+        nextVisibleSessionIds.push(replacementSessionId);
+      }
+      continue;
+    }
+    if (visibleSessionId === replacementSessionId && visibleSessionIds.includes(sessionId)) {
+      continue;
+    }
+    nextVisibleSessionIds.push(visibleSessionId);
+  }
+  return nextVisibleSessionIds;
+}
+
+function countPaneLayoutOwnerSlots(layout: SessionPaneLayoutNode): number {
+  if (layout.kind === "split") {
+    return layout.children.reduce((count, child) => count + countPaneLayoutOwnerSlots(child), 0);
+  }
+  return 1;
+}
+
 function addSessionToPaneTabGroup(
   layout: SessionPaneLayoutNode,
   targetSessionId: string,
   sourceSessionId: string,
+  position: SessionPaneTabInsertPosition = "append",
 ): SessionPaneLayoutNode | undefined {
-  const result = addSessionToPaneTabGroupNode(layout, targetSessionId, sourceSessionId);
+  const result = addSessionToPaneTabGroupNode(layout, targetSessionId, sourceSessionId, position);
   return result.didAdd ? result.node : undefined;
 }
 
@@ -2565,6 +2797,7 @@ function addSessionToPaneTabGroupNode(
   node: SessionPaneLayoutNode,
   targetSessionId: string,
   sourceSessionId: string,
+  position: SessionPaneTabInsertPosition,
 ): { didAdd: boolean; node: SessionPaneLayoutNode } {
   if (node.kind === "leaf") {
     return node.sessionId === targetSessionId
@@ -2582,12 +2815,28 @@ function addSessionToPaneTabGroupNode(
     if (!node.sessionIds.includes(targetSessionId)) {
       return { didAdd: false, node };
     }
+    const nextSessionIds =
+      position === "append"
+        ? [...node.sessionIds, sourceSessionId]
+        : (() => {
+            const sessionIdsWithoutSource = node.sessionIds.filter(
+              (sessionId) => sessionId !== sourceSessionId,
+            );
+            const targetIndex = sessionIdsWithoutSource.indexOf(targetSessionId);
+            const insertIndex = position === "before" ? targetIndex : targetIndex + 1;
+            sessionIdsWithoutSource.splice(insertIndex, 0, sourceSessionId);
+            return sessionIdsWithoutSource;
+          })();
+    /**
+     * CDXC:PaneTabs 2026-06-06-04:36:
+     * Cmd+T and Cmd+N create tabs in the focused pane immediately next to the focused tab, not at the far right of the tab strip. Preserve the old append behavior unless callers explicitly request before/after placement.
+     */
     return {
       didAdd: true,
       node: {
         ...node,
         activeSessionId: sourceSessionId,
-        sessionIds: dedupeVisibleSessionIds([...node.sessionIds, sourceSessionId]),
+        sessionIds: dedupeVisibleSessionIds(nextSessionIds),
       },
     };
   }
@@ -2596,7 +2845,12 @@ function addSessionToPaneTabGroupNode(
     if (didAdd) {
       return child;
     }
-    const result = addSessionToPaneTabGroupNode(child, targetSessionId, sourceSessionId);
+    const result = addSessionToPaneTabGroupNode(
+      child,
+      targetSessionId,
+      sourceSessionId,
+      position,
+    );
     didAdd = result.didAdd;
     return result.node;
   });
@@ -2811,6 +3065,20 @@ export function ensureAllSessionsInFocusedPaneTabGroupInSimpleWorkspace(
   if (!group) {
     return { changed: false, snapshot: normalizedSnapshot };
   }
+  if (
+    group.snapshot.visibleCount === 1 &&
+    group.snapshot.fullscreenRestoreVisibleCount !== undefined
+  ) {
+    /*
+     * CDXC:SessionFocusMode 2026-06-02-18:45:
+     * Publish-time virtual tab materialization must not rewrite paneLayout while Focus mode is active.
+     * Focus mode intentionally renders only the focused tab group, so treating visibleSessionIds as the complete rendered owner set would prune the hidden split branches and make Exit focus restore only a tab group instead of the original split.
+     */
+    return {
+      changed: !areSnapshotsEqual(snapshot, normalizedSnapshot),
+      snapshot: normalizedSnapshot,
+    };
+  }
   const nextGroupSnapshot = materializeAllSessionsInFocusedPaneTabGroup(group.snapshot);
   const nextSnapshot = updateGroup(normalizedSnapshot, groupId, (targetGroup) => ({
     ...targetGroup,
@@ -2825,6 +3093,14 @@ export function ensureAllSessionsInFocusedPaneTabGroupInSimpleWorkspace(
 function materializeAllSessionsInFocusedPaneTabGroup(
   snapshot: SessionGroupRecord["snapshot"],
 ): SessionGroupRecord["snapshot"] {
+  if (snapshot.visibleCount === 1 && snapshot.fullscreenRestoreVisibleCount !== undefined) {
+    /*
+     * CDXC:SessionFocusMode 2026-06-04-20:37:
+     * Focus mode intentionally hides other split branches without deleting them from paneLayout.
+     * Keep private virtual-tab materialization as a no-op during Focus too, so callers cannot bypass the public publish-time guard and flatten hidden panes into the focused tab group before Exit focus restores.
+     */
+    return normalizeGroupSnapshot(snapshot);
+  }
   const sessionIds = dedupeVisibleSessionIds(snapshot.sessions.map((session) => session.sessionId));
   if (sessionIds.length === 0) {
     return normalizeGroupSnapshot(snapshot);
@@ -4005,5 +4281,15 @@ function areSnapshotsEqual(
   left: GroupedSessionWorkspaceSnapshot,
   right: GroupedSessionWorkspaceSnapshot,
 ): boolean {
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
+/*
+CDXC:SessionFocusMode 2026-06-05-22:26:
+Focus-mode mutations compare both whole workspaces and individual group snapshots.
+Keep group-level equality typed separately so release typecheck catches accidental
+cross-scope comparisons instead of weakening the workspace snapshot contract.
+*/
+function areGroupSnapshotsEqual(left: SessionGridSnapshot, right: SessionGridSnapshot): boolean {
   return JSON.stringify(left) === JSON.stringify(right);
 }

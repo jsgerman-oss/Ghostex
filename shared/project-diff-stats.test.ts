@@ -4,7 +4,6 @@ import {
   mergeSidebarProjectDiffStats,
   parseGitNumstatDiffStats,
   parseGitZeroDelimitedPaths,
-  parseWcLineCountStdout,
   resolveSidebarProjectDiffStats,
 } from "./project-diff-stats";
 
@@ -26,16 +25,6 @@ describe("parseGitZeroDelimitedPaths", () => {
       "new file.ts",
       "nested/other.ts",
     ]);
-  });
-});
-
-describe("parseWcLineCountStdout", () => {
-  test("uses the total line when wc receives multiple files", () => {
-    expect(parseWcLineCountStdout("       4 a.ts\n      10 b.ts\n      14 total\n")).toBe(14);
-  });
-
-  test("sums single-file chunks without a total row", () => {
-    expect(parseWcLineCountStdout("       7 new file.ts\n")).toBe(7);
   });
 });
 

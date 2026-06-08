@@ -44,20 +44,22 @@ export function summarizeSidebarRefreshMessage(
   message: SidebarRefreshSnapshotMessage,
   previousRevision: number,
 ): Record<string, unknown> {
+  const sessionCount = countSidebarRefreshSessions(message.groups);
+  /**
+   * CDXC:SidebarRefreshDiagnostics 2026-06-06-23:07:
+   * Hydrate diagnostics must stay count-only. Full session-id arrays made the
+   * refresh log grow by megabytes during title storms while support only needs
+   * revision, group count, and total row count to diagnose render loops.
+   */
   return {
     groupCount: message.groups.length,
     messageType: message.type,
     previousRevision,
     revision: message.revision,
-    sessionCount: countSidebarRefreshSessions(message.groups),
-    sessionIds: collectSidebarRefreshSessionIds(message.groups),
+    sessionCount,
   };
 }
 
 function countSidebarRefreshSessions(groups: readonly SidebarSessionGroup[]): number {
   return groups.reduce((total, group) => total + group.sessions.length, 0);
-}
-
-function collectSidebarRefreshSessionIds(groups: readonly SidebarSessionGroup[]): string[] {
-  return groups.flatMap((group) => group.sessions.map((session) => session.sessionId));
 }

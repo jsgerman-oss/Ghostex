@@ -112,6 +112,17 @@
           quickSuggestions: false,
           renderLineHighlight: "none",
           scrollBeyondLastLine: false,
+          /*
+           * CDXC:PromptEditor 2026-06-04-19:29:
+           * The standalone macOS Monaco editor scrollbar should match the thin Agents Hub sidebar rail instead of Monaco's wider default gutter.
+           *
+           * CDXC:PromptEditor 2026-06-04-19:48:
+           * The scrollbar rail should be 7px wide so the code editor reads lighter than the previous 10px treatment.
+           */
+          scrollbar: {
+            horizontalScrollbarSize: 7,
+            verticalScrollbarSize: 7,
+          },
           selectionHighlight: false,
           snippetSuggestions: "none",
           suggestOnTriggerCharacters: false,

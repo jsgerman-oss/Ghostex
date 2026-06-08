@@ -24,6 +24,10 @@ export type ghostexHotkeyActionId =
   | "focusLeft"
   | "splitMore"
   | "splitMoreDown"
+  | "switchAgentsView"
+  | "switchSourceView"
+  | "switchGitHubView"
+  | "switchKanbanView"
   | `runActionSlot${1 | 2 | 3 | 4 | 5}`
   | `focusGroup${1 | 2 | 3 | 4 | 5}`
   | `focusSessionSlot${1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9}`;
@@ -53,6 +57,7 @@ export type ghostexHotkeyAction =
   | { id: ghostexHotkeyActionId; kind: "renameActiveSession" }
   | { id: ghostexHotkeyActionId; kind: "runActionSlot"; slotNumber: number }
   | { id: ghostexHotkeyActionId; kind: "setViewMode"; viewMode: TerminalViewMode }
+  | { id: ghostexHotkeyActionId; kind: "switchWorkareaView"; view: "agents" | "github" | "kanban" | "source" }
   | { direction: "horizontal" | "vertical"; id: ghostexHotkeyActionId; kind: "splitFocusedPane" };
 
 export type ghostexHotkeyDefinition = {
@@ -79,10 +84,14 @@ export const GHOSTEX_HOTKEY_DEFINITIONS: readonly ghostexHotkeyDefinition[] = [
      * Default hotkeys should prefer plain Cmd chords so the app feels like a
      * Mac-first terminal workspace instead of requiring Cmd+Option layers for
      * everyday navigation.
+     *
+     * CDXC:Hotkeys 2026-06-06-04:36:
+     * Cmd+T is the default New Terminal Tab action. It creates a terminal tab in the focused workspace split pane, immediately after the currently focused tab.
      */
-    defaultKey: "cmd+n",
+    defaultKey: "cmd+t",
     description: "Create a terminal session.",
     id: "createSession",
+    retiredDefaultKeys: ["cmd+n"],
     title: "Create Session",
   },
   {
@@ -133,12 +142,36 @@ export const GHOSTEX_HOTKEY_DEFINITIONS: readonly ghostexHotkeyDefinition[] = [
      * Pane context-menu actions should also be command-palette commands with
      * configurable shortcuts. These hotkeys target the focused pane/session so
      * keyboard use follows the same scope as the visible pane menu.
+     *
+     * CDXC:Hotkeys 2026-06-06-04:36:
+     * Cmd+N is the default New Browser Tab action. It opens the browser as the next tab in the focused workspace split pane instead of creating a separate split or app window.
      */
-    defaultKey: "ctrl+shift+b",
-    description: "Open a browser pane beside the focused pane.",
+    defaultKey: "cmd+n",
+    description: "Open a browser tab beside the focused tab.",
     id: "openBrowserPane",
+    retiredDefaultKeys: ["ctrl+shift+b"],
     title: "Open Browser Pane",
   },
+  ...([
+    ["switchAgentsView", "agents", "alt+1", "Agents"],
+    ["switchSourceView", "source", "alt+2", "Source"],
+    ["switchGitHubView", "github", "alt+3", "GitHub"],
+    ["switchKanbanView", "kanban", "alt+4", "Kanban"],
+  ] as const).map(([id, view, defaultKey, title]) => ({
+    action: {
+      id,
+      kind: "switchWorkareaView" as const,
+      view,
+    },
+    /**
+     * CDXC:Hotkeys 2026-06-06-04:36:
+     * Option+1..4 are default workarea view switchers in titlebar order: Agents, Source, GitHub, Kanban. Keep these as named actions instead of overloading group/session slots so AppKit, Settings, and sidebar DOM dispatch switch the same project surface.
+     */
+    defaultKey,
+    description: `Switch to ${title} view.`,
+    id,
+    title: `Switch to ${title}`,
+  })),
   {
     action: {
       focusedPaneAction: "rotatePanesClockwise",
@@ -209,8 +242,12 @@ export const GHOSTEX_HOTKEY_DEFINITIONS: readonly ghostexHotkeyDefinition[] = [
   {
     action: { id: "focusPreviousSession", kind: "focusSessionSlot", slotNumber: -1 },
     alternateDefaultKeys: ["cmd+shift+["],
+    /**
+     * CDXC:Hotkeys 2026-06-07-14:05:
+     * Cmd+Shift+[ and Cmd+Shift+] must remain supported alongside Cmd+Shift+Tab and Cmd+Tab. Both shortcut families traverse rendered sidebar order across expanded groups and skip sleeping sessions.
+     */
     defaultKey: "cmd+shift+tab",
-    description: "Focus the previous visible sidebar tab.",
+    description: "Focus the previous awake visible sidebar tab.",
     id: "focusPreviousSession",
     retiredDefaultKeys: ["cmd+["],
     title: "Previous Tab",
@@ -219,7 +256,7 @@ export const GHOSTEX_HOTKEY_DEFINITIONS: readonly ghostexHotkeyDefinition[] = [
     action: { id: "focusNextSession", kind: "focusSessionSlot", slotNumber: 0 },
     alternateDefaultKeys: ["cmd+shift+]"],
     defaultKey: "cmd+tab",
-    description: "Focus the next visible sidebar tab.",
+    description: "Focus the next awake visible sidebar tab.",
     id: "focusNextSession",
     retiredDefaultKeys: ["cmd+]"],
     title: "Next Tab",
@@ -376,6 +413,11 @@ const SHIFTED_DIGIT_KEYS: Record<string, string> = {
   ")": "0",
 };
 
+const SHIFTED_SYMBOL_KEYS: Record<string, string> = {
+  "{": "[",
+  "}": "]",
+};
+
 function normalizeHotkeyChordText(chord: string): string {
   const parts = chord.split("+").filter(Boolean);
   const key = parts.at(-1);
@@ -391,6 +433,16 @@ function normalizeHotkeyChordText(chord: string): string {
      * hotkeys run from sidebar, browser, and terminal focus without duplicate bindings.
      */
     parts[parts.length - 1] = SHIFTED_DIGIT_KEYS[key];
+  }
+  if (parts.includes("shift") && SHIFTED_SYMBOL_KEYS[key]) {
+    /**
+     * CDXC:Hotkeys 2026-06-07-14:24:
+     * WebKit reports Cmd+Shift+[ and Cmd+Shift+] as the shifted glyphs "{" and
+     * "}" when sidebar chrome owns focus. Normalize those back to the physical
+     * bracket keys so the alternate next/previous-session defaults match the
+     * same stored shortcut text as AppKit and Settings.
+     */
+    parts[parts.length - 1] = SHIFTED_SYMBOL_KEYS[key];
   }
   return parts.join("+");
 }

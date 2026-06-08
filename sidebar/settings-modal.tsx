@@ -52,10 +52,10 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { SidebarSessionSearchField } from "./sidebar-session-search-overlay";
 import {
   IconAsterisk,
   IconAlertTriangle,
-  IconBrowser,
   IconChevronDown,
   IconCircleCheckFilled,
   IconCircleX,
@@ -101,12 +101,19 @@ import {
   type PromptEditorBackend,
   SESSION_PERSISTENCE_PROVIDER_OPTIONS,
   SESSION_STATUS_INDICATOR_SIZE_OPTIONS,
+  SESSION_TITLE_GENERATION_AGENT_OPTIONS,
   SIDEBAR_SETTINGS_PRESETS,
   SIDEBAR_SIDE_OPTIONS,
   SIDEBAR_THEME_SETTING_OPTIONS,
   applySidebarSettingsPreset,
+  getSessionTitleGenerationCommandPreview,
   getSidebarSettingsPresetId,
+  MAX_COMMANDS_PANEL_DEFAULT_HEIGHT_PX,
+  MAX_SIDEBAR_DEFAULT_WIDTH_PX,
+  MIN_COMMANDS_PANEL_DEFAULT_HEIGHT_PX,
+  MIN_SIDEBAR_DEFAULT_WIDTH_PX,
   normalizeghostexSettings,
+  normalizeRemoteMachineSettings,
   type BrowserFeedbackTool,
   type AutoSleepIdleMinutes,
   type DefaultEditorCommand,
@@ -114,8 +121,10 @@ import {
   type GhosttyCopyOnSelect,
   type GhosttyScrollbar,
   type KeepAwakeDurationMinutes,
+  type RemoteMachineSettings,
   type SessionPersistenceProvider,
   type SessionStatusIndicatorSize,
+  type SessionTitleGenerationAgent,
   type SidebarSettingsPresetId,
   type SidebarSide,
   type TerminalCursorStyle,
@@ -165,6 +174,7 @@ import {
 import { PET_OPTIONS, type PetId } from "../shared/pets";
 import { AGENT_LOGO_COLORS, AGENT_LOGOS } from "./agent-logos";
 import { EditorBrandIcon, getEditorBrandIconId } from "./brand-icons";
+import { BundledAgentSkillsPanel } from "./bundled-agent-skills-panel";
 import { HotkeyRecorderField } from "./hotkey-recorder-field";
 import { PetAvatar } from "./pet-avatar";
 import { CommandIconPicker } from "./command-icon-picker";
@@ -274,6 +284,7 @@ export type SettingsModalTab =
   | "ghostty"
   | "integrations"
   | "osIntegration"
+  | "remote"
   | "projects"
   | "agents"
   | "actions"
@@ -303,6 +314,7 @@ const MAIN_SETTINGS_SECTION_SETTING_KEYS: Record<
   sidebar: [
     "sidebarSettingsPreset",
     "sidebarSide",
+    "sidebarDefaultWidthPx",
     "sidebarTheme",
     "sessionStatusIndicatorSize",
     "agentManagerZoomPercent",
@@ -335,6 +347,7 @@ const MAIN_SETTINGS_SECTION_SETTING_KEYS: Record<
   workspace: [
     "workspaceActivePaneBorderColor",
     "workspaceBackgroundColor",
+    "commandsPanelDefaultHeightPx",
     "debuggingMode",
   ],
   editor: [
@@ -358,7 +371,6 @@ const MAIN_SETTINGS_SECTION_SETTING_KEYS: Record<
     "autoSleepAgentSessionsEnabled",
     "autoSleepAgentIdleMinutes",
     "autoSleepRequireAgentResumeCommand",
-    "autoSleepFocusedAgentSessions",
     "autoSleepFavoriteAgentSessions",
   ],
   power: [
@@ -460,6 +472,7 @@ export type SettingsModalProps = {
   agentHookStatusLoading?: boolean;
   firstLaunchSetupVisibleSettings?: ReadonlySet<FirstLaunchSetupMainSettingKey>;
   initialSection?: MainSettingsInitialSectionId;
+  initialSearchQuery?: string;
   initialTab?: SettingsModalTab;
   isOpen: boolean;
   presentation?: SettingsModalPresentation;
@@ -471,8 +484,11 @@ export type SettingsModalProps = {
   onOpenScreenRecordingPreferences?: () => void;
   onOpenGhostexFolder?: () => void;
   onGhosttySettingsAction?: (action: GhosttySettingsAction) => void;
+  onInstallAgentOrchestrationSkill?: () => void;
   onInstallBrowserControl?: () => void;
+  onInstallComputerUseSkill?: () => void;
   onInstallCuaDriver?: () => void;
+  onInstallGenerateTitleSkill?: () => void;
   onInstallGte?: () => void;
   onInstallGhostexCli?: () => void;
   onPlayCompletionSound?: (sound: CompletionSoundSetting) => void;
@@ -501,6 +517,7 @@ export function SettingsModal({
   agentHookStatusLoading = false,
   firstLaunchSetupVisibleSettings,
   initialSection,
+  initialSearchQuery,
   initialTab = "settings",
   isOpen,
   onChange,
@@ -512,8 +529,11 @@ export function SettingsModal({
   onOpenScreenRecordingPreferences,
   onOpenGhostexFolder,
   onGhosttySettingsAction,
+  onInstallAgentOrchestrationSkill,
   onInstallBrowserControl,
+  onInstallComputerUseSkill,
   onInstallCuaDriver,
+  onInstallGenerateTitleSkill,
   onInstallGte,
   onInstallGhostexCli,
   onPlayCompletionSound,
@@ -640,6 +660,33 @@ export function SettingsModal({
     rememberedSettingsModalTab = nextTab;
     setActiveTabState(nextTab);
   }, [initialTab, isOpen]);
+
+  useEffect(() => {
+    if (!isOpen || isFirstLaunchSetup || !initialSearchQuery?.trim()) {
+      return;
+    }
+    const nextQuery = initialSearchQuery.trim();
+    const nextTab = getInitialSettingsModalTab(initialTab);
+    /**
+     * CDXC:SessionPersistence 2026-06-04-02:52:
+     * Titlebar Tips notices can deep-link into Settings by opening a searchable
+     * tab and pre-filling the search box with the setting label. Seed the
+     * correct tab-specific query instead of typing through the DOM so repeated
+     * opens land on the intended control without depending on focus timing.
+     */
+    if (nextTab === "hotkeys") {
+      setHotkeysSearchQuery(nextQuery);
+    } else if (nextTab === "ghostty") {
+      setGhosttySearchQuery(nextQuery);
+    } else if (nextTab === "settings") {
+      setSettingsSearchQuery(nextQuery);
+    }
+    const animationFrame = requestAnimationFrame(() => {
+      searchInputRef.current?.focus({ preventScroll: true });
+      searchInputRef.current?.select();
+    });
+    return () => cancelAnimationFrame(animationFrame);
+  }, [initialSearchQuery, initialTab, isFirstLaunchSetup, isOpen]);
 
   useEffect(() => {
     if (!isOpen || activeTab !== "osIntegration" || osIntegrationStatus || osIntegrationStatusLoading) {
@@ -854,11 +901,6 @@ export function SettingsModal({
         title: "Require resume command",
       },
       {
-        key: "autoSleepFocusedAgentSessions",
-        subtitle: "Allow the currently focused agent terminal to auto-sleep.",
-        title: "Include focused agent",
-      },
-      {
         key: "autoSleepFavoriteAgentSessions",
         subtitle: "Allow favorite agent sessions to auto-sleep.",
         title: "Include favorite agents",
@@ -995,6 +1037,11 @@ export function SettingsModal({
         title: "Side",
       },
       {
+        key: "sidebarDefaultWidthPx",
+        subtitle: "Width restored when double-clicking the sidebar resize handle.",
+        title: "Default Width",
+      },
+      {
         key: "sidebarTheme",
         options: SIDEBAR_THEME_SETTING_OPTIONS,
         subtitle: "Choose the sidebar color scheme.",
@@ -1059,7 +1106,7 @@ export function SettingsModal({
           { label: "Folder sizes", value: "folderSizes" },
           { label: "Disk usage", value: "diskUsage" },
         ],
-        subtitle: "Show ~/.ghostex folder sizes and open the Ghostex storage folder in Finder.",
+        subtitle: "Show ~/.ghostex folder sizes and open the Ghostex storage folder.",
         title: "Ghostex folder",
       },
     ]),
@@ -1224,9 +1271,18 @@ export function SettingsModal({
         title: "Terminal Background",
       },
       {
+        key: "commandsPanelDefaultHeightPx",
+        subtitle: "Height used when opening the command pane and when double-clicking its top resize rail.",
+        title: "Command Pane Default Height",
+      },
+      /*
+      CDXC:DiagnosticsSettings 2026-06-06-07:09:
+      Debugging Mode is both diagnostic disk logging and debug UI exposure. The setting label and searchable subtitle must warn that detailed app logs can affect performance so users disable it after a repro.
+      */
+      {
         key: "debuggingMode",
-        subtitle: "Expose debugging-only sidebar controls.",
-        title: "Show debugging UI",
+        subtitle: "Show debugging controls and write detailed app diagnostics to disk. This can affect performance, so turn it off when you do not need it.",
+        title: "Debug logging and UI",
       },
     ]),
   };
@@ -1611,6 +1667,7 @@ export function SettingsModal({
                 <TabsTrigger value="ghostty">Ghostty</TabsTrigger>
                 <TabsTrigger value="osIntegration">OS Integration</TabsTrigger>
                 <TabsTrigger value="integrations">Integrations</TabsTrigger>
+                <TabsTrigger value="remote">Remote</TabsTrigger>
                 <TabsTrigger value="projects">Projects</TabsTrigger>
                 <TabsTrigger value="hotkeys">Hotkeys</TabsTrigger>
                 <TabsTrigger value="agents">Agents</TabsTrigger>
@@ -1621,18 +1678,32 @@ export function SettingsModal({
             ) : null}
             {!isFirstLaunchSetup &&
             (activeTab === "settings" || activeTab === "ghostty" || activeTab === "hotkeys") ? (
-              <Input
-                aria-label={
+              <SidebarSessionSearchField
+                ariaLabel={
                   activeTab === "hotkeys"
                     ? "Search hotkeys"
                     : activeTab === "ghostty"
                       ? "Search Ghostty settings"
                       : "Search settings"
                 }
-                className="mt-3 h-10 px-3 text-sm"
-                ref={searchInputRef}
-                onChange={(event) => {
-                  const nextQuery = event.currentTarget.value;
+                clearLabel={
+                  activeTab === "hotkeys"
+                    ? "Clear hotkeys search"
+                    : activeTab === "ghostty"
+                      ? "Clear Ghostty settings search"
+                      : "Clear settings search"
+                }
+                inputClassName="settings-modal-search-input"
+                inputRef={searchInputRef}
+                placeholder={activeTab === "hotkeys" ? "Search hotkeys" : "Search settings"}
+                query={
+                  activeTab === "hotkeys"
+                    ? hotkeysSearchQuery
+                    : activeTab === "ghostty"
+                      ? ghosttySearchQuery
+                      : settingsSearchQuery
+                }
+                setQuery={(nextQuery) => {
                   if (activeTab === "hotkeys") {
                     setHotkeysSearchQuery(nextQuery);
                     return;
@@ -1643,14 +1714,7 @@ export function SettingsModal({
                   }
                   setSettingsSearchQuery(nextQuery);
                 }}
-                placeholder={activeTab === "hotkeys" ? "Search hotkeys" : "Search settings"}
-                value={
-                  activeTab === "hotkeys"
-                    ? hotkeysSearchQuery
-                    : activeTab === "ghostty"
-                      ? ghosttySearchQuery
-                      : settingsSearchQuery
-                }
+                toolbarClassName="settings-modal-search-toolbar"
               />
             ) : null}
           </DialogHeader>
@@ -1733,6 +1797,25 @@ export function SettingsModal({
                 options={SIDEBAR_SIDE_OPTIONS}
                 value={draft.sidebarSide}
               />
+              ) : null}
+              {mainSettingVisible(settingsSearch.sidebar, "sidebarDefaultWidthPx") ? (
+              <>
+                {/*
+                 * CDXC:SidebarChrome 2026-06-05-04:40:
+                 * This setting changes only the explicit double-click reset target for the sidebar resize handle. App restart must keep restoring the last persisted sidebar width from native/Electron chrome state.
+                 */}
+                <SliderNumberField
+                  description="Used when double-clicking the sidebar resize handle. App restart still restores your last manually set sidebar width."
+                  label="Default Width"
+                  {...getSettingModificationProps("sidebarDefaultWidthPx")}
+                  max={MAX_SIDEBAR_DEFAULT_WIDTH_PX}
+                  min={MIN_SIDEBAR_DEFAULT_WIDTH_PX}
+                  onCommit={(value) => updateDraft("sidebarDefaultWidthPx", value)}
+                  onChange={(value) => updateDraftDebounced("sidebarDefaultWidthPx", value)}
+                  step={1}
+                  value={draft.sidebarDefaultWidthPx}
+                />
+              </>
               ) : null}
               {mainSettingVisible(settingsSearch.sidebar, "sidebarTheme") ? (
               <StaticNoteField
@@ -1926,11 +2009,24 @@ export function SettingsModal({
                 value={draft.workspaceBackgroundColor}
               />
               ) : null}
+              {mainSettingVisible(settingsSearch.workspace, "commandsPanelDefaultHeightPx") ? (
+              <SliderNumberField
+                description="Used when opening the command pane (F12 or sidebar) and when double-clicking its top resize rail."
+                label="Command Pane Default Height"
+                {...getSettingModificationProps("commandsPanelDefaultHeightPx")}
+                max={MAX_COMMANDS_PANEL_DEFAULT_HEIGHT_PX}
+                min={MIN_COMMANDS_PANEL_DEFAULT_HEIGHT_PX}
+                onCommit={(value) => updateDraft("commandsPanelDefaultHeightPx", value)}
+                onChange={(value) => updateDraftDebounced("commandsPanelDefaultHeightPx", value)}
+                step={1}
+                value={draft.commandsPanelDefaultHeightPx}
+              />
+              ) : null}
               {mainSettingVisible(settingsSearch.workspace, "debuggingMode") ? (
               <ToggleField
                 checked={draft.debuggingMode}
-                description="Expose debugging-only sidebar controls."
-                label="Show debugging UI"
+                description="Shows debugging controls and writes detailed app diagnostics to disk. This can affect performance, so turn it off when you do not need it."
+                label="Debug logging and UI"
                 {...getSettingModificationProps("debuggingMode")}
                 onChange={(checked) => updateDraft("debuggingMode", checked)}
               />
@@ -2160,16 +2256,6 @@ export function SettingsModal({
                 onChange={(checked) =>
                   updateDraft("autoSleepRequireAgentResumeCommand", checked)
                 }
-              />
-              ) : null}
-              {draft.autoSleepAgentSessionsEnabled &&
-              mainSettingVisible(settingsSearch.autoSleep, "autoSleepFocusedAgentSessions") ? (
-              <ToggleField
-                checked={draft.autoSleepFocusedAgentSessions}
-                description="Allow the currently focused agent terminal to auto-sleep."
-                label="Include focused agent"
-                {...getSettingModificationProps("autoSleepFocusedAgentSessions")}
-                onChange={(checked) => updateDraft("autoSleepFocusedAgentSessions", checked)}
               />
               ) : null}
               {draft.autoSleepAgentSessionsEnabled &&
@@ -2581,8 +2667,11 @@ export function SettingsModal({
                          CDXC:SessionPersistence 2026-05-26-13:41:
                           zmx is now the default and recommended Settings option. Hide tmux and zellij from the dropdown without removing their code paths, so existing persisted provider sessions still normalize and launch.
 
-                         CDXC:SessionPersistence 2026-05-28-04:24:
-                          The Session Persistence setting should no longer be marked as Beta in Settings copy or search results. */
+                        CDXC:SessionPersistence 2026-05-28-04:24:
+                          The Session Persistence setting should no longer be marked as Beta in Settings copy or search results.
+
+                         CDXC:SessionPersistence 2026-06-04-01:57:
+                          Users can disable persistence, but the Settings dropdown must warn that Android and iOS attach flows depend on persistent provider sessions. Show the warning only while Off is selected so the risk is visible at the decision point without making the default zmx state noisy. */
                       <SelectField
                         description="Use zmx with zmx-session-manager when you care about using ssh from other devices to continue working on sessions created using Ghostex. It doesn't affect the Agent CLI tools at all. Mostly working great, few minor issues left to fix."
                         label="Session Persistence"
@@ -2594,6 +2683,16 @@ export function SettingsModal({
                           )
                         }
                         options={SESSION_PERSISTENCE_PROVIDER_OPTIONS}
+                        supportingContent={
+                          draft.sessionPersistenceProvider === "off" ? (
+                            <div className="settings-persistence-warning" role="note">
+                              <IconAlertTriangle aria-hidden="true" size={14} />
+                              <span>
+                                Android and iOS attach can have issues while persistence is disabled.
+                              </span>
+                            </div>
+                          ) : undefined
+                        }
                         value={draft.sessionPersistenceProvider}
                       />
                     ) : null}
@@ -2856,15 +2955,31 @@ export function SettingsModal({
               agentHookStatusLoading={agentHookStatusLoading}
               ghostexCliStatus={ghostexCliStatus}
               ghostexCliStatusLoading={ghostexCliStatusLoading}
+              onInstallAgentOrchestrationSkill={onInstallAgentOrchestrationSkill}
               onInstallAgentHooks={onInstallAgentHooks}
               onInstallBrowserControl={onInstallBrowserControl}
+              onInstallComputerUseSkill={onInstallComputerUseSkill}
               onInstallCuaDriver={onInstallCuaDriver}
+              onInstallGenerateTitleSkill={onInstallGenerateTitleSkill}
               onInstallGhostexCli={onInstallGhostexCli}
               onOpenAccessibilityPreferences={onOpenAccessibilityPreferences}
               onOpenFirstLaunchSetup={onOpenFirstLaunchSetup}
               onOpenScreenRecordingPreferences={onOpenScreenRecordingPreferences}
               onRequestAgentHookStatus={onRequestAgentHookStatus}
               onRequestGhostexCliStatus={onRequestGhostexCliStatus}
+            />
+          </TabsContent>
+          ) : null}
+          {!isFirstLaunchSetup ? (
+          <TabsContent className="mt-0 min-h-0 flex-1 overflow-hidden" value="remote">
+            <RemoteSettingsTab
+              onChange={(nextRemoteMachines) =>
+                applySettings({
+                  ...draft,
+                  remoteMachines: nextRemoteMachines,
+                })
+              }
+              remoteMachines={draft.remoteMachines}
             />
           </TabsContent>
           ) : null}
@@ -2879,7 +2994,9 @@ export function SettingsModal({
               agentHookStatus={agentHookStatus}
               agentHookStatusLoading={agentHookStatusLoading}
               agentAcceptAllEnabled={draft.agentAcceptAllEnabled}
+              customSessionTitleGenerationCommand={draft.customSessionTitleGenerationCommand}
               defaultPromptAgentId={draft.defaultPromptAgentId}
+              sessionTitleGenerationAgent={draft.sessionTitleGenerationAgent}
               onAgentAcceptAllEnabledChange={(checked) =>
                 applySettings({
                   ...draft,
@@ -2892,8 +3009,20 @@ export function SettingsModal({
                   defaultPromptAgentId: agentId,
                 })
               }
+              onCustomSessionTitleGenerationCommandChange={(command) =>
+                applySettings({
+                  ...draft,
+                  customSessionTitleGenerationCommand: command,
+                })
+              }
               onInstallAgentHooks={onInstallAgentHooks}
               onRequestAgentHookStatus={onRequestAgentHookStatus}
+              onSessionTitleGenerationAgentChange={(agent) =>
+                applySettings({
+                  ...draft,
+                  sessionTitleGenerationAgent: agent,
+                })
+              }
               vscode={vscode}
             />
           </TabsContent>
@@ -2944,6 +3073,254 @@ type SettingsOpenTargetEditorState = {
   };
   id?: string;
 };
+
+type RemoteMachineDraft = {
+  name: string;
+  sshHost: string;
+  sshIdentityFile: string;
+  sshPort: string;
+  sshUser: string;
+};
+
+function RemoteSettingsTab({
+  onChange,
+  remoteMachines,
+}: {
+  onChange: (remoteMachines: RemoteMachineSettings[]) => void;
+  remoteMachines: RemoteMachineSettings[];
+}) {
+  const [isTailscaleHelpOpen, setIsTailscaleHelpOpen] = useState(false);
+  const [newMachine, setNewMachine] = useState<RemoteMachineDraft>({
+    name: "",
+    sshHost: "",
+    sshIdentityFile: "",
+    sshPort: "",
+    sshUser: "",
+  });
+
+  const updateRemoteMachine = (machineId: string, patch: Partial<RemoteMachineDraft>) => {
+    const nextMachines = remoteMachines
+      .map((machine) => {
+        if (machine.id !== machineId) {
+          return machine;
+        }
+        return normalizeRemoteMachineDraft({
+          id: machine.id,
+          name: patch.name ?? machine.name,
+          sshHost: patch.sshHost ?? machine.sshHost,
+          sshIdentityFile: patch.sshIdentityFile ?? machine.sshIdentityFile ?? "",
+          sshPort: patch.sshPort ?? (machine.sshPort ? String(machine.sshPort) : ""),
+          sshUser: patch.sshUser ?? machine.sshUser ?? "",
+        });
+      })
+      .filter((machine): machine is RemoteMachineSettings => Boolean(machine));
+    onChange(normalizeRemoteMachineSettings(nextMachines));
+  };
+
+  const addRemoteMachine = () => {
+    const machine = normalizeRemoteMachineDraft({
+      ...newMachine,
+      id: `remote-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`,
+    });
+    if (!machine) {
+      return;
+    }
+    onChange(normalizeRemoteMachineSettings([...remoteMachines, machine]));
+    setNewMachine({ name: "", sshHost: "", sshIdentityFile: "", sshPort: "", sshUser: "" });
+  };
+
+  const removeRemoteMachine = (machineId: string) => {
+    onChange(remoteMachines.filter((machine) => machine.id !== machineId));
+  };
+
+  const canAddMachine = newMachine.name.trim().length > 0 && newMachine.sshHost.trim().length > 0;
+
+  return (
+    <div className="settings-tab-scroll scroll-mask-y">
+      <div className="settings-management-layout">
+        <div className="settings-management-header">
+          <div>
+            <h3 className="settings-management-heading">Remote machines</h3>
+            <p className="settings-management-description">
+              Saved SSH machines appear as separate sidebar sections.
+            </p>
+          </div>
+          <Button onClick={() => setIsTailscaleHelpOpen(true)} type="button" variant="outline">
+            <IconInfoCircle aria-hidden="true" />
+            Tailscale setup
+          </Button>
+        </div>
+
+        <div className="settings-management-list">
+          {remoteMachines.length === 0 ? (
+            <div className="rounded-none border border-border bg-muted/30 px-4 py-6 text-center text-sm text-muted-foreground">
+              No remote machines.
+            </div>
+          ) : (
+            remoteMachines.map((machine) => (
+              <Card className="settings-project-command-card" key={machine.id}>
+                <CardContent className="flex flex-col gap-4 p-4">
+                  <div className="settings-management-row">
+                    <span className="settings-management-icon flex size-9 shrink-0 items-center justify-center bg-muted">
+                      <IconDeviceDesktop aria-hidden="true" />
+                    </span>
+                    <span className="settings-management-main min-w-0">
+                      <span className="settings-management-title">{machine.name}</span>
+                      <span className="settings-management-detail">{formatRemoteMachineSshTarget(machine)}</span>
+                    </span>
+                    <Button
+                      aria-label={`Remove ${machine.name}`}
+                      onClick={() => removeRemoteMachine(machine.id)}
+                      size="icon"
+                      type="button"
+                      variant="ghost"
+                    >
+                      <IconTrash aria-hidden="true" />
+                    </Button>
+                  </div>
+                  <RemoteMachineFields
+                    draft={{
+                      name: machine.name,
+                      sshHost: machine.sshHost,
+                      sshIdentityFile: machine.sshIdentityFile ?? "",
+                      sshPort: machine.sshPort ? String(machine.sshPort) : "",
+                      sshUser: machine.sshUser ?? "",
+                    }}
+                    onChange={(patch) => updateRemoteMachine(machine.id, patch)}
+                  />
+                </CardContent>
+              </Card>
+            ))
+          )}
+        </div>
+
+        <Card className="settings-project-command-card">
+          <CardContent className="flex flex-col gap-4 p-4">
+            <CardTitle className="text-sm">Add remote machine</CardTitle>
+            {/*
+             * CDXC:RemoteMachines 2026-06-02-23:47:
+             * Remote settings require a human name and SSH host before saving because the sidebar section title comes from this user label and v1 remote connections support SSH only.
+             */}
+            <RemoteMachineFields
+              draft={newMachine}
+              onChange={(patch) => setNewMachine((draft) => ({ ...draft, ...patch }))}
+            />
+            <div className="settings-management-actions">
+              <Button disabled={!canAddMachine} onClick={addRemoteMachine} type="button">
+                <IconPlus aria-hidden="true" />
+                Add Machine
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+      </div>
+
+      <Dialog onOpenChange={setIsTailscaleHelpOpen} open={isTailscaleHelpOpen}>
+        <DialogContent className="ghostex-settings-shadcn settings-modal-dialog max-w-lg p-0 font-sans">
+          <DialogHeader className="px-5 pt-5 pb-3">
+            <DialogTitle>Tailscale setup</DialogTitle>
+          </DialogHeader>
+          <div className="flex flex-col gap-3 px-5 pb-5 text-sm text-muted-foreground">
+            <p>Use Tailscale when the remote machine is not reachable on your local network.</p>
+            <ol className="list-decimal space-y-2 pl-5">
+              <li>Install Tailscale on this Mac and sign in.</li>
+              <li>Install Tailscale on the remote machine and sign in to the same tailnet.</li>
+              <li>Confirm both machines are connected in Tailscale.</li>
+              <li>Use the remote machine's Tailscale DNS name or Tailscale IP as the SSH host.</li>
+            </ol>
+            <p>Ghostex still connects with SSH only; no Tailscale tokens or remote gxserver listener are required.</p>
+          </div>
+        </DialogContent>
+      </Dialog>
+    </div>
+  );
+}
+
+function RemoteMachineFields({
+  draft,
+  onChange,
+}: {
+  draft: RemoteMachineDraft;
+  onChange: (patch: Partial<RemoteMachineDraft>) => void;
+}) {
+  return (
+    <FieldGroup>
+      <Field>
+        <FieldLabel>Name</FieldLabel>
+        <Input
+          aria-label="Remote machine name"
+          maxLength={80}
+          onChange={(event) => onChange({ name: event.currentTarget.value })}
+          placeholder="Machine one"
+          value={draft.name}
+        />
+      </Field>
+      <Field>
+        <FieldLabel>SSH host</FieldLabel>
+        <Input
+          aria-label="Remote machine SSH host"
+          maxLength={200}
+          onChange={(event) => onChange({ sshHost: event.currentTarget.value })}
+          placeholder="100.77.81.4"
+          value={draft.sshHost}
+        />
+      </Field>
+      <div className="grid gap-3 md:grid-cols-2">
+        <Field>
+          <FieldLabel>SSH user</FieldLabel>
+          <Input
+            aria-label="Remote machine SSH user"
+            maxLength={120}
+            onChange={(event) => onChange({ sshUser: event.currentTarget.value })}
+            placeholder="madda"
+            value={draft.sshUser}
+          />
+        </Field>
+        <Field>
+          <FieldLabel>SSH port</FieldLabel>
+          <Input
+            aria-label="Remote machine SSH port"
+            inputMode="numeric"
+            maxLength={5}
+            onChange={(event) => onChange({ sshPort: event.currentTarget.value.replace(/[^0-9]/gu, "") })}
+            placeholder="22"
+            value={draft.sshPort}
+          />
+        </Field>
+      </div>
+      <Field>
+        <FieldLabel>Identity file</FieldLabel>
+        <Input
+          aria-label="Remote machine SSH identity file"
+          maxLength={500}
+          onChange={(event) => onChange({ sshIdentityFile: event.currentTarget.value })}
+          placeholder="~/.ssh/id_ed25519"
+          value={draft.sshIdentityFile}
+        />
+      </Field>
+    </FieldGroup>
+  );
+}
+
+function normalizeRemoteMachineDraft(
+  draft: RemoteMachineDraft & { id: string },
+): RemoteMachineSettings | undefined {
+  return normalizeRemoteMachineSettings([
+    {
+      id: draft.id,
+      name: draft.name,
+      sshHost: draft.sshHost,
+      sshIdentityFile: draft.sshIdentityFile,
+      sshPort: draft.sshPort ? Number(draft.sshPort) : undefined,
+      sshUser: draft.sshUser,
+    },
+  ])[0];
+}
+
+function formatRemoteMachineSshTarget(machine: RemoteMachineSettings): string {
+  const host = machine.sshUser ? `${machine.sshUser}@${machine.sshHost}` : machine.sshHost;
+  return machine.sshPort ? `${host}:${machine.sshPort}` : host;
+}
 
 function ProjectsSettingsPanel({
   projects,
@@ -3200,7 +3577,9 @@ function OpenTargetsSettingsTab({
                       <div className="truncate text-sm font-medium">{target.label}</div>
                       <div className="truncate text-xs text-muted-foreground">
                         {isAvailable
-                          ? target.commands?.join(", ") ?? "macOS"
+                          ? target.id === "finder"
+                            ? "Built-in"
+                            : target.commands?.join(", ") ?? "macOS"
                           : "Not installed"}
                       </div>
                     </div>
@@ -3541,9 +3920,12 @@ function IntegrationsSettingsTab({
   agentHookStatusLoading,
   ghostexCliStatus,
   ghostexCliStatusLoading,
+  onInstallAgentOrchestrationSkill,
   onInstallAgentHooks,
   onInstallBrowserControl,
+  onInstallComputerUseSkill,
   onInstallCuaDriver,
+  onInstallGenerateTitleSkill,
   onInstallGhostexCli,
   onOpenAccessibilityPreferences,
   onOpenFirstLaunchSetup,
@@ -3555,9 +3937,12 @@ function IntegrationsSettingsTab({
   agentHookStatusLoading: boolean;
   ghostexCliStatus?: SidebarGhostexCliStatusMessage;
   ghostexCliStatusLoading: boolean;
+  onInstallAgentOrchestrationSkill?: () => void;
   onInstallAgentHooks?: () => void;
   onInstallBrowserControl?: () => void;
+  onInstallComputerUseSkill?: () => void;
   onInstallCuaDriver?: () => void;
+  onInstallGenerateTitleSkill?: () => void;
   onInstallGhostexCli?: () => void;
   onOpenAccessibilityPreferences?: () => void;
   onOpenFirstLaunchSetup?: () => void;
@@ -3569,18 +3954,35 @@ function IntegrationsSettingsTab({
     agentHookStatus?.agents.filter(
       (status) => status.status === "installed" || status.status === "notRequired",
     ).length ?? 0;
+  const updateRequiredHookCount =
+    agentHookStatus?.agents.filter((status) => status.status === "updateRequired").length ?? 0;
+  const updateRequiredHookSummary =
+    updateRequiredHookCount === 1 ? "1 needs update" : `${updateRequiredHookCount} need update`;
   const hookSummary = agentHookStatus
     ? agentHookStatus.errorMessage
       ? "Unable to check"
-      : `${installedHookCount}/${AGENT_HOOK_SUPPORTED_DEFAULT_AGENTS.length} installed`
+      : updateRequiredHookCount > 0
+        ? updateRequiredHookSummary
+        : `${installedHookCount}/${AGENT_HOOK_SUPPORTED_DEFAULT_AGENTS.length} installed`
     : agentHookStatusLoading
       ? "Checking"
       : "Not checked";
   const cliReady = ghostexCliStatus?.installed === true;
-  const browserControlReady = ghostexCliStatus?.browserSkillInstalled === true;
   const desktopControlReady =
     ghostexCliStatus?.cuaDriverInstalled === true &&
     ghostexCliStatus?.computerUseSkillInstalled === true;
+  const t3RuntimeReady = ghostexCliStatus?.t3RuntimeInstalled === true;
+  const t3RuntimeStatus =
+    ghostexCliStatusLoading && !ghostexCliStatus
+      ? "Checking"
+      : t3RuntimeReady
+        ? ghostexCliStatus?.t3RuntimeSource === "development"
+          ? "Development"
+          : "Bundled"
+        : "Missing";
+  const t3RuntimeDescription =
+    ghostexCliStatus?.t3RuntimeDetail ??
+    "T3 Code should be packaged with Ghostex so GUI coding panes can start without a developer checkout.";
   /**
    * CDXC:CuaPermissions 2026-05-29-06:00:
    * Cua Permissions status must be based on Cua Driver's own permission check,
@@ -3596,13 +3998,23 @@ function IntegrationsSettingsTab({
         {/*
          * CDXC:IntegrationsSetup 2026-05-27-04:17:
          * Settings owns one Integrations tab for post-onboarding setup. Keep
-         * CLI, Ghostex Browser Use, agent hooks, Cua Driver, and macOS privacy
+         * CLI, bundled Ghostex skills, agent hooks, Cua Driver, and macOS privacy
          * permissions on the same page so users can recover skipped first-launch
          * steps without hunting through unrelated tabs.
+         *
+         * CDXC:AgentSkills 2026-05-31-09:18:
+         * Bundled Ghostex skills are explicit per-skill installs in Settings,
+         * not hidden side effects of CLI setup. Each row explains what the skill
+         * teaches agents and remains disabled until the Ghostex CLI is present.
+         *
+         * CDXC:CliInstall 2026-06-07-13:53:
+         * Ghostex installs and repairs the app-bundled CLI automatically for
+         * DMG and Homebrew installs. Settings should expose a manual Repair CLI
+         * action for unusual PATH states, not a cask reinstall flow.
          */}
         <SettingsSection title="Integrations">
           <IntegrationSettingsRow
-            description="Install the Ghostex command-line bridge for mobile apps and CLI-backed integration setup. Ghostex Browser Use can also use gx when that alias is available and not taken by another command."
+            description="Ghostex keeps the app-bundled ghostex command linked automatically for mobile apps and CLI-backed integration setup. gx is linked when that alias is available and not taken by another command."
             icon={IconTerminal2}
             status={ghostexCliStatusLoading && !ghostexCliStatus ? "Checking" : cliReady ? "Installed" : "Not installed"}
             tone={cliReady ? "success" : "warning"}
@@ -3615,7 +4027,7 @@ function IntegrationsSettingsTab({
               variant={cliReady ? "outline" : "default"}
             >
               <IconDownload aria-hidden="true" data-icon="inline-start" />
-              {cliReady ? "Reinstall CLI" : "Install CLI"}
+              Repair CLI
             </Button>
             <Button
               disabled={ghostexCliStatusLoading || !onRequestGhostexCliStatus}
@@ -3628,28 +4040,39 @@ function IntegrationsSettingsTab({
             </Button>
           </IntegrationSettingsRow>
 
+          {/*
+           * CDXC:T3CodePackaging 2026-06-06-05:50:
+           * T3 Code panes are a core advertised Ghostex feature, so Settings -> Integrations must show whether the app build actually contains the managed T3 runtime instead of leaving users to discover a missing Web/t3code-server package through a pane startup failure.
+           */}
           <IntegrationSettingsRow
-            description="Install the Ghostex Browser Use skill so agents can inspect Ghostex browser panes, read console logs, take screenshots, and interact with pages."
-            icon={IconBrowser}
-            status={ghostexCliStatusLoading && !ghostexCliStatus ? "Checking" : browserControlReady ? "Installed" : "Not installed"}
-            tone={browserControlReady ? "success" : "warning"}
-            title="Ghostex Browser Use"
+            description={t3RuntimeDescription}
+            icon={IconCodeDots}
+            status={t3RuntimeStatus}
+            tone={t3RuntimeReady ? "success" : "warning"}
+            title="T3 Code Runtime"
           >
             <Button
-              disabled={
-                ghostexCliStatusLoading ||
-                browserControlReady ||
-                !cliReady ||
-                !onInstallBrowserControl
-              }
-              onClick={onInstallBrowserControl}
+              disabled={ghostexCliStatusLoading || !onRequestGhostexCliStatus}
+              onClick={onRequestGhostexCliStatus}
               type="button"
-              variant={browserControlReady ? "outline" : "default"}
+              variant="ghost"
             >
-              <IconDownload aria-hidden="true" data-icon="inline-start" />
-              {browserControlReady ? "Installed" : "Install Ghostex Browser Use"}
+              <IconRefresh aria-hidden="true" data-icon="inline-start" />
+              Refresh
             </Button>
           </IntegrationSettingsRow>
+
+          <BundledAgentSkillsPanel
+            ghostexCliStatus={ghostexCliStatus}
+            ghostexCliStatusLoading={ghostexCliStatusLoading}
+            onInstallSkill={{
+              agentOrchestration: onInstallAgentOrchestrationSkill,
+              browserUse: onInstallBrowserControl,
+              computerUse: onInstallComputerUseSkill,
+              generateTitle: onInstallGenerateTitleSkill,
+            }}
+            onRefreshStatus={onRequestGhostexCliStatus}
+          />
 
           <IntegrationSettingsRow
             description="Install agent hooks for supported CLIs so Ghostex can show In Progress and Needs Attention notifications and name sessions from the first message."
@@ -3665,7 +4088,7 @@ function IntegrationsSettingsTab({
               variant={installedHookCount > 0 ? "outline" : "default"}
             >
               <IconDownload aria-hidden="true" data-icon="inline-start" />
-              Install Hooks
+              {updateRequiredHookCount > 0 ? "Update Hooks" : "Install Hooks"}
             </Button>
             <Button
               disabled={agentHookStatusLoading || !onRequestAgentHookStatus}
@@ -3679,11 +4102,11 @@ function IntegrationsSettingsTab({
           </IntegrationSettingsRow>
 
           <IntegrationSettingsRow
-            description="Install Cua Driver and the Ghostex Computer Use skill so agents can control native macOS desktop apps. You can skip it until a workflow needs desktop control."
+            description="Install Cua Driver for native macOS desktop automation. The bundled Ghostex Computer Use skill above teaches agents when and how to use it."
             icon={IconDeviceDesktop}
             status={ghostexCliStatusLoading && !ghostexCliStatus ? "Checking" : desktopControlReady ? "Installed" : "Not installed"}
             tone={desktopControlReady ? "success" : "warning"}
-            title="Ghostex Computer Use"
+            title="Desktop Control Runtime"
           >
             <Button
               disabled={ghostexCliStatusLoading || desktopControlReady || !onInstallCuaDriver}
@@ -3692,7 +4115,7 @@ function IntegrationsSettingsTab({
               variant={desktopControlReady ? "outline" : "default"}
             >
               <IconDownload aria-hidden="true" data-icon="inline-start" />
-              {desktopControlReady ? "Installed" : "Install Ghostex Computer Use"}
+              {desktopControlReady ? "Installed" : "Install Desktop Control"}
             </Button>
           </IntegrationSettingsRow>
 
@@ -3795,21 +4218,29 @@ function AgentsSettingsTab({
   agentHookStatus,
   agentHookStatusLoading,
   agentAcceptAllEnabled,
+  customSessionTitleGenerationCommand,
   defaultPromptAgentId,
+  sessionTitleGenerationAgent,
   onAgentAcceptAllEnabledChange,
+  onCustomSessionTitleGenerationCommandChange,
   onDefaultPromptAgentIdChange,
   onInstallAgentHooks,
   onRequestAgentHookStatus,
+  onSessionTitleGenerationAgentChange,
   vscode,
 }: {
   agentHookStatus?: SidebarAgentHookStatusMessage;
   agentHookStatusLoading: boolean;
   agentAcceptAllEnabled: boolean;
+  customSessionTitleGenerationCommand: string;
   defaultPromptAgentId: string;
+  sessionTitleGenerationAgent: SessionTitleGenerationAgent;
   onAgentAcceptAllEnabledChange: (checked: boolean) => void;
+  onCustomSessionTitleGenerationCommandChange: (command: string) => void;
   onDefaultPromptAgentIdChange: (agentId: string) => void;
   onInstallAgentHooks?: () => void;
   onRequestAgentHookStatus?: () => void;
+  onSessionTitleGenerationAgentChange: (agent: SessionTitleGenerationAgent) => void;
   vscode?: WebviewApi;
 }) {
   const agents = useSidebarStore((state) => state.hud.agents);
@@ -3849,16 +4280,32 @@ function AgentsSettingsTab({
         ?.value ??
       promptAgentOptions[0]?.value ??
       "";
+  const titleGenerationCommandPreview = getSessionTitleGenerationCommandPreview(
+    sessionTitleGenerationAgent,
+    {
+      command: resolveSettingsTitleGenerationCommand(
+        sessionTitleGenerationAgent,
+        orderedAgents,
+        customSessionTitleGenerationCommand,
+      ),
+    },
+  );
   const hookStatusByAgentId = useMemo(
     () => new Map(agentHookStatus?.agents.map((status) => [status.agentId, status]) ?? []),
     [agentHookStatus],
   );
   const installedHookCount =
     agentHookStatus?.agents.filter((status) => status.status === "installed").length ?? 0;
+  const updateRequiredHookCount =
+    agentHookStatus?.agents.filter((status) => status.status === "updateRequired").length ?? 0;
+  const updateRequiredHookSummary =
+    updateRequiredHookCount === 1 ? "1 needs update" : `${updateRequiredHookCount} need update`;
   const hookStatusSummary = agentHookStatus
     ? agentHookStatus.errorMessage
       ? "Unable to check hooks"
-      : `${installedHookCount}/${AGENT_HOOK_SUPPORTED_DEFAULT_AGENTS.length} hooks ready`
+      : updateRequiredHookCount > 0
+        ? `${installedHookCount}/${AGENT_HOOK_SUPPORTED_DEFAULT_AGENTS.length} hooks ready, ${updateRequiredHookSummary}`
+        : `${installedHookCount}/${AGENT_HOOK_SUPPORTED_DEFAULT_AGENTS.length} hooks ready`
     : agentHookStatusLoading
       ? "Checking hooks"
       : "Hook status not checked";
@@ -3960,7 +4407,7 @@ function AgentsSettingsTab({
                   variant="outline"
                 >
                   <IconDownload aria-hidden="true" data-icon="inline-start" />
-                  Install Hooks
+                  {updateRequiredHookCount > 0 ? "Update Hooks" : "Install Hooks"}
                 </Button>
                 <Button
                   disabled={!onRequestAgentHookStatus || agentHookStatusLoading}
@@ -4017,6 +4464,58 @@ function AgentsSettingsTab({
           <StaticNoteField
             description="Configure at least one CLI agent before selecting a default prompt agent."
             label="Default Prompt Agent"
+          />
+        ) : null}
+        {!editorState ? (
+          <>
+            {/*
+             * CDXC:GxserverSessionTitle 2026-06-04-08:24:
+             * First-prompt session-title generation needs its own agent selector instead of reusing Default Prompt Agent, because title generation is a gxserver-owned background job while prompt-launch defaults affect Git helpers, search prompts, project-board prompts, and worktree starts.
+             *
+             * CDXC:GxserverSessionTitle 2026-06-04-22:44:
+             * Show the disabled command preview directly under the selector so users can inspect the exact Codex, Cursor CLI, Claude, Grok Build, or Custom command template before Ghostex sends a background title-generation prompt.
+             */}
+            <SelectField
+              description="Choose the headless agent Ghostex uses for first-prompt session title generation."
+              isModified={
+                sessionTitleGenerationAgent !==
+                DEFAULT_ghostex_SETTINGS.sessionTitleGenerationAgent
+              }
+              label="Title Generation Agent"
+              onChange={(value) =>
+                onSessionTitleGenerationAgentChange(value as SessionTitleGenerationAgent)
+              }
+              onResetToDefault={() =>
+                onSessionTitleGenerationAgentChange(
+                  DEFAULT_ghostex_SETTINGS.sessionTitleGenerationAgent,
+                )
+              }
+              options={SESSION_TITLE_GENERATION_AGENT_OPTIONS}
+              value={sessionTitleGenerationAgent}
+            />
+            <DisabledCommandPreviewField
+              description="Preview of the command Ghostex sends to generate automatic first-prompt session titles."
+              label="Title Generation Command"
+              value={titleGenerationCommandPreview}
+            />
+          </>
+        ) : null}
+        {!editorState && sessionTitleGenerationAgent === "custom" ? (
+          <TextField
+            description="Run this command with the title prompt on stdin. It should print only the title."
+            isModified={
+              customSessionTitleGenerationCommand !==
+              DEFAULT_ghostex_SETTINGS.customSessionTitleGenerationCommand
+            }
+            label="Custom Title Command"
+            onChange={onCustomSessionTitleGenerationCommandChange}
+            onResetToDefault={() =>
+              onCustomSessionTitleGenerationCommandChange(
+                DEFAULT_ghostex_SETTINGS.customSessionTitleGenerationCommand,
+              )
+            }
+            placeholder="title-generator"
+            value={customSessionTitleGenerationCommand}
           />
         ) : null}
         {!editorState ? (
@@ -4102,6 +4601,17 @@ function AgentsSettingsTab({
   );
 }
 
+function resolveSettingsTitleGenerationCommand(
+  agent: SessionTitleGenerationAgent,
+  agents: readonly SidebarAgentButton[],
+  customCommand: string,
+): string | undefined {
+  if (agent === "custom") {
+    return customCommand.trim();
+  }
+  return agents.find((candidate) => candidate.agentId === agent)?.command?.trim();
+}
+
 function AgentHookStatusRow({
   agent,
   isLoading,
@@ -4157,6 +4667,8 @@ function AgentHookStatusIcon({
   switch (status.status) {
     case "installed":
       return <IconCircleCheckFilled aria-hidden="true" className="size-3.5 text-emerald-400" />;
+    case "updateRequired":
+      return <IconAlertTriangle aria-hidden="true" className="size-3.5 text-amber-400" />;
     case "cliMissing":
       return <IconAlertTriangle aria-hidden="true" className="size-3.5 text-amber-400" />;
     case "notRequired":
@@ -4179,6 +4691,8 @@ function getAgentHookStatusText(
   switch (status.status) {
     case "installed":
       return "Installed";
+    case "updateRequired":
+      return "Needs update";
     case "cliMissing":
       return "CLI missing";
     case "notRequired":
@@ -4198,6 +4712,8 @@ function getAgentHookStatusClassName(
   switch (status.status) {
     case "installed":
       return "bg-emerald-500/10 text-emerald-300";
+    case "updateRequired":
+      return "bg-amber-500/10 text-amber-300";
     case "cliMissing":
       return "bg-amber-500/10 text-amber-300";
     case "notRequired":
@@ -5767,6 +6283,7 @@ function SelectField({
   onResetToDefault,
   options,
   showScrollButtons,
+  supportingContent,
   value,
 }: {
   contentClassName?: string;
@@ -5775,6 +6292,7 @@ function SelectField({
   onChange: (value: string) => void;
   options: ReadonlyArray<{ label: string; value: string }>;
   showScrollButtons?: boolean;
+  supportingContent?: ReactNode;
   value: string;
 } & SettingModificationProps) {
   const id = useId();
@@ -5800,6 +6318,7 @@ function SelectField({
           </SelectGroup>
         </SelectContent>
       </Select>
+      {supportingContent}
     </SettingRow>
   );
 }
@@ -5975,6 +6494,29 @@ function TextField({
         className="h-10 px-3 text-sm"
         onChange={(event) => onChange(event.currentTarget.value)}
         placeholder={placeholder}
+        value={value}
+      />
+    </SettingRow>
+  );
+}
+
+function DisabledCommandPreviewField({
+  description,
+  label,
+  value,
+}: {
+  description?: string;
+  label: string;
+  value: string;
+}) {
+  const id = useId();
+  return (
+    <SettingRow description={description} htmlFor={id} label={label}>
+      <Textarea
+        className="min-h-24 resize-none px-3 py-2 font-mono text-xs leading-5"
+        disabled
+        id={id}
+        readOnly
         value={value}
       />
     </SettingRow>

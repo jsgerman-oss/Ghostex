@@ -1,7 +1,7 @@
 "use client";
 
 import * as React from "react";
-import { IconCheck, IconSearch } from "@tabler/icons-react";
+import { IconCheck, IconSearch, IconX } from "@tabler/icons-react";
 import { Command as CommandPrimitive } from "cmdk";
 
 import {
@@ -59,21 +59,70 @@ function CommandDialog({
 
 function CommandInput({
   className,
+  clearLabel = "Clear search",
+  onKeyDown,
+  onValueChange,
+  value,
   ...props
-}: React.ComponentProps<typeof CommandPrimitive.Input>) {
+}: React.ComponentProps<typeof CommandPrimitive.Input> & {
+  clearLabel?: string;
+}) {
+  const inputRef = React.useRef<HTMLInputElement>(null);
+  const [uncontrolledValue, setUncontrolledValue] = React.useState("");
+  const currentValue = typeof value === "string" ? value : uncontrolledValue;
+  const hasQuery = currentValue.length > 0;
+  const handleValueChange = (nextValue: string) => {
+    setUncontrolledValue(nextValue);
+    onValueChange?.(nextValue);
+  };
+
   return (
     <div data-slot="command-input-wrapper" className="p-1 pb-0">
       <InputGroup className="h-9 bg-input/30">
+        {/*
+         * CDXC:SearchInputs 2026-06-04-02:59:
+         * Command-backed search boxes, including Settings icon search, should match the sidebar search affordance by keeping the search icon on the right while empty and replacing it with a focused clear button after typing.
+         *
+         * CDXC:SearchInputs 2026-06-04-03:11:
+         * Escape on a focused non-empty command search must clear the query the same way as the X button instead of closing the surrounding popover first.
+         */}
         <CommandPrimitive.Input
           data-slot="command-input"
           className={cn(
             "w-full text-sm outline-hidden disabled:cursor-not-allowed disabled:opacity-50",
             className,
           )}
+          onKeyDown={(event) => {
+            if (event.key === "Escape" && currentValue.length > 0) {
+              event.preventDefault();
+              event.stopPropagation();
+              handleValueChange("");
+              inputRef.current?.focus();
+              return;
+            }
+            onKeyDown?.(event);
+          }}
+          onValueChange={handleValueChange}
+          ref={inputRef}
+          value={currentValue}
           {...props}
         />
-        <InputGroupAddon>
-          <IconSearch className="size-4 shrink-0 opacity-50" />
+        <InputGroupAddon align="inline-end">
+          {hasQuery ? (
+            <button
+              aria-label={clearLabel}
+              className="flex size-6 items-center justify-center rounded-none border-0 bg-transparent p-0 text-muted-foreground hover:text-foreground focus-visible:text-foreground focus-visible:outline-none"
+              onClick={() => {
+                handleValueChange("");
+                inputRef.current?.focus();
+              }}
+              type="button"
+            >
+              <IconX aria-hidden="true" className="size-4 shrink-0" />
+            </button>
+          ) : (
+            <IconSearch aria-hidden="true" className="size-4 shrink-0 opacity-50" />
+          )}
         </InputGroupAddon>
       </InputGroup>
     </div>

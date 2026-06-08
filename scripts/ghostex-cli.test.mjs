@@ -1,20 +1,27 @@
 import { describe, expect, test } from "vitest";
 import { execFile } from "node:child_process";
-import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { EventEmitter } from "node:events";
+import { chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import http from "node:http";
+import net from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import {
   agentOrchestrationUsage,
+  applyZehnAcceptAllArgs,
   browserUsage,
   buildSessionPickerModel,
   buildSessionPickerRows,
   buildSessionAttachCommand,
   computerUseUsage,
+  createCliSshForwardPlan,
+  fetchGxserverSessionList,
   formatCompactSessionLine,
   generateTitleUsage,
   groupSessionsPreservingSidebarOrder,
   isFailedCliResult,
+  manageBeadsUsage,
   moveSessionPickerSelection,
   parseArgs,
   parseCreateSession,
@@ -24,9 +31,13 @@ import {
   parseRename,
   parseVsCodePathPosition,
   readAndroidReadinessSettings,
-  readPersistedSidebarSessionList,
+  requestGxserverRpc,
+  resolveGxserverServerTarget,
+  resolveGhostexTuiLaunchFromRoot,
   resolveListedSessions,
   resolveZehnLaunchFromRoot,
+  sendGxserverCliAction,
+  serverUsage,
   usage,
 } from "./ghostex-cli.mjs";
 
@@ -46,6 +57,102 @@ function strictAndroidReleaseEnv(overrides = {}) {
     GHOSTEX_ANDROID_CONFIRM_CLEAR_DATA: "1",
     ...overrides,
   };
+}
+
+async function withGxserverFixture(callback, options = {}) {
+  const body = options.body ?? {
+    ok: true,
+    product: "gxserver",
+    protocolVersion: 1,
+    requestId: "fixture-request",
+    result: { sessions: [] },
+  };
+  const server = http.createServer(async (request, response) => {
+    expect(request.headers.authorization).toBe("Bearer test-token");
+    expect(request.headers["x-gxserver-protocol-version"]).toBe("1");
+    const chunks = [];
+    for await (const chunk of request) {
+      chunks.push(chunk);
+    }
+    const requestBody = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+    expect(requestBody.protocolVersion).toBe(1);
+    response.writeHead(options.status ?? 200, { "content-type": "application/json" });
+    response.end(JSON.stringify(body));
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  try {
+    await callback({ baseUrl: `http://127.0.0.1:${address.port}` });
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+}
+
+function createGxserverRpcAndHealthFixture({ serverId }) {
+  return http.createServer(async (request, response) => {
+    expect(request.headers.authorization).toBe("Bearer test-token");
+    expect(request.headers["x-gxserver-protocol-version"]).toBe("1");
+    if (request.method === "GET" && request.url?.startsWith("/api/health/server")) {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(
+        JSON.stringify({
+          ok: true,
+          product: "gxserver",
+          protocolVersion: 1,
+          serverId,
+          state: "running",
+        }),
+      );
+      return;
+    }
+    const chunks = [];
+    for await (const chunk of request) {
+      chunks.push(chunk);
+    }
+    const requestBody = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+    expect(requestBody.protocolVersion).toBe(1);
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end(
+      JSON.stringify({
+        ok: true,
+        product: "gxserver",
+        protocolVersion: 1,
+        requestId: "fixture-request",
+        result: { sessions: [] },
+      }),
+    );
+  });
+}
+
+async function reserveTestPort() {
+  return new Promise((resolve, reject) => {
+    const server = net.createServer();
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => {
+      const address = server.address();
+      server.close(() => {
+        if (address && typeof address === "object") {
+          resolve(address.port);
+          return;
+        }
+        reject(new Error("Expected test server to reserve a TCP port."));
+      });
+    });
+  });
+}
+
+async function isTestPortAvailable(port) {
+  return new Promise((resolve) => {
+    const server = net.createServer();
+    server.once("error", () => resolve(false));
+    server.listen(port, "127.0.0.1", () => {
+      server.close(() => resolve(true));
+    });
+  });
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 describe("ghostex CLI Android remote-session contract", () => {
@@ -141,6 +248,64 @@ describe("ghostex CLI Android remote-session contract", () => {
     expect(help).toMatch(/^\s+gx$/m);
   });
 
+  test("documents gx server commands in top-level and server help", () => {
+    /**
+     * CDXC:GxserverCli 2026-06-02-18:36:
+     * The user-facing `gx`/`ghostex` help must expose gxserver lifecycle
+     * commands through the `server` namespace so normal users can manage the
+     * background process without switching to the internal daemon command name.
+     */
+    const help = usage();
+    const serverHelp = serverUsage();
+
+    expect(help).toContain("Server:");
+    expect(help).toContain("server start [--json]");
+    expect(help).toContain("server stop [--json]");
+    expect(help).toContain("server stop-all [--json]");
+    expect(help).toContain("server status [--json]");
+    expect(help).toContain("server --help");
+    expect(serverHelp).toContain("Ghostex Server - manage the gxserver background process");
+    expect(serverHelp).toContain("gx server <command> [args...] [--flags]");
+    expect(serverHelp).toContain("server version");
+    expect(serverHelp).toContain("server --version");
+    expect(serverHelp).toContain("gx server stop stops only the control plane");
+    expect(serverHelp).toContain("gx server stop-all is destructive");
+  });
+
+  test("forwards gx server subcommands to the gxserver CLI", async () => {
+    const tempDir = await mkdtemp(path.join(tmpdir(), "ghostex-gxserver-cli-"));
+    const markerPath = path.join(tempDir, "argv.txt");
+    const gxserverCliPath = path.join(tempDir, "gxserver");
+    try {
+      await writeFile(
+        gxserverCliPath,
+        `#!/bin/sh
+printf '%s\\n' "$@" > ${JSON.stringify(markerPath)}
+printf 'forwarded:%s\\n' "$1"
+`,
+      );
+      await chmod(gxserverCliPath, 0o755);
+
+      const result = await execFileAsync(process.execPath, [
+        path.resolve("scripts/ghostex-cli.mjs"),
+        "server",
+        "status",
+        "--json",
+      ], {
+        env: {
+          ...process.env,
+          GHOSTEX_GXSERVER_CLI: gxserverCliPath,
+        },
+      });
+
+      expect(result.stderr).toBe("");
+      expect(result.stdout).toContain("forwarded:status");
+      expect((await readFile(markerPath, "utf8")).trim().split("\n")).toEqual(["status", "--json"]);
+    } finally {
+      await rm(tempDir, { force: true, recursive: true });
+    }
+  });
+
   test("resolves bundled zehn from the pinned submodule output", async () => {
     /**
      * CDXC:AgentHistorySearch 2026-05-29-12:27:
@@ -162,6 +327,51 @@ describe("ghostex CLI Android remote-session contract", () => {
     } finally {
       await rm(tempDir, { force: true, recursive: true });
     }
+  });
+
+  test("resolves bundled Ghostex TUI from the app resource bin directory", async () => {
+    /**
+     * CDXC:GhostexTui 2026-06-07-12:13:
+     * Installed `gx` should launch the packaged Ghostex TUI from Web/bin even
+     * when the user runs the CLI outside a Ghostex source checkout.
+     */
+    const tempDir = await mkdtemp(path.join(tmpdir(), "ghostex-tui-"));
+    try {
+      const tuiBin = path.join(tempDir, "bin", "ghostex-tui");
+      await mkdir(path.dirname(tuiBin), { recursive: true });
+      await writeFile(tuiBin, "#!/bin/sh\n");
+
+      expect(resolveGhostexTuiLaunchFromRoot(tempDir)).toMatchObject({
+        args: [],
+        command: tuiBin,
+      });
+    } finally {
+      await rm(tempDir, { force: true, recursive: true });
+    }
+  });
+
+  test("gx find passes Accept All to zehn from gxserver settings unless user overrides it", () => {
+    /**
+     * CDXC:AgentHistorySearch 2026-06-04-23:31:
+     * Ghostex-owned `gx find` should make Enter resume match the gxserver
+     * global Accept All policy while preserving explicit zehn CLI flags.
+     */
+    expect(applyZehnAcceptAllArgs(["--agent", "codex"], true)).toEqual([
+      "--accept-all",
+      "--agent",
+      "codex",
+    ]);
+    expect(applyZehnAcceptAllArgs(["--agent", "codex"], false)).toEqual(["--agent", "codex"]);
+    expect(applyZehnAcceptAllArgs(["--no-accept-all", "--agent", "codex"], true)).toEqual([
+      "--no-accept-all",
+      "--agent",
+      "codex",
+    ]);
+    expect(applyZehnAcceptAllArgs(["--accept-all", "--agent", "codex"], true)).toEqual([
+      "--accept-all",
+      "--agent",
+      "codex",
+    ]);
   });
 
   test("parses OS integration path open commands", () => {
@@ -193,6 +403,424 @@ describe("ghostex CLI Android remote-session contract", () => {
       line: 12,
       path: "file.ts",
     });
+  });
+
+  test("keeps floating Monaco prompt editor on the native app bridge", async () => {
+    /**
+     * CDXC:PromptEditor 2026-05-31-10:24:
+     * Ctrl+G Monaco prompt editing is an EDITOR-facing macOS overlay command.
+     * Until gxserver owns a blocking save/cancel endpoint, the CLI must keep
+     * sending openFloatingEditor over the native bridge instead of rejecting the
+     * command during the gxserver cutover.
+     */
+    const tempDir = await mkdtemp(path.join(tmpdir(), "ghostex-fme-test-"));
+    const homeDir = path.join(tempDir, "home");
+    const editFile = path.join(tempDir, "prompt.md");
+    const receivedMessages = [];
+    const server = net.createServer((socket) => {
+      let buffer = "";
+      socket.setEncoding("utf8");
+      socket.on("data", async (chunk) => {
+        buffer += chunk;
+        let newlineIndex = buffer.indexOf("\n");
+        while (newlineIndex >= 0) {
+          const line = buffer.slice(0, newlineIndex);
+          buffer = buffer.slice(newlineIndex + 1);
+          if (line) {
+            const message = JSON.parse(line);
+            receivedMessages.push(message);
+            await writeFile(message.statusFile, "saved\n");
+          }
+          newlineIndex = buffer.indexOf("\n");
+        }
+      });
+    });
+    await mkdir(path.join(homeDir, "cli"), { recursive: true });
+    await writeFile(path.join(homeDir, "cli", "bridge-token"), "test-token\n");
+    await writeFile(editFile, "prompt text\n");
+    await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    try {
+      const result = await execFileAsync(process.execPath, [
+        path.resolve("scripts/ghostex-cli.mjs"),
+        "floating-monaco-editor",
+        editFile,
+        "--port",
+        String(address.port),
+        "--timeout-ms",
+        "1000",
+        "--exit-timeout-ms",
+        "1000",
+      ], {
+        env: {
+          ...process.env,
+          GHOSTEX_HOME: homeDir,
+        },
+      });
+
+      expect(result.stderr).toBe("");
+      expect(receivedMessages).toHaveLength(1);
+      expect(receivedMessages[0]).toMatchObject({
+        authToken: "test-token",
+        editorKind: "monaco",
+        filePath: editFile,
+        language: "markdown",
+        title: "Prompt Editor",
+        type: "openFloatingEditor",
+      });
+    } finally {
+      await new Promise((resolve) => server.close(resolve));
+      await rm(tempDir, { force: true, recursive: true });
+    }
+  });
+
+  test("prompt-editor uses floating Monaco for macOS app Monaco sessions", async () => {
+    /**
+     * CDXC:PromptEditor 2026-05-31-11:58:
+     * The stable EDITOR wrapper must keep macOS app Ctrl+G on the Monaco
+     * overlay when Settings selects Monaco. The wrapper chooses this only from
+     * native app runtime markers, not from the setting alone.
+     */
+    const tempDir = await mkdtemp(path.join(tmpdir(), "ghostex-prompt-editor-macos-"));
+    const homeDir = path.join(tempDir, "home");
+    const editFile = path.join(tempDir, "prompt.md");
+    const receivedMessages = [];
+    const server = net.createServer((socket) => {
+      let buffer = "";
+      socket.setEncoding("utf8");
+      socket.on("data", async (chunk) => {
+        buffer += chunk;
+        let newlineIndex = buffer.indexOf("\n");
+        while (newlineIndex >= 0) {
+          const line = buffer.slice(0, newlineIndex);
+          buffer = buffer.slice(newlineIndex + 1);
+          if (line) {
+            const message = JSON.parse(line);
+            receivedMessages.push(message);
+            await writeFile(message.statusFile, "saved\n");
+          }
+          newlineIndex = buffer.indexOf("\n");
+        }
+      });
+    });
+    await mkdir(path.join(homeDir, "cli"), { recursive: true });
+    await writeFile(path.join(homeDir, "cli", "bridge-token"), "test-token\n");
+    await writeFile(editFile, "prompt text\n");
+    await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    try {
+      const result = await execFileAsync(process.execPath, [
+        path.resolve("scripts/ghostex-cli.mjs"),
+        "prompt-editor",
+        editFile,
+        "--port",
+        String(address.port),
+        "--timeout-ms",
+        "1000",
+        "--exit-timeout-ms",
+        "1000",
+      ], {
+        env: {
+          ...process.env,
+          GHOSTEX_HOME: homeDir,
+          GHOSTEX_PROMPT_EDITOR_CLIENT: "macos-app",
+          GHOSTEX_PROMPT_EDITOR_BACKEND: "monaco",
+          ZMX_SESSION: "",
+        },
+      });
+
+      expect(result.stderr).toBe("");
+      expect(receivedMessages).toHaveLength(1);
+      expect(receivedMessages[0]).toMatchObject({
+        editorKind: "monaco",
+        filePath: editFile,
+        type: "openFloatingEditor",
+      });
+    } finally {
+      await new Promise((resolve) => server.close(resolve));
+      await rm(tempDir, { force: true, recursive: true });
+    }
+  });
+
+  test("prompt-editor routes Monaco settings to gte without macOS app context", async () => {
+    /**
+     * CDXC:PromptEditor 2026-05-31-11:58:
+     * Android, iOS, CLI, TUI, and plain SSH attaches do not have the native app
+     * prompt-editor marker. In those contexts the wrapper must invoke gte even
+     * when the inherited prompt editor backend says Monaco.
+     */
+    const tempDir = await mkdtemp(path.join(tmpdir(), "ghostex-prompt-editor-gte-"));
+    const binDir = path.join(tempDir, "bin");
+    const editFile = path.join(tempDir, "prompt.md");
+    const markerFile = path.join(tempDir, "gte-args.txt");
+    const gtePath = path.join(binDir, "gte");
+    try {
+      await mkdir(binDir, { recursive: true });
+      await writeFile(editFile, "prompt text\n");
+      await writeFile(
+        gtePath,
+        `#!/bin/sh
+printf '%s\\n' "$@" > ${JSON.stringify(markerFile)}
+`,
+      );
+      await chmod(gtePath, 0o755);
+
+      const result = await execFileAsync(process.execPath, [
+        path.resolve("scripts/ghostex-cli.mjs"),
+        "prompt-editor",
+        editFile,
+      ], {
+        env: {
+          ...process.env,
+          GHOSTEX_NATIVE_SESSION_ID: "",
+          GHOSTEX_PROMPT_EDITOR_CLIENT: "",
+          GHOSTEX_PROMPT_EDITOR_BACKEND: "monaco",
+          PATH: `${binDir}${path.delimiter}${process.env.PATH}`,
+          ZMX_SESSION: "",
+        },
+      });
+
+      expect(result.stderr).toBe("");
+      expect((await readFile(markerFile, "utf8")).trim()).toBe(editFile);
+    } finally {
+      await rm(tempDir, { force: true, recursive: true });
+    }
+  });
+
+  test("prompt-editor routes stale macOS Monaco zmx sessions to gte without attach capability", async () => {
+    /**
+     * CDXC:PromptEditor 2026-06-06-16:40:
+     * Reattached zmx sessions can inherit macOS app prompt-editor environment
+     * from the shell that created the session. The prompt-editor wrapper must
+     * trust zmx's current leader capability instead so SSH, TUI, and mobile
+     * attaches use gte even when the old environment still says macos-app.
+     */
+    const tempDir = await mkdtemp(path.join(tmpdir(), "ghostex-prompt-editor-zmx-gte-"));
+    const binDir = path.join(tempDir, "bin");
+    const editFile = path.join(tempDir, "prompt.md");
+    const markerFile = path.join(tempDir, "gte-args.txt");
+    const gtePath = path.join(binDir, "gte");
+    const zmxPath = path.join(binDir, "zmx");
+    try {
+      await mkdir(binDir, { recursive: true });
+      await writeFile(editFile, "prompt text\n");
+      await writeFile(
+        gtePath,
+        `#!/bin/sh
+printf '%s\\n' "$@" > ${JSON.stringify(markerFile)}
+`,
+      );
+      await writeFile(
+        zmxPath,
+        `#!/bin/sh
+if [ "$1" = "prompt-editor-capability" ]; then
+  printf '%s\\n' gte
+fi
+`,
+      );
+      await chmod(gtePath, 0o755);
+      await chmod(zmxPath, 0o755);
+
+      const result = await execFileAsync(process.execPath, [
+        path.resolve("scripts/ghostex-cli.mjs"),
+        "prompt-editor",
+        editFile,
+      ], {
+        env: {
+          ...process.env,
+          GHOSTEX_PROMPT_EDITOR_CLIENT: "macos-app",
+          GHOSTEX_PROMPT_EDITOR_BACKEND: "monaco",
+          GHOSTEX_ZMX_BIN: zmxPath,
+          PATH: `${binDir}${path.delimiter}${process.env.PATH}`,
+          ZMX_SESSION: "shared-session",
+        },
+      });
+
+      expect(result.stderr).toBe("");
+      expect((await readFile(markerFile, "utf8")).trim()).toBe(editFile);
+    } finally {
+      await rm(tempDir, { force: true, recursive: true });
+    }
+  });
+
+  test("prompt-editor uses explicit bundled zmx when zmx leader advertises Monaco capability", async () => {
+    /**
+     * CDXC:PromptEditor 2026-06-07-08:09:
+     * The prompt-editor wrapper must query GHOSTEX_ZMX_BIN instead of PATH so a
+     * stale Homebrew zmx cannot hide the current desktop attach client's
+     * Monaco capability.
+     */
+    const tempDir = await mkdtemp(path.join(tmpdir(), "ghostex-prompt-editor-zmx-monaco-"));
+    const homeDir = path.join(tempDir, "home");
+    const binDir = path.join(tempDir, "bin");
+    const editFile = path.join(tempDir, "prompt.md");
+    const receivedMessages = [];
+    const pathZmxPath = path.join(binDir, "zmx");
+    const bundledZmxPath = path.join(tempDir, "bundled-zmx");
+    const server = net.createServer((socket) => {
+      let buffer = "";
+      socket.setEncoding("utf8");
+      socket.on("data", async (chunk) => {
+        buffer += chunk;
+        let newlineIndex = buffer.indexOf("\n");
+        while (newlineIndex >= 0) {
+          const line = buffer.slice(0, newlineIndex);
+          buffer = buffer.slice(newlineIndex + 1);
+          if (line) {
+            const message = JSON.parse(line);
+            receivedMessages.push(message);
+            await writeFile(message.statusFile, "saved\n");
+          }
+          newlineIndex = buffer.indexOf("\n");
+        }
+      });
+    });
+    try {
+      await mkdir(path.join(homeDir, "cli"), { recursive: true });
+      await mkdir(binDir, { recursive: true });
+      await writeFile(path.join(homeDir, "cli", "bridge-token"), "test-token\n");
+      await writeFile(editFile, "prompt text\n");
+      await writeFile(
+        pathZmxPath,
+        `#!/bin/sh
+if [ "$1" = "prompt-editor-capability" ]; then
+  printf '%s\\n' gte
+fi
+`,
+      );
+      await writeFile(
+        bundledZmxPath,
+        `#!/bin/sh
+if [ "$1" = "prompt-editor-capability" ]; then
+  printf '%s\\n' monaco
+fi
+`,
+      );
+      await chmod(pathZmxPath, 0o755);
+      await chmod(bundledZmxPath, 0o755);
+      await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+      const address = server.address();
+
+      const result = await execFileAsync(process.execPath, [
+        path.resolve("scripts/ghostex-cli.mjs"),
+        "prompt-editor",
+        editFile,
+        "--port",
+        String(address.port),
+        "--timeout-ms",
+        "1000",
+        "--exit-timeout-ms",
+        "1000",
+      ], {
+        env: {
+          ...process.env,
+          GHOSTEX_HOME: homeDir,
+          GHOSTEX_PROMPT_EDITOR_CLIENT: "",
+          GHOSTEX_PROMPT_EDITOR_BACKEND: "monaco",
+          GHOSTEX_ZMX_BIN: bundledZmxPath,
+          PATH: `${binDir}${path.delimiter}${process.env.PATH}`,
+          ZMX_SESSION: "shared-session",
+        },
+      });
+
+      expect(result.stderr).toBe("");
+      expect(receivedMessages).toHaveLength(1);
+      expect(receivedMessages[0]).toMatchObject({
+        editorKind: "monaco",
+        filePath: editFile,
+        type: "openFloatingEditor",
+      });
+    } finally {
+      await new Promise((resolve) => server.close(resolve));
+      await rm(tempDir, { force: true, recursive: true });
+    }
+  });
+
+  test("prompt-editor ignores PATH zmx when explicit bundled zmx is missing", async () => {
+    const tempDir = await mkdtemp(path.join(tmpdir(), "ghostex-prompt-editor-zmx-no-bin-"));
+    const binDir = path.join(tempDir, "bin");
+    const editFile = path.join(tempDir, "prompt.md");
+    const markerFile = path.join(tempDir, "gte-args.txt");
+    const gtePath = path.join(binDir, "gte");
+    const pathZmxPath = path.join(binDir, "zmx");
+    try {
+      await mkdir(binDir, { recursive: true });
+      await writeFile(editFile, "prompt text\n");
+      await writeFile(
+        gtePath,
+        `#!/bin/sh
+printf '%s\\n' "$@" > ${JSON.stringify(markerFile)}
+`,
+      );
+      await writeFile(
+        pathZmxPath,
+        `#!/bin/sh
+if [ "$1" = "prompt-editor-capability" ]; then
+  printf '%s\\n' monaco
+fi
+`,
+      );
+      await chmod(gtePath, 0o755);
+      await chmod(pathZmxPath, 0o755);
+
+      const result = await execFileAsync(process.execPath, [
+        path.resolve("scripts/ghostex-cli.mjs"),
+        "prompt-editor",
+        editFile,
+      ], {
+        env: {
+          ...process.env,
+          GHOSTEX_PROMPT_EDITOR_CLIENT: "macos-app",
+          GHOSTEX_PROMPT_EDITOR_BACKEND: "monaco",
+          GHOSTEX_ZMX_BIN: "",
+          PATH: `${binDir}${path.delimiter}${process.env.PATH}`,
+          ZMX_SESSION: "shared-session",
+        },
+      });
+
+      expect(result.stderr).toBe("");
+      expect((await readFile(markerFile, "utf8")).trim()).toBe(editFile);
+    } finally {
+      await rm(tempDir, { force: true, recursive: true });
+    }
+  });
+
+  test("prompt-editor keeps explicit gte on gte", async () => {
+    const tempDir = await mkdtemp(path.join(tmpdir(), "ghostex-prompt-editor-explicit-gte-"));
+    const binDir = path.join(tempDir, "bin");
+    const editFile = path.join(tempDir, "prompt.md");
+    const markerFile = path.join(tempDir, "gte-args.txt");
+    const gtePath = path.join(binDir, "gte");
+    try {
+      await mkdir(binDir, { recursive: true });
+      await writeFile(editFile, "prompt text\n");
+      await writeFile(
+        gtePath,
+        `#!/bin/sh
+printf '%s\\n' "$@" > ${JSON.stringify(markerFile)}
+`,
+      );
+      await chmod(gtePath, 0o755);
+
+      const result = await execFileAsync(process.execPath, [
+        path.resolve("scripts/ghostex-cli.mjs"),
+        "prompt-editor",
+        editFile,
+      ], {
+        env: {
+          ...process.env,
+          GHOSTEX_PROMPT_EDITOR_CLIENT: "macos-app",
+          GHOSTEX_PROMPT_EDITOR_BACKEND: "gte",
+          PATH: `${binDir}${path.delimiter}${process.env.PATH}`,
+          ZMX_SESSION: "",
+        },
+      });
+
+      expect(result.stderr).toBe("");
+      expect((await readFile(markerFile, "utf8")).trim()).toBe(editFile);
+    } finally {
+      await rm(tempDir, { force: true, recursive: true });
+    }
   });
 
   test("installs the Ghostex Browser Use skill for agents", async () => {
@@ -339,6 +967,43 @@ describe("ghostex CLI Android remote-session contract", () => {
     }
   });
 
+  test("installs the Ghostex Manage Beads skill for agents", async () => {
+    /**
+     * CDXC:ProjectBoardBeads 2026-06-04-03:32:
+     * Project-board work needs a bundled `$ghostex-manage-beads` skill so
+     * agents can discover the `bd` workflow and associate a review bead with
+     * the current Ghostex/Codex session without relying on transcript memory.
+     */
+    const tempDir = await mkdtemp(path.join(tmpdir(), "ghostex-manage-beads-skill-"));
+    try {
+      const targetDir = path.join(tempDir, "ghostex-manage-beads");
+      const result = await execFileAsync(process.execPath, [
+        path.resolve("scripts/ghostex-cli.mjs"),
+        "manage-beads",
+        "install-skill",
+        "--target-dir",
+        targetDir,
+        "--json",
+      ]);
+      const payload = JSON.parse(result.stdout);
+      const skillMarkdown = await readFile(path.join(targetDir, "SKILL.md"), "utf8");
+      const skillMetadata = await readFile(path.join(targetDir, "agents", "openai.yaml"), "utf8");
+
+      expect(payload).toMatchObject({
+        command: "bd --help",
+        ok: true,
+        skill: "ghostex-manage-beads",
+        targetDir,
+      });
+      expect(skillMarkdown).toContain("# ghostex-manage-beads");
+      expect(skillMarkdown).toContain("Associate A Bead With The Current Session");
+      expect(skillMarkdown).toContain("codex-thread:$CODEX_THREAD_ID");
+      expect(skillMetadata).toContain("allow_implicit_invocation: true");
+    } finally {
+      await rm(tempDir, { force: true, recursive: true });
+    }
+  });
+
   test("documents browser control under gx browser help", async () => {
     const help = browserUsage();
     const cliHelpResult = await execFileAsync(process.execPath, [
@@ -400,6 +1065,21 @@ describe("ghostex CLI Android remote-session contract", () => {
     expect(help).toContain("$ghostex-generate-title");
     expect(help).toContain("shorter than 47 characters");
     expect(help).toContain("Do not press Enter");
+  });
+
+  test("documents Ghostex Manage Beads under gx manage-beads help", async () => {
+    const help = manageBeadsUsage();
+    const cliHelpResult = await execFileAsync(process.execPath, [
+      path.resolve("scripts/ghostex-cli.mjs"),
+      "manage-beads",
+      "--help",
+    ]);
+
+    expect(cliHelpResult.stdout).toBe(`${help}\n`);
+    expect(help).toContain("gx manage-beads install-skill");
+    expect(help).toContain("$ghostex-manage-beads");
+    expect(help).toContain("codex-thread:$CODEX_THREAD_ID");
+    expect(help).toContain("Ghostex and Codex ids");
   });
 
   test("builds picker rows with intro text, project spacing, and agent indicators", () => {
@@ -639,83 +1319,33 @@ describe("ghostex CLI Android remote-session contract", () => {
     );
   });
 
-  test("builds persisted sidebar fallback sessions with live-inventory-compatible fields", async () => {
-    const tempDir = await mkdtemp(path.join(tmpdir(), "ghostex-persisted-sessions-"));
-    const statePath = path.join(tempDir, "native-sidebar-projects.json");
-    try {
-      await writeFile(
-        statePath,
-        JSON.stringify({
-          projects: [
-            {
-              name: "Project A",
-              path: "/Users/madda/project-a",
-              projectId: "project-a",
-              workspace: {
-                groups: [
-                  {
-                    groupId: "group-main",
-                    snapshot: {
-                      focusedSessionId: "session-1",
-                      sessions: [
-                        {
-                          agentName: "codex",
-                          createdAt: "2026-05-31T08:00:00.000Z",
-                          kind: "terminal",
-                          restoreActivity: "working",
-                          sessionId: "session-1",
-                          sessionPersistenceName: "g-0531-080000",
-                          sessionPersistenceProvider: "zmx",
-                          title: "Ship mobile fallback",
-                        },
-                        {
-                          createdAt: "2026-05-31T08:05:00.000Z",
-                          isSleeping: true,
-                          kind: "terminal",
-                          sessionId: "session-2",
-                          title: "Sleeping session",
-                        },
-                      ],
-                      visibleSessionIds: ["session-1"],
-                    },
-                    title: "Main",
-                  },
-                ],
-              },
-            },
-          ],
-        }),
-      );
-
-      const result = await readPersistedSidebarSessionList(new Error("bridge down"), statePath);
-
-      expect(result.ok).toBe(true);
-      expect(result.fallback).toBe("persisted-sidebar-state");
-      expect(result.sessions).toHaveLength(2);
-      expect(result.sessions[0]).toMatchObject({
-        activity: "working",
-        alias: 1,
-        groupId: "group-main",
-        isFocused: true,
-        projectId: "project-a",
+  test("scopes duplicate gxserver session id selectors by project id", async () => {
+    const sessions = [
+      {
+        globalRef: "S1a:P1aa:G1aa",
+        projectId: "P1aa",
+        projectName: "Alpha",
         provider: "zmx",
-        providerSessionName: "g-0531-080000",
-        sessionId: "combined-session:project-a:session-1",
-        status: "working",
-      });
-      expect(result.sessions[0].attachCommand).toBe("zmx attach 'g-0531-080000'");
-      expect(result.sessions[1]).toMatchObject({
-        activity: "idle",
-        alias: 2,
-        groupId: "group-main",
-        isFocused: false,
-        isVisible: false,
-        status: "sleep",
-      });
-      await expect(resolveListedSessions("1", result.sessions)).resolves.toEqual([result.sessions[0]]);
-    } finally {
-      await rm(tempDir, { force: true, recursive: true });
-    }
+        providerSessionName: "S1a-P1aa-G1aa",
+        sessionId: "G1aa",
+        title: "Shared id in alpha",
+      },
+      {
+        globalRef: "S1a:P2bb:G1aa",
+        projectId: "P2bb",
+        projectName: "Beta",
+        provider: "zmx",
+        providerSessionName: "S1a-P2bb-G1aa",
+        sessionId: "G1aa",
+        title: "Shared id in beta",
+      },
+    ];
+
+    await expect(resolveListedSessions("G1aa", sessions)).resolves.toEqual(sessions);
+    await expect(resolveListedSessions("G1aa", sessions, { projectId: "P2bb" })).resolves.toEqual([
+      sessions[1],
+    ]);
+    await expect(resolveListedSessions("S1a:P1aa:G1aa", sessions)).resolves.toEqual([sessions[0]]);
   });
 
   test("formats compact session rows without field labels", () => {
@@ -799,6 +1429,491 @@ describe("ghostex CLI Android remote-session contract", () => {
     expect(command).toBe("zmx attach ghostex-session-8");
   });
 
+  test("sends gxserver auth and protocol headers for RPC requests", async () => {
+    /**
+     * CDXC:GxserverCliCutover 2026-05-30-15:15:
+     * The Node gx/ghostex CLI reads the local gxserver token itself and sends
+     * authenticated protocol-versioned HTTP RPCs. This replaces the retired
+     * macOS app bridge for session inventory, lifecycle, and mobile callbacks.
+     */
+    await withGxserverFixture(async ({ baseUrl }) => {
+      const result = await requestGxserverRpc(
+        { baseUrl, token: "test-token" },
+        "/api/listSessions",
+        { projectId: "P3a91" },
+        { timeoutMs: 1_000 },
+      );
+
+      expect(result).toMatchObject({
+        ok: true,
+        requestId: "fixture-request",
+        sessions: [],
+      });
+    });
+  });
+
+  test("lists non-stopped gxserver zmx sessions with shared lifecycle fields", async () => {
+    /**
+     * CDXC:GxserverSessionInventory 2026-05-31-08:45:
+     * `ghostex sessions --json` is the common inventory for macOS hydration,
+     * Android, iOS, the gx TUI, and `gx ls`. It should render running and
+     * sleeping zmx sessions while hiding stopped rows by default.
+     */
+    const server = http.createServer(async (request, response) => {
+      expect(request.headers.authorization).toBe("Bearer test-token");
+      const chunks = [];
+      for await (const chunk of request) {
+        chunks.push(chunk);
+      }
+      JSON.parse(Buffer.concat(chunks).toString("utf8"));
+      let result;
+      if (request.url === "/api/listProjects") {
+        result = {
+          projects: [
+            { name: "Ghostex", path: "/Users/madda/zmux", projectId: "P1a" },
+          ],
+        };
+      } else if (request.url === "/api/readPresentationSnapshot") {
+        result = {
+          snapshot: {
+            revision: 9,
+            sessions: [
+              { activity: "working", projectId: "P1a", sessionId: "G1a" },
+              {
+                actions: {
+                  acknowledgeAttention: false,
+                  attach: true,
+                  focus: true,
+                  kill: true,
+                  readText: true,
+                  sendMessage: true,
+                  sendText: true,
+                  sleep: true,
+                  wake: false,
+                },
+                activity: "idle",
+                agentIcon: "codex",
+                agentName: "codex",
+                groupId: "P1a:active",
+                isFavorite: true,
+                isPinned: false,
+                isPrimaryTitleTerminalTitle: false,
+                isTemporaryTitle: false,
+                kind: "agent",
+                primaryTitle: "Sleeping",
+                projectId: "P1a",
+                sessionId: "G2a",
+                sortKey: "0:1:2026-05-31T04:01:00.000Z:G2a",
+                surface: "workspace",
+                terminalTitle: "Sleeping",
+                title: "Sleeping",
+                titleSource: "terminal-auto",
+                trustedResumeTitle: "Sleeping",
+                updatedAt: "2026-05-31T04:01:00.000Z",
+                visibleInSidebarByDefault: true,
+                zmxName: "S1a-P1a-G2a",
+              },
+            ],
+          },
+        };
+      } else {
+        result = {
+          sessions: [
+            {
+              globalRef: "S1a:P1a:G1a",
+              lifecycleState: "running",
+              projectId: "P1a",
+              providerState: { lifecycleState: "missing", zmxName: "S1a-P1a-G1a" },
+              sessionId: "G1a",
+              title: "Live after restart",
+              updatedAt: "2026-05-31T04:00:00.000Z",
+              zmxName: "S1a-P1a-G1a",
+            },
+            {
+              globalRef: "S1a:P1a:G2a",
+              lifecycleState: "sleeping",
+              projectId: "P1a",
+              providerState: { lifecycleState: "missing", zmxName: "S1a-P1a-G2a" },
+              sessionId: "G2a",
+              title: "Sleeping",
+              updatedAt: "2026-05-31T04:01:00.000Z",
+              zmxName: "S1a-P1a-G2a",
+            },
+            {
+              globalRef: "S1a:P1a:G3a",
+              lifecycleState: "stopped",
+              projectId: "P1a",
+              providerState: { lifecycleState: "missing", zmxName: "S1a-P1a-G3a" },
+              sessionId: "G3a",
+              title: "Stopped",
+              updatedAt: "2026-05-31T04:02:00.000Z",
+              zmxName: "S1a-P1a-G3a",
+            },
+          ],
+        };
+      }
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({
+        ok: true,
+        product: "gxserver",
+        protocolVersion: 1,
+        requestId: "inventory-fixture",
+        result,
+      }));
+    });
+    await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    try {
+      const flags = {
+        server: `http://127.0.0.1:${address.port}`,
+        timeoutMs: 1_000,
+        token: "test-token",
+      };
+      const result = await fetchGxserverSessionList(flags);
+
+      expect(result.sessions.map((session) => session.sessionId)).toEqual(["G1a", "G2a"]);
+      expect(result.sessions[0]).toMatchObject({
+        isLive: true,
+        isLocalOnly: false,
+        lifecycleState: "running",
+        ownership: "gxserver",
+        provider: "zmx",
+        providerSessionName: "S1a-P1a-G1a",
+        providerSessionState: "missing",
+        sessionPersistenceProvider: "zmx",
+        status: "running",
+        activity: "working",
+      });
+      expect(result.sessions[1]).toMatchObject({
+        actions: {
+          attach: true,
+          sendMessage: true,
+          wake: false,
+        },
+        activity: "idle",
+        agentIcon: "codex",
+        agentName: "codex",
+        groupId: "P1a:active",
+        isFavorite: true,
+        primaryTitle: "Sleeping",
+        surface: "workspace",
+        titleSource: "terminal-auto",
+        isSleeping: true,
+        lifecycleState: "sleeping",
+        status: "sleep",
+        visibleInSidebarByDefault: true,
+      });
+
+      const allResult = await fetchGxserverSessionList({ ...flags, all: true });
+      expect(allResult.sessions.map((session) => session.sessionId)).toEqual(["G1a", "G2a", "G3a"]);
+    } finally {
+      await new Promise((resolve) => server.close(resolve));
+    }
+  });
+
+  test("resolves bare gxserver session ids before lifecycle RPCs", async () => {
+    const requests = [];
+    const server = http.createServer(async (request, response) => {
+      const chunks = [];
+      for await (const chunk of request) {
+        chunks.push(chunk);
+      }
+      const requestBody = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+      requests.push({ body: requestBody, url: request.url });
+      const result =
+        request.url === "/api/listProjects"
+          ? { projects: [{ name: "Ghostex", path: "/Users/madda/zmux", projectId: "P1a" }] }
+          : request.url === "/api/listSessions"
+            ? {
+                sessions: [
+                  {
+                    globalRef: "S1a:P1a:G9a",
+                    lifecycleState: "running",
+                    projectId: "P1a",
+                    providerState: { lifecycleState: "exists", zmxName: "S1a-P1a-G9a" },
+                    sessionId: "G9a",
+                    title: "Kill me",
+                    updatedAt: "2026-05-31T04:03:00.000Z",
+                    zmxName: "S1a-P1a-G9a",
+                  },
+                ],
+              }
+            : { killed: true };
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({
+        ok: true,
+        product: "gxserver",
+        protocolVersion: 1,
+        requestId: "lifecycle-fixture",
+        result,
+      }));
+    });
+    await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    try {
+      const result = await sendGxserverCliAction(
+        "closeSession",
+        { sessionId: "G9a" },
+        {
+          server: `http://127.0.0.1:${address.port}`,
+          timeoutMs: 1_000,
+          token: "test-token",
+        },
+      );
+
+      expect(result).toMatchObject({ killed: true, ok: true });
+      expect(requests.at(-1)).toMatchObject({
+        url: "/api/killSession",
+        body: {
+          params: {
+            projectId: "P1a",
+            sessionId: "G9a",
+          },
+          protocolVersion: 1,
+        },
+      });
+    } finally {
+      await new Promise((resolve) => server.close(resolve));
+    }
+  });
+
+  test("sleep-session false with a flagged selector calls gxserver wake", async () => {
+    const requests = [];
+    const server = http.createServer(async (request, response) => {
+      const chunks = [];
+      for await (const chunk of request) {
+        chunks.push(chunk);
+      }
+      requests.push({
+        body: JSON.parse(Buffer.concat(chunks).toString("utf8")),
+        url: request.url,
+      });
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({
+        ok: true,
+        product: "gxserver",
+        protocolVersion: 1,
+        requestId: "wake-fixture",
+        result: {
+          session: {
+            lifecycleState: "running",
+            projectId: "P1a",
+            sessionId: "G9a",
+          },
+        },
+      }));
+    });
+    await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    try {
+      /**
+       * CDXC:GxserverSessionLifecycle 2026-05-31-08:45:
+       * The gx TUI and remote clients use `sleep-session --session-id G... false`
+       * as their wake form. When the selector comes from a flag, the boolean is
+       * the first positional argument; parsing it as rest[1] silently turns wake
+       * into sleep and kills the zmx runtime again.
+       */
+      const result = await execFileAsync(process.execPath, [
+        path.resolve("scripts/ghostex-cli.mjs"),
+        "sleep-session",
+        "--session-id",
+        "G9a",
+        "--project-id",
+        "P1a",
+        "false",
+        "--server",
+        `http://127.0.0.1:${address.port}`,
+        "--token",
+        "test-token",
+        "--json",
+      ]);
+
+      expect(JSON.parse(result.stdout)).toMatchObject({ ok: true });
+      expect(requests).toHaveLength(1);
+      expect(requests[0]).toMatchObject({
+        url: "/api/wakeSession",
+        body: {
+          params: {
+            projectId: "P1a",
+            sessionId: "G9a",
+            sleeping: false,
+          },
+          protocolVersion: 1,
+        },
+      });
+    } finally {
+      await new Promise((resolve) => server.close(resolve));
+    }
+  });
+
+  test("hard-fails gxserver protocol mismatch with update guidance", async () => {
+    await withGxserverFixture(
+      async ({ baseUrl }) => {
+        await expect(
+          requestGxserverRpc(
+            { baseUrl, token: "test-token" },
+            "/api/listSessions",
+            {},
+            { timeoutMs: 1_000 },
+          ),
+        ).rejects.toThrow(/Update Ghostex and gxserver/);
+      },
+      {
+        body: {
+          error: "protocolMismatch",
+          message: "gxserver protocol mismatch. Expected protocol 1, got 999. Update Ghostex and gxserver so their protocol versions match.",
+          ok: false,
+          product: "gxserver",
+          protocolVersion: 1,
+        },
+        status: 426,
+      },
+    );
+  });
+
+  test("reports missing local gxserver with a clear start command", async () => {
+    await expect(
+      requestGxserverRpc(
+        { baseUrl: "http://127.0.0.1:9", token: "test-token" },
+        "/api/listSessions",
+        {},
+        { timeoutMs: 50 },
+      ),
+    ).rejects.toThrow(/Start it with "gx server start"/);
+  });
+
+  test("plans remote ssh targets and direct trusted-network targets with explicit tokens", async () => {
+    /**
+     * CDXC:GxserverRemoteCli 2026-05-30-15:25:
+     * SSH remote support is a helper plan around a forwarded gxserver listener,
+     * while direct/Tailscale targets require explicit auth token material from
+     * the credential store or stdin one-shot path. The CLI must not fall back to the
+     * retired macOS bridge for remote refs.
+     */
+    expect(createCliSshForwardPlan({ id: "studio", sshUrl: "ssh://madda@example.test" }, { localPort: 60000 })).toMatchObject({
+      baseUrl: "http://127.0.0.1:60000",
+      checkCommand: ["ssh", "madda@example.test", "command -v gxserver >/dev/null && gxserver status --json"],
+      portForwardCommand: ["ssh", "-N", "-o", "ExitOnForwardFailure=yes", "-L", "60000:127.0.0.1:58744", "madda@example.test"],
+      startCommand: ["ssh", "madda@example.test", "gxserver start --background"],
+    });
+    await expect(resolveGxserverServerTarget({ server: "https://studio.test:58745", token: "token-1" })).resolves.toMatchObject({
+      baseUrl: "https://studio.test:58745",
+      kind: "direct",
+      token: "token-1",
+    });
+    await expect(
+      resolveGxserverServerTarget({
+        server: "https://studio.test:58745",
+        tokenStdin: true,
+        stdinReader: async () => "stdin-token\n",
+      }),
+    ).resolves.toMatchObject({
+      baseUrl: "https://studio.test:58745",
+      kind: "direct",
+      token: "stdin-token",
+    });
+    await expect(resolveGxserverServerTarget({ server: "studio" })).rejects.toThrow(/was not found/);
+  });
+
+  test("guides remote gxserver one-shot tokens away from argv", async () => {
+    await expect(resolveGxserverServerTarget({ server: "https://studio.test:58745" })).rejects.toThrow(/--token-stdin/);
+    await expect(resolveGxserverServerTarget({ server: "https://studio.test:58745" })).rejects.toThrow(/process listings/);
+
+    const help = usage();
+    expect(help).toContain("--token-stdin");
+    expect(help).toContain("legacy remote one-shot only because argv can expose secrets");
+  });
+
+  test("starts an SSH tunnel before RPC when no existing forward is listening", async () => {
+    /**
+     * CDXC:GxserverRemoteCli 2026-05-30-20:18:
+     * An SSH profile command must not fetch the forwarded URL until the CLI has
+     * checked remote gxserver, started it if needed, spawned the forward, and
+     * observed gxserver health through that tunnel.
+     */
+    const localPort = await reserveTestPort();
+    const commands = [];
+    let remoteRunning = false;
+    let tunnelServer;
+    let tunnelChild;
+
+    const result = await requestGxserverRpc(
+      {
+        baseUrl: `http://127.0.0.1:${localPort}`,
+        forwardPlan: createCliSshForwardPlan({ id: "studio", sshUrl: "ssh://madda@example.test" }, { localPort }),
+        kind: "ssh",
+        profileId: "studio",
+        serverId: "S1a",
+        token: "test-token",
+      },
+      "/api/listSessions",
+      {},
+      {
+        sshCommandRunner: async (command, options) => {
+          commands.push({ command, phase: options.phase });
+          if (options.phase === "start") {
+            remoteRunning = true;
+            return { stderr: "", stdout: "" };
+          }
+          return {
+            stderr: "",
+            stdout: JSON.stringify({
+              ok: true,
+              product: "gxserver",
+              protocolVersion: 1,
+              serverId: "S1a",
+              state: remoteRunning ? "running" : "stopped",
+            }),
+          };
+        },
+        sshTunnelIdleKillMs: 0,
+        sshTunnelPollMs: 10,
+        sshTunnelReadyTimeoutMs: 1_000,
+        sshTunnelSpawner: (command) => {
+          commands.push({ command, phase: "forward" });
+          tunnelChild = new EventEmitter();
+          tunnelChild.killed = false;
+          tunnelChild.kill = () => {
+            tunnelChild.killed = true;
+            tunnelServer?.close();
+            tunnelChild.emit("exit", 0, null);
+            return true;
+          };
+          tunnelServer = createGxserverRpcAndHealthFixture({ serverId: "S1a" });
+          tunnelServer.listen(localPort, "127.0.0.1");
+          return tunnelChild;
+        },
+        timeoutMs: 1_000,
+      },
+    );
+
+    expect(result).toMatchObject({ ok: true, requestId: "fixture-request", sessions: [] });
+    expect(commands.map((entry) => entry.phase)).toEqual(["check", "start", "check", "forward"]);
+    expect(commands.at(-1).command).toContain("ExitOnForwardFailure=yes");
+    await sleep(20);
+    expect(tunnelChild.killed).toBe(true);
+  });
+
+  test("chooses a non-gxserver port for SSH profiles when the local gxserver port is occupied", async () => {
+    let localGxserverPortFixture;
+    if (await isTestPortAvailable(58744)) {
+      localGxserverPortFixture = net.createServer();
+      await new Promise((resolve) => localGxserverPortFixture.listen(58744, "127.0.0.1", resolve));
+    }
+    try {
+      const target = await resolveGxserverServerTarget({
+        server: "ssh://madda@example.test",
+        token: "test-token",
+      });
+
+      expect(target.kind).toBe("ssh");
+      expect(target.forwardPlan.localPort).not.toBe(58744);
+      expect(target.baseUrl).not.toBe("http://127.0.0.1:58744");
+    } finally {
+      await new Promise((resolve) => localGxserverPortFixture?.close(resolve) ?? resolve());
+    }
+  });
+
   test("preserves sidebar project and session order from the inventory", () => {
     const grouped = groupSessionsPreservingSidebarOrder([
       {
@@ -838,7 +1953,7 @@ describe("ghostex CLI Android remote-session contract", () => {
     expect(help).toContain("attach | a --session-id <id>");
     expect(help).toContain("sleep <selector|all> [--json]");
     expect(help).toContain("wake <selector|all> [--json]");
-    expect(help).toContain("(focus|sleep|wake|kill) --session-id <id> [--json]");
+    expect(help).toContain("(sleep|wake|kill) --session-id <id> [--json]");
     expect(help).toContain("rename-session --session-id <id> --title <title> [--json]");
   });
 
@@ -991,12 +2106,14 @@ describe("ghostex CLI Android remote-session contract", () => {
       stderr: expect.stringContaining("GHOSTEX_ANDROID_SIGNING_STORE_FILE does not exist"),
     });
 
+    const inCheckoutKeystore = path.resolve("android/.ghostex-release-test-keystore");
+    await writeFile(inCheckoutKeystore, "test");
     try {
       await execFileAsync("bash", [
         path.resolve("scripts/ghostex-android-release-readiness.sh"),
       ], {
         env: strictAndroidReleaseEnv({
-          GHOSTEX_ANDROID_SIGNING_STORE_FILE: path.resolve("android/README.md"),
+          GHOSTEX_ANDROID_SIGNING_STORE_FILE: inCheckoutKeystore,
         }),
       });
       throw new Error("strict Android release runner unexpectedly accepted an in-checkout signing file");
@@ -1005,6 +2122,8 @@ describe("ghostex CLI Android remote-session contract", () => {
       expect(error.stderr).toContain("must live outside the Android checkout");
       expect(error.stdout).not.toContain("ghostex-cli.mjs android-check");
       expect(error.stdout).not.toContain("./gradlew");
+    } finally {
+      await rm(inCheckoutKeystore, { force: true });
     }
   });
 });

@@ -37,15 +37,20 @@ import { normalizeT3SessionMetadata } from "./t3-session-metadata";
  * CDXC:CursorCLI 2026-05-19-15:22:
  * Cursor CLI appends ` - ⏳ Working <spinner>` and ` - ✅ Ready` to terminal titles,
  * including the startup title `Cursor Agent - ✅ Ready`. Strip those trailing status
- * suffixes for visible sidebar titles. Keep the detection patterns in
- * session-title-activity.ts aligned with these strip rules.
+ * suffixes for visible sidebar titles. Keep the gxserver session-status title
+ * classifier aligned with these strip rules.
  *
  * CDXC:AntigravityCLI 2026-05-19-18:45:
  * Antigravity CLI uses `agy` while running and `🔔 agy` when finished. Strip the
- * bell attention prefix for visible sidebar titles while title-activity keeps the
- * raw terminal title for attention detection.
+ * bell attention prefix for visible sidebar titles while gxserver keeps the raw
+ * terminal title for attention detection.
  */
-const LEADING_TERMINAL_TITLE_STATUS_MARKER_PATTERN = /^[\s\u2800-\u28ff·•⋅◦✳*✶✻✽✸✹✺✷✴✦◇🤖🔔]+/u;
+/*
+ * CDXC:AgentResume 2026-06-01-12:59:
+ * The sidebar status marker uses the mathematical asterisk `∗`, not only ASCII `*`.
+ * Strip it before title trust checks so display markers cannot make placeholder titles look like real restore lookup titles.
+ */
+const LEADING_TERMINAL_TITLE_STATUS_MARKER_PATTERN = /^[\s\u2800-\u28ff·•⋅◦✳*∗✶✻✽✸✹✺✷✴✦◇🤖🔔]+/u;
 const ANTIGRAVITY_ATTENTION_TITLE_PATTERN = /^🔔\s*agy$/iu;
 const ANTIGRAVITY_IDLE_TITLE_PATTERN = /^agy$/iu;
 const LEADING_TERMINAL_TITLE_PREFIX_PATTERN = /^(?:OC\s*\|\s*)+/iu;
@@ -61,10 +66,10 @@ export const DEFAULT_TERMINAL_SESSION_TITLE = "Terminal Session";
  * Users need the bottom command pane to shrink to 5% of the window height.
  *
  * CDXC:CommandsPanel 2026-05-30-09:20:
- * The command pane may grow up to 90% of the workspace height. Double-clicking the top resize rail and other default-height restores must target 125px, not a percentage of the window.
+ * The command pane may grow up to 90% of the workspace height. Opening the pane and double-clicking the top resize rail restore a pixel default height from Settings, not a percentage of the window.
  *
  * CDXC:CommandsPanel 2026-05-30-09:45:
- * Default command-pane height was raised by 60px (65px -> 125px) so reset/double-click restores leave more room for command tabs and input.
+ * The built-in default height is 125px until the user changes Command Pane Default Height in Workspace settings.
  */
 export const MIN_COMMANDS_PANEL_HEIGHT_RATIO = 0.05;
 export const MAX_COMMANDS_PANEL_HEIGHT_RATIO = 0.9;
@@ -77,6 +82,7 @@ export const DEFAULT_COMMANDS_PANEL_REFERENCE_WORKSPACE_HEIGHT_PX = 900;
 
 export function resolveDefaultCommandsPanelHeightRatio(
   workspaceHeightPx?: number,
+  defaultHeightPx: number = DEFAULT_COMMANDS_PANEL_HEIGHT_PX,
 ): number {
   const workspaceHeight =
     typeof workspaceHeightPx === "number" &&
@@ -84,11 +90,15 @@ export function resolveDefaultCommandsPanelHeightRatio(
     workspaceHeightPx > 0
       ? workspaceHeightPx
       : DEFAULT_COMMANDS_PANEL_REFERENCE_WORKSPACE_HEIGHT_PX;
+  const resolvedDefaultHeightPx =
+    Number.isFinite(defaultHeightPx) && defaultHeightPx > 0
+      ? defaultHeightPx
+      : DEFAULT_COMMANDS_PANEL_HEIGHT_PX;
   return Math.max(
     MIN_COMMANDS_PANEL_HEIGHT_RATIO,
     Math.min(
       MAX_COMMANDS_PANEL_HEIGHT_RATIO,
-      DEFAULT_COMMANDS_PANEL_HEIGHT_PX / workspaceHeight,
+      resolvedDefaultHeightPx / workspaceHeight,
     ),
   );
 }
@@ -299,10 +309,16 @@ export function createDefaultSessionGridSnapshot(): SessionGridSnapshot {
   };
 }
 
-export function createDefaultCommandsPanelState() {
+export function createDefaultCommandsPanelState(options?: {
+  defaultHeightPx?: number;
+  workspaceHeightPx?: number;
+}) {
   return {
     activeSessionId: undefined,
-    heightRatio: DEFAULT_COMMANDS_PANEL_HEIGHT_RATIO,
+    heightRatio: resolveDefaultCommandsPanelHeightRatio(
+      options?.workspaceHeightPx,
+      options?.defaultHeightPx,
+    ),
     isVisible: false,
     mode: "pinned" as const,
     paneLayout: undefined,
@@ -515,11 +531,14 @@ export function createSessionRecord(
     createdAt,
     delayedSendDeadlineAt: normalizeTerminalDelayedSendDeadlineAt(options?.delayedSendDeadlineAt),
     displayId,
+    isFavorite: options?.sessionTag === "favorite" ? true : undefined,
     kind: "terminal",
     lastAccessedAt,
     lastStartedAt,
     row: position.row,
     sessionId,
+    sessionTag:
+      options?.kind === undefined || options?.kind === "terminal" ? options?.sessionTag : undefined,
     slotIndex,
     terminalEngine: normalizeTerminalEngine(options?.terminalEngine),
     sessionPersistenceName: normalizeTerminalSessionPersistenceName(

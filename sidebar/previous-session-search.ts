@@ -2,7 +2,9 @@ import Fuse, { type IFuseOptions } from "fuse.js";
 import type {
   SidebarPreviousSessionItem,
   SidebarSessionItem,
+  SidebarSessionTag,
 } from "../shared/session-grid-contract";
+import { getEffectiveSidebarSessionTag, getSidebarSessionTagLabel } from "../shared/session-tags";
 import { getSessionHistoryCardTitle } from "./session-history-card-title";
 
 export type PreviousSessionsModalDayGroup = {
@@ -11,12 +13,12 @@ export type PreviousSessionsModalDayGroup = {
 };
 
 export type FilterPreviousSessionsOptions = {
-  favoritesOnly?: boolean;
+  sessionTags?: readonly SidebarSessionTag[];
 };
 
 type SidebarSearchableSession = Pick<
   SidebarSessionItem,
-  "alias" | "detail" | "primaryTitle" | "sessionNumber" | "terminalTitle"
+  "alias" | "detail" | "displayTitle" | "isFavorite" | "primaryTitle" | "sessionNumber" | "sessionTag" | "terminalTitle"
 >;
 
 type SidebarSessionSearchRecord<T extends SidebarSearchableSession> = {
@@ -40,9 +42,15 @@ export function filterPreviousSessions(
   options: FilterPreviousSessionsOptions = {},
 ): SidebarPreviousSessionItem[] {
   const normalizedQuery = query.trim().toLowerCase();
-  const filteredSessions = options.favoritesOnly
-    ? previousSessions.filter((session) => session.isFavorite)
-    : [...previousSessions];
+  const selectedSessionTags = options.sessionTags ?? [];
+  const selectedTagSet = new Set(selectedSessionTags);
+  const filteredSessions =
+    selectedSessionTags.length > 0
+      ? previousSessions.filter((session) => {
+          const sessionTag = getEffectiveSidebarSessionTag(session);
+          return sessionTag ? selectedTagSet.has(sessionTag) : false;
+        })
+      : [...previousSessions];
   const dedupedSessions = dedupePreviousSessionsByProjectAndTitle(filteredSessions);
 
   if (!normalizedQuery) {
@@ -62,6 +70,17 @@ export function filterPreviousSessionsModalItems(
    * modal must hide web pages so the list only presents agent sessions.
    */
   return previousSessions.filter((session) => !isPreviousSessionWebPage(session));
+}
+
+export function removePreviousSessionByHistoryId(
+  previousSessions: readonly SidebarPreviousSessionItem[],
+  historyId: string,
+): SidebarPreviousSessionItem[] {
+  /*
+  CDXC:PreviousSessions 2026-06-04-22:52:
+  The full Previous Sessions modal keeps gxserver query results in component state. Delete must remove the clicked row from that modal-owned result page immediately, because native/gxserver deletion is asynchronous and does not send a matching previousSessionsResult request id back to the open modal.
+  */
+  return previousSessions.filter((session) => session.historyId !== historyId);
 }
 
 export function groupPreviousSessionsByDay(
@@ -139,10 +158,12 @@ function createSidebarSessionSearchRecord<T extends SidebarSearchableSession>(
     itemIndex,
     searchText: [
       session.alias,
+      session.displayTitle,
       session.primaryTitle,
       session.terminalTitle,
       session.detail,
       session.sessionNumber,
+      getSidebarSessionTagLabel(getEffectiveSidebarSessionTag(session)),
     ]
       .map((part) => normalizeSessionSearchValue(part))
       .filter(Boolean)

@@ -1,0 +1,749 @@
+import Foundation
+import Security
+
+private struct RemoteGxserverConnection {
+  let baseURL: String
+  let localPort: Int
+  let remoteMachineId: String
+  let token: String
+  let tunnelProcess: Process
+}
+
+private struct RemoteProcessResult {
+  let exitCode: Int32
+  let stderr: String
+  let stdout: String
+}
+
+final class RemoteGxserverClient {
+  static let shared = RemoteGxserverClient()
+
+  private static let keychainService = "com.madda.ghostex.remote-gxserver-token"
+  private let lock = NSLock()
+  private var connections: [String: RemoteGxserverConnection] = [:]
+  private var presentationSubscriptions: [String: URLSessionWebSocketTask] = [:]
+
+  private init() {}
+
+  /*
+   CDXC:RemoteMachines 2026-06-03-00:18:
+   Remote connection setup is native-owned: Swift runs SSH, starts or checks
+   gxserver on the remote host, reads the remote token over SSH, stores that
+   token in Keychain, and keeps the local tunnel process. React receives status
+   only and must not read or persist remote bearer tokens.
+   */
+  func connect(_ command: RemoteGxserverConnect) async -> HostEvent {
+    await withCheckedContinuation { continuation in
+      DispatchQueue.global(qos: .utility).async {
+        let event = self.connectSynchronously(command)
+        continuation.resume(returning: event)
+      }
+    }
+  }
+
+  func request(_ command: RemoteGxserverRequest) async -> HostEvent {
+    await withCheckedContinuation { continuation in
+      DispatchQueue.global(qos: .utility).async {
+        do {
+          let connection = try self.connection(for: command.remoteMachineId)
+          let response = try self.performRequest(command, connection: connection)
+          continuation.resume(returning: .remoteGxserverResponse(
+            remoteMachineId: command.remoteMachineId,
+            requestId: command.requestId,
+            path: command.path,
+            ok: (200..<300).contains(response.statusCode),
+            statusCode: response.statusCode,
+            bodyJson: response.body,
+            error: nil
+          ))
+        } catch {
+          continuation.resume(returning: .remoteGxserverResponse(
+            remoteMachineId: command.remoteMachineId,
+            requestId: command.requestId,
+            path: command.path,
+            ok: false,
+            statusCode: nil,
+            bodyJson: nil,
+            error: error.localizedDescription
+          ))
+        }
+      }
+    }
+  }
+
+  func subscribePresentation(
+    _ command: RemoteGxserverPresentationSubscribe,
+    eventHandler: @escaping (HostEvent) -> Void
+  ) async -> HostEvent {
+    await withCheckedContinuation { continuation in
+      DispatchQueue.global(qos: .utility).async {
+        do {
+          let connection = try self.connection(for: command.remoteMachineId)
+          try self.subscribePresentationSynchronously(
+            command,
+            connection: connection,
+            eventHandler: eventHandler
+          )
+          continuation.resume(returning: .remoteGxserverStatus(
+            remoteMachineId: command.remoteMachineId,
+            payloadJson: self.statusPayloadJson([
+              "message": "Remote presentation subscription started.",
+              "ok": true,
+              "requestId": command.requestId,
+              "state": "presentationSubscribed",
+            ])
+          ))
+        } catch {
+          continuation.resume(returning: .remoteGxserverStatus(
+            remoteMachineId: command.remoteMachineId,
+            payloadJson: self.statusPayloadJson([
+              "message": error.localizedDescription,
+              "ok": false,
+              "requestId": command.requestId,
+              "state": "presentationSubscribeFailed",
+            ])
+          ))
+        }
+      }
+    }
+  }
+
+  func connectingStatus(remoteMachineId: String, requestId: String) -> HostEvent {
+    .remoteGxserverStatus(
+      remoteMachineId: remoteMachineId,
+      payloadJson: statusPayloadJson([
+        "message": "Connecting to remote gxserver over SSH...",
+        "ok": true,
+        "requestId": requestId,
+        "state": "connecting",
+      ])
+    )
+  }
+
+  private func connectSynchronously(_ command: RemoteGxserverConnect) -> HostEvent {
+    guard !command.remoteMachineId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+      return statusEvent(command, state: "invalid", ok: false, message: "Remote machine id is missing.")
+    }
+    guard !command.sshHost.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+      return statusEvent(command, state: "invalid", ok: false, message: "Remote SSH host is missing.")
+    }
+
+    let target = RemoteSshTarget(
+      host: command.sshHost,
+      identityFile: command.identityFile?.trimmingCharacters(in: .whitespacesAndNewlines),
+      port: command.sshPort,
+      user: command.sshUser?.trimmingCharacters(in: .whitespacesAndNewlines)
+    )
+
+    terminateExistingConnection(remoteMachineId: command.remoteMachineId)
+
+    let tokenResult = runSsh(
+      target: target,
+      remoteCommand: remoteTokenReadCommand(),
+      timeoutSeconds: 18
+    )
+    if tokenResult.exitCode == 127 {
+      if command.installApproved == true {
+        let installResult = installBundledGxserverAndReadToken(target: target)
+        if installResult.exitCode != 0 {
+          return statusEvent(
+            command,
+            state: "installFailed",
+            ok: false,
+            message: sanitizedProcessFailure(defaultMessage: "Remote gxserver install failed.", result: installResult)
+          )
+        }
+        return finishConnectWithTokenResult(command: command, target: target, tokenResult: installResult)
+      }
+      return statusEvent(
+        command,
+        state: "installApprovalRequired",
+        ok: false,
+        message: "gxserver is not installed on that machine. Ask before installing the remote gxserver package."
+      )
+    }
+    if tokenResult.exitCode != 0 {
+      return statusEvent(
+        command,
+        state: "sshFailed",
+        ok: false,
+        message: sanitizedProcessFailure(defaultMessage: "Remote gxserver SSH setup failed.", result: tokenResult)
+      )
+    }
+
+    return finishConnectWithTokenResult(command: command, target: target, tokenResult: tokenResult)
+  }
+
+  private func finishConnectWithTokenResult(
+    command: RemoteGxserverConnect,
+    target: RemoteSshTarget,
+    tokenResult: RemoteProcessResult
+  ) -> HostEvent {
+    let token = tokenResult.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard isValidAuthToken(token) else {
+      return statusEvent(
+        command,
+        state: "tokenUnavailable",
+        ok: false,
+        message: "Remote gxserver token was not readable after SSH start."
+      )
+    }
+
+    do {
+      try storeTokenInKeychain(token, remoteMachineId: command.remoteMachineId)
+    } catch {
+      return statusEvent(
+        command,
+        state: "keychainFailed",
+        ok: false,
+        message: "Could not store the remote gxserver token in Keychain."
+      )
+    }
+
+    do {
+      let connection = try openTunnel(command: command, target: target, token: token)
+      return statusEvent(
+        command,
+        state: "connected",
+        ok: true,
+        message: "Remote gxserver is connected.",
+        extra: [
+          "baseUrl": connection.baseURL,
+          "localPort": connection.localPort,
+          "protocolVersion": GxserverClient.protocolVersion,
+        ]
+      )
+    } catch {
+      return statusEvent(command, state: "tunnelFailed", ok: false, message: error.localizedDescription)
+    }
+  }
+
+  private func remoteTokenReadCommand() -> String {
+    """
+    GXSERVER_BIN="$(command -v gxserver 2>/dev/null || true)"; \
+    if [ -z "$GXSERVER_BIN" ] && [ -x "$HOME/.ghostex/gxserver/package/bin/gxserver" ]; then GXSERVER_BIN="$HOME/.ghostex/gxserver/package/bin/gxserver"; fi; \
+    if [ -z "$GXSERVER_BIN" ]; then exit 127; fi; \
+    "$GXSERVER_BIN" start --json >/dev/null 2>&1 || "$GXSERVER_BIN" start >/dev/null 2>&1 || true; \
+    test -r "$HOME/.ghostex/gxserver/auth/token" || exit 126; \
+    cat "$HOME/.ghostex/gxserver/auth/token"
+    """
+  }
+
+  private func installBundledGxserverAndReadToken(target: RemoteSshTarget) -> RemoteProcessResult {
+    guard let packageURL = bundledGxserverPackageURL() else {
+      return RemoteProcessResult(exitCode: 126, stderr: "Bundled gxserver package is unavailable.", stdout: "")
+    }
+
+    let tempDirectory = FileManager.default.temporaryDirectory
+      .appendingPathComponent("ghostex-remote-gxserver-\(UUID().uuidString)", isDirectory: true)
+    let archiveURL = tempDirectory.appendingPathComponent("gxserver.tar.gz")
+    do {
+      try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
+    } catch {
+      return RemoteProcessResult(exitCode: 126, stderr: "Could not prepare gxserver upload archive.", stdout: "")
+    }
+    defer {
+      try? FileManager.default.removeItem(at: tempDirectory)
+    }
+
+    /*
+     CDXC:RemoteMachines 2026-06-02-23:38:
+     Approved remote install uses the app-bundled gxserver package. Native
+     creates a temporary archive, copies it over SSH, installs under
+     ~/.ghostex/gxserver/package, and starts gxserver from that absolute path so
+     non-login SSH shells do not need ~/.local/bin on PATH.
+     */
+    let tarResult = runProcess(
+      executable: "/usr/bin/tar",
+      arguments: ["-czf", archiveURL.path, "-C", packageURL.path, "."],
+      timeoutSeconds: 60
+    )
+    if tarResult.exitCode != 0 {
+      return RemoteProcessResult(exitCode: tarResult.exitCode, stderr: "Could not archive bundled gxserver package.", stdout: "")
+    }
+
+    let mkdirResult = runSsh(
+      target: target,
+      remoteCommand: "mkdir -p \"$HOME/.ghostex/gxserver\"",
+      timeoutSeconds: 12
+    )
+    if mkdirResult.exitCode != 0 {
+      return mkdirResult
+    }
+
+    let uploadResult = runScp(
+      target: target,
+      localPath: archiveURL.path,
+      remotePath: "~/.ghostex/gxserver/gxserver-upload.tar.gz",
+      timeoutSeconds: 120
+    )
+    if uploadResult.exitCode != 0 {
+      return RemoteProcessResult(exitCode: uploadResult.exitCode, stderr: "Could not upload gxserver package over SSH.", stdout: "")
+    }
+
+    let installCommand = """
+    set -eu; \
+    rm -rf "$HOME/.ghostex/gxserver/package.tmp"; \
+    mkdir -p "$HOME/.ghostex/gxserver/package.tmp" "$HOME/.local/bin"; \
+    tar -xzf "$HOME/.ghostex/gxserver/gxserver-upload.tar.gz" -C "$HOME/.ghostex/gxserver/package.tmp"; \
+    rm -rf "$HOME/.ghostex/gxserver/package"; \
+    mv "$HOME/.ghostex/gxserver/package.tmp" "$HOME/.ghostex/gxserver/package"; \
+    chmod +x "$HOME/.ghostex/gxserver/package/bin/gxserver" "$HOME/.ghostex/gxserver/package/bin/zmx" "$HOME/.ghostex/gxserver/package/bin/zehn" 2>/dev/null || true; \
+    ln -sf "$HOME/.ghostex/gxserver/package/bin/gxserver" "$HOME/.local/bin/gxserver" 2>/dev/null || true; \
+    \(remoteTokenReadCommand())
+    """
+    return runSsh(target: target, remoteCommand: installCommand, timeoutSeconds: 45)
+  }
+
+  private func bundledGxserverPackageURL() -> URL? {
+    let resourceURL = Bundle.main.resourceURL
+    let packageURL = resourceURL?.appendingPathComponent("Web/gxserver", isDirectory: true)
+    if let packageURL, FileManager.default.fileExists(atPath: packageURL.appendingPathComponent("bin/gxserver").path) {
+      return packageURL
+    }
+    return nil
+  }
+
+  private func openTunnel(command: RemoteGxserverConnect, target: RemoteSshTarget, token: String) throws -> RemoteGxserverConnection {
+    var lastError: Error?
+    for _ in 0..<8 {
+      let localPort = Int.random(in: 42000...58999)
+      let process = Process()
+      process.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
+      var arguments = [
+        "-N",
+        "-o", "BatchMode=yes",
+        "-o", "ConnectTimeout=8",
+        "-o", "ExitOnForwardFailure=yes",
+        "-o", "StrictHostKeyChecking=accept-new",
+        "-L", "\(localPort):127.0.0.1:58744",
+      ]
+      arguments.append(contentsOf: sshTargetArguments(target))
+      process.arguments = arguments
+      process.standardInput = FileHandle.nullDevice
+      process.standardOutput = Pipe()
+      process.standardError = Pipe()
+
+      do {
+        try process.run()
+      } catch {
+        lastError = error
+        continue
+      }
+
+      Thread.sleep(forTimeInterval: 0.35)
+      if !process.isRunning {
+        lastError = NSError(
+          domain: "RemoteGxserverTunnel",
+          code: 1,
+          userInfo: [NSLocalizedDescriptionKey: "SSH tunnel exited before remote gxserver became reachable."]
+        )
+        continue
+      }
+
+      let baseURL = "http://127.0.0.1:\(localPort)"
+      if waitForAuthenticatedHealth(baseURL: baseURL, token: token) {
+        let connection = RemoteGxserverConnection(
+          baseURL: baseURL,
+          localPort: localPort,
+          remoteMachineId: command.remoteMachineId,
+          token: token,
+          tunnelProcess: process
+        )
+        lock.lock()
+        connections[command.remoteMachineId] = connection
+        lock.unlock()
+        return connection
+      }
+
+      process.terminate()
+      lastError = NSError(
+        domain: "RemoteGxserverTunnel",
+        code: 2,
+        userInfo: [NSLocalizedDescriptionKey: "SSH tunnel opened, but remote gxserver health did not become reachable."]
+      )
+    }
+
+    throw lastError ?? NSError(
+      domain: "RemoteGxserverTunnel",
+      code: 3,
+      userInfo: [NSLocalizedDescriptionKey: "Could not open an SSH tunnel to remote gxserver."]
+    )
+  }
+
+  private func subscribePresentationSynchronously(
+    _ command: RemoteGxserverPresentationSubscribe,
+    connection: RemoteGxserverConnection,
+    eventHandler: @escaping (HostEvent) -> Void
+  ) throws {
+    guard var components = URLComponents(string: "\(connection.baseURL)/api/events") else {
+      throw NSError(
+        domain: "RemoteGxserverPresentation",
+        code: 1,
+        userInfo: [NSLocalizedDescriptionKey: "Invalid remote gxserver event URL."]
+      )
+    }
+    components.scheme = components.scheme == "https" ? "wss" : "ws"
+    components.queryItems = [
+      URLQueryItem(name: "protocolVersion", value: String(GxserverClient.protocolVersion)),
+      URLQueryItem(name: "authToken", value: connection.token),
+    ]
+    guard let url = components.url else {
+      throw NSError(
+        domain: "RemoteGxserverPresentation",
+        code: 2,
+        userInfo: [NSLocalizedDescriptionKey: "Invalid remote gxserver event URL."]
+      )
+    }
+
+    let task = URLSession.shared.webSocketTask(with: url)
+    lock.lock()
+    let previous = presentationSubscriptions[command.remoteMachineId]
+    presentationSubscriptions[command.remoteMachineId] = task
+    lock.unlock()
+    previous?.cancel(with: .goingAway, reason: nil)
+
+    task.resume()
+    var subscribePayload: [String: Any] = [
+      "clientId": command.clientId ?? "macos-remote-sidebar-\(command.remoteMachineId)",
+      "type": "subscribePresentation",
+    ]
+    if let lastRevision = command.lastRevision {
+      subscribePayload["lastRevision"] = lastRevision
+    }
+    let data = try JSONSerialization.data(withJSONObject: subscribePayload)
+    let message = String(data: data, encoding: .utf8) ?? #"{"type":"subscribePresentation"}"#
+    task.send(.string(message)) { [weak self] error in
+      if let error {
+        eventHandler(.remoteGxserverStatus(
+          remoteMachineId: command.remoteMachineId,
+          payloadJson: self?.statusPayloadJson([
+            "message": error.localizedDescription,
+            "ok": false,
+            "requestId": command.requestId,
+            "state": "presentationSubscribeFailed",
+          ]) ?? #"{"ok":false,"state":"presentationSubscribeFailed"}"#
+        ))
+      }
+    }
+    receivePresentationMessages(remoteMachineId: command.remoteMachineId, task: task, eventHandler: eventHandler)
+  }
+
+  private func receivePresentationMessages(
+    remoteMachineId: String,
+    task: URLSessionWebSocketTask,
+    eventHandler: @escaping (HostEvent) -> Void
+  ) {
+    task.receive { [weak self] result in
+      guard let self else { return }
+      self.lock.lock()
+      let isCurrent = self.presentationSubscriptions[remoteMachineId] === task
+      self.lock.unlock()
+      guard isCurrent else { return }
+
+      switch result {
+      case .success(let message):
+        let payloadJson: String?
+        switch message {
+        case .string(let text):
+          payloadJson = text
+        case .data(let data):
+          payloadJson = String(data: data, encoding: .utf8)
+        @unknown default:
+          payloadJson = nil
+        }
+        if let payloadJson {
+          eventHandler(.remoteGxserverPresentationEvent(
+            remoteMachineId: remoteMachineId,
+            payloadJson: payloadJson
+          ))
+        }
+        self.receivePresentationMessages(remoteMachineId: remoteMachineId, task: task, eventHandler: eventHandler)
+      case .failure(let error):
+        eventHandler(.remoteGxserverStatus(
+          remoteMachineId: remoteMachineId,
+          payloadJson: self.statusPayloadJson([
+            "message": error.localizedDescription,
+            "ok": false,
+            "state": "presentationStreamFailed",
+          ])
+        ))
+      }
+    }
+  }
+
+  private func waitForAuthenticatedHealth(baseURL: String, token: String) -> Bool {
+    let deadline = Date().addingTimeInterval(7)
+    while Date() < deadline {
+      if let response = try? performRequest(
+        path: "/api/health/server",
+        method: "GET",
+        paramsJson: nil,
+        baseURL: baseURL,
+        token: token,
+        timeoutSeconds: 1
+      ), (200..<300).contains(response.statusCode) {
+        return true
+      }
+      Thread.sleep(forTimeInterval: 0.2)
+    }
+    return false
+  }
+
+  private func performRequest(_ command: RemoteGxserverRequest, connection: RemoteGxserverConnection) throws -> (statusCode: Int, body: String?) {
+    try performRequest(
+      path: command.path,
+      method: command.method,
+      paramsJson: command.paramsJson,
+      baseURL: connection.baseURL,
+      token: connection.token,
+      timeoutSeconds: command.path == "/api/runBeadsAction" ? 60 : 15
+    )
+  }
+
+  private func performRequest(
+    path: String,
+    method: String,
+    paramsJson: String?,
+    baseURL: String,
+    token: String,
+    timeoutSeconds: TimeInterval
+  ) throws -> (statusCode: Int, body: String?) {
+    guard path.hasPrefix("/api/") else {
+      throw NSError(
+        domain: "RemoteGxserverRequest",
+        code: 1,
+        userInfo: [NSLocalizedDescriptionKey: "Invalid remote gxserver API path."])
+    }
+    guard let url = URL(string: "\(baseURL)\(path)") else {
+      throw NSError(
+        domain: "RemoteGxserverRequest",
+        code: 2,
+        userInfo: [NSLocalizedDescriptionKey: "Invalid remote gxserver API URL."])
+    }
+    var request = URLRequest(url: url, timeoutInterval: timeoutSeconds)
+    request.httpMethod = method.uppercased()
+    request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+    request.setValue(String(GxserverClient.protocolVersion), forHTTPHeaderField: "x-gxserver-protocol-version")
+    if request.httpMethod == "POST" {
+      request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+      let params = paramsJson?.trimmingCharacters(in: .whitespacesAndNewlines)
+      let normalizedParams = (params?.isEmpty == false) ? params! : "{}"
+      request.httpBody = Data(#"{"protocolVersion":\#(GxserverClient.protocolVersion),"params":\#(normalizedParams)}"#.utf8)
+    }
+    return try sendSynchronousRequest(request)
+  }
+
+  private func sendSynchronousRequest(_ request: URLRequest) throws -> (statusCode: Int, body: String?) {
+    let semaphore = DispatchSemaphore(value: 0)
+    var result: Result<(statusCode: Int, body: String?), Error>?
+    URLSession.shared.dataTask(with: request) { data, response, error in
+      defer { semaphore.signal() }
+      if let error {
+        result = .failure(error)
+        return
+      }
+      let statusCode = (response as? HTTPURLResponse)?.statusCode ?? 0
+      result = .success((statusCode, data.flatMap { String(data: $0, encoding: .utf8) }))
+    }.resume()
+    _ = semaphore.wait(timeout: .now() + request.timeoutInterval + 2)
+    guard let result else {
+      throw NSError(
+        domain: "RemoteGxserverRequest",
+        code: 3,
+        userInfo: [NSLocalizedDescriptionKey: "Remote gxserver request timed out."])
+    }
+    return try result.get()
+  }
+
+  private func runSsh(target: RemoteSshTarget, remoteCommand: String, timeoutSeconds: TimeInterval) -> RemoteProcessResult {
+    var arguments = [
+      "-o", "BatchMode=yes",
+      "-o", "ConnectTimeout=8",
+      "-o", "StrictHostKeyChecking=accept-new",
+    ]
+    arguments.append(contentsOf: sshTargetArguments(target))
+    arguments.append(remoteCommand)
+    return runProcess(
+      executable: "/usr/bin/ssh",
+      arguments: arguments,
+      timeoutSeconds: timeoutSeconds
+    )
+  }
+
+  private func runScp(
+    target: RemoteSshTarget,
+    localPath: String,
+    remotePath: String,
+    timeoutSeconds: TimeInterval
+  ) -> RemoteProcessResult {
+    var arguments = [
+      "-o", "BatchMode=yes",
+      "-o", "ConnectTimeout=8",
+      "-o", "StrictHostKeyChecking=accept-new",
+    ]
+    if let identityFile = target.identityFile, !identityFile.isEmpty {
+      arguments.append(contentsOf: ["-i", identityFile])
+    }
+    if let port = target.port, port > 0 {
+      arguments.append(contentsOf: ["-P", String(port)])
+    }
+    arguments.append(localPath)
+    arguments.append("\(remoteTargetHost(target)):\(remotePath)")
+    return runProcess(
+      executable: "/usr/bin/scp",
+      arguments: arguments,
+      timeoutSeconds: timeoutSeconds
+    )
+  }
+
+  private func runProcess(executable: String, arguments: [String], timeoutSeconds: TimeInterval) -> RemoteProcessResult {
+    let process = Process()
+    let stdoutPipe = Pipe()
+    let stderrPipe = Pipe()
+    process.executableURL = URL(fileURLWithPath: executable)
+    process.arguments = arguments
+    process.standardInput = FileHandle.nullDevice
+    process.standardOutput = stdoutPipe
+    process.standardError = stderrPipe
+
+    do {
+      try process.run()
+    } catch {
+      return RemoteProcessResult(exitCode: 127, stderr: error.localizedDescription, stdout: "")
+    }
+
+    let deadline = Date().addingTimeInterval(timeoutSeconds)
+    while process.isRunning && Date() < deadline {
+      Thread.sleep(forTimeInterval: 0.05)
+    }
+    if process.isRunning {
+      process.terminate()
+      return RemoteProcessResult(exitCode: 124, stderr: "Remote SSH command timed out.", stdout: "")
+    }
+    let stdout = String(data: stdoutPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+    let stderr = String(data: stderrPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+    return RemoteProcessResult(exitCode: process.terminationStatus, stderr: stderr, stdout: stdout)
+  }
+
+  private func sshTargetArguments(_ target: RemoteSshTarget) -> [String] {
+    var args: [String] = []
+    if let identityFile = target.identityFile, !identityFile.isEmpty {
+      args.append(contentsOf: ["-i", identityFile])
+    }
+    if let port = target.port, port > 0 {
+      args.append(contentsOf: ["-p", String(port)])
+    }
+    let host = target.user?.isEmpty == false ? "\(target.user!)@\(target.host)" : target.host
+    args.append(host)
+    return args
+  }
+
+  private func remoteTargetHost(_ target: RemoteSshTarget) -> String {
+    target.user?.isEmpty == false ? "\(target.user!)@\(target.host)" : target.host
+  }
+
+  private func connection(for remoteMachineId: String) throws -> RemoteGxserverConnection {
+    lock.lock()
+    let connection = connections[remoteMachineId]
+    lock.unlock()
+    guard let connection, connection.tunnelProcess.isRunning else {
+      throw NSError(
+        domain: "RemoteGxserverConnection",
+        code: 1,
+        userInfo: [NSLocalizedDescriptionKey: "Remote gxserver is not connected."])
+    }
+    return connection
+  }
+
+  private func terminateExistingConnection(remoteMachineId: String) {
+    lock.lock()
+    let existing = connections.removeValue(forKey: remoteMachineId)
+    let subscription = presentationSubscriptions.removeValue(forKey: remoteMachineId)
+    lock.unlock()
+    subscription?.cancel(with: .goingAway, reason: nil)
+    if existing?.tunnelProcess.isRunning == true {
+      existing?.tunnelProcess.terminate()
+    }
+  }
+
+  private func storeTokenInKeychain(_ token: String, remoteMachineId: String) throws {
+    guard let tokenData = token.data(using: .utf8) else {
+      throw NSError(domain: "RemoteGxserverKeychain", code: 1)
+    }
+    let query: [String: Any] = [
+      kSecAttrAccount as String: remoteMachineId,
+      kSecAttrService as String: Self.keychainService,
+      kSecClass as String: kSecClassGenericPassword,
+    ]
+    SecItemDelete(query as CFDictionary)
+    var addQuery = query
+    addQuery[kSecValueData as String] = tokenData
+    let status = SecItemAdd(addQuery as CFDictionary, nil)
+    guard status == errSecSuccess else {
+      throw NSError(domain: "RemoteGxserverKeychain", code: Int(status))
+    }
+  }
+
+  private func statusEvent(
+    _ command: RemoteGxserverConnect,
+    state: String,
+    ok: Bool,
+    message: String,
+    extra: [String: Any] = [:]
+  ) -> HostEvent {
+    var payload: [String: Any] = [
+      "message": message,
+      "ok": ok,
+      "protocolVersion": GxserverClient.protocolVersion,
+      "requestId": command.requestId,
+      "state": state,
+    ]
+    for (key, value) in extra {
+      payload[key] = value
+    }
+    return .remoteGxserverStatus(
+      remoteMachineId: command.remoteMachineId,
+      payloadJson: statusPayloadJson(payload)
+    )
+  }
+
+  private func statusPayloadJson(_ payload: [String: Any]) -> String {
+    guard
+      let data = try? JSONSerialization.data(withJSONObject: payload),
+      let payloadJson = String(data: data, encoding: .utf8)
+    else {
+      return #"{"ok":false,"state":"invalid","message":"Could not encode remote gxserver status."}"#
+    }
+    return payloadJson
+  }
+
+  private func isValidAuthToken(_ token: String) -> Bool {
+    token.range(of: #"^[A-Za-z0-9_-]{32,}$"#, options: .regularExpression) != nil
+  }
+
+  private func sanitizedProcessFailure(defaultMessage: String, result: RemoteProcessResult) -> String {
+    let stderr = result.stderr.trimmingCharacters(in: .whitespacesAndNewlines)
+    if stderr.isEmpty {
+      return defaultMessage
+    }
+    if stderr.localizedCaseInsensitiveContains("permission denied") {
+      return "SSH authentication failed for the remote machine."
+    }
+    if stderr.localizedCaseInsensitiveContains("could not resolve hostname") {
+      return "SSH could not resolve the remote host."
+    }
+    if stderr.localizedCaseInsensitiveContains("operation timed out") ||
+      stderr.localizedCaseInsensitiveContains("connection timed out") {
+      return "SSH connection to the remote machine timed out."
+    }
+    return defaultMessage
+  }
+}
+
+private struct RemoteSshTarget {
+  let host: String
+  let identityFile: String?
+  let port: Int?
+  let user: String?
+}

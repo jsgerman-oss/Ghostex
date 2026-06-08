@@ -29,8 +29,10 @@ import { useDroppable } from "@dnd-kit/react";
 import { useSortable } from "@dnd-kit/react/sortable";
 import { createPortal } from "react-dom";
 import {
+  Fragment,
   forwardRef,
   startTransition,
+  useCallback,
   useLayoutEffect,
   useEffect,
   useEffectEvent,
@@ -71,18 +73,19 @@ import { openAppModal } from "./app-modal-host-bridge";
 import {
   PROJECT_SESSION_LIST_COLLAPSED_CHANGED_EVENT,
   PROJECT_SESSION_LIST_COLLAPSED_COUNT,
-  PROJECT_SESSION_LIST_COLLAPSED_STORAGE_KEY,
   getVisibleProjectSessionIds,
-  normalizeStoredProjectSessionListCollapsedState,
-  type ProjectSessionListCollapsedState,
+  readProjectSessionListCollapsedState,
+  writeProjectSessionListCollapsedState,
 } from "./project-session-list-toggle";
 import {
   DEFAULT_WORKSPACE_THEME_COLOR,
   normalizeWorkspaceThemeColor,
-  readWorkspaceThemeColorHistory,
   updateWorkspaceThemeColorHistory,
+} from "../shared/workspace-project-appearance";
+import {
+  readWorkspaceThemeColorHistory,
   writeWorkspaceThemeColorHistory,
-} from "../shared/workspace-dock-icons";
+} from "./workspace-theme-color-history";
 
 const CONTEXT_MENU_MARGIN_PX = 12;
 const CONTEXT_MENU_WIDTH_PX = 196;
@@ -98,6 +101,14 @@ const GROUP_DRAG_HOLD_TOLERANCE_PX = 12;
 const TOUCH_GROUP_DRAG_HOLD_DELAY_MS = 180;
 const TOUCH_GROUP_DRAG_HOLD_TOLERANCE_PX = 12;
 const PROJECT_EDITOR_DISPLAY_MAX_FILES = 99;
+const DISABLED_GROUP_DND_AX_ATTRIBUTES = [
+  "aria-describedby",
+  "aria-disabled",
+  "aria-grabbed",
+  "aria-pressed",
+  "aria-roledescription",
+  "tabindex",
+] as const;
 const NESTED_CONTEXT_MENU_INTERACTIVE_SELECTOR =
   "button, input, textarea, select, a[href], [role='button'], [role='menuitem'], [contenteditable='true'], .group-header-actions";
 
@@ -171,7 +182,7 @@ function getProjectThemeSwatchStyle(themeColor: string | undefined): CSSProperti
   }
 
   return {
-    "--workspace-dock-button-background": themeColor,
+    "--workspace-theme-swatch-background": themeColor,
   } as CSSProperties;
 }
 
@@ -440,6 +451,53 @@ export function shouldTreatProjectAsEmptySessionGroup({
   return hasProjectContext && sessionCount === 0;
 }
 
+export const PINNED_SESSION_DROP_GAP_AFTER_LAST = "after-last";
+
+function getSessionDropGapKeyBefore(sessionId: string): string {
+  return `before:${sessionId}`;
+}
+
+/**
+ * CDXC:PinnedSessions 2026-06-02-20:35:
+ * Pinned project-session reorder feedback should paint one stable insertion
+ * line in a fixed gap slot, including the slot before the first pinned row.
+ * Map row-based drop targets to visible list gaps so the line does not jitter
+ * with per-row hover halves while the drag pointer moves over a session.
+ */
+export function getPinnedSessionDropGapKey({
+  dropTarget,
+  groupId,
+  visibleSessionIds,
+}: {
+  dropTarget: SidebarSessionDropTarget | undefined;
+  groupId: string;
+  visibleSessionIds: readonly string[];
+}): string | undefined {
+  if (!dropTarget || dropTarget.groupId !== groupId || visibleSessionIds.length === 0) {
+    return undefined;
+  }
+
+  if (dropTarget.kind === "group") {
+    return dropTarget.position === "start"
+      ? getSessionDropGapKeyBefore(visibleSessionIds[0])
+      : PINNED_SESSION_DROP_GAP_AFTER_LAST;
+  }
+
+  const targetIndex = visibleSessionIds.indexOf(dropTarget.sessionId);
+  if (targetIndex < 0) {
+    return undefined;
+  }
+
+  if (dropTarget.position === "before") {
+    return getSessionDropGapKeyBefore(dropTarget.sessionId);
+  }
+
+  const nextSessionId = visibleSessionIds[targetIndex + 1];
+  return nextSessionId
+    ? getSessionDropGapKeyBefore(nextSessionId)
+    : PINNED_SESSION_DROP_GAP_AFTER_LAST;
+}
+
 export function shouldShowOpenProjectFolderIcon({
   isCollapsed,
   sessionCount,
@@ -692,6 +750,7 @@ export function SessionGroupSection({
   const menuRef = useRef<HTMLDivElement>(null);
   const controlMenuRef = useRef<HTMLDivElement>(null);
   const projectAgentButtonRef = useRef<HTMLButtonElement>(null);
+  const groupSectionRef = useRef<HTMLElement | null>(null);
   const debugInstanceIdRef = useRef(createSessionGroupDebugInstanceId());
 
   useEffect(() => {
@@ -788,6 +847,13 @@ export function SessionGroupSection({
     sensors: groupSensors,
     type: "group",
   });
+  const setGroupSectionElement = useCallback(
+    (element: HTMLElement | null) => {
+      groupSectionRef.current = element;
+      sortable.ref(element);
+    },
+    [sortable],
+  );
   const emptyGroupDropTarget = useDroppable({
     accept: "session",
     data: createSessionDropTargetData({
@@ -820,6 +886,15 @@ export function SessionGroupSection({
     isToggleEnabled: enableProjectSessionListToggle,
     sessionIds: orderedSessionIds,
   });
+  const shouldRenderPinnedSessionDropGaps =
+    allowPinnedSessionReorder && showSessionDropPositionIndicators && orderedSessionIds.length > 0;
+  const pinnedSessionDropGapKey = shouldRenderPinnedSessionDropGaps
+    ? getPinnedSessionDropGapKey({
+        dropTarget: pinnedSessionDropIndicator,
+        groupId: group.groupId,
+        visibleSessionIds,
+      })
+    : undefined;
   const visibleGroupSessions = visibleSessionIds
     .map((sessionId) => sessionsById[sessionId])
     .filter((session): session is NonNullable<typeof session> => session !== undefined);
@@ -827,6 +902,7 @@ export function SessionGroupSection({
     Boolean(projectContext) &&
     enableProjectSessionListToggle &&
     orderedSessionIds.length > PROJECT_SESSION_LIST_COLLAPSED_COUNT;
+  const shouldScrubDisabledGroupDndAccessibility = isChatCollection || draggingDisabled;
   const sessionSummary = getGroupSessionSummary(groupSessions);
   const actualSessionCount = storedSessionIds.length;
   const allSessionsSleeping =
@@ -983,6 +1059,49 @@ export function SessionGroupSection({
   ]);
 
   useEffect(() => {
+    if (!shouldScrubDisabledGroupDndAccessibility) {
+      return;
+    }
+
+    const element = groupSectionRef.current;
+    if (!element) {
+      return;
+    }
+
+    const scrubDndAccessibilityAttributes = () => {
+      for (const attribute of DISABLED_GROUP_DND_AX_ATTRIBUTES) {
+        element.removeAttribute(attribute);
+      }
+    };
+
+    scrubDndAccessibilityAttributes();
+
+    const observer = new MutationObserver((mutations) => {
+      if (
+        mutations.some(
+          (mutation) =>
+            mutation.type === "attributes" &&
+            mutation.attributeName !== null &&
+            DISABLED_GROUP_DND_AX_ATTRIBUTES.includes(
+              mutation.attributeName as (typeof DISABLED_GROUP_DND_AX_ATTRIBUTES)[number],
+            ),
+        )
+      ) {
+        window.queueMicrotask(scrubDndAccessibilityAttributes);
+      }
+    });
+
+    observer.observe(element, {
+      attributeFilter: [...DISABLED_GROUP_DND_AX_ATTRIBUTES],
+      attributes: true,
+    });
+
+    return () => {
+      observer.disconnect();
+    };
+  }, [shouldScrubDisabledGroupDndAccessibility]);
+
+  useEffect(() => {
     if (isEditing) {
       return;
     }
@@ -1135,6 +1254,9 @@ export function SessionGroupSection({
       modal: "worktree",
       projectId: projectContext.editor.projectId,
       projectName: group.title,
+      projectPath: projectContext.path,
+      remoteMachineId: group.remoteMachineContext?.machineId,
+      remoteMachineName: group.remoteMachineContext?.machineName,
       type: "open",
     });
   };
@@ -1210,6 +1332,14 @@ export function SessionGroupSection({
     vscode.postMessage({
       groupId: group.groupId,
       type: "sleepInactiveProjectSessions",
+    });
+  };
+
+  const requestCloseInactiveProjectSessions = () => {
+    setContextMenuPosition(undefined);
+    vscode.postMessage({
+      groupId: group.groupId,
+      type: "closeInactiveProjectSessions",
     });
   };
 
@@ -1432,6 +1562,7 @@ export function SessionGroupSection({
         data-session-connector={String(showSessionGroupConnector)}
         data-sidebar-group-id={group.groupId}
         data-workspace-custom-theme={String(Boolean(projectContext?.themeColor))}
+        aria-label={shouldScrubDisabledGroupDndAccessibility ? `${group.title} sessions` : undefined}
         onClick={() => {
           if (isCollapsed) {
             return;
@@ -1472,7 +1603,8 @@ export function SessionGroupSection({
             ),
           );
         }}
-        ref={sortable.ref}
+        ref={setGroupSectionElement}
+        role={shouldScrubDisabledGroupDndAccessibility ? "group" : undefined}
       >
         <div
           className="group-head"
@@ -1724,7 +1856,7 @@ export function SessionGroupSection({
                               event.stopPropagation();
                               openWorktreeModal();
                             }}
-                            tooltip="New Worktree"
+                            tooltip="Add Worktree"
                             type="button"
                           >
                             <IconGitBranch
@@ -1864,6 +1996,7 @@ export function SessionGroupSection({
         >
           <div
             className="group-sessions sidebar-collapse-content"
+            data-pinned-drop-gaps={String(shouldRenderPinnedSessionDropGaps)}
             data-drop-target={String(isSessionDropTargetVisible)}
             id={sessionsRegionId}
             ref={contentRef}
@@ -1886,36 +2019,61 @@ export function SessionGroupSection({
             {orderedSessionIds.length > 0 ? (
               <>
                 {visibleSessionIds.map((sessionId, sessionIndex) => (
-                  <SortableSessionCard
-                    completionFlashNonce={completionFlashNonceBySessionId?.[sessionId] ?? 0}
-                    dragDisabled={
-                      draggingDisabled ||
-                      (sessionDraggingDisabled &&
-                        !(allowPinnedSessionReorder && sessionsById[sessionId]?.isPinned === true)
-                      )
-                    }
-                    dropDisabled={
-                      draggingDisabled || (sessionDraggingDisabled && !allowPinnedSessionReorder)
-                    }
-                    groupId={group.groupId}
-                    forcedDropPosition={
-                      pinnedSessionDropIndicator?.kind === "session" &&
-                      pinnedSessionDropIndicator.groupId === group.groupId &&
-                      pinnedSessionDropIndicator.sessionId === sessionId
-                        ? pinnedSessionDropIndicator.position
-                        : undefined
-                    }
-                    index={sessionIndex}
-                    isSearchSelected={selectedSearchSessionId === sessionId}
-                    key={sessionId}
-                    onFocusRequested={onFocusRequested}
-                    sessionId={sessionId}
-                    showGroupDropTargetChrome={!allowPinnedSessionReorder}
-                    showGroupConnector={showSessionGroupConnector}
-                    showDropPositionIndicator={showSessionDropPositionIndicators}
-                    vscode={vscode}
-                  />
+                  <Fragment key={sessionId}>
+                    {shouldRenderPinnedSessionDropGaps ? (
+                      <div
+                        aria-hidden
+                        className="pinned-session-drop-gap"
+                        data-active={String(
+                          pinnedSessionDropGapKey === getSessionDropGapKeyBefore(sessionId),
+                        )}
+                        data-edge={sessionIndex === 0 ? "start" : undefined}
+                      />
+                    ) : null}
+                    <SortableSessionCard
+                      completionFlashNonce={completionFlashNonceBySessionId?.[sessionId] ?? 0}
+                      dragDisabled={
+                        draggingDisabled ||
+                        (sessionDraggingDisabled &&
+                          !(allowPinnedSessionReorder && sessionsById[sessionId]?.isPinned === true)
+                        )
+                      }
+                      dropDisabled={
+                        draggingDisabled || (sessionDraggingDisabled && !allowPinnedSessionReorder)
+                      }
+                      groupId={group.groupId}
+                      forcedDropPosition={
+                        allowPinnedSessionReorder
+                          ? undefined
+                          : pinnedSessionDropIndicator?.kind === "session" &&
+                              pinnedSessionDropIndicator.groupId === group.groupId &&
+                              pinnedSessionDropIndicator.sessionId === sessionId
+                            ? pinnedSessionDropIndicator.position
+                            : undefined
+                      }
+                      index={sessionIndex}
+                      isSearchSelected={selectedSearchSessionId === sessionId}
+                      onFocusRequested={onFocusRequested}
+                      sessionIdsBelow={visibleSessionIds.slice(sessionIndex + 1)}
+                      sessionId={sessionId}
+                      showGroupDropTargetChrome={!allowPinnedSessionReorder}
+                      showGroupConnector={showSessionGroupConnector}
+                      showDropPositionIndicator={
+                        showSessionDropPositionIndicators && !allowPinnedSessionReorder
+                      }
+                      vscode={vscode}
+                    />
+                  </Fragment>
                 ))}
+                {shouldRenderPinnedSessionDropGaps ? (
+                  <div
+                    aria-hidden
+                    className="pinned-session-drop-gap"
+                    data-active={String(
+                      pinnedSessionDropGapKey === PINNED_SESSION_DROP_GAP_AFTER_LAST,
+                    )}
+                  />
+                ) : null}
                 {shouldShowProjectSessionListToggle ? (
                   <button
                     aria-label={
@@ -1991,14 +2149,14 @@ export function SessionGroupSection({
                     </button>
                     <div className="session-context-menu-divider" role="separator" />
                     <button
-                      className="session-context-menu-item workspace-dock-theme-menu-item"
+                      className="session-context-menu-item workspace-theme-menu-item"
                       data-selected={String(Boolean(projectContext.themeColor))}
                       onClick={openProjectCustomThemeMenu}
                       role="menuitemradio"
                       type="button"
                     >
                       <span
-                        className="workspace-dock-theme-swatch"
+                        className="workspace-theme-swatch"
                         style={getProjectThemeSwatchStyle(
                           projectContext.themeColor ??
                             recentThemeColors[0] ??
@@ -2014,7 +2172,7 @@ export function SessionGroupSection({
                     </button>
                     {PROJECT_CONTEXT_THEME_OPTIONS.map((theme) => (
                       <button
-                        className="session-context-menu-item workspace-dock-theme-menu-item"
+                        className="session-context-menu-item workspace-theme-menu-item"
                         data-selected={String(
                           !projectContext.themeColor && projectContext.theme === theme.value,
                         )}
@@ -2024,7 +2182,7 @@ export function SessionGroupSection({
                         type="button"
                       >
                         <span
-                          className="workspace-dock-theme-swatch"
+                          className="workspace-theme-swatch"
                           data-workspace-theme={theme.value}
                         />
                         {theme.label}
@@ -2050,10 +2208,7 @@ export function SessionGroupSection({
                     <div className="workspace-theme-custom-picker">
                       {/*
                        * CDXC:WorkspaceTheme 2026-05-05-02:58
-                       * Combined-mode project headers use the same Theme menu
-                       * custom color picker as the workspace dock. Applying a
-                       * color posts a validated project theme color and records
-                       * it in the local recent-color palette.
+                       * Combined-mode project headers own the Theme menu custom color picker after the far-left project list was removed. Applying a color posts a validated project theme color and records it in the local recent-color palette.
                        */}
                       <input
                         aria-label="Custom workspace theme color"
@@ -2111,6 +2266,9 @@ export function SessionGroupSection({
                     {/*
                      * CDXC:WorktreeDelete 2026-05-28-07:46:
                      * Worktree project rows have their own compact context menu: open/reveal/rename first, then destructive worktree-specific actions. Delete removes the Git worktree checkout after confirmation; Remove only drops the Ghostex project row.
+                     *
+                     * CDXC:ProjectGroups 2026-06-04-13:39:
+                     * Project and worktree filesystem menu items should say Open Folder instead of Finder-specific copy so the macOS app presents OS-agnostic action names.
                      */}
                     <button
                       className="session-context-menu-item"
@@ -2136,7 +2294,7 @@ export function SessionGroupSection({
                         className="session-context-menu-icon"
                         size={14}
                       />
-                      Reveal in Finder
+                      Open Folder
                     </button>
                     <button
                       className="session-context-menu-item"
@@ -2198,6 +2356,11 @@ export function SessionGroupSection({
                      * messages because the rendered row owns a synthetic group
                      * id. Full reload is intentionally narrower than group
                      * reload: native only reloads idle attached zmx terminals.
+                     * CDXC:ProjectClose 2026-06-04-23:40:
+                     * Project rows expose Close inactive directly above Close
+                     * Project so users can remove idle project terminal
+                     * sessions without parking the whole project in Recent
+                     * Projects or interrupting working/attention sessions.
                      * CDXC:WorkspaceTheme 2026-05-09-17:18
                      * The Theme submenu is unused in the UI for now because
                      * theming has been disabled in this app for now. Keep the
@@ -2228,7 +2391,7 @@ export function SessionGroupSection({
                         className="session-context-menu-icon"
                         size={14}
                       />
-                      Open in Finder
+                      Open Folder
                     </button>
                     <div className="session-context-menu-divider" role="separator" />
                     <button
@@ -2275,6 +2438,16 @@ export function SessionGroupSection({
                       </button>
                     ) : null}
                     <div className="session-context-menu-divider" role="separator" />
+                    <button
+                      className="session-context-menu-item session-context-menu-item-danger"
+                      disabled={!hasInactiveProjectSessionsToSleep}
+                      onClick={requestCloseInactiveProjectSessions}
+                      role="menuitem"
+                      type="button"
+                    >
+                      <IconX aria-hidden="true" className="session-context-menu-icon" size={14} />
+                      Close inactive
+                    </button>
                     <button
                       className="session-context-menu-item session-context-menu-item-danger"
                       disabled={!projectContext.canRemoveProject}
@@ -2485,32 +2658,6 @@ function readPrimaryProjectAgentLauncherId(): string | undefined {
 
 function writePrimaryProjectAgentLauncherId(agentId: string): void {
   localStorage.setItem(PROJECT_AGENT_LAUNCHER_STORAGE_KEY, agentId);
-}
-
-function readProjectSessionListCollapsedState(): ProjectSessionListCollapsedState {
-  try {
-    return normalizeStoredProjectSessionListCollapsedState(
-      JSON.parse(localStorage.getItem(PROJECT_SESSION_LIST_COLLAPSED_STORAGE_KEY) ?? "null"),
-    );
-  } catch {
-    return {};
-  }
-}
-
-function writeProjectSessionListCollapsedState(state: ProjectSessionListCollapsedState): void {
-  /**
-   * CDXC:ProjectSessionLists 2026-05-16-21:50:
-   * Show less / Show more is per-project navigation state, not session data.
-   * Persist only the collapsed project ids so new projects and projects the
-   * user has never collapsed continue to start with all sessions shown.
-   *
-   * CDXC:WorktreeProjectOrder 2026-05-25-12:38:
-   * Native worktree creation can activate Show less for the source project so
-   * only the top six sessions remain visible. Broadcast same-document updates
-   * because localStorage storage events do not fire in the writing webview.
-   */
-  localStorage.setItem(PROJECT_SESSION_LIST_COLLAPSED_STORAGE_KEY, JSON.stringify(state));
-  window.dispatchEvent(new Event(PROJECT_SESSION_LIST_COLLAPSED_CHANGED_EVENT));
 }
 
 function getPortalMenuStyle(button: HTMLButtonElement | null, menuWidth: number) {

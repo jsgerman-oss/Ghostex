@@ -980,12 +980,20 @@
   min-width: 0;
 }
 
+.daemon-sessions-search-control {
+  min-width: 0;
+}
+
 .daemon-sessions-search-input {
   font-size: 12px;
   font-weight: 600;
+  height: 32px;
   letter-spacing: 0.01em;
+  min-height: 32px;
   min-width: 0;
+  padding-right: 34px;
   text-transform: none;
+  width: 100%;
 }
 
 .daemon-sessions-toolbar-actions {
@@ -1287,6 +1295,10 @@
   min-width: 0;
 }
 
+.previous-sessions-search-control {
+  min-width: 0;
+}
+
 .previous-sessions-search-input {
   background: color-mix(in srgb, var(--app-foreground) 5%, transparent);
   border: 1px solid color-mix(in srgb, #ffffff 10%, transparent);
@@ -1300,8 +1312,9 @@
   line-height: 1.3;
   min-height: 32px;
   min-width: 0;
-  padding: 0 10px;
+  padding: 0 34px 0 10px;
   text-transform: none;
+  width: 100%;
 }
 
 .previous-sessions-favorites-toggle {
@@ -1379,6 +1392,45 @@
 .previous-sessions-favorites-toggle[data-selected="true"] {
   background: color-mix(in srgb, var(--app-foreground) 10%, transparent);
   color: color-mix(in srgb, #ffdf75 78%, #c78b12 22%);
+}
+
+.previous-sessions-tag-filter {
+  position: relative;
+}
+
+.previous-sessions-tag-filter-toggle[data-selected="true"] {
+  color: var(--app-foreground);
+}
+
+.previous-sessions-tag-filter-menu {
+  /*
+   * CDXC:PreviousSessions 2026-06-05-18:39:
+   * The tag filter dropdown is portaled out of the modal because Previous
+   * Sessions clips its content area. Keep the menu fixed above the modal layer
+   * so the filter button can show all grouped tag sections.
+   */
+  min-width: 224px;
+  position: fixed;
+  z-index: 1302;
+}
+
+.app-modal-host-body .previous-sessions-tag-filter-menu {
+  /*
+   * CDXC:PreviousSessions 2026-06-05-19:23:
+   * The full-window native modal host lowers generic session context menus to
+   * its local overlay stack. Previous Sessions tag filters are portaled to the
+   * body and must stay above the modal/backdrop, otherwise the button appears
+   * inert because the opened menu is hidden behind the dialog.
+   */
+  z-index: 1302;
+}
+
+.previous-sessions-tag-filter-check[data-visible="false"] {
+  opacity: 0;
+}
+
+.previous-sessions-tag-filter-item[data-selected="true"] {
+  color: var(--app-foreground);
 }
 
 .previous-sessions-clear-button {
@@ -1881,11 +1933,27 @@
    * The initial commit review view should not clip the bottom of the commit
    * message textarea. Use a little more available viewport height before the
    * body becomes scrollable.
+   *
+   * CDXC:TitlebarGit 2026-06-05-20:59:
+   * The commit review modal needs more width and height so the existing commit
+   * controls can stay on the left while selected file diffs and diff display
+   * controls live on the right without opening a second stacked modal.
+   *
+   * CDXC:TitlebarGit 2026-06-08-04:20:
+   * The commit review panes should use t3code-style source review density:
+   * the message editor grows until its bottom aligns with the right diff pane,
+   * file/diff scrollbars are floating 5px hover-only thumbs that do not reserve
+   * layout, and file paths/code use the same SF Mono-oriented stack as t3code.
+   *
+   * CDXC:TitlebarGit 2026-06-08-04:47:
+   * The file list should behave like a narrow source-control rail while the
+   * selected-file diff gets most of the horizontal room for side-by-side review.
    */
-  height: auto;
-  max-height: min(820px, calc(100vh - 1rem));
-  max-width: min(960px, calc(100vw - 2rem));
-  width: min(960px, calc(100vw - 2rem));
+  --git-review-mono-font: "SF Mono", "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+  height: min(900px, calc(100vh - 1rem));
+  max-height: min(900px, calc(100vh - 1rem));
+  max-width: min(1480px, calc(100vw - 1rem));
+  width: min(1480px, calc(100vw - 1rem));
 }
 
 .git-commit-modal-header {
@@ -1901,10 +1969,31 @@
 
 .git-commit-modal-body {
   display: grid;
-  gap: 18px;
+  grid-template-columns: minmax(320px, 0.62fr) minmax(600px, 1.38fr);
+  gap: 16px;
+  flex: 1 1 auto;
   min-height: 0;
-  overflow: auto;
+  overflow: hidden;
   padding: 0 20px 24px;
+}
+
+.git-commit-modal-left {
+  display: grid;
+  gap: 18px;
+  grid-template-rows: minmax(0, 1fr) auto;
+  min-height: 0;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.git-commit-modal-left[data-has-message="true"] {
+  grid-template-rows: minmax(0, 1fr) minmax(230px, 0.62fr) auto;
+}
+
+.git-commit-modal-left[data-has-message="true"] .command-config-field {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
 }
 
 .git-commit-modal-shadcn .command-config-label {
@@ -1916,40 +2005,79 @@
 }
 
 .git-commit-modal-textarea {
+  /*
+   * CDXC:TitlebarGit 2026-06-08-04:20:
+   * The commit-message editor is elastic inside the left review column so its
+   * bottom aligns with the right diff pane. Keep manual resize disabled; long
+   * commit text scrolls inside the editor instead of changing modal geometry.
+   */
+  field-sizing: fixed;
+  flex: 1 1 auto;
   font-family: inherit;
   font-size: 14px;
   font-weight: 500;
+  height: auto;
   letter-spacing: 0;
   line-height: 1.5;
-  min-height: 180px;
-  resize: vertical;
+  max-height: none;
+  min-height: 0;
+  overflow-y: auto;
+  resize: none;
+  scrollbar-color: #757575 transparent;
+  scrollbar-width: thin;
   text-transform: none;
 }
 
+.git-commit-modal-textarea::-webkit-scrollbar {
+  background: transparent;
+  display: block;
+  height: 6px;
+  width: 6px;
+}
+
+.git-commit-modal-textarea::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.git-commit-modal-textarea::-webkit-scrollbar-thumb {
+  background-color: #757575;
+  border-radius: 999px;
+}
+
 .git-commit-files-panel {
+  /*
+   * CDXC:TitlebarGit 2026-06-08-04:07:
+   * The commit file panel no longer has a separate "Files" label. Keep the
+   * branch summary and Edit action in one compact header row so the file tree
+   * starts higher and matches the t3code review density.
+   */
   background: color-mix(in srgb, var(--input) 16%, transparent);
   border: 1px solid color-mix(in srgb, var(--input) 82%, transparent);
   border-radius: 0;
-  display: grid;
+  display: flex;
+  flex-direction: column;
   gap: 12px;
+  min-height: 0;
   min-width: 0;
   padding: 14px;
 }
 
 .git-commit-branch-row {
   align-items: center;
-  display: grid;
+  display: flex;
   gap: 8px;
-  grid-template-columns: auto minmax(0, 1fr) auto;
   min-width: 0;
 }
 
 .git-commit-branch-name {
+  background: color-mix(in srgb, var(--foreground) 6%, transparent);
+  border: 1px solid color-mix(in srgb, var(--border) 74%, transparent);
   color: color-mix(in srgb, var(--foreground) 92%, var(--muted-foreground) 8%);
   font-size: 14px;
   font-weight: 800;
   min-width: 0;
   overflow: hidden;
+  padding: 3px 8px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -1966,6 +2094,13 @@
   display: flex;
   gap: 12px;
   justify-content: space-between;
+  min-height: 36px;
+  min-width: 0;
+}
+
+.git-commit-files-heading {
+  display: grid;
+  gap: 5px;
   min-width: 0;
 }
 
@@ -2009,18 +2144,121 @@
 }
 
 .git-commit-files-list {
+  /*
+   * CDXC:TitlebarGit 2026-06-08-04:07:
+   * File and diff scrolling should expose a quiet 5px transparent gutter only
+   * on hover/focus, matching t3code's thin scrollbar feel without the previous
+   * scroll-mask overflow fade at the top and bottom of the panes.
+   *
+   * CDXC:TitlebarGit 2026-06-08-04:20:
+   * The same 5px scrollbar needs to float over content instead of reserving
+   * layout space when it appears. Keep native scrollbar dimensions stable and
+   * make only the thumb color change on hover/focus.
+   */
   background: color-mix(in srgb, var(--background) 56%, transparent);
   border: 1px solid color-mix(in srgb, var(--input) 62%, transparent);
   border-radius: 0;
-  max-height: min(300px, 36vh);
+  max-height: none;
+  flex: 1 1 auto;
+  min-height: 180px;
   min-width: 0;
   overflow: auto;
   padding: 8px;
+  scrollbar-color: transparent transparent;
+  scrollbar-width: thin;
+}
+
+.git-commit-inline-diff-panel {
+  background: color-mix(in srgb, var(--input) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--input) 82%, transparent);
+  border-radius: 0;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  min-height: 0;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.git-commit-inline-diff-header {
+  align-items: center;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 82%, transparent);
+  display: grid;
+  gap: 12px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  min-width: 0;
+  padding: 10px 12px;
+}
+
+.git-commit-inline-diff-title {
+  color: var(--foreground);
+  font-size: 14px;
+  font-weight: 750;
+}
+
+.git-commit-inline-diff-file {
+  align-items: center;
+  display: flex;
+  gap: 12px;
+  min-width: 0;
+}
+
+.git-commit-inline-diff-body {
+  min-height: 0;
+  overflow: auto;
+  padding: 0;
+  scrollbar-color: transparent transparent;
+  scrollbar-width: thin;
+}
+
+.git-commit-files-list:hover,
+.git-commit-files-list:focus-within,
+.git-commit-inline-diff-body:hover,
+.git-commit-inline-diff-body:focus-within,
+.git-file-diff-modal-body:hover,
+.git-file-diff-modal-body:focus-within {
+  scrollbar-color: rgb(255 255 255 / 18%) transparent;
+}
+
+.git-commit-files-list::-webkit-scrollbar,
+.git-commit-inline-diff-body::-webkit-scrollbar,
+.git-file-diff-modal-body::-webkit-scrollbar {
+  background: transparent;
+  display: block;
+  height: 5px;
+  width: 5px;
+}
+
+.git-commit-files-list::-webkit-scrollbar-track,
+.git-commit-inline-diff-body::-webkit-scrollbar-track,
+.git-file-diff-modal-body::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.git-commit-files-list::-webkit-scrollbar-thumb,
+.git-commit-inline-diff-body::-webkit-scrollbar-thumb,
+.git-file-diff-modal-body::-webkit-scrollbar-thumb {
+  background-color: transparent;
+  border-radius: 999px;
+}
+
+.git-commit-files-list:hover::-webkit-scrollbar-thumb,
+.git-commit-files-list:focus-within::-webkit-scrollbar-thumb,
+.git-commit-inline-diff-body:hover::-webkit-scrollbar-thumb,
+.git-commit-inline-diff-body:focus-within::-webkit-scrollbar-thumb,
+.git-file-diff-modal-body:hover::-webkit-scrollbar-thumb,
+.git-file-diff-modal-body:focus-within::-webkit-scrollbar-thumb {
+  background-color: rgb(255 255 255 / 18%);
+}
+
+.git-commit-files-list::-webkit-scrollbar-thumb:hover,
+.git-commit-inline-diff-body::-webkit-scrollbar-thumb:hover,
+.git-file-diff-modal-body::-webkit-scrollbar-thumb:hover {
+  background-color: rgb(255 255 255 / 24%);
 }
 
 .git-commit-files-summary {
   display: flex;
-  font-family: var(--app-monospace-font, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-family: var(--git-review-mono-font, "SF Mono", "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace);
   font-size: 13px;
   font-weight: 800;
   gap: 4px;
@@ -2066,13 +2304,22 @@
   min-height: 28px;
 }
 
+.git-commit-modal-shadcn .changed-files-tree-row[data-selected="true"] {
+  background: color-mix(in srgb, var(--foreground) 8%, transparent);
+  color: color-mix(in srgb, var(--foreground) 96%, var(--muted-foreground) 4%);
+}
+
 .git-commit-modal-shadcn .changed-files-tree-name {
-  font-size: 13px;
+  font-family: var(--git-review-mono-font, "SF Mono", "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace);
+  font-size: 11px;
+  font-weight: 500;
 }
 
 .git-commit-modal-shadcn .changed-files-tree-stat,
 .git-commit-modal-shadcn .changed-files-tree-excluded {
-  font-size: 12px;
+  font-family: var(--git-review-mono-font, "SF Mono", "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace);
+  font-size: 10px;
+  font-weight: 650;
 }
 
 .git-commit-modal-shadcn .changed-files-tree-checkbox,
@@ -2124,6 +2371,18 @@
 }
 
 .git-commit-modal-button {
+  /*
+   * CDXC:TitlebarGit 2026-06-02-19:47:
+   * Commit review footer actions should match the prompt-agent dropdown height
+   * in the same row so Cancel, generated-commit actions, and Commit align as
+   * one control group.
+   *
+   * CDXC:TitlebarGit 2026-06-08-04:47:
+   * The final Commit action should use the same outline visual treatment as the
+   * other commit footer actions instead of a filled primary button.
+   */
+  height: 2.25rem;
+  min-height: 2.25rem;
   min-width: 132px;
 }
 
@@ -2227,7 +2486,12 @@
   /*
    * CDXC:TitlebarGit 2026-05-25-10:16:
    * File diffs opened from the commit review tree need a larger full-window modal than the commit form, matching the rich prompt editor's app-modal layer while leaving enough room for dense patch inspection.
+   *
+   * CDXC:TitlebarGit 2026-06-08-04:20:
+   * Standalone file diffs share the same floating 5px hover scrollbar and
+   * t3code-style SF Mono patch typography as the inline commit diff.
    */
+  --git-review-mono-font: "SF Mono", "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
   height: min(820px, calc(100vh - 2rem));
   max-height: min(820px, calc(100vh - 2rem));
   max-width: min(1180px, calc(100vw - 2rem));
@@ -2255,9 +2519,9 @@
 .git-file-diff-modal-path {
   color: color-mix(in srgb, var(--foreground) 84%, var(--muted-foreground) 16%);
   display: block;
-  font-family: var(--app-monospace-font, ui-monospace, SFMono-Regular, Menlo, monospace);
-  font-size: 13px;
-  font-weight: 700;
+  font-family: var(--git-review-mono-font, "SF Mono", "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace);
+  font-size: 12px;
+  font-weight: 600;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -2267,9 +2531,9 @@
 .git-file-diff-modal-stats {
   display: inline-flex;
   flex: none;
-  font-family: var(--app-monospace-font, ui-monospace, SFMono-Regular, Menlo, monospace);
-  font-size: 13px;
-  font-weight: 800;
+  font-family: var(--git-review-mono-font, "SF Mono", "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace);
+  font-size: 11px;
+  font-weight: 650;
   gap: 4px;
 }
 
@@ -2278,6 +2542,70 @@
   min-height: 0;
   overflow: auto;
   padding: 12px;
+  scrollbar-color: transparent transparent;
+  scrollbar-width: thin;
+}
+
+.git-file-diff-panel {
+  display: grid;
+  min-height: 100%;
+  min-width: 0;
+}
+
+.git-file-diff-panel[data-has-toolbar="true"] {
+  gap: 10px;
+}
+
+.git-file-diff-controls {
+  align-items: center;
+  display: flex;
+  gap: 6px;
+  justify-content: flex-end;
+  min-width: 0;
+}
+
+.git-file-diff-control-button {
+  border-color: color-mix(in srgb, var(--input) 88%, transparent) !important;
+  color: color-mix(in srgb, var(--foreground) 72%, var(--muted-foreground) 28%) !important;
+  height: 28px !important;
+  min-height: 28px !important;
+  padding: 0 !important;
+  width: 28px !important;
+}
+
+.git-file-diff-control-tooltip-trigger {
+  display: inline-flex;
+}
+
+.git-file-diff-control-button[data-active="true"] {
+  background: color-mix(in srgb, var(--foreground) 12%, transparent) !important;
+  border-color: color-mix(in srgb, var(--foreground) 28%, transparent) !important;
+  color: var(--foreground) !important;
+}
+
+.git-file-diff-control-button:hover,
+.git-file-diff-control-button:focus-visible {
+  background: color-mix(in srgb, var(--input) 46%, transparent) !important;
+  color: var(--foreground) !important;
+}
+
+.git-file-diff-control-button svg {
+  height: 14px;
+  width: 14px;
+}
+
+.git-file-diff-placeholder {
+  align-items: center;
+  background: color-mix(in srgb, var(--card) 72%, var(--background) 28%);
+  border: 1px solid color-mix(in srgb, var(--border) 86%, transparent);
+  color: var(--muted-foreground);
+  display: flex;
+  font-size: 13px;
+  font-weight: 700;
+  justify-content: center;
+  min-height: 180px;
+  padding: 20px;
+  text-align: center;
 }
 
 .git-file-diff-surface {
@@ -2290,9 +2618,20 @@
   overflow: hidden;
 }
 
+.git-file-diff-surface[data-wrap-lines="true"] {
+  min-width: 0;
+  width: 100%;
+}
+
 .git-file-diff-line {
   display: grid;
   grid-template-columns: 56px minmax(0, 1fr);
+  min-height: 22px;
+}
+
+.git-file-diff-split-line {
+  display: grid;
+  grid-template-columns: 56px minmax(220px, 1fr) 56px minmax(220px, 1fr);
   min-height: 22px;
 }
 
@@ -2304,8 +2643,16 @@
   background: color-mix(in srgb, #16a34a 16%, transparent);
 }
 
+.git-file-diff-split-line[data-kind="addition"] {
+  background: color-mix(in srgb, #16a34a 10%, transparent);
+}
+
 .git-file-diff-line[data-kind="deletion"] {
   background: color-mix(in srgb, #ef4444 16%, transparent);
+}
+
+.git-file-diff-split-line[data-kind="deletion"] {
+  background: color-mix(in srgb, #ef4444 10%, transparent);
 }
 
 .git-file-diff-line[data-kind="hunk"] {
@@ -2325,9 +2672,9 @@
 .git-file-diff-line-number {
   border-right: 1px solid color-mix(in srgb, var(--border) 72%, transparent);
   color: color-mix(in srgb, var(--muted-foreground) 76%, transparent);
-  font-family: var(--app-monospace-font, ui-monospace, SFMono-Regular, Menlo, monospace);
-  font-size: 12px;
-  font-weight: 650;
+  font-family: var(--git-review-mono-font, "SF Mono", "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace);
+  font-size: 11px;
+  font-weight: 500;
   padding: 3px 10px 3px 8px;
   text-align: right;
   user-select: none;
@@ -2335,16 +2682,84 @@
 
 .git-file-diff-line-content {
   color: inherit;
-  font-family: var(--app-monospace-font, ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace);
-  font-size: 12.5px;
-  font-weight: 600;
-  line-height: 1.4;
+  font-family: var(--git-review-mono-font, "SF Mono", "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace);
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1.55;
   margin: 0;
   min-width: 0;
   overflow: visible;
   padding: 2px 12px;
   tab-size: 2;
   white-space: pre;
+}
+
+.git-file-diff-token {
+  color: inherit;
+}
+
+.git-file-diff-token-marker {
+  color: color-mix(in srgb, var(--muted-foreground) 74%, transparent);
+}
+
+.git-file-diff-token-keyword {
+  color: #c792ea;
+}
+
+.git-file-diff-token-type,
+.git-file-diff-token-attribute {
+  color: #82aaff;
+}
+
+.git-file-diff-token-function {
+  color: #addb67;
+}
+
+.git-file-diff-token-string {
+  color: #c3e88d;
+}
+
+.git-file-diff-token-number,
+.git-file-diff-token-literal {
+  color: #f78c6c;
+}
+
+.git-file-diff-token-comment {
+  color: color-mix(in srgb, #7f8ea3 82%, var(--muted-foreground) 18%);
+  font-style: italic;
+}
+
+.git-file-diff-token-operator {
+  color: color-mix(in srgb, #89ddff 78%, var(--foreground) 22%);
+}
+
+.git-file-diff-surface[data-wrap-lines="true"] .git-file-diff-line-content {
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.git-file-diff-surface[data-wrap-lines="true"] .git-file-diff-split-line {
+  grid-template-columns: 56px minmax(0, 1fr) 56px minmax(0, 1fr);
+}
+
+.git-file-diff-split-cell {
+  border-right: 1px solid color-mix(in srgb, var(--border) 54%, transparent);
+}
+
+@media (max-width: 980px) {
+  .ghostex-settings-shadcn.settings-modal-dialog.git-commit-modal-shadcn {
+    height: min(900px, calc(100vh - 1rem));
+  }
+
+  .git-commit-modal-body {
+    grid-template-columns: minmax(0, 1fr);
+    overflow: auto;
+  }
+
+  .git-commit-modal-left,
+  .git-commit-inline-diff-panel {
+    min-height: 360px;
+  }
 }
 
 .command-icon-picker-fields {
@@ -2529,25 +2944,18 @@
    * Persistent Git/worktree toasts show a top-right spinner while the action is
    * still running. Error and success toasts keep subtle tinted shadows so final
    * states are visually distinct from normal dark status toasts.
+   *
+   * CDXC:AppToasts 2026-06-02-21:10:
+   * Sonner owns toast `::after` while the stack expands on hover. App toast
+   * spinner chrome must not use that pseudo-element, because Sonner resizes it
+   * into a full-width hover spacer and any Ghostex border on it appears as a
+   * rounded tooltip-like pill over the toast title.
    */
   position: relative;
 }
 
 .ghostex-app-toast-persistent {
   padding-right: 52px !important;
-}
-
-.ghostex-app-toast-persistent::after {
-  border: 2px solid color-mix(in srgb, var(--app-muted) 46%, transparent);
-  border-radius: 999px;
-  content: "";
-  height: 16px;
-  pointer-events: none;
-  position: absolute;
-  right: 18px;
-  top: 18px;
-  width: 16px;
-  z-index: 0;
 }
 
 .ghostex-app-toast-persistent::before {
@@ -2654,11 +3062,101 @@
   min-width: 0;
 }
 
+.add-repository-options-row {
+  /*
+   * CDXC:AddRepository 2026-06-01-10:28:
+   * Clone scope controls should be visible together in one row under the folder
+   * chooser, unchecked by default, without competing with the primary Clone &
+   * Add action. Keep the layout compact and allow labels to shrink before they
+   * can push the modal wider than its shell.
+   */
+  align-items: center;
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.add-repository-option {
+  align-items: center;
+  color: color-mix(in srgb, var(--foreground) 88%, var(--muted-foreground) 12%);
+  cursor: pointer;
+  display: inline-flex;
+  font-size: 13px;
+  gap: 7px;
+  line-height: 1.35;
+  min-width: 0;
+}
+
+.add-repository-option-checkbox {
+  appearance: none;
+  background: color-mix(in srgb, var(--input) 30%, transparent);
+  border: 1px solid var(--input);
+  border-radius: 0;
+  flex: none;
+  height: 16px;
+  margin: 0;
+  position: relative;
+  width: 16px;
+}
+
+.add-repository-option-checkbox:checked {
+  background: var(--primary);
+  border-color: var(--primary);
+}
+
+.add-repository-option-checkbox:checked::after {
+  border: solid var(--primary-foreground);
+  border-width: 0 2px 2px 0;
+  content: "";
+  height: 8px;
+  left: 5px;
+  position: absolute;
+  top: 2px;
+  transform: rotate(45deg);
+  width: 4px;
+}
+
+.add-repository-option-checkbox:disabled {
+  opacity: 0.55;
+}
+
+.add-repository-option-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.add-repository-option-info {
+  align-items: center;
+  color: color-mix(in srgb, var(--muted-foreground) 82%, var(--foreground) 18%);
+  cursor: help;
+  display: inline-flex;
+  flex: none;
+  justify-content: center;
+}
+
+.add-repository-option-info:hover,
+.add-repository-option-info:focus-visible {
+  color: var(--foreground);
+}
+
 .add-repository-error {
   background: color-mix(in srgb, var(--destructive) 12%, transparent);
   border: 1px solid color-mix(in srgb, var(--destructive) 38%, transparent);
   border-radius: 0;
   color: color-mix(in srgb, var(--destructive) 82%, var(--foreground) 18%);
+  font-size: 13px;
+  line-height: 1.45;
+  padding: 10px 12px;
+  white-space: pre-wrap;
+}
+
+.add-repository-warning {
+  background: color-mix(in srgb, #f59e0b 13%, transparent);
+  border: 1px solid color-mix(in srgb, #f59e0b 42%, transparent);
+  border-radius: 0;
+  color: color-mix(in srgb, #fbbf24 78%, var(--foreground) 22%);
   font-size: 13px;
   line-height: 1.45;
   padding: 10px 12px;
@@ -2677,7 +3175,24 @@
   min-height: 150px;
 }
 
-.worktree-create-agent-select {
+.worktree-create-mode-toggle {
+  /*
+   * CDXC:WorktreeProjectRegistration 2026-06-01-20:59:
+   * Add Worktree has two explicit modes: create a fresh checkout or open an
+   * existing Git worktree. Keep the mode switch compact and let Open Existing
+   * hide the create-only prompt and agent controls below it.
+   */
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.worktree-create-mode-toggle [data-slot="button"] {
+  min-width: 0;
+}
+
+.worktree-create-agent-select,
+.worktree-create-existing-select {
   width: 100%;
 }
 
@@ -2839,4 +3354,33 @@
   .daemon-sessions-summary-row {
     grid-template-columns: minmax(0, 1fr);
   }
+}
+
+.remote-gxserver-install-modal {
+  max-width: 520px;
+}
+
+.remote-gxserver-install-modal-body {
+  color: rgba(244, 244, 245, 0.76);
+  display: flex;
+  flex-direction: column;
+  font-size: 13px;
+  gap: 12px;
+  line-height: 1.5;
+}
+
+.remote-gxserver-install-modal-body code {
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 4px;
+  color: rgba(244, 244, 245, 0.92);
+  font-size: 12px;
+  padding: 1px 4px;
+}
+
+.remote-gxserver-install-modal-actions {
+  display: flex;
+  gap: 10px;
+  justify-content: flex-end;
+  padding-top: 6px;
 }

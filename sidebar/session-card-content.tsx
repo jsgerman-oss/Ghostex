@@ -26,7 +26,17 @@ import {
 } from "../shared/session-grid-contract";
 import { getSidebarAgentNameByIcon, type SidebarAgentIcon } from "../shared/sidebar-agents";
 import { AGENT_LOGOS } from "./agent-logos";
-import { SIDEBAR_TOOLTIP_DISMISS_EVENT } from "./app-tooltip";
+import {
+  getEffectiveSessionTag,
+  getSidebarSessionTagLabel,
+  SessionTagIcon,
+  type SidebarSessionTag,
+} from "./session-tag-ui";
+import {
+  areSidebarTooltipsSuppressed,
+  SIDEBAR_TOOLTIP_DISMISS_EVENT,
+  SIDEBAR_TOOLTIP_SUPPRESSION_CHANGED_EVENT,
+} from "./app-tooltip";
 import { formatRelativeTime } from "./relative-time";
 import { TOOLTIP_DELAY_MS } from "./tooltip-delay";
 import { useRelativeTimeTick } from "./use-relative-time-tick";
@@ -113,11 +123,16 @@ export function SessionCardContent({
     !hideHeaderAgentIcon &&
     !shouldAllowFullWidthTitle &&
     (Boolean(session.agentIcon) || showTerminalSessionIcon || showHeaderLoadingSpinner);
-  useRelativeTimeTick(hasLastInteractionTime);
+  /*
+  CDXC:SidebarRelativeTime 2026-06-07-06:27:
+  Session-card Last Active labels must keep aging from the client clock after the row is rendered. Pass the relative-time tick into the formatter so React Compiler cannot cache the first label, such as a newly created session's 0s, until gxserver publishes an unrelated row update.
+  */
+  const relativeTimeTick = useRelativeTimeTick(hasLastInteractionTime);
   const lastInteractionLabel =
     hasLastInteractionTime && session.lastInteractionAt
       ? formatRelativeTime(session.lastInteractionAt, {
           allowJustNow: false,
+          nowMs: relativeTimeTick,
         }).value
       : undefined;
   /**
@@ -272,11 +287,16 @@ export function getSessionCardTitleTooltip({
     | "alias"
     | "delayedSendRemainingLabel"
     | "detail"
+    | "displayTitle"
+    | "displayTitleTooltip"
     | "firstUserMessage"
+    | "isFavorite"
     | "kind"
     | "isPrimaryTitleTerminalTitle"
     | "primaryTitle"
     | "sessionKind"
+    | "sessionTag"
+    | "sessionRoutingId"
     | "sessionPersistenceName"
     | "sessionPersistenceProvider"
     | "sessionNumber"
@@ -294,6 +314,8 @@ export function getSessionCardTitleTooltip({
 } {
   const headingText = formatSessionHeadingText({
     agentIcon: session.agentIcon,
+    displayTitle: session.displayTitle,
+    displayTitleTooltip: session.displayTitleTooltip,
     includeUnsyncedTitleLabel: false,
     kind: session.kind,
     isPrimaryTitleTerminalTitle: session.isPrimaryTitleTerminalTitle,
@@ -304,6 +326,8 @@ export function getSessionCardTitleTooltip({
   });
   const tooltipHeadingText = formatSessionHeadingText({
     agentIcon: session.agentIcon,
+    displayTitle: session.displayTitle,
+    displayTitleTooltip: session.displayTitleTooltip,
     includeUnsyncedTitleLabel: true,
     kind: session.kind,
     isPrimaryTitleTerminalTitle: session.isPrimaryTitleTerminalTitle,
@@ -314,7 +338,7 @@ export function getSessionCardTitleTooltip({
   });
   const fullTooltipHeadingText = getFullSessionTooltipHeadingText({
     firstUserMessage: session.firstUserMessage,
-    headingText: tooltipHeadingText,
+    headingText: formatSessionTagTooltipHeadingText(session, tooltipHeadingText),
   });
   /**
    * CDXC:PreviousSessions 2026-05-08-16:07
@@ -327,10 +351,16 @@ export function getSessionCardTitleTooltip({
    *
    * CDXC:SessionRestore 2026-05-23-00:25:
    * The hover tooltip should show the captured session id directly, without a "captured session id" label, so the tooltip stays compact and copyable.
+   *
+   * CDXC:SessionTooltips 2026-05-31-06:25:
+   * macOS gxserver session-card tooltips should show the full routed session id
+   * such as S7k-P3a91-G8v20 when available. The legacy two-digit display id is
+   * only a visual row shortcut and should not replace the routed identity.
    */
+  const sessionIdTooltipValue = session.sessionRoutingId?.trim() || session.sessionNumber?.trim();
   const sessionIdTooltip =
-    showDebugSessionNumbers && session.sessionNumber !== undefined
-      ? `ID: ${session.sessionNumber}`
+    showDebugSessionNumbers && sessionIdTooltipValue
+      ? `ID: ${sessionIdTooltipValue}`
       : undefined;
   const agentSessionIdTooltip = getCapturedAgentSessionIdTooltipText(session);
   const tooltipMetadata = [
@@ -379,6 +409,24 @@ function getCapturedAgentSessionIdTooltipText(
   return agentSessionId || undefined;
 }
 
+function formatSessionTagTooltipHeadingText(
+  session: Pick<SidebarSessionItem, "isFavorite" | "sessionTag">,
+  headingText: string,
+): string {
+  const sessionTag = getEffectiveSessionTag(session);
+  const label = getSidebarSessionTagLabel(sessionTag);
+  if (!label) {
+    return headingText;
+  }
+
+  /**
+   * CDXC:SessionTags 2026-06-05-12:30:
+   * Session-card hover tooltips prefix the title with the active tag, for
+   * example `[Todo]`, without changing the visible row title.
+   */
+  return `[${label}] ${headingText}`;
+}
+
 function getFullSessionTooltipHeadingText({
   firstUserMessage,
   headingText,
@@ -421,6 +469,8 @@ function getFullSessionTooltipHeadingText({
 export function formatSessionHeadingText({
   agentIcon,
   alias,
+  displayTitle,
+  displayTitleTooltip,
   includeUnsyncedTitleLabel = false,
   kind,
   isPrimaryTitleTerminalTitle,
@@ -431,6 +481,8 @@ export function formatSessionHeadingText({
   SidebarSessionItem,
   | "agentIcon"
   | "alias"
+  | "displayTitle"
+  | "displayTitleTooltip"
   | "kind"
   | "isPrimaryTitleTerminalTitle"
   | "primaryTitle"
@@ -439,6 +491,17 @@ export function formatSessionHeadingText({
 > & {
   includeUnsyncedTitleLabel?: boolean;
 }): string {
+  const gxserverDisplayTitle = normalizeDisplayTitle(displayTitle);
+  if (gxserverDisplayTitle) {
+    /*
+    CDXC:GxserverSessionTitles 2026-06-07-09:33:
+    gxserver presentation rows are dumb-rendered title strings. When `displayTitle` is present, React must not compare titleSource, terminalTitle, or placeholder state locally; the server already applied the shared title rules and unsynced marker.
+    */
+    return includeUnsyncedTitleLabel
+      ? normalizeDisplayTitle(displayTitleTooltip) ?? gxserverDisplayTitle
+      : gxserverDisplayTitle;
+  }
+
   const primaryHeadingTitle = normalizeSessionCardHeadingTitle(primaryTitle);
   const terminalHeadingTitle = normalizeSessionCardHeadingTitle(terminalTitle);
   const aliasHeadingTitle = normalizeSessionCardHeadingTitle(alias);
@@ -462,6 +525,11 @@ export function formatSessionHeadingText({
   }
 
   return formatNonPersistentSessionHeadingText(baseHeadingText, includeUnsyncedTitleLabel);
+}
+
+function normalizeDisplayTitle(title: string | undefined): string | undefined {
+  const normalizedTitle = title?.trim().replace(/\s+/g, " ");
+  return normalizedTitle || undefined;
 }
 
 function formatNonPersistentSessionHeadingText(
@@ -587,10 +655,12 @@ export function getSessionTitleTooltipOptions({
 
 type SessionAgentIconProps = {
   agentIcon: SidebarSessionItem["agentIcon"];
+  delayedSendDeadlineAt?: string;
   delayedSendRemainingLabel?: string;
   faviconDataUrl?: string;
   isFavorite?: boolean;
   isPinned?: boolean;
+  sessionTag?: SidebarSessionTag;
   isGeneratingFirstPromptTitle?: boolean;
   isReloading?: boolean;
   sessionPersistenceName?: string;
@@ -701,16 +771,25 @@ function SessionAgentIconDecoration({
 
 export function SessionFloatingAgentIcon({
   agentIcon,
+  delayedSendDeadlineAt,
   delayedSendRemainingLabel,
   faviconDataUrl,
   isFavorite = false,
   isPinned = false,
   onDelayedSendClick,
+  sessionTag,
   sessionPersistenceName,
   sessionPersistenceProvider,
   showTerminalIcon = false,
 }: SessionAgentIconProps & { onDelayedSendClick?: () => void }) {
-  if (delayedSendRemainingLabel && !isPinned) {
+  const effectiveSessionTag = getEffectiveSessionTag({ isFavorite, sessionTag });
+  const hasActiveDelayedSend = Boolean(delayedSendRemainingLabel || delayedSendDeadlineAt);
+
+  if (hasActiveDelayedSend) {
+    /*
+    CDXC:DelayedSend 2026-06-06-05:29:
+    An active Delayed Send timer always owns the leading session icon slot, even when the session is tagged, pinned, or has a visible agent icon. The deadline alone is enough to show the yellow clock so a missing countdown label cannot hide the active timer state.
+    */
     return (
       <DelayedSendSidebarIcon
         className="session-floating-agent-tabler-icon session-delayed-send-agent-icon"
@@ -722,12 +801,8 @@ export function SessionFloatingAgentIcon({
 
   return (
     <>
-      {delayedSendRemainingLabel ? (
-        <DelayedSendSidebarIcon
-          className="session-floating-agent-tabler-icon session-delayed-send-agent-icon"
-          onClick={onDelayedSendClick}
-          remainingLabel={delayedSendRemainingLabel}
-        />
+      {effectiveSessionTag ? (
+        <SessionTagSidebarIcon sessionTag={effectiveSessionTag} />
       ) : isPinned ? (
         <PinnedSessionSidebarIcon />
       ) : null}
@@ -746,6 +821,24 @@ export function SessionFloatingAgentIcon({
         slot="floating"
       />
     </>
+  );
+}
+
+function SessionTagSidebarIcon({ sessionTag }: { sessionTag: SidebarSessionTag }) {
+  /**
+   * CDXC:SessionTags 2026-06-05-12:30:
+   * A tagged session shows its tag glyph in the same leading identity slot used
+   * by agent icons. Delayed Send owns higher precedence; otherwise the tag is
+   * visible at rest and hover/focus can reveal the hidden agent identity.
+   */
+  return (
+    <SessionTagIcon
+      className="session-floating-agent-tabler-icon session-tag-agent-icon"
+      fillFavorite
+      size={15}
+      stroke={1.9}
+      tag={sessionTag}
+    />
   );
 }
 
@@ -805,7 +898,7 @@ function DelayedSendSidebarIcon({
 }: {
   className: string;
   onClick?: () => void;
-  remainingLabel: string;
+  remainingLabel?: string;
 }) {
   /**
    * CDXC:DelayedSend 2026-05-17-03:14
@@ -817,7 +910,7 @@ function DelayedSendSidebarIcon({
    * directly in the leading agent-icon slot; a wrapper would become a separate
    * flow box and can push the clock above the session card.
    */
-  const tooltip = `Delayed Send in ${remainingLabel}`;
+  const tooltip = remainingLabel ? `Delayed Send in ${remainingLabel}` : "Delayed Send scheduled";
   return (
     <button
       aria-label={tooltip}
@@ -1036,6 +1129,10 @@ export function OverflowTooltipText({
 
   const openTooltip = () => {
     clearOpenTimeout();
+    if (areSidebarTooltipsSuppressed()) {
+      setIsOpen(false);
+      return;
+    }
     const shouldOpen = tooltipWhen === "always" ? Boolean(tooltip ?? text) : hasOverflow();
     if (!shouldOpen) {
       setIsOpen(false);
@@ -1043,6 +1140,10 @@ export function OverflowTooltipText({
     }
 
     openTimeoutIdRef.current = window.setTimeout(() => {
+      if (areSidebarTooltipsSuppressed()) {
+        closeTooltip();
+        return;
+      }
       if (activeOverflowTooltipId !== tooltipIdRef.current) {
         activeOverflowTooltipClose?.();
       }
@@ -1056,9 +1157,22 @@ export function OverflowTooltipText({
 
   useEffect(() => {
     const handleSidebarTooltipDismiss = () => closeTooltip();
+    const handleSidebarTooltipSuppressionChanged = () => {
+      if (areSidebarTooltipsSuppressed()) {
+        closeTooltip();
+      }
+    };
     window.addEventListener(SIDEBAR_TOOLTIP_DISMISS_EVENT, handleSidebarTooltipDismiss);
+    window.addEventListener(
+      SIDEBAR_TOOLTIP_SUPPRESSION_CHANGED_EVENT,
+      handleSidebarTooltipSuppressionChanged,
+    );
     return () => {
       window.removeEventListener(SIDEBAR_TOOLTIP_DISMISS_EVENT, handleSidebarTooltipDismiss);
+      window.removeEventListener(
+        SIDEBAR_TOOLTIP_SUPPRESSION_CHANGED_EVENT,
+        handleSidebarTooltipSuppressionChanged,
+      );
       clearOpenTimeout();
       if (activeOverflowTooltipId === tooltipIdRef.current) {
         activeOverflowTooltipId = undefined;

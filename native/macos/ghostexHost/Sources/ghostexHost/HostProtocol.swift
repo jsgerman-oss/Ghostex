@@ -7,6 +7,7 @@ enum HostCommand: Decodable {
   case closeTerminal(SessionCommand)
   case closeWebPane(SessionCommand)
   case focusTerminal(SessionCommand)
+  case focusProjectEditorCompanionSession(SessionCommand)
   case focusWebPane(SessionCommand)
   case reloadWebPane(SessionCommand)
   case startT3CodeRuntime(StartT3CodeRuntime)
@@ -39,12 +40,18 @@ enum HostCommand: Decodable {
   case appendTerminalFocusDebugLog(AppendTerminalFocusDebugLog)
   case appendRestoreDebugLog(AppendRestoreDebugLog)
   case appendSessionTitleDebugLog(AppendSessionTitleDebugLog)
+  case appendSidebarCollapseStateDebugLog(AppendSidebarCollapseStateDebugLog)
   case appendSidebarRefreshDebugLog(AppendSidebarRefreshDebugLog)
   case appendWorkspaceDockIndicatorDebugLog(AppendWorkspaceDockIndicatorDebugLog)
   case persistSharedSidebarStorage(PersistSharedSidebarStorage)
   case projectBoardResponse(ProjectBoardResponse)
   case playSound(PlaySound)
   case runProcess(RunProcess)
+  case cancelRunProcess(CancelRunProcess)
+  case gxserverRequest(GxserverRequest)
+  case remoteGxserverConnect(RemoteGxserverConnect)
+  case remoteGxserverRequest(RemoteGxserverRequest)
+  case remoteGxserverSubscribePresentation(RemoteGxserverPresentationSubscribe)
   case setKeepAwakeLidSleepPrevention(SetKeepAwakeLidSleepPrevention)
   case syncGhosttyTerminalSettings(SyncGhosttyTerminalSettings)
   case applyGhosttyConfigSettings(ApplyGhosttyConfigSettings)
@@ -75,6 +82,10 @@ enum HostCommand: Decodable {
   case togglePetOverlayFromTitlebar
   case toggleCommandsPanelFromTitlebar
   case showUpdateDialogFromTitlebar
+  case startGxserverFromTitlebar
+  case stopGxserverFromTitlebar
+  case restartGxserverFromTitlebar
+  case setGxserverAlwaysStartFromTitlebar(SetGxserverAlwaysStartFromTitlebar)
   case focusResourceSessionFromTitlebar(FocusResourceSessionFromTitlebar)
   case sleepInactiveSessionsFromTitlebar(SleepInactiveSessionsFromTitlebar)
   case quitResourcesFromTitlebar(QuitResourcesFromTitlebar)
@@ -95,6 +106,7 @@ enum HostCommand: Decodable {
     case closeTerminal
     case closeWebPane
     case focusTerminal
+    case focusProjectEditorCompanionSession
     case focusWebPane
     case reloadWebPane
     case startT3CodeRuntime
@@ -127,12 +139,18 @@ enum HostCommand: Decodable {
     case appendTerminalFocusDebugLog
     case appendRestoreDebugLog
     case appendSessionTitleDebugLog
+    case appendSidebarCollapseStateDebugLog
     case appendSidebarRefreshDebugLog
     case appendWorkspaceDockIndicatorDebugLog
     case persistSharedSidebarStorage
     case projectBoardResponse
     case playSound
     case runProcess
+    case cancelRunProcess
+    case gxserverRequest
+    case remoteGxserverConnect
+    case remoteGxserverRequest
+    case remoteGxserverSubscribePresentation
     case setKeepAwakeLidSleepPrevention
     case syncGhosttyTerminalSettings
     case applyGhosttyConfigSettings
@@ -163,6 +181,10 @@ enum HostCommand: Decodable {
     case togglePetOverlayFromTitlebar
     case toggleCommandsPanelFromTitlebar
     case showUpdateDialogFromTitlebar
+    case startGxserverFromTitlebar
+    case stopGxserverFromTitlebar
+    case restartGxserverFromTitlebar
+    case setGxserverAlwaysStartFromTitlebar
     case focusResourceSessionFromTitlebar
     case sleepInactiveSessionsFromTitlebar
     case quitResourcesFromTitlebar
@@ -188,6 +210,8 @@ enum HostCommand: Decodable {
       self = .closeWebPane(try SessionCommand(from: decoder))
     case .focusTerminal:
       self = .focusTerminal(try SessionCommand(from: decoder))
+    case .focusProjectEditorCompanionSession:
+      self = .focusProjectEditorCompanionSession(try SessionCommand(from: decoder))
     case .focusWebPane:
       self = .focusWebPane(try SessionCommand(from: decoder))
     case .reloadWebPane:
@@ -252,6 +276,9 @@ enum HostCommand: Decodable {
       self = .appendRestoreDebugLog(try AppendRestoreDebugLog(from: decoder))
     case .appendSessionTitleDebugLog:
       self = .appendSessionTitleDebugLog(try AppendSessionTitleDebugLog(from: decoder))
+    case .appendSidebarCollapseStateDebugLog:
+      self = .appendSidebarCollapseStateDebugLog(
+        try AppendSidebarCollapseStateDebugLog(from: decoder))
     case .appendSidebarRefreshDebugLog:
       self = .appendSidebarRefreshDebugLog(try AppendSidebarRefreshDebugLog(from: decoder))
     case .appendWorkspaceDockIndicatorDebugLog:
@@ -265,6 +292,16 @@ enum HostCommand: Decodable {
       self = .playSound(try PlaySound(from: decoder))
     case .runProcess:
       self = .runProcess(try RunProcess(from: decoder))
+    case .cancelRunProcess:
+      self = .cancelRunProcess(try CancelRunProcess(from: decoder))
+    case .gxserverRequest:
+      self = .gxserverRequest(try GxserverRequest(from: decoder))
+    case .remoteGxserverConnect:
+      self = .remoteGxserverConnect(try RemoteGxserverConnect(from: decoder))
+    case .remoteGxserverRequest:
+      self = .remoteGxserverRequest(try RemoteGxserverRequest(from: decoder))
+    case .remoteGxserverSubscribePresentation:
+      self = .remoteGxserverSubscribePresentation(try RemoteGxserverPresentationSubscribe(from: decoder))
     case .setKeepAwakeLidSleepPrevention:
       self = .setKeepAwakeLidSleepPrevention(try SetKeepAwakeLidSleepPrevention(from: decoder))
     case .syncGhosttyTerminalSettings:
@@ -325,6 +362,14 @@ enum HostCommand: Decodable {
       self = .toggleCommandsPanelFromTitlebar
     case .showUpdateDialogFromTitlebar:
       self = .showUpdateDialogFromTitlebar
+    case .startGxserverFromTitlebar:
+      self = .startGxserverFromTitlebar
+    case .stopGxserverFromTitlebar:
+      self = .stopGxserverFromTitlebar
+    case .restartGxserverFromTitlebar:
+      self = .restartGxserverFromTitlebar
+    case .setGxserverAlwaysStartFromTitlebar:
+      self = .setGxserverAlwaysStartFromTitlebar(try SetGxserverAlwaysStartFromTitlebar(from: decoder))
     case .focusResourceSessionFromTitlebar:
       self = .focusResourceSessionFromTitlebar(try FocusResourceSessionFromTitlebar(from: decoder))
     case .sleepInactiveSessionsFromTitlebar:
@@ -351,9 +396,11 @@ struct CreateTerminal: Decodable {
   let diagnosticSource: String?
   let env: [String: String]?
   let initialInput: String?
+  let persistenceSessionCreated: Bool?
   let sessionId: String
   let sessionPersistenceName: String?
   let sessionPersistenceProvider: String?
+  let shellAttachCommand: String?
   let shellCommand: String?
   let title: String?
   let tmuxMode: Bool?
@@ -401,9 +448,11 @@ struct ProjectBoardBridgeRequest: Decodable {
   let beadId: String?
   let details: String?
   let event: String?
+  let projectEditorId: String?
   let prompt: String?
   let projectId: String?
   let projectPath: String?
+  let remoteMachineId: String?
   let requestId: String
   let sessionId: String?
   let startLocation: String?
@@ -416,16 +465,11 @@ struct StartT3CodeRuntime: Decodable {
 
 struct SetT3CodeRuntimeSessionState: Decodable {
   /**
-   CDXC:T3Code 2026-05-10-22:48
-   The React sidebar owns the definition of a running T3 session: its card is
-   included in the current session-sidebar projection and is not sleeping.
-   Native receives only those sidebar ids so the provider heartbeat follows the
-   session model instead of workspace-pane visibility.
-
-   CDXC:T3Code 2026-05-14-09:34:
-   Native also needs one awake T3 workspace root on the same state update so it
-   can restart the managed t3code provider in the background when the server is
-   no longer live but T3 session cards remain visible in the sidebar.
+   CDXC:T3Code 2026-06-06-05:13:
+   This sidebar-projected state is protocol compatibility only. The managed
+   t3code provider lifetime follows live native managed T3 web panes instead,
+   because gxserver presentation can omit local T3 cards while the AppKit pane
+   registry still owns an open embedded tab.
    */
   let runtimeCwd: String?
   let runningSessionIds: [String]
@@ -441,9 +485,14 @@ struct StartCodeServerRuntime: Decodable {
    CDXC:EditorPanes 2026-05-06-15:00
    The sidebar sends VS Code settings-link choices with the runtime command so
    the native launcher can pass code-server CLI flags before the process starts.
+
+   CDXC:EditorPanes 2026-06-06-23:50:
+   VS Code server startup failures must return to the sidebar immediately as a
+   project-scoped error and toast instead of waiting for the generic open timer.
    */
   let cwd: String
   let linkVscodeUserConfig: Bool?
+  let projectId: String?
   let vscodeUserConfigDir: String?
 }
 
@@ -511,6 +560,7 @@ struct SetActiveTerminalSet: Decodable {
   let commandsPanelActiveSessionIds: [String]?
   let commandsPanelFocusedSessionId: String?
   let commandsPanelHeightRatio: Double?
+  let commandsPanelDefaultHeightPx: Double?
   let commandsPanelIsVisible: Bool?
   let commandsPanelLayout: NativeTerminalLayout?
   let commandsPanelMode: String?
@@ -528,8 +578,10 @@ struct SetActiveTerminalSet: Decodable {
   let sessionFocusModeAvailableSessionIds: [String]?
   let sleepingSessionIds: [String]?
   let layoutChanged: Bool?
+  let paneOwnerSelectionChanged: Bool?
   let layout: NativeTerminalLayout?
   let keepAwake: TitlebarKeepAwakeSettings?
+  let gxserverDaemon: TitlebarGxserverDaemon?
   let paneGap: Double?
   let petOverlayEnabled: Bool?
   /**
@@ -559,6 +611,12 @@ struct SetActiveTerminalSet: Decodable {
   let sessionTitleBarActions: [String: [TerminalTitleBarAction]]?
   let sessionTitles: [String: String]?
   /**
+   CDXC:PaneTabs 2026-06-04-20:36:
+   The native pane-tab moon marks an inactive zmx provider session, not a
+   missing AppKit terminal renderer.
+   */
+  let sessionZmxInactiveIds: [String]?
+  /**
    CDXC:SessionPersistence 2026-05-23-00:50:
    The sidebar owns the preference for showing provider/session ids. Decode it
    with layout sync because AppKit owns the top-right overlay view and still
@@ -567,6 +625,8 @@ struct SetActiveTerminalSet: Decodable {
   let showSessionIdInTerminalPanes: Bool?
   let showProjectEditorDiffFileCount: Bool?
   let sidebarActions: TitlebarSidebarActions?
+  let agentHookStatus: TitlebarAgentHookStatus?
+  let ghostexCliStatus: TitlebarGhostexCliStatus?
   let sessionPersistenceProvider: String?
   let titlebarResourceGroups: [TitlebarResourceGroup]?
   let workspaceOpenTargets: TitlebarWorkspaceOpenTargets?
@@ -588,6 +648,12 @@ struct SetSessionPaneChrome: Decodable {
   let sessionFirstPromptTitleGenerationSessionIds: [String]?
   let sessionTitleBarActions: [String: [TerminalTitleBarAction]]?
   let sessionTitles: [String: String]?
+  /**
+   CDXC:PaneTabs 2026-06-04-20:36:
+   ZMX liveness is pane chrome, so provider inactivity can repaint tab moons
+   without rebuilding the native split/tab layout.
+   */
+  let sessionZmxInactiveIds: [String]?
   let showSessionIdInTerminalPanes: Bool?
 }
 
@@ -601,6 +667,32 @@ struct TitlebarResourceGroup: Decodable {
   let title: String
 }
 
+struct TitlebarAgentHookStatusItem: Decodable {
+  let agentId: String
+  let cliCommand: String
+  let cliInstalled: Bool
+  let detail: String
+  let hookInstalled: Bool
+  let paths: [String]
+  let status: String
+}
+
+struct TitlebarAgentHookStatus: Decodable {
+  let agents: [TitlebarAgentHookStatusItem]
+  let errorMessage: String?
+  let generatedAt: String
+  let hookStateDirectory: String
+  let notifyHookPath: String
+  let type: String
+}
+
+struct TitlebarGhostexCliStatus: Decodable {
+  let generatedAt: String
+  let gxUsable: Bool
+  let installed: Bool
+  let type: String
+}
+
 struct TitlebarKeepAwakeSettings: Decodable {
   let activateOnExternalDisplay: Bool
   let activateOnLaunch: Bool
@@ -611,6 +703,18 @@ struct TitlebarKeepAwakeSettings: Decodable {
   let deactivateOnUserSwitch: Bool
   let defaultDurationMinutes: Int
   let preventLidSleep: Bool
+}
+
+struct TitlebarGxserverDaemon: Decodable {
+  let alwaysStart: Bool?
+  let message: String?
+  let nodePath: String?
+  let nodeVersion: String?
+  let ok: Bool?
+  let pid: Int?
+  let startedAt: String?
+  let state: String
+  let version: String?
 }
 
 struct TitlebarResourceSession: Decodable {
@@ -822,6 +926,11 @@ struct AppendSessionTitleDebugLog: Decodable {
   let force: Bool?
 }
 
+struct AppendSidebarCollapseStateDebugLog: Decodable {
+  let details: String?
+  let event: String
+}
+
 struct AppendRestoreDebugLog: Decodable {
   let details: String?
   let event: String
@@ -838,8 +947,19 @@ struct AppendWorkspaceDockIndicatorDebugLog: Decodable {
 }
 
 struct PersistSharedSidebarStorage: Decodable {
-  let key: String
+  let key: SharedSidebarStorageKey
   let payloadJson: String
+}
+
+enum SharedSidebarStorageKey: String, Decodable {
+  /**
+   CDXC:ProjectSidebarOwnership 2026-06-02-15:04:
+   After the gxserver/native ownership cutoff, Swift accepts shared-sidebar
+   persistence only for settings. Projects, worktrees, sessions, and previous
+   sessions are gxserver-owned and must not decode as valid native shared
+   storage commands.
+   */
+  case settings
 }
 
 struct PlaySound: Decodable {
@@ -858,6 +978,43 @@ struct RunProcess: Decodable {
   let cwd: String?
   let env: [String: String]?
   let executable: String
+  let requestId: String
+}
+
+struct CancelRunProcess: Decodable {
+  let requestId: String
+}
+
+struct GxserverRequest: Decodable {
+  let method: String
+  let paramsJson: String?
+  let path: String
+  let requestId: String
+}
+
+struct RemoteGxserverConnect: Decodable {
+  let identityFile: String?
+  let installApproved: Bool?
+  let remoteMachineId: String
+  let remoteMachineName: String
+  let requestId: String
+  let sshHost: String
+  let sshPort: Int?
+  let sshUser: String?
+}
+
+struct RemoteGxserverRequest: Decodable {
+  let method: String
+  let paramsJson: String?
+  let path: String
+  let remoteMachineId: String
+  let requestId: String
+}
+
+struct RemoteGxserverPresentationSubscribe: Decodable {
+  let clientId: String?
+  let lastRevision: Int?
+  let remoteMachineId: String
   let requestId: String
 }
 
@@ -972,6 +1129,10 @@ struct SleepInactiveSessionsFromTitlebar: Decodable {
   let sessionIds: [String]
 }
 
+struct SetGxserverAlwaysStartFromTitlebar: Decodable {
+  let enabled: Bool
+}
+
 struct QuitResourcesFromTitlebar: Decodable {
   let projectIds: [String]
   let sessionIds: [String]
@@ -1078,6 +1239,7 @@ enum HostEvent: Encodable {
   case projectEditorCompanionPaneHiddenChanged(projectId: String, hidden: Bool)
   case projectEditorTabSelected(projectId: String, url: String?)
   case projectEditorLoadState(projectId: String, status: String, message: String?)
+  case codeServerRuntimeStartFailed(projectId: String?, message: String)
   case projectBoardRequest(ProjectBoardBridgeRequest)
   case osIntegrationStatus(payloadJson: String)
   case sessionStatusIndicatorClicked(status: NativeSessionStatusIndicatorStatus)
@@ -1087,7 +1249,14 @@ enum HostEvent: Encodable {
     sessionId: String, projectId: String, threadId: String, serverOrigin: String, workspaceRoot: String)
   case t3ThreadChanged(sessionId: String, threadId: String, title: String?)
   case processResult(requestId: String, exitCode: Int32, stdout: String, stderr: String)
+  case gxserverResponse(
+    requestId: String, path: String, ok: Bool, statusCode: Int?, bodyJson: String?, error: String?)
+  case remoteGxserverStatus(remoteMachineId: String, payloadJson: String)
+  case remoteGxserverResponse(
+    remoteMachineId: String, requestId: String, path: String, ok: Bool, statusCode: Int?, bodyJson: String?, error: String?)
+  case remoteGxserverPresentationEvent(remoteMachineId: String, payloadJson: String)
   case sidebarCliResult(requestId: String, ok: Bool, payloadJson: String)
+  case gxserverStatus(payloadJson: String)
 
   private enum CodingKeys: String, CodingKey {
     case exitCode
@@ -1101,6 +1270,8 @@ enum HostEvent: Encodable {
     case agentId
     case beadDisplayId
     case beadId
+    case details
+    case event
     case placement
     case actionId
     case sessionId
@@ -1109,6 +1280,7 @@ enum HostEvent: Encodable {
     case title
     case faviconDataUrl
     case url
+    case projectEditorId
     case projectId
     case serverOrigin
     case threadId
@@ -1117,7 +1289,9 @@ enum HostEvent: Encodable {
     case workspaceRoot
     case requestId
     case ok
+    case bodyJson
     case payloadJson
+    case path
     case projectPath
     case prompt
     case error
@@ -1130,11 +1304,14 @@ enum HostEvent: Encodable {
     case sessionPersistenceName
     case scope
     case status
+    case statusCode
+    case startLocation
     case ticketTitle
     case position
     case sourceSessionId
     case targetSessionId
     case tmuxSessionName
+    case remoteMachineId
   }
 
   func encode(to encoder: Encoder) throws {
@@ -1331,33 +1508,49 @@ enum HostEvent: Encodable {
       try container.encode(projectId, forKey: .projectId)
       try container.encode(status, forKey: .status)
       try container.encodeIfPresent(message, forKey: .message)
+    case .codeServerRuntimeStartFailed(let projectId, let message):
+      /**
+       CDXC:EditorPanes 2026-06-06-23:50:
+       A code-server process can fail before CEF navigation begins. Report that
+       native runtime failure separately so React can show an error toast and
+       avoid leaving users with only the delayed VS Code timeout row.
+       */
+      try container.encode("codeServerRuntimeStartFailed", forKey: .type)
+      try container.encodeIfPresent(projectId, forKey: .projectId)
+      try container.encode(message, forKey: .message)
     case .projectBoardRequest(let request):
       /**
        CDXC:ProjectBoard 2026-05-26-10:16:
        The Project WKWebView cannot own Ghostex session state. Forward its
        conversation-link actions over the typed host-event bus so the sidebar
        remains the single owner of project/session persistence and focusing.
+
+       CDXC:ProjectBoardRouting 2026-06-04-23:51:
+       Forward both the raw Project board project id and the native editor id. The raw id selects gxserver data, while projectEditorId routes the sidebar response back to the WKWebView that sent the request.
       */
       try container.encode("projectBoardRequest", forKey: .type)
       try container.encode(request.action, forKey: .action)
       try container.encodeIfPresent(request.agentId, forKey: .agentId)
       try container.encodeIfPresent(request.beadDisplayId, forKey: .beadDisplayId)
       try container.encodeIfPresent(request.beadId, forKey: .beadId)
+      try container.encodeIfPresent(request.details, forKey: .details)
+      try container.encodeIfPresent(request.event, forKey: .event)
+      try container.encodeIfPresent(request.projectEditorId, forKey: .projectEditorId)
       try container.encodeIfPresent(request.prompt, forKey: .prompt)
       try container.encodeIfPresent(request.projectId, forKey: .projectId)
       try container.encodeIfPresent(request.projectPath, forKey: .projectPath)
+      try container.encodeIfPresent(request.remoteMachineId, forKey: .remoteMachineId)
       try container.encode(request.requestId, forKey: .requestId)
       try container.encodeIfPresent(request.sessionId, forKey: .sessionId)
+      try container.encodeIfPresent(request.startLocation, forKey: .startLocation)
       try container.encodeIfPresent(request.ticketTitle, forKey: .ticketTitle)
     case .osIntegrationStatus(let payloadJson):
       try container.encode("osIntegrationStatus", forKey: .type)
       try container.encode(payloadJson, forKey: .payloadJson)
     case .sessionStatusIndicatorClicked(let status):
       /**
-       CDXC:SessionStatusIndicators 2026-05-05-19:47
-       Floating AppKit status circles report only the clicked aggregate status
-       back to the sidebar. The sidebar owns the live session graph, so it
-       selects and focuses the correct matching session at click time.
+       CDXC:SessionStatusIndicators 2026-06-02-15:27:
+       Floating AppKit status circles report only the clicked aggregate status back to the sidebar adapter. The adapter chooses the current-window focus target from gxserver presentation plus local-only panes instead of letting AppKit own shared session inventory.
       */
       try container.encode("sessionStatusIndicatorClicked", forKey: .type)
       try container.encode(status, forKey: .status)
@@ -1397,10 +1590,48 @@ enum HostEvent: Encodable {
       try container.encode(exitCode, forKey: .exitCode)
       try container.encode(stdout, forKey: .stdout)
       try container.encode(stderr, forKey: .stderr)
+    case .gxserverResponse(let requestId, let path, let ok, let statusCode, let bodyJson, let error):
+      try container.encode("gxserverResponse", forKey: .type)
+      try container.encode(requestId, forKey: .requestId)
+      try container.encode(path, forKey: .path)
+      try container.encode(ok, forKey: .ok)
+      try container.encodeIfPresent(statusCode, forKey: .statusCode)
+      try container.encodeIfPresent(bodyJson, forKey: .bodyJson)
+      try container.encodeIfPresent(error, forKey: .error)
+    case .remoteGxserverStatus(let remoteMachineId, let payloadJson):
+      /**
+       CDXC:RemoteMachines 2026-06-03-00:18:
+       Remote gxserver bootstrap status travels over a native-only event so
+       React can render connection state while Swift keeps SSH, tunnel process,
+       and Keychain token ownership out of the webview.
+       */
+      try container.encode("remoteGxserverStatus", forKey: .type)
+      try container.encode(remoteMachineId, forKey: .remoteMachineId)
+      try container.encode(payloadJson, forKey: .payloadJson)
+    case .remoteGxserverResponse(let remoteMachineId, let requestId, let path, let ok, let statusCode, let bodyJson, let error):
+      try container.encode("remoteGxserverResponse", forKey: .type)
+      try container.encode(remoteMachineId, forKey: .remoteMachineId)
+      try container.encode(requestId, forKey: .requestId)
+      try container.encode(path, forKey: .path)
+      try container.encode(ok, forKey: .ok)
+      try container.encodeIfPresent(statusCode, forKey: .statusCode)
+      try container.encodeIfPresent(bodyJson, forKey: .bodyJson)
+      try container.encodeIfPresent(error, forKey: .error)
+    case .remoteGxserverPresentationEvent(let remoteMachineId, let payloadJson):
+      try container.encode("remoteGxserverPresentationEvent", forKey: .type)
+      try container.encode(remoteMachineId, forKey: .remoteMachineId)
+      try container.encode(payloadJson, forKey: .payloadJson)
     case .sidebarCliResult(let requestId, let ok, let payloadJson):
       try container.encode("sidebarCliResult", forKey: .type)
       try container.encode(requestId, forKey: .requestId)
       try container.encode(ok, forKey: .ok)
+      try container.encode(payloadJson, forKey: .payloadJson)
+    case .gxserverStatus(let payloadJson):
+      /**
+       CDXC:GxserverBootstrap 2026-05-30-15:39:
+       Native gxserver bootstrap status crosses the existing typed host-event bus so the trusted React sidebar can update its gxserver client wrapper without owning daemon launch or reading local token files itself.
+       */
+      try container.encode("gxserverStatus", forKey: .type)
       try container.encode(payloadJson, forKey: .payloadJson)
     }
   }

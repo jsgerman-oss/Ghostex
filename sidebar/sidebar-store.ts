@@ -3,7 +3,7 @@ import { createDefaultSidebarAgentButtons } from "../shared/sidebar-agents";
 import { createDefaultSidebarCommandButtons } from "../shared/sidebar-commands";
 import { DEFAULT_COMPLETION_SOUND, getCompletionSoundLabel } from "../shared/completion-sound";
 import { DEFAULT_ghostex_SETTINGS } from "../shared/ghostex-settings";
-import { createDefaultSidebarGitState } from "../shared/sidebar-git";
+import { createDefaultSidebarGitState, type SidebarGitFileDiffDraft } from "../shared/sidebar-git";
 import type {
   SidebarCommandRunStateClearedMessage,
   SidebarCommandRunStateChangedMessage,
@@ -31,11 +31,14 @@ type SidebarStoreDataState = {
   commandRunStates: Record<string, SidebarCommandRunFeedbackState>;
   daemonSessionsState: SidebarDaemonSessionsStateMessage | undefined;
   gitCommitDraft: SidebarPromptGitCommitMessage | undefined;
+  gitFileDiffDraft: SidebarGitFileDiffDraft | undefined;
   groupOrder: string[];
   groupsById: Record<string, SidebarGroupRecord>;
   hud: SidebarHudState;
   latestAgentOrderSyncResult: SidebarOrderSyncResultMessage | undefined;
   latestCommandOrderSyncResult: SidebarOrderSyncResultMessage | undefined;
+  localHiddenSessionIds: Record<string, true>;
+  localSessionSleepingOverrides: Record<string, boolean>;
   pendingFocusedSessionId: string | undefined;
   pinnedPrompts: SidebarPinnedPrompt[];
   previousSessions: SidebarPreviousSessionItem[];
@@ -51,12 +54,17 @@ type SidebarStoreActions = {
   applyCommandRunStateMessage: (message: SidebarCommandRunStateChangedMessage) => void;
   applyOrderSyncResultMessage: (message: SidebarOrderSyncResultMessage) => void;
   applyLocalFocus: (groupId: string, sessionId: string) => void;
+  hideSessionLocally: (sessionId: string) => void;
+  hideSessionsLocally: (sessionIds: readonly string[]) => void;
+  setSessionSleepingLocally: (sessionId: string, sleeping: boolean) => void;
+  setSessionsSleepingLocally: (sessionIds: readonly string[], sleeping: boolean) => void;
   applySessionPresentationMessage: (message: SidebarSessionPresentationChangedMessage) => void;
   applySidebarMessage: (message: SidebarHydrateMessage | SidebarSessionStateMessage) => void;
   clearCommandRunState: (commandId: string) => void;
   reset: () => void;
   setDaemonSessionsState: (message: SidebarDaemonSessionsStateMessage | undefined) => void;
   setGitCommitDraft: (message: SidebarPromptGitCommitMessage | undefined) => void;
+  setGitFileDiffDraft: (draft: SidebarGitFileDiffDraft | undefined) => void;
 };
 
 export type SidebarStoreState = SidebarStoreDataState & SidebarStoreActions;
@@ -66,6 +74,7 @@ export function createInitialSidebarStoreDataState(): SidebarStoreDataState {
     commandRunStates: {},
     daemonSessionsState: undefined,
     gitCommitDraft: undefined,
+    gitFileDiffDraft: undefined,
     groupOrder: [],
     groupsById: {},
     hud: {
@@ -102,6 +111,8 @@ export function createInitialSidebarStoreDataState(): SidebarStoreDataState {
     },
     latestAgentOrderSyncResult: undefined,
     latestCommandOrderSyncResult: undefined,
+    localHiddenSessionIds: {},
+    localSessionSleepingOverrides: {},
     pendingFocusedSessionId: undefined,
     pinnedPrompts: [],
     previousSessions: [],
@@ -155,6 +166,18 @@ export const useSidebarStore = create<SidebarStoreState>((set) => ({
   applyLocalFocus: (groupId, sessionId) => {
     set((state) => applyLocalFocusState(state, groupId, sessionId));
   },
+  hideSessionLocally: (sessionId) => {
+    set((state) => hideSessionLocallyState(state, sessionId));
+  },
+  hideSessionsLocally: (sessionIds) => {
+    set((state) => hideSessionsLocallyState(state, sessionIds));
+  },
+  setSessionSleepingLocally: (sessionId, sleeping) => {
+    set((state) => setSessionSleepingLocallyState(state, sessionId, sleeping));
+  },
+  setSessionsSleepingLocally: (sessionIds, sleeping) => {
+    set((state) => setSessionsSleepingLocallyState(state, sessionIds, sleeping));
+  },
   applySessionPresentationMessage: (message) => {
     set((state) => applySessionPresentationMessageState(state, message));
   },
@@ -181,7 +204,10 @@ export const useSidebarStore = create<SidebarStoreState>((set) => ({
     set({ daemonSessionsState: message });
   },
   setGitCommitDraft: (message) => {
-    set({ gitCommitDraft: message });
+    set({ gitCommitDraft: message, gitFileDiffDraft: undefined });
+  },
+  setGitFileDiffDraft: (draft) => {
+    set({ gitFileDiffDraft: draft });
   },
 }));
 
@@ -208,8 +234,16 @@ function applySidebarMessageState(
     return state;
   }
 
-  const reconciledGroups = reconcilePendingFocusedSession(
+  const localFirstFiltered = filterLocallyHiddenSidebarSessions(
     message.groups,
+    state.localHiddenSessionIds,
+  );
+  const localSleepApplied = applyLocalSessionSleepingOverrides(
+    localFirstFiltered.groups,
+    state.localSessionSleepingOverrides,
+  );
+  const reconciledGroups = reconcilePendingFocusedSession(
+    localSleepApplied.groups,
     state.pendingFocusedSessionId,
   );
   const normalizedGroups = normalizeSidebarGroups(state, reconciledGroups.groups);
@@ -226,6 +260,8 @@ function applySidebarMessageState(
     groupOrder: normalizedGroups.groupOrder,
     groupsById: normalizedGroups.groupsById,
     hud: nextHud,
+    localHiddenSessionIds: localFirstFiltered.localHiddenSessionIds,
+    localSessionSleepingOverrides: localSleepApplied.localSessionSleepingOverrides,
     pendingFocusedSessionId: reconciledGroups.pendingFocusedSessionId,
     pinnedPrompts: message.pinnedPrompts,
     previousSessions: message.previousSessions,
@@ -314,6 +350,283 @@ function applySessionPresentationMessageState(
       ...state.sessionsById,
       [message.session.sessionId]: message.session,
     },
+  };
+}
+
+function hideSessionLocallyState(
+  state: SidebarStoreState,
+  sessionId: string,
+): Partial<SidebarStoreState> | SidebarStoreState {
+  if (!state.sessionsById[sessionId] && state.localHiddenSessionIds[sessionId]) {
+    return state;
+  }
+
+  /*
+  CDXC:LocalFirstSidebar 2026-06-01-19:34:
+  Closing a session must remove the card in the same React event as the click. Native still owns the durable close, but the sidebar store keeps a local hidden-id overlay so no hydrate can briefly reinsert the card while gxserver catches up.
+  */
+  const nextSessionsById = { ...state.sessionsById };
+  delete nextSessionsById[sessionId];
+
+  let didChangeSessionOrder = false;
+  const nextSessionIdsByGroup: Record<string, string[]> = {};
+  for (const [groupId, sessionIds] of Object.entries(state.sessionIdsByGroup)) {
+    const nextSessionIds = sessionIds.filter((candidate) => candidate !== sessionId);
+    nextSessionIdsByGroup[groupId] = nextSessionIds;
+    if (nextSessionIds.length !== sessionIds.length) {
+      didChangeSessionOrder = true;
+    }
+  }
+
+  return {
+    localHiddenSessionIds: {
+      ...state.localHiddenSessionIds,
+      [sessionId]: true,
+    },
+    pendingFocusedSessionId:
+      state.pendingFocusedSessionId === sessionId ? undefined : state.pendingFocusedSessionId,
+    sessionIdsByGroup: didChangeSessionOrder ? nextSessionIdsByGroup : state.sessionIdsByGroup,
+    sessionsById: nextSessionsById,
+  };
+}
+
+function hideSessionsLocallyState(
+  state: SidebarStoreState,
+  sessionIds: readonly string[],
+): Partial<SidebarStoreState> | SidebarStoreState {
+  const hiddenSessionIds = Array.from(new Set(sessionIds));
+  if (hiddenSessionIds.length === 0) {
+    return state;
+  }
+
+  const existingTargetIds = hiddenSessionIds.filter(
+    (sessionId) => state.sessionsById[sessionId] || !state.localHiddenSessionIds[sessionId],
+  );
+  if (existingTargetIds.length === 0) {
+    return state;
+  }
+
+  /*
+  CDXC:SidebarContextMenu 2026-06-07-13:34:
+  Bulk context-menu actions such as Close below must update sidebar chrome once before native fan-out starts. Avoid one Zustand write per target because each write can re-render the session list and keep the menu/sidebar busy until every native close has been queued.
+  */
+  const targetIdSet = new Set(existingTargetIds);
+  const nextSessionsById = { ...state.sessionsById };
+  for (const sessionId of targetIdSet) {
+    delete nextSessionsById[sessionId];
+  }
+
+  let didChangeSessionOrder = false;
+  const nextSessionIdsByGroup: Record<string, string[]> = {};
+  for (const [groupId, groupSessionIds] of Object.entries(state.sessionIdsByGroup)) {
+    const nextGroupSessionIds = groupSessionIds.filter((sessionId) => !targetIdSet.has(sessionId));
+    nextSessionIdsByGroup[groupId] = nextGroupSessionIds;
+    if (nextGroupSessionIds.length !== groupSessionIds.length) {
+      didChangeSessionOrder = true;
+    }
+  }
+
+  return {
+    localHiddenSessionIds: {
+      ...state.localHiddenSessionIds,
+      ...Object.fromEntries(existingTargetIds.map((sessionId) => [sessionId, true] as const)),
+    },
+    pendingFocusedSessionId:
+      state.pendingFocusedSessionId && targetIdSet.has(state.pendingFocusedSessionId)
+        ? undefined
+        : state.pendingFocusedSessionId,
+    sessionIdsByGroup: didChangeSessionOrder ? nextSessionIdsByGroup : state.sessionIdsByGroup,
+    sessionsById: nextSessionsById,
+  };
+}
+
+function filterLocallyHiddenSidebarSessions(
+  groups: readonly SidebarSessionGroup[],
+  localHiddenSessionIds: Record<string, true>,
+): {
+  groups: SidebarSessionGroup[];
+  localHiddenSessionIds: Record<string, true>;
+} {
+  const hiddenIds = Object.keys(localHiddenSessionIds);
+  if (hiddenIds.length === 0) {
+    return {
+      groups: [...groups],
+      localHiddenSessionIds,
+    };
+  }
+
+  const incomingSessionIds = new Set(
+    groups.flatMap((group) => (group.sessions ?? []).map((session) => session.sessionId)),
+  );
+  const nextLocalHiddenSessionIds: Record<string, true> = {};
+  for (const sessionId of hiddenIds) {
+    if (incomingSessionIds.has(sessionId)) {
+      nextLocalHiddenSessionIds[sessionId] = true;
+    }
+  }
+  if (Object.keys(nextLocalHiddenSessionIds).length === 0) {
+    return {
+      groups: [...groups],
+      localHiddenSessionIds: nextLocalHiddenSessionIds,
+    };
+  }
+
+  return {
+    groups: groups.map((group) => {
+      const sessions = group.sessions ?? [];
+      if (!sessions.some((session) => nextLocalHiddenSessionIds[session.sessionId])) {
+        return group;
+      }
+      return {
+        ...group,
+        sessions: sessions.filter((session) => !nextLocalHiddenSessionIds[session.sessionId]),
+      };
+    }),
+    localHiddenSessionIds: nextLocalHiddenSessionIds,
+  };
+}
+
+function setSessionSleepingLocallyState(
+  state: SidebarStoreState,
+  sessionId: string,
+  sleeping: boolean,
+): Partial<SidebarStoreState> | SidebarStoreState {
+  const session = state.sessionsById[sessionId];
+  if (!session && state.localSessionSleepingOverrides[sessionId] === sleeping) {
+    return state;
+  }
+
+  /*
+  CDXC:LocalFirstSidebar 2026-06-01-19:34:
+  Sleep and Wake from the session context menu should dismiss the menu and flip the card state before native disposes or recreates the terminal surface. Keep a local override until the host snapshot confirms the same sleeping state.
+  */
+  return {
+    localSessionSleepingOverrides: {
+      ...state.localSessionSleepingOverrides,
+      [sessionId]: sleeping,
+    },
+    sessionsById: session
+      ? {
+          ...state.sessionsById,
+          [sessionId]: applyLocalSessionSleepingOverride(session, sleeping),
+        }
+      : state.sessionsById,
+  };
+}
+
+function setSessionsSleepingLocallyState(
+  state: SidebarStoreState,
+  sessionIds: readonly string[],
+  sleeping: boolean,
+): Partial<SidebarStoreState> | SidebarStoreState {
+  const targetSessionIds = Array.from(new Set(sessionIds));
+  if (targetSessionIds.length === 0) {
+    return state;
+  }
+
+  /*
+  CDXC:SidebarContextMenu 2026-06-07-13:34:
+  Sleep below can target many rows. Apply the local sleeping overlay to all awake targets in one store write so the context menu closes and the sidebar paints once while native session shutdown proceeds asynchronously.
+  */
+  let nextSessionSleepingOverrides: Record<string, boolean> | undefined;
+  let nextSessionsById: Record<string, SidebarSessionItem> | undefined;
+
+  for (const sessionId of targetSessionIds) {
+    const session = (nextSessionsById ?? state.sessionsById)[sessionId];
+    if (
+      session &&
+      session.isSleeping === sleeping &&
+      session.lifecycleState === (sleeping ? "sleeping" : "running")
+    ) {
+      continue;
+    }
+    if (!session && (nextSessionSleepingOverrides ?? state.localSessionSleepingOverrides)[sessionId] === sleeping) {
+      continue;
+    }
+
+    nextSessionSleepingOverrides ??= { ...state.localSessionSleepingOverrides };
+    nextSessionSleepingOverrides[sessionId] = sleeping;
+    if (session) {
+      nextSessionsById ??= { ...state.sessionsById };
+      nextSessionsById[sessionId] = applyLocalSessionSleepingOverride(session, sleeping);
+    }
+  }
+
+  if (!nextSessionSleepingOverrides && !nextSessionsById) {
+    return state;
+  }
+
+  return {
+    localSessionSleepingOverrides: nextSessionSleepingOverrides ?? state.localSessionSleepingOverrides,
+    sessionsById: nextSessionsById ?? state.sessionsById,
+  };
+}
+
+function applyLocalSessionSleepingOverrides(
+  groups: readonly SidebarSessionGroup[],
+  localSessionSleepingOverrides: Record<string, boolean>,
+): {
+  groups: SidebarSessionGroup[];
+  localSessionSleepingOverrides: Record<string, boolean>;
+} {
+  const overrideEntries = Object.entries(localSessionSleepingOverrides);
+  if (overrideEntries.length === 0) {
+    return {
+      groups: [...groups],
+      localSessionSleepingOverrides,
+    };
+  }
+
+  const incomingSessionIds = new Set(
+    groups.flatMap((group) => (group.sessions ?? []).map((session) => session.sessionId)),
+  );
+  const nextOverrides: Record<string, boolean> = {};
+  for (const [sessionId, sleeping] of overrideEntries) {
+    if (incomingSessionIds.has(sessionId)) {
+      nextOverrides[sessionId] = sleeping;
+    }
+  }
+  if (Object.keys(nextOverrides).length === 0) {
+    return {
+      groups: [...groups],
+      localSessionSleepingOverrides: nextOverrides,
+    };
+  }
+
+  return {
+    groups: groups.map((group) => {
+      const sessions = group.sessions ?? [];
+      if (!sessions.some((session) => session.sessionId in nextOverrides)) {
+        return group;
+      }
+      return {
+        ...group,
+        sessions: sessions.map((session) => {
+          const override = nextOverrides[session.sessionId];
+          if (override === undefined) {
+            return session;
+          }
+          if (session.isSleeping === override) {
+            delete nextOverrides[session.sessionId];
+            return session;
+          }
+          return applyLocalSessionSleepingOverride(session, override);
+        }),
+      };
+    }),
+    localSessionSleepingOverrides: nextOverrides,
+  };
+}
+
+function applyLocalSessionSleepingOverride(
+  session: SidebarSessionItem,
+  sleeping: boolean,
+): SidebarSessionItem {
+  return {
+    ...session,
+    isRunning: sleeping ? false : true,
+    isSleeping: sleeping,
+    lifecycleState: sleeping ? "sleeping" : "running",
   };
 }
 
@@ -519,6 +832,7 @@ function toSidebarGroupRecord(group: SidebarSessionGroup): SidebarGroupRecord {
     kind: group.kind,
     layoutVisibleCount: group.layoutVisibleCount,
     projectContext: group.projectContext,
+    remoteMachineContext: group.remoteMachineContext,
     title: group.title,
     viewMode: group.viewMode,
     visibleCount: group.visibleCount,
@@ -535,10 +849,21 @@ function haveSameSidebarGroupRecord(left: SidebarGroupRecord, right: SidebarGrou
     left.kind === right.kind &&
     left.layoutVisibleCount === right.layoutVisibleCount &&
     haveSameSidebarProjectContext(left.projectContext, right.projectContext) &&
+    haveSameSidebarRemoteMachineContext(left.remoteMachineContext, right.remoteMachineContext) &&
     left.title === right.title &&
     left.viewMode === right.viewMode &&
     left.visibleCount === right.visibleCount
   );
+}
+
+function haveSameSidebarRemoteMachineContext(
+  left: SidebarGroupRecord["remoteMachineContext"],
+  right: SidebarGroupRecord["remoteMachineContext"],
+): boolean {
+  if (!left || !right) {
+    return left === right;
+  }
+  return left.machineId === right.machineId && left.machineName === right.machineName;
 }
 
 function haveSameSidebarProjectContext(
@@ -592,6 +917,8 @@ function haveSameSidebarSessionItem(left: SidebarSessionItem, right: SidebarSess
     left.delayedSendRemainingLabel === right.delayedSendRemainingLabel &&
     left.delayedSendRemainingMs === right.delayedSendRemainingMs &&
     left.detail === right.detail &&
+    left.displayTitle === right.displayTitle &&
+    left.displayTitleTooltip === right.displayTitleTooltip &&
     left.faviconDataUrl === right.faviconDataUrl &&
     left.isGeneratingFirstPromptTitle === right.isGeneratingFirstPromptTitle &&
     left.isReloading === right.isReloading &&
@@ -599,6 +926,7 @@ function haveSameSidebarSessionItem(left: SidebarSessionItem, right: SidebarSess
     left.isFocused === right.isFocused &&
     left.isFavorite === right.isFavorite &&
     left.isPinned === right.isPinned &&
+    left.sessionTag === right.sessionTag &&
     left.isSleeping === right.isSleeping &&
     left.isRunning === right.isRunning &&
     left.isVisible === right.isVisible &&

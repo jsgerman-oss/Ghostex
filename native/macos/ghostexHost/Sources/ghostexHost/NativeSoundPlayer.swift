@@ -17,13 +17,15 @@ final class NativeSoundPlayer: NSObject, AVAudioPlayerDelegate {
    */
   func play(_ command: PlaySound) {
     guard isBundledSoundFileName(command.fileName) else {
-      Self.logger.error("Rejected invalid sound file name \(command.fileName, privacy: .public)")
+      let sanitizedFileName = NativeLogPrivacy.sanitizeLogLine(command.fileName)
+      Self.logger.error("Rejected invalid sound file name \(sanitizedFileName, privacy: .public)")
       return
     }
 
     let soundUrl = Self.resolveSoundUrl(fileName: command.fileName)
     guard FileManager.default.fileExists(atPath: soundUrl.path) else {
-      Self.logger.error("Sound file not found \(soundUrl.path, privacy: .public)")
+      let sanitizedPath = NativeLogPrivacy.sanitizeLogLine(soundUrl.path)
+      Self.logger.error("Sound file not found \(sanitizedPath, privacy: .public)")
       return
     }
 
@@ -35,7 +37,9 @@ final class NativeSoundPlayer: NSObject, AVAudioPlayerDelegate {
       player.prepareToPlay()
       player.play()
     } catch {
-      Self.logger.error("Failed to play sound \(command.fileName, privacy: .public): \(error.localizedDescription, privacy: .public)")
+      let sanitizedFileName = NativeLogPrivacy.sanitizeLogLine(command.fileName)
+      let sanitizedError = NativeLogPrivacy.sanitizeLogLine(error.localizedDescription)
+      Self.logger.error("Failed to play sound \(sanitizedFileName, privacy: .public): \(sanitizedError, privacy: .public)")
     }
   }
 

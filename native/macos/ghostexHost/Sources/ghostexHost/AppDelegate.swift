@@ -10,6 +10,56 @@ import UniformTypeIdentifiers
 import UserNotifications
 import WebKit
 
+private final class NativeProcessRegistry {
+  static let shared = NativeProcessRegistry()
+
+  private let lock = NSLock()
+  private var canceledRequestIds = Set<String>()
+  private var processesByRequestId: [String: Process] = [:]
+
+  func register(requestId: String, process: Process) -> Bool {
+    /*
+     CDXC:AddRepository 2026-06-01-10:33:
+     Repository clone cancellation is a native process concern, not just a toast
+     dismissal. Track runProcess children by request id so the sidebar can cancel
+     the active Git clone and so an early cancel wins before Process.run starts.
+     */
+    lock.lock()
+    defer { lock.unlock() }
+    if canceledRequestIds.remove(requestId) != nil {
+      return false
+    }
+    processesByRequestId[requestId] = process
+    return true
+  }
+
+  func unregister(requestId: String) {
+    lock.lock()
+    processesByRequestId.removeValue(forKey: requestId)
+    canceledRequestIds.remove(requestId)
+    lock.unlock()
+  }
+
+  func cancel(requestId: String) {
+    lock.lock()
+    let process = processesByRequestId[requestId]
+    if process?.isRunning != true {
+      canceledRequestIds.insert(requestId)
+    }
+    lock.unlock()
+
+    if process?.isRunning == true {
+      process?.terminate()
+    }
+  }
+
+  func isCanceled(requestId: String) -> Bool {
+    lock.lock()
+    defer { lock.unlock() }
+    return canceledRequestIds.contains(requestId)
+  }
+}
+
 /**
  CDXC:SidebarReference 2026-05-08-02:40
  The reference sidebar and standalone macOS title bar must share the same
@@ -52,6 +102,11 @@ private let ghostexNativeShellPathSentinel = "__GHOSTEX_NATIVE_SHELL_PATH__"
 private let ghostexNativeShellPathDiscoveryTimeout: DispatchTimeInterval = .seconds(2)
 private let ghostexNativeShellPathCacheLock = NSLock()
 private var ghostexNativeShellPathCache: [String]?
+private let ghostexNativeColorDisablingEnvironmentKeys = [
+  "ANSI_COLORS_DISABLED",
+  "NO_COLOR",
+  "NODE_DISABLE_COLORS",
+]
 
 private func normalizedNativeProcessEnvironment(overrides: [String: String]?) -> [String: String] {
   /**
@@ -60,12 +115,18 @@ private func normalizedNativeProcessEnvironment(overrides: [String: String]?) ->
    background commands must still find common developer tools installed through
    Homebrew, mise, asdf, or ~/.local/bin, because features such as session title
    generation run Codex through this process bridge instead of inside a terminal.
+
+   CDXC:NativeCommandBridge 2026-06-07-00:38:
+   Native helper subprocesses must not inherit NO_COLOR from the app process or command-specific env overlays. Keep helper environments color-capable by stripping color-disabling keys at the normalized process boundary.
    */
   var environment = ProcessInfo.processInfo.environment
   environment["PATH"] = normalizedNativeProcessPath(environment["PATH"], environment: environment)
   if let overrides {
     environment.merge(overrides) { _, newValue in newValue }
     environment["PATH"] = normalizedNativeProcessPath(environment["PATH"], environment: environment)
+  }
+  for key in ghostexNativeColorDisablingEnvironmentKeys {
+    environment.removeValue(forKey: key)
   }
   return environment
 }
@@ -118,12 +179,11 @@ private func nativeShellPathEntries(environment: [String: String]) -> [String] {
 
 private func discoverNativeShellPathEntries(environment: [String: String]) -> [String] {
   /**
-   CDXC:NativeCommandBridge 2026-06-02-10:18
-   OpenCode's official installer writes ~/.opencode/bin into shell startup
-   files, and npm/NVM Gemini installs often live in versioned Node bin folders.
-   GUI app launches do not receive those shell-mutated PATH entries, so probe
-   the user's interactive login shell once and merge the result with Ghostex's
-   static fallbacks.
+   CDXC:NativeCommandBridge 2026-06-03-20:28:
+   Some macOS-local commands still launch through the native bridge after
+   gxserver took shared agent/tool ownership. Probe the user's interactive login
+   shell once so GUI-launched setup probes can find shell-mutated PATH entries
+   such as NVM/npm, mise/asdf, Homebrew, and ~/.opencode/bin.
    */
   let configuredShell = environment["SHELL"]?.trimmingCharacters(in: .whitespacesAndNewlines)
   let shellPath = configuredShell?.isEmpty == false ? configuredShell! : "/bin/zsh"
@@ -557,12 +617,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
   private weak var appTitlebarLabel: NSTextField?
   private let nativeSettingsStore = NativeSettingsStore()
   private let lidSleepHelperClient = LidSleepPrivilegedHelperClient.shared
+  private let gxserverClient = GxserverClient()
   private var isSparkleUpdateAvailable = false
   private lazy var updaterController = SPUStandardUpdaterController(
     startingUpdater: true,
     updaterDelegate: self,
     userDriverDelegate: self)
   private var t3CodeRuntimeProcess: Process?
+  private var t3CodeRuntimeStartedAt: Date?
   private var t3RuntimeVisibleSessionCwd: String?
   private var t3RuntimeLivenessTimer: Timer?
   private var codeServerRuntimeProcess: Process?
@@ -615,10 +677,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
        Persistent helper mode was removed by request. Native terminals now
        always use the in-process embedded Ghostty SurfaceView backend from
        startup, so no restart-survival helper client is created.
+
+       CDXC:GxserverMigration 2026-05-30-19:30:
+       First upgraded launch must let gxserver finish the legacy macOS shared-state import before WKWebView injects sidebar storage. Creating the sidebar earlier can hydrate old `project-*`/`g-*` IDs and later persist them over the canonical P/G rewrite, so window creation waits for the local gxserver bootstrap result.
        */
-      makeWindow()
-      installAppHotkeyEventMonitor()
-      startBridge()
+      startGxserverBootstrapThenCreateWindow()
       startSparkleLaunchUpdateProbe()
       scheduleOSIntegrationFlushRetry()
     }
@@ -637,17 +700,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
       handleOSIntegrationURL(url)
     }
     if !filePaths.isEmpty {
-      dispatchOSIntegrationFileOpenPaths(filePaths)
+      dispatchApplicationFileOpenPaths(filePaths, operationSource: "applicationOpenURLs")
     }
   }
 
   @MainActor func application(_ sender: NSApplication, openFiles filenames: [String]) {
-    dispatchOSIntegrationFileOpenPaths(filenames)
+    dispatchApplicationFileOpenPaths(filenames, operationSource: "applicationOpenFiles")
     sender.reply(toOpenOrPrint: .success)
   }
 
   @MainActor func application(_ sender: NSApplication, openFile filename: String) -> Bool {
-    dispatchOSIntegrationFileOpenPaths([filename])
+    dispatchApplicationFileOpenPaths([filename], operationSource: "applicationOpenFile")
     return true
   }
 
@@ -666,6 +729,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
     )
     stopCodeServerRuntime(logPrefix: "nativeHost.applicationWillTerminate")
     (window?.contentView as? ghostexRootView)?.stopCodeServerRuntimeForAppTermination()
+    /**
+     CDXC:GxserverBootstrap 2026-05-30-15:39:
+     Closing or quitting the macOS app must not stop gxserver. The desktop host starts or reuses the daemon during launch, then treats it as an independent backend process so terminal/session backend state survives window and app lifetime changes.
+     */
     /**
      CDXC:TitlebarKeepAwake 2026-05-28-19:28:
      Closing Ghostex must restore normal lid-close sleep even if the React
@@ -922,6 +989,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
     return "\(type) phase=\(phase) eventNumber=\(eventNumber) ageMs=\(recordedAgeMs) hitView=\(hitView)"
   }
 
+  @MainActor
+  private func terminalPaneDropRecentLocalInputAgeMs() -> Int? {
+    lastNativeInputEventRecordedAt.map { Int(Date().timeIntervalSince($0) * 1000) }
+  }
+
+  @MainActor
+  private func shouldSuppressTerminalPaneDropActivationForRecentLocalInput(
+    recentLocalInputAgeMs: Int?
+  ) -> Bool {
+    if let event = NSApp.currentEvent,
+      Self.isNativeMouseActivationBoundaryEvent(event.type)
+    {
+      return true
+    }
+    guard let recentLocalInputAgeMs else {
+      return false
+    }
+    return recentLocalInputAgeMs >= 0 && recentLocalInputAgeMs <= 750
+  }
+
   private static func hitViewDescription(for event: NSEvent, in window: NSWindow?) -> String {
     guard let contentView = window?.contentView else {
       return "<none>"
@@ -936,13 +1023,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
   private static func nativeEventTypeName(_ eventType: NSEvent.EventType) -> String {
     switch eventType {
     case .leftMouseDown: return "leftMouseDown"
+    case .leftMouseDragged: return "leftMouseDragged"
     case .leftMouseUp: return "leftMouseUp"
     case .rightMouseDown: return "rightMouseDown"
+    case .rightMouseDragged: return "rightMouseDragged"
     case .rightMouseUp: return "rightMouseUp"
     case .otherMouseDown: return "otherMouseDown"
+    case .otherMouseDragged: return "otherMouseDragged"
     case .otherMouseUp: return "otherMouseUp"
     case .keyDown: return "keyDown"
     default: return "\(eventType.rawValue)"
+    }
+  }
+
+  private static func isNativeMouseActivationBoundaryEvent(_ eventType: NSEvent.EventType) -> Bool {
+    switch eventType {
+    case .leftMouseDown, .leftMouseUp, .rightMouseDown, .rightMouseUp, .otherMouseDown,
+      .otherMouseUp:
+      return true
+    default:
+      return false
     }
   }
 
@@ -1052,7 +1152,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
     return value
   }
 
+  private func ghosttyConfigColor(_ key: String) -> NSColor? {
+    guard let color = ghosttyConfigRawColor(key) else {
+      return nil
+    }
+    return NSColor(
+      calibratedRed: CGFloat(color.r) / 255,
+      green: CGFloat(color.g) / 255,
+      blue: CGFloat(color.b) / 255,
+      alpha: 1)
+  }
+
   private func ghosttyConfigColorHex(_ key: String) -> String? {
+    guard let color = ghosttyConfigRawColor(key) else {
+      return nil
+    }
+    return String(format: "#%02X%02X%02X", color.r, color.g, color.b)
+  }
+
+  private func ghosttyConfigRawColor(_ key: String) -> ghostty_config_color_s? {
     guard let config = ghostty.config.config else {
       return nil
     }
@@ -1060,7 +1178,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
     guard ghostty_config_get(config, &color, key, UInt(key.lengthOfBytes(using: .utf8))) else {
       return nil
     }
-    return String(format: "#%02X%02X%02X", color.r, color.g, color.b)
+    return color
   }
 
   private static func appendGhosttyConfigLog(_ message: String) {
@@ -1086,8 +1204,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
      Forced session-title entries record Codex title-generation failures even
      when debugging mode is disabled. Those failures must persist to the
      session-title log instead of interrupting the user with a native alert.
+
+     CDXC:Diagnostics 2026-06-06-07:09:
+     The force flag is not a normal-mode logging override for routine
+     breadcrumbs. Persist warning/error/failure-like session-title events with
+     Debugging Mode off, and keep all other session-title diagnostics behind the
+     settings toggle.
      */
-    guard force || NativeDebugLogging.isEnabled else {
+    guard isNativePersistentLogImportantDiagnostic(event) || NativeDebugLogging.isEnabled else {
       return
     }
     let logsDirectory = GhostexAppStorage.logsDirectory
@@ -1103,7 +1227,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
      title events, detector output, and sidebar projection can be correlated
      without mixing them with session rename diagnostics.
      */
-    guard NativeDebugLogging.isEnabled else {
+    guard isNativePersistentLogImportantDiagnostic(event) || NativeDebugLogging.isEnabled else {
       return
     }
     let logsDirectory = GhostexAppStorage.logsDirectory
@@ -1138,11 +1262,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
 
   fileprivate static func appendRestoreDebugLog(event: String, details: String?) {
     /**
-     CDXC:WorkspaceRestore 2026-04-26-10:00
-     The packaged native sidebar owns workspace/session persistence. Write
-     restore diagnostics into a dedicated app storage logs file so project load,
-     localStorage persistence, and native terminal recreation can be traced
-     independently from session-title logs.
+     CDXC:WorkspaceRestore 2026-06-02-15:27:
+     The native sidebar owns current-window layout restore while gxserver owns shared project/session persistence. Write restore diagnostics into a dedicated app storage logs file so local layout cache, localStorage persistence, and native terminal recreation can be traced independently from session-title logs.
      */
     guard NativeDebugLogging.isEnabled else {
       return
@@ -1156,6 +1277,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
 
   fileprivate static func appendSidebarRefreshDebugLog(event: String, details: String?) {
     SidebarRefreshDebugLog.append(event: event, details: details)
+  }
+
+  fileprivate static func appendSidebarCollapseStateDebugLog(event: String, details: String?) {
+    /**
+     CDXC:SidebarCollapseDiagnostics 2026-06-02-23:52:
+     Sidebar disclosure-state restart repros need a dedicated log under the
+     shared support-bundle logs directory. Keep writes behind Debugging Mode and
+     persist only the already-sanitized webview summary so project names, paths,
+     and raw localStorage payloads never reach disk.
+     */
+    guard NativeDebugLogging.isEnabled else {
+      return
+    }
+    let logsDirectory = GhostexAppStorage.logsDirectory
+    let logURL = logsDirectory.appendingPathComponent("sidebar-collapse-state-debug.log")
+    let message = details.map { "\(event) \($0)" } ?? event
+    appendLogLine(
+      message, to: logURL, logsDirectory: logsDirectory, label: "sidebar collapse state debug")
   }
 
   fileprivate static func appendProjectBoardDebugLog(event: String, details: String?) {
@@ -1227,13 +1366,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
   fileprivate static func persistSharedSidebarStorage(_ command: PersistSharedSidebarStorage) {
     do {
       try GhostexAppStorage.persistSharedSidebarStorage(
-        key: command.key, payloadJson: command.payloadJson)
+        key: command.key.rawValue, payloadJson: command.payloadJson)
     } catch {
       appendRestoreDebugLog(
         event: "nativeSidebar.sharedStorage.persistFailed",
         details: jsonObjectString([
           "error": error.localizedDescription,
-          "key": command.key,
+          "key": command.key.rawValue,
         ]))
     }
   }
@@ -1250,7 +1389,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
      formatting and avoid recreating the logs directory on every append so
      enabled diagnostics do not become the app's hot path.
      */
-    let line = "[\(logDateFormatter.string(from: Date()))] \(message)\n"
+    let line = "[\(logDateFormatter.string(from: Date()))] \(NativeLogPrivacy.sanitizeLogLine(message))\n"
 
     do {
       if !createdLogDirectories.contains(logsDirectory.path) {
@@ -1268,7 +1407,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
         try line.write(to: logURL, atomically: true, encoding: .utf8)
       }
     } catch {
-      logger.warning("failed to write \(label) log: \(error.localizedDescription)")
+      let sanitizedError = NativeLogPrivacy.sanitizeLogLine(error.localizedDescription)
+      logger.warning("failed to write \(label) log: \(sanitizedError)")
     }
   }
 
@@ -1328,6 +1468,64 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
       "windowDidResignKey windowVisible=\(window?.isVisible ?? false) keyWindow=\(window?.isKeyWindow ?? false) mainWindow=\(window?.isMainWindow ?? false) frontmost=\(NSWorkspace.shared.frontmostApplication?.localizedName ?? "<missing>") lastActivationRequest=\(describeLastNativeActivationRequest()) recentInput=\(describeRecentNativeInputEvent()) workspace=\(describeWorkspaceActivationSnapshot())"
     )
     logNativeActivationLifecycleEvent("nativeHost.window.didResignKey")
+  }
+
+  /*
+   CDXC:TerminalImageDrop 2026-06-08-03:57:
+   The 03:53 Dock-stack repro showed `NSWindow.registerForDraggedTypes` was active but no `window.entered` or `window.perform` events fired. AppKit's NSWindow drag registration forwards NSDraggingDestination messages to the window delegate, so route those delegate callbacks here instead of relying only on subclass methods on the custom window.
+
+   CDXC:TerminalImageDrop 2026-06-08-03:59:
+   The 03:59 repro still showed no `window.entered` event after delegate routing was added. NSWindow discovers these drag methods by Objective-C selector lookup rather than the NSWindowDelegate protocol, so expose them explicitly with `@objc` to make `responds(to:)` succeed.
+
+   CDXC:TerminalImageDrop 2026-06-08-04:49:
+   Window drag registration is now disabled after the 04:45 Dock-stack repro, but these delegate methods stay wired for diagnostics if AppKit ever routes an already-selected window drag destination through the historical callbacks.
+   */
+  @objc(draggingEntered:)
+  func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+    routeTerminalPaneDropWindowDelegateDragOperation(sender, phase: "entered")
+  }
+
+  @objc(draggingUpdated:)
+  func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
+    routeTerminalPaneDropWindowDelegateDragOperation(sender, phase: "updated")
+  }
+
+  @objc(draggingExited:)
+  func draggingExited(_ sender: NSDraggingInfo?) {
+    guard isMainTerminalPaneDropDestination(sender) else {
+      return
+    }
+    (window as? ghostexFocusReportingWindow)?.onTerminalPaneDropDraggingExited?(sender)
+  }
+
+  @objc(prepareForDragOperation:)
+  func prepareForDragOperation(_ sender: NSDraggingInfo) -> Bool {
+    routeTerminalPaneDropWindowDelegateDragOperation(sender, phase: "prepare") == .copy
+  }
+
+  @objc(performDragOperation:)
+  func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+    guard isMainTerminalPaneDropDestination(sender) else {
+      return false
+    }
+    return (window as? ghostexFocusReportingWindow)?.onTerminalPaneDropPerform?(sender) ?? false
+  }
+
+  private func routeTerminalPaneDropWindowDelegateDragOperation(
+    _ sender: NSDraggingInfo,
+    phase: String
+  ) -> NSDragOperation {
+    guard isMainTerminalPaneDropDestination(sender) else {
+      return []
+    }
+    return (window as? ghostexFocusReportingWindow)?.onTerminalPaneDropDragOperation?(sender, phase) ?? []
+  }
+
+  private func isMainTerminalPaneDropDestination(_ sender: NSDraggingInfo?) -> Bool {
+    guard let destinationWindow = sender?.draggingDestinationWindow else {
+      return true
+    }
+    return destinationWindow === window
   }
 
   func windowDidBecomeMain(_ notification: Notification) {
@@ -1659,7 +1857,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
   nonisolated func setSecureInput(_ mode: Ghostty.SetSecureInput) {}
 
   @MainActor
-  private func makeWindow() {
+  private func makeWindow(gxserverStatus: GxserverClientStatus? = nil) {
     let sessionStatusIndicatorController = SessionStatusIndicatorController(
       onActivationRequest: { [weak self] reason in
         self?.recordNativeActivationRequest(reason: reason)
@@ -1700,8 +1898,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
       })
     self.petOverlayController = petOverlayController
     petOverlayController.load(webAssets: ghostexRootView.resolveWebAssets())
+    /*
+     CDXC:WorkspaceLayout 2026-06-07-16:53:
+     Native workspace chrome should derive its automatic background from the same loaded Ghostty config as embedded terminals. Resolve the color after Ghostty initialization so themes and user config participate, with black only when Ghostty cannot provide a background.
+     */
     let root = ghostexRootView(
       ghostty: ghostty,
+      defaultWorkspaceBackgroundColor: ghosttyConfigColor("background") ?? .black,
+      gxserverBootstrap: gxserverClient.webBootstrap(status: gxserverStatus),
       sendEvent: { [weak self] event in
         self?.bridge?.send(event)
         (self?.window?.contentView as? ghostexRootView)?.postHostEvent(event)
@@ -1735,6 +1939,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
       },
       showUpdateDialogFromTitlebar: { [weak self] in
         self?.showUpdateDialogFromTitlebar()
+      },
+      startGxserverFromTitlebar: { [weak self] in
+        self?.startGxserverFromUserAction(reason: "start")
+      },
+      stopGxserverFromTitlebar: { [weak self] in
+        self?.stopGxserverFromUserAction()
+      },
+      restartGxserverFromTitlebar: { [weak self] in
+        self?.restartGxserverFromUserAction()
+      },
+      setGxserverAlwaysStartFromTitlebar: { [weak self] enabled in
+        self?.setGxserverAlwaysStartFromUserAction(enabled: enabled)
       }
     )
     workspaceView = root.workspaceView
@@ -1772,6 +1988,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
         root?.handleWindowMouseDownBeforeDispatch(event)
       }
       self?.logNativeActivationBoundaryInputEvent(event, phase: phase)
+    }
+    /*
+     CDXC:TerminalImageDrop 2026-06-07-16:58:
+     The 16:56 image-drop repro tried registering the NSWindow itself as a high-water drag destination because child AppKit/CEF surfaces could prevent content/root views from becoming the selected drag receiver.
+
+     CDXC:TerminalImageDrop 2026-06-08-04:49:
+     The 04:45 Dock-stack repro showed the window/root registrations still did not receive `NSDraggingInfo`, while the release mouse hit test reached the terminal surface. Disable window-level file-drop registration so AppKit can select the concrete terminal NSView directly.
+     */
+    window.unregisterDraggedTypes()
+    root.workspaceView.logTerminalPaneDropRegistrationDisabled(operationSource: "window")
+    window.onTerminalPaneDropDragOperation = { [weak root] sender, phase in
+      guard let root else { return [] }
+      return root.workspaceView.terminalPaneRootDragOperation(
+        for: sender,
+        rootView: root,
+        phase: phase,
+        operationSource: "window")
+    }
+    window.onTerminalPaneDropDraggingExited = { [weak root] sender in
+      guard let root else { return }
+      root.workspaceView.terminalPaneRootDraggingExited(
+        sender,
+        rootView: root,
+        operationSource: "window")
+    }
+    window.onTerminalPaneDropPerform = { [weak root] sender in
+      guard let root else { return false }
+      return root.workspaceView.performTerminalPaneRootDrop(
+        for: sender,
+        rootView: root,
+        operationSource: "window")
     }
     window.title = "Ghostex"
     window.titleVisibility = .hidden
@@ -1883,22 +2130,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
     guard let storedFrame = stored.frame else {
       return nil
     }
-    let size = CGSize(
-      width: max(storedFrame.width, ghostexMainWindowMinimumSize.width),
-      height: max(storedFrame.height, ghostexMainWindowMinimumSize.height))
-    if let screen = screen(matchingIdentifier: stored.screenID),
-      let storedScreenFrame = stored.screenFrame
-    {
-      return NSRect(
-        x: screen.frame.minX + (storedFrame.minX - storedScreenFrame.minX),
-        y: screen.frame.minY + (storedFrame.minY - storedScreenFrame.minY),
+    guard let launchScreen = resolvedMainWindowLaunchScreen(from: stored, storedFrame: storedFrame)
+    else {
+      return nil
+    }
+    let size = constrainedMainWindowSize(storedFrame.size, for: launchScreen.screen)
+    let proposedFrame: NSRect
+    /**
+     CDXC:NativeWindowChrome 2026-06-05-05:06:
+     Relaunch must reopen the macOS app at the same outer-window size and
+     display-relative position saved at close. If that monitor is absent, choose
+     the nearest available display and preserve the saved relative placement
+     while shrinking and clamping the frame to the best visible size available
+     on that display.
+     */
+    if launchScreen.isStoredDisplayConnected, let storedScreenFrame = stored.screenFrame {
+      proposedFrame = NSRect(
+        x: launchScreen.screen.frame.minX + (storedFrame.minX - storedScreenFrame.minX),
+        y: launchScreen.screen.frame.minY + (storedFrame.minY - storedScreenFrame.minY),
         width: size.width,
         height: size.height)
+    } else if let storedScreenFrame = stored.screenFrame {
+      proposedFrame = remappedMainWindowFrame(
+        storedFrame: storedFrame,
+        storedScreenFrame: storedScreenFrame,
+        targetScreen: launchScreen.screen,
+        targetSize: size)
+    } else {
+      proposedFrame = NSRect(origin: storedFrame.origin, size: size)
     }
-    if screen(containingLargestVisibleAreaOf: storedFrame) != nil {
-      return NSRect(origin: storedFrame.origin, size: size)
-    }
-    return nil
+    return clampedMainWindowFrame(proposedFrame, to: launchScreen.screen.visibleFrame)
   }
 
   private static func defaultInitialWindowFrame(size: CGSize) -> NSRect {
@@ -1908,6 +2169,95 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
     let x = screenFrame.minX + min(100, max(0, screenFrame.width - width))
     let y = screenFrame.minY + min(80, max(0, screenFrame.height - height))
     return NSRect(x: x, y: y, width: width, height: height)
+  }
+
+  private struct MainWindowLaunchScreen {
+    let screen: NSScreen
+    let isStoredDisplayConnected: Bool
+  }
+
+  private static func resolvedMainWindowLaunchScreen(
+    from stored: NativeMainWindowChromeSettings,
+    storedFrame: NSRect
+  ) -> MainWindowLaunchScreen? {
+    if let screen = screen(matchingIdentifier: stored.screenID) {
+      return MainWindowLaunchScreen(screen: screen, isStoredDisplayConnected: true)
+    }
+    if let storedScreenFrame = stored.screenFrame {
+      if let screen = screen(containingLargestVisibleAreaOf: storedScreenFrame) {
+        return MainWindowLaunchScreen(screen: screen, isStoredDisplayConnected: false)
+      }
+      let storedScreenCenter = NSPoint(x: storedScreenFrame.midX, y: storedScreenFrame.midY)
+      if let screen = screen(nearestTo: storedScreenCenter) {
+        return MainWindowLaunchScreen(screen: screen, isStoredDisplayConnected: false)
+      }
+    }
+    if let screen = screen(containingLargestVisibleAreaOf: storedFrame) {
+      return MainWindowLaunchScreen(screen: screen, isStoredDisplayConnected: false)
+    }
+    return (NSScreen.main ?? NSScreen.screens.first).map {
+      MainWindowLaunchScreen(screen: $0, isStoredDisplayConnected: false)
+    }
+  }
+
+  private static func remappedMainWindowFrame(
+    storedFrame: NSRect,
+    storedScreenFrame: NSRect,
+    targetScreen: NSScreen,
+    targetSize: NSSize
+  ) -> NSRect {
+    let targetFrame = targetScreen.visibleFrame
+    let xRatio = mainWindowPositionRatio(
+      origin: storedFrame.minX,
+      containerOrigin: storedScreenFrame.minX,
+      containerLength: storedScreenFrame.width,
+      windowLength: storedFrame.width)
+    let yRatio = mainWindowPositionRatio(
+      origin: storedFrame.minY,
+      containerOrigin: storedScreenFrame.minY,
+      containerLength: storedScreenFrame.height,
+      windowLength: storedFrame.height)
+    return NSRect(
+      x: targetFrame.minX + xRatio * max(0, targetFrame.width - targetSize.width),
+      y: targetFrame.minY + yRatio * max(0, targetFrame.height - targetSize.height),
+      width: targetSize.width,
+      height: targetSize.height)
+  }
+
+  private static func mainWindowPositionRatio(
+    origin: CGFloat,
+    containerOrigin: CGFloat,
+    containerLength: CGFloat,
+    windowLength: CGFloat
+  ) -> CGFloat {
+    let availableLength = containerLength - windowLength
+    guard availableLength > 0 else {
+      return 0.5
+    }
+    return min(1, max(0, (origin - containerOrigin) / availableLength))
+  }
+
+  private static func constrainedMainWindowSize(_ size: NSSize, for screen: NSScreen) -> NSSize {
+    let visibleFrame = screen.visibleFrame
+    return NSSize(
+      width: min(
+        max(size.width, ghostexMainWindowMinimumSize.width),
+        max(visibleFrame.width, ghostexMainWindowMinimumSize.width)),
+      height: min(
+        max(size.height, ghostexMainWindowMinimumSize.height),
+        max(visibleFrame.height, ghostexMainWindowMinimumSize.height)))
+  }
+
+  private static func clampedMainWindowFrame(_ frame: NSRect, to visibleFrame: NSRect) -> NSRect {
+    let width = frame.width
+    let height = frame.height
+    let maxX = max(visibleFrame.minX, visibleFrame.maxX - width)
+    let maxY = max(visibleFrame.minY, visibleFrame.maxY - height)
+    return NSRect(
+      x: min(max(frame.minX, visibleFrame.minX), maxX),
+      y: min(max(frame.minY, visibleFrame.minY), maxY),
+      width: width,
+      height: height)
   }
 
   private func persistMainWindowChrome() {
@@ -2121,6 +2471,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
     return candidates.first?.screen
   }
 
+  private static func screen(nearestTo point: NSPoint) -> NSScreen? {
+    NSScreen.screens.min { lhs, rhs in
+      let lhsDistanceX = lhs.frame.midX - point.x
+      let lhsDistanceY = lhs.frame.midY - point.y
+      let rhsDistanceX = rhs.frame.midX - point.x
+      let rhsDistanceY = rhs.frame.midY - point.y
+      return lhsDistanceX * lhsDistanceX + lhsDistanceY * lhsDistanceY
+        < rhsDistanceX * rhsDistanceX + rhsDistanceY * rhsDistanceY
+    }
+  }
+
   fileprivate static func screenIdentifier(_ screen: NSScreen?) -> UInt32? {
     guard
       let number = screen?.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber
@@ -2175,6 +2536,97 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
   }
 
   @MainActor
+  private func startGxserverBootstrapThenCreateWindow() {
+    Task { [weak self] in
+      guard let self else { return }
+      let status = await self.gxserverClient.startOrReuse()
+      await MainActor.run {
+        /*
+         CDXC:GxserverBootstrap 2026-06-07-12:02:
+         The sidebar may miss the first native gxserverStatus host event while the WebKit document is still installing listeners. Seed the startup status into the injected bootstrap object so React sees a running daemon before it decides whether startup API work is allowed.
+         */
+        self.makeWindow(gxserverStatus: status)
+        self.installAppHotkeyEventMonitor()
+        self.startBridge()
+        self.publishGxserverBootstrapStatus(status)
+      }
+    }
+  }
+
+  @MainActor
+  private func publishGxserverBootstrapStatus(_ status: GxserverClientStatus) {
+    guard
+      let payloadData = try? JSONSerialization.data(withJSONObject: gxserverClient.statusPayload(status)),
+      let payloadJson = String(data: payloadData, encoding: .utf8)
+    else {
+      return
+    }
+    let event = HostEvent.gxserverStatus(payloadJson: payloadJson)
+    bridge?.send(event)
+    (window?.contentView as? ghostexRootView)?.postHostEvent(event)
+    Self.appendNativeHostLifecycleLog(
+      "gxserver.bootstrap state=\(status.state) ok=\(status.ok) message=\(status.message)")
+  }
+
+  @MainActor
+  private func startGxserverFromUserAction(reason: String) {
+    publishGxserverBootstrapStatus(gxserverClient.startingStatus(message: "Starting gxserver..."))
+    Task { [weak self] in
+      guard let self else { return }
+      let status = await self.gxserverClient.startOrReuse(allowStart: true)
+      await MainActor.run {
+        Self.appendNativeHostLifecycleLog("gxserver.\(reason) state=\(status.state) ok=\(status.ok)")
+        self.publishGxserverBootstrapStatus(status)
+      }
+    }
+  }
+
+  @MainActor
+  private func stopGxserverFromUserAction() {
+    publishGxserverBootstrapStatus(gxserverClient.startingStatus(message: "Stopping gxserver..."))
+    Task { [weak self] in
+      guard let self else { return }
+      let status = await self.gxserverClient.stopControlPlane()
+      await MainActor.run {
+        Self.appendNativeHostLifecycleLog("gxserver.stop state=\(status.state) ok=\(status.ok)")
+        self.publishGxserverBootstrapStatus(status)
+      }
+    }
+  }
+
+  @MainActor
+  private func restartGxserverFromUserAction() {
+    publishGxserverBootstrapStatus(gxserverClient.startingStatus(message: "Restarting gxserver..."))
+    Task { [weak self] in
+      guard let self else { return }
+      _ = await self.gxserverClient.stopControlPlane()
+      let status = await self.gxserverClient.startOrReuse(allowStart: true)
+      await MainActor.run {
+        Self.appendNativeHostLifecycleLog("gxserver.restart state=\(status.state) ok=\(status.ok)")
+        self.publishGxserverBootstrapStatus(status)
+      }
+    }
+  }
+
+  @MainActor
+  private func setGxserverAlwaysStartFromUserAction(enabled: Bool) {
+    /**
+     CDXC:GxserverBootstrap 2026-05-31-03:56:
+     The Resources dropdown owns the compact daemon controls. The Always start
+     checkbox changes only future Ghostex launch behavior; explicit Start and
+     Restart still run immediately so users can recover a stopped daemon.
+    */
+    gxserverClient.alwaysStartOnLaunch = enabled
+    Task { [weak self] in
+      guard let self else { return }
+      let status = await self.gxserverClient.startOrReuse(allowStart: false)
+      await MainActor.run {
+        self.publishGxserverBootstrapStatus(status)
+      }
+    }
+  }
+
+  @MainActor
   private func startBridge() {
     do {
       /**
@@ -2182,9 +2634,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
        CEF browser-pane verification runs the ghostex-dev app beside the installed
        ghostex app. Give the dev bundle a separate CLI bridge port so browser-pane
        creation can be tested without stopping the user's normal ghostex process.
+
+       CDXC:GxserverBootstrap 2026-05-30-15:39:
+       gxserver owns port 58744 in the hard cutover. The dev-only native CLI bridge uses 58742 so local desktop automation cannot bind or mask the daemon API port.
+
+       CDXC:GxserverMacBootstrap 2026-05-30-15:13:
+       gxserver owns fixed local API port 58744, so the dev-only native CLI
+       bridge must not bind that port before daemon bootstrap. Keep production
+       on 58743 and move dev bridge traffic to 58742.
        */
-      let bridgePort: UInt16 = Bundle.main.bundleIdentifier == "com.madda.ghostex-dev.host"
-        ? 58744
+      let bridgePort: UInt16 = Self.isDevBundleIdentifier(Bundle.main.bundleIdentifier)
+        ? 58742
         : 58743
       let bridgeAuthToken = try Self.prepareBridgeAuthToken()
       let bridge = try NativeHostBridge(port: bridgePort, authToken: bridgeAuthToken) { [weak self] command in
@@ -2203,20 +2663,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
        */
       Self.appendNativeHostLifecycleLog("nativeHostBridge.failed error=\(error.localizedDescription)")
       workspaceView?.createTerminal(
-        CreateTerminal(
-          activateOnCreate: true,
-          cwd: FileManager.default.currentDirectoryPath,
-          diagnosticSource: nil,
+	        CreateTerminal(
+	          activateOnCreate: true,
+	          cwd: FileManager.default.currentDirectoryPath,
+	          diagnosticSource: nil,
 	          env: nil,
 	          initialInput: "printf 'Failed to start Ghostex bridge: \(error.localizedDescription)\\n'\r",
+	          persistenceSessionCreated: nil,
 	          sessionId: "bridge-error",
-          sessionPersistenceName: nil,
-          sessionPersistenceProvider: nil,
-          /**
-           CDXC:CliBridgeTransport 2026-05-21-00:56:
-           The bridge-error terminal must remain a normal shell session that receives diagnostic initial input, so the explicit shellCommand contract is nil here.
-           */
-          shellCommand: nil,
+	          sessionPersistenceName: nil,
+	          sessionPersistenceProvider: nil,
+	          /**
+	           CDXC:CliBridgeTransport 2026-05-21-00:56:
+	           The bridge-error terminal must remain a normal shell session that receives diagnostic initial input, so the explicit shellCommand contract is nil here.
+
+	           CDXC:GxserverBootstrap 2026-05-30-16:16:
+	           This diagnostic pane is created only when the native bridge fails before sidebar startup, so it must not claim a gxserver-created zmx attach command or persistence-created state.
+	           */
+	          shellAttachCommand: nil,
+	          shellCommand: nil,
           title: "Bridge error",
           tmuxMode: nil,
           tmuxSessionName: nil
@@ -2224,7 +2689,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
     }
   }
 
-  private static func prepareBridgeAuthToken() throws -> String {
+	  private static func prepareBridgeAuthToken() throws -> String {
     /**
      CDXC:CliBridgeSecurity 2026-05-15-18:25
      CLI automation still needs a localhost bridge, but browser pages can also
@@ -2245,9 +2710,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
     )
     if fileManager.fileExists(atPath: GhostexAppStorage.cliBridgeTokenURL.path) {
       try fileManager.removeItem(at: GhostexAppStorage.cliBridgeTokenURL)
-    }
-    guard
-      fileManager.createFile(
+	  }
+
+	    guard
+	      fileManager.createFile(
         atPath: GhostexAppStorage.cliBridgeTokenURL.path,
         contents: Data("\(token)\n".utf8),
         attributes: [.posixPermissions: 0o600]
@@ -2258,10 +2724,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
         code: 2,
         userInfo: [NSLocalizedDescriptionKey: "Failed to write bridge token."])
     }
-    return token
+	    return token
+	  }
+
+  private static func isDevBundleIdentifier(_ bundleIdentifier: String?) -> Bool {
+    /**
+     CDXC:GxserverVerification 2026-05-30-16:25:
+     Worktree verification uses a uniquely identified Ghostex dev app so Cua Driver can launch the built bundle instead of the installed /Applications copy. Every com.madda.ghostex-dev... bundle keeps the dev bridge on 58742 because gxserver owns 58744 and production keeps 58743.
+     */
+    bundleIdentifier?.hasPrefix("com.madda.ghostex-dev") == true
   }
 
-  private static func makeBridgeAuthToken() throws -> String {
+	  private static func makeBridgeAuthToken() throws -> String {
     var bytes = [UInt8](repeating: 0, count: 32)
     let status = SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes)
     guard status == errSecSuccess else {
@@ -2271,6 +2745,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
         userInfo: [NSLocalizedDescriptionKey: "Failed to create bridge token."])
     }
     return Data(bytes).base64EncodedString()
+  }
+
+  @MainActor
+  private func startGxserverBootstrap() {
+    Task { [weak self] in
+      guard let self else { return }
+      let result = await self.gxserverClient.startOrReuse()
+      await MainActor.run {
+        Self.appendNativeHostLifecycleLog("gxserver.bootstrap ok=\(result.ok) message=\(result.message)")
+        if !result.ok {
+          self.showMessage(.init(level: .error, message: result.message))
+        }
+      }
+    }
   }
 
   @MainActor
@@ -2300,6 +2788,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
       workspaceView?.closeWebPane(sessionId: command.sessionId)
     case .focusTerminal(let command):
       workspaceView?.focusTerminal(sessionId: command.sessionId)
+    case .focusProjectEditorCompanionSession(let command):
+      workspaceView?.focusProjectEditorCompanionSession(sessionId: command.sessionId)
     case .focusWebPane(let command):
       workspaceView?.focusWebPane(sessionId: command.sessionId)
     case .reloadWebPane(let command):
@@ -2391,6 +2881,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
     case .appendSessionTitleDebugLog(let command):
       Self.appendSessionTitleDebugLog(
         event: command.event, details: command.details, force: command.force == true)
+    case .appendSidebarCollapseStateDebugLog(let command):
+      Self.appendSidebarCollapseStateDebugLog(event: command.event, details: command.details)
     case .appendSidebarRefreshDebugLog(let command):
       Self.appendSidebarRefreshDebugLog(event: command.event, details: command.details)
     case .appendWorkspaceDockIndicatorDebugLog(let command):
@@ -2404,6 +2896,46 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
     case .runProcess(let command):
       runProcess(command) { [weak self] event in
         self?.bridge?.send(event)
+      }
+    case .cancelRunProcess(let command):
+      NativeProcessRegistry.shared.cancel(requestId: command.requestId)
+    case .gxserverRequest(let command):
+      Task { [weak self] in
+        let event = await GxserverClient.request(command)
+        await MainActor.run {
+          self?.bridge?.send(event)
+        }
+      }
+    case .remoteGxserverConnect(let command):
+      bridge?.send(RemoteGxserverClient.shared.connectingStatus(
+        remoteMachineId: command.remoteMachineId,
+        requestId: command.requestId
+      ))
+      Task { [weak self] in
+        let event = await RemoteGxserverClient.shared.connect(command)
+        await MainActor.run {
+          self?.bridge?.send(event)
+        }
+      }
+    case .remoteGxserverRequest(let command):
+      Task { [weak self] in
+        let event = await RemoteGxserverClient.shared.request(command)
+        await MainActor.run {
+          self?.bridge?.send(event)
+        }
+      }
+    case .remoteGxserverSubscribePresentation(let command):
+      Task { [weak self] in
+        let event = await RemoteGxserverClient.shared.subscribePresentation(command) { event in
+          Task { [weak self] in
+            await MainActor.run {
+              self?.bridge?.send(event)
+            }
+          }
+        }
+        await MainActor.run {
+          self?.bridge?.send(event)
+        }
       }
     case .setKeepAwakeLidSleepPrevention(let command):
       LidSleepPrivilegedHelperClient.shared.setEnabled(
@@ -2434,7 +2966,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
         target: command.target,
         bundleIdentifier: bundleIdentifier)
       if failures.isEmpty {
-        showMessage(.init(level: .info, message: "Updated macOS OS Integration defaults."))
+        (window?.contentView as? ghostexRootView)?.presentAppToast(
+          level: "success",
+          title: "Updated macOS OS Integration defaults."
+        )
       } else {
         showMessage(.init(level: .error, message: "Could not set defaults: \(failures.joined(separator: ", "))"))
       }
@@ -2484,6 +3019,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
       break
     case .showUpdateDialogFromTitlebar:
       showUpdateDialogFromTitlebar()
+    case .startGxserverFromTitlebar:
+      startGxserverFromUserAction(reason: "start")
+    case .stopGxserverFromTitlebar:
+      stopGxserverFromUserAction()
+    case .restartGxserverFromTitlebar:
+      restartGxserverFromUserAction()
+    case .setGxserverAlwaysStartFromTitlebar(let command):
+      setGxserverAlwaysStartFromUserAction(enabled: command.enabled)
     case .focusResourceSessionFromTitlebar:
       break
     case .sleepInactiveSessionsFromTitlebar:
@@ -2510,36 +3053,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
   }
 
   /**
-   CDXC:T3Code 2026-05-14-09:34:
-   While the sidebar still shows awake T3 sessions, native must treat the
-   managed t3code provider as required background infrastructure. Refresh the
-   heartbeat and actively repair missing or unresponsive localhost runtime
-   state so restored T3 cards do not strand users in a manual retry flow.
+   CDXC:T3Code 2026-06-06-05:13:
+   The native-host command path keeps accepting sidebar T3 session-state messages
+   for protocol compatibility, but those messages cannot own provider lifetime.
+   Live managed T3 panes now refresh and repair t3code through the root workspace
+   pane registry.
    */
   @MainActor
   private func setT3CodeRuntimeSessionState(_ command: SetT3CodeRuntimeSessionState, reason: String) {
-    NativeT3RuntimeLauncher.setRunningSessionHeartbeat(
-      runningSessionIds: command.runningSessionIds,
-      reason: reason)
-    let runtimeCwd = command.runtimeCwd?.trimmingCharacters(in: .whitespacesAndNewlines)
-    guard !command.runningSessionIds.isEmpty, let runtimeCwd, !runtimeCwd.isEmpty else {
-      t3RuntimeVisibleSessionCwd = nil
-      t3RuntimeLivenessTimer?.invalidate()
-      t3RuntimeLivenessTimer = nil
-      return
-    }
-
-    t3RuntimeVisibleSessionCwd = runtimeCwd
-    ensureT3CodeRuntimeForRunningSessions(reason: reason)
-    if t3RuntimeLivenessTimer == nil {
-      let timer = Timer(timeInterval: 10.0, repeats: true) { [weak self] _ in
-        MainActor.assumeIsolated {
-          self?.ensureT3CodeRuntimeForRunningSessions(reason: "livenessTimer")
-        }
-      }
-      t3RuntimeLivenessTimer = timer
-      RunLoop.main.add(timer, forMode: .common)
-    }
+    /**
+     CDXC:T3Code 2026-06-06-05:13:
+     Sidebar-projected T3 session state is no longer allowed to own provider
+     lifetime. Live native managed T3 panes are the authoritative signal, so a
+     stale or gxserver-filtered hydrate payload cannot stop the runtime while a
+     real T3 tab remains open.
+     */
+    NativeT3CodePaneReproLog.append("nativeHost.t3Runtime.sidebarSessionState.ignored", [
+      "hasRuntimeCwd": command.runtimeCwd?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false,
+      "reason": reason,
+      "runningSessionCount": command.runningSessionIds.count,
+    ])
   }
 
   @MainActor
@@ -2581,6 +3114,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
        the handle only after the same health probe used for listener adoption.
        */
       guard NativeT3RuntimeLauncher.hasResponsiveManagedRuntimeListener() else {
+        if let startedAt = t3CodeRuntimeStartedAt {
+          let runtimeAgeSeconds = Date().timeIntervalSince(startedAt)
+          if runtimeAgeSeconds <= NativeT3RuntimeLauncher.startupGraceInterval {
+            NativeT3CodePaneReproLog.append("nativeHost.t3Runtime.start.booting", [
+              "pid": process.processIdentifier,
+              "runtimeAgeSeconds": runtimeAgeSeconds,
+              "startupGraceSeconds": NativeT3RuntimeLauncher.startupGraceInterval,
+            ])
+            workspaceView?.reloadManagedT3WebPanes(reason: "runtimeRetainedDuringStartup")
+            return
+          }
+        }
         if NativeT3RuntimeLauncher.shouldRetainUnresponsiveManagedRuntime(
           pid: Int(process.processIdentifier))
         {
@@ -2604,6 +3149,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
         ])
         process.terminate()
         t3CodeRuntimeProcess = nil
+        t3CodeRuntimeStartedAt = nil
         NativeT3RuntimeLauncher.clearStaleRuntimeIfNeeded(logPrefix: "nativeHost")
         return startT3CodeRuntime(command)
       }
@@ -2612,6 +3158,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
         "pid": process.processIdentifier,
       ])
       return
+    }
+    if let process = t3CodeRuntimeProcess, !process.isRunning {
+      NativeT3CodePaneReproLog.append("nativeHost.t3Runtime.start.trackedExited", [
+        "pid": process.processIdentifier
+      ])
+      t3CodeRuntimeProcess = nil
+      t3CodeRuntimeStartedAt = nil
     }
 
     /**
@@ -2628,8 +3181,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
       return
     }
 
+    let launchStartedAt: Date
+    switch NativeT3RuntimeLauncher.claimLaunchStart() {
+    case .retained(let launchAgeSeconds):
+      NativeT3CodePaneReproLog.append("nativeHost.t3Runtime.start.launchInProgressRetained", [
+        "launchAgeSeconds": launchAgeSeconds,
+        "startupGraceSeconds": NativeT3RuntimeLauncher.startupGraceInterval,
+      ])
+      workspaceView?.reloadManagedT3WebPanes(reason: "runtimeRetainedDuringStartup")
+      return
+    case .claimed(let claimedStartedAt):
+      launchStartedAt = claimedStartedAt
+    }
+
     NativeT3RuntimeLauncher.clearStaleRuntimeIfNeeded(logPrefix: "nativeHost")
     if NativeT3RuntimeLauncher.hasManagedRuntimeListener() {
+      NativeT3RuntimeLauncher.clearLaunchAttempt(startedAt: launchStartedAt)
       NativeT3CodePaneReproLog.append("nativeHost.t3Runtime.start.retainedExistingUnresponsive", [
         "cwd": command.cwd,
         "port": NativeT3RuntimeLauncher.port,
@@ -2646,14 +3213,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
       let process = launch.process
       try process.run()
       t3CodeRuntimeProcess = process
+      t3CodeRuntimeStartedAt = launchStartedAt
       NativeT3CodePaneReproLog.append("nativeHost.t3Runtime.start.spawned", [
         "args": process.arguments ?? [],
         "cwd": command.cwd,
         "executable": process.executableURL?.path ?? NSNull(),
         "pid": process.processIdentifier,
+        "startedAt": launchStartedAt.timeIntervalSince1970,
       ])
       workspaceView?.reloadManagedT3WebPanes(reason: "runtimeSpawned")
-      process.terminationHandler = { [outputCapture = launch.outputCapture] terminatedProcess in
+      process.terminationHandler = { [outputCapture = launch.outputCapture, launchStartedAt] terminatedProcess in
+        NativeT3RuntimeLauncher.clearLaunchAttempt(startedAt: launchStartedAt)
         var details = outputCapture.finish()
         details["pid"] = terminatedProcess.processIdentifier
         details["reason"] = terminatedProcess.terminationReason.rawValue
@@ -2661,11 +3231,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
         NativeT3CodePaneReproLog.append("nativeHost.t3Runtime.exit", details)
       }
     } catch {
+      NativeT3RuntimeLauncher.clearLaunchAttempt(startedAt: launchStartedAt)
       NativeT3CodePaneReproLog.append("nativeHost.t3Runtime.start.failed", [
         "cwd": command.cwd,
         "error": error.localizedDescription,
       ])
-      Self.logger.error("Failed to start T3 Code runtime: \(error.localizedDescription)")
+      let sanitizedError = NativeLogPrivacy.sanitizeLogLine(error.localizedDescription)
+      Self.logger.error("Failed to start T3 Code runtime: \(sanitizedError)")
     }
   }
 
@@ -2686,6 +3258,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
         process.terminate()
       }
       t3CodeRuntimeProcess = nil
+      t3CodeRuntimeStartedAt = nil
     }
     NativeT3RuntimeLauncher.clearStaleRuntimeIfNeeded(
       logPrefix: "\(logPrefix).stop",
@@ -2773,8 +3346,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
       NativeT3CodePaneReproLog.append("nativeHost.codeServerRuntime.start.failed", [
         "cwd": command.cwd,
         "error": error.localizedDescription,
+        "level": "error",
+        "projectId": command.projectId ?? NSNull(),
       ])
-      Self.logger.error("Failed to start code-server runtime: \(error.localizedDescription)")
+      let sanitizedError = NativeLogPrivacy.sanitizeLogLine(error.localizedDescription)
+      /**
+       CDXC:EditorPanes 2026-06-06-23:50:
+       VS Code server launch failures should surface immediately in the app as a
+       toast and project-editor error, while the support log records the same
+       failure as an error-level diagnostic after privacy sanitization.
+      */
+      let failureMessage = sanitizedError.isEmpty ? "Unknown startup error." : sanitizedError
+      (window?.contentView as? ghostexRootView)?.postHostEvent(
+        .codeServerRuntimeStartFailed(projectId: command.projectId, message: failureMessage))
+      Self.logger.error("Failed to start code-server runtime: \(sanitizedError)")
     }
   }
 
@@ -2968,6 +3553,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
     }
   }
 
+  @discardableResult
+  @MainActor private func dispatchApplicationFileOpenPaths(
+    _ paths: [String],
+    operationSource: String
+  ) -> Bool {
+    /*
+     CDXC:TerminalImageDrop 2026-06-08-04:09:
+     The 04:06 Dock-stack repro tested Launch Services file-open callbacks as a terminal-drop fallback when no AppKit drag callback arrived.
+
+     CDXC:TerminalImageDrop 2026-06-08-06:27:
+     Drag/drop must not depend on global mouse monitors or armed file-open fallbacks, because those paths inspect cross-app drag state outside AppKit's scoped `NSDraggingInfo` callback and can trigger repeated macOS app-data permission prompts. Keep application file-open routing separate from terminal drop insertion.
+     */
+    TerminalFocusDebugLog.append(
+      event: "nativeWorkspace.terminalDrop.\(operationSource).inspect",
+      details: [
+        "didRouteTerminalDrop": false,
+        "operationSource": operationSource,
+        "pathCount": paths.count,
+      ],
+      force: true)
+    dispatchOSIntegrationFileOpenPaths(paths)
+    return false
+  }
+
   @MainActor private func presentScriptOpenDialogIfNeeded(path: String) -> Bool {
     let url = URL(fileURLWithPath: path)
     guard ["command", "tool", "sh"].contains(url.pathExtension.lowercased()) else {
@@ -3037,7 +3646,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
     var failures: [String] = []
     failures.append(contentsOf: Self.osIntegrationDefaultFailures(target: target, bundleIdentifier: bundleIdentifier))
     if failures.isEmpty {
-      showMessage(.init(level: .info, message: "Updated macOS OS Integration defaults."))
+      (window?.contentView as? ghostexRootView)?.presentAppToast(
+        level: "success",
+        title: "Updated macOS OS Integration defaults."
+      )
     } else {
       showMessage(.init(level: .error, message: "Could not set defaults: \(failures.joined(separator: ", "))"))
     }
@@ -3195,12 +3807,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
       """
     sidebarView.evaluateJavaScript(script) { [weak self] result, error in
       if let error {
-        Self.logger.error("OS Integration sidebar dispatch failed: \(error.localizedDescription, privacy: .public)")
+        let sanitizedError = NativeLogPrivacy.sanitizeLogLine(error.localizedDescription)
+        Self.logger.error("OS Integration sidebar dispatch failed: \(sanitizedError, privacy: .public)")
         self?.pendingOSIntegrationCommands.append((action: action, payloadJson: payloadJson))
         return
       }
       if let text = result as? String, text.contains(#""ok":false"#) {
-        Self.logger.error("OS Integration sidebar command failed: \(text, privacy: .public)")
+        let sanitizedText = NativeLogPrivacy.sanitizeLogLine(text)
+        Self.logger.error("OS Integration sidebar command failed: \(sanitizedText, privacy: .public)")
       }
     }
   }
@@ -3273,7 +3887,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
       try mergedConfig.write(to: configURL, atomically: true, encoding: .utf8)
       scheduleGhosttyConfigReload(immediate: command.reloadImmediately == true)
     } catch {
-      Self.logger.error("Failed to sync Ghostty terminal settings: \(error.localizedDescription)")
+      let sanitizedError = NativeLogPrivacy.sanitizeLogLine(error.localizedDescription)
+      Self.logger.error("Failed to sync Ghostty terminal settings: \(sanitizedError)")
     }
   }
 
@@ -3301,7 +3916,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
       try mergedConfig.write(to: configURL, atomically: true, encoding: .utf8)
       scheduleGhosttyConfigReload(immediate: command.reloadImmediately == true)
     } catch {
-      Self.logger.error("Failed to apply Ghostty config settings: \(error.localizedDescription)")
+      let sanitizedError = NativeLogPrivacy.sanitizeLogLine(error.localizedDescription)
+      Self.logger.error("Failed to apply Ghostty config settings: \(sanitizedError)")
     }
   }
 
@@ -3544,23 +4160,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
   }
 
   private func showMessage(_ command: ShowMessage) {
-    let alert = NSAlert()
-    switch command.level {
-    case .info:
-      alert.alertStyle = .informational
-    case .warning:
-      alert.alertStyle = .warning
-    case .error:
-      alert.alertStyle = .critical
-    }
-    alert.messageText = "Ghostex"
-    alert.informativeText = command.message
-    alert.addButton(withTitle: "OK")
-    if let window {
-      alert.beginSheetModal(for: window)
-    } else {
-      alert.runModal()
-    }
+    (window?.contentView as? ghostexRootView)?.presentAppToast(command)
   }
 
   private func openExternalUrl(_ command: OpenExternalUrl) {
@@ -3579,9 +4179,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
 
     /**
      CDXC:WorkspaceActions 2026-05-04-08:22
-     Project right-click "Open in Finder" should reveal the actual stored
-     workspace folder through Finder instead of routing through a URL opener or
+     Project right-click "Open Folder" should reveal the actual stored
+     workspace folder through the platform file viewer instead of routing through a URL opener or
      creating a fallback path when the project record is wrong.
+
+     CDXC:WorkspaceActions 2026-06-04-13:39
+     Keep the native reveal implementation while using Open Folder as the user-facing label so filesystem actions are OS-agnostic.
      */
     NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path, isDirectory: true)])
   }
@@ -3612,7 +4215,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
     do {
       try process.run()
     } catch {
-      Self.logger.error("Failed to open workspace in IDE: \(error.localizedDescription)")
+      let sanitizedError = NativeLogPrivacy.sanitizeLogLine(error.localizedDescription)
+      Self.logger.error("Failed to open workspace in IDE: \(sanitizedError)")
     }
   }
 
@@ -3650,7 +4254,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
       }
       NSWorkspace.shared.open(configURL)
     } catch {
-      Self.logger.error("Failed to open Ghostty config file: \(error.localizedDescription)")
+      let sanitizedError = NativeLogPrivacy.sanitizeLogLine(error.localizedDescription)
+      Self.logger.error("Failed to open Ghostty config file: \(sanitizedError)")
     }
   }
 
@@ -3668,6 +4273,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
       process.standardInput = FileHandle.nullDevice
       process.standardOutput = stdoutPipe
       process.standardError = stderrPipe
+      guard NativeProcessRegistry.shared.register(requestId: command.requestId, process: process) else {
+        await MainActor.run {
+          sendEvent(
+            .processResult(
+              requestId: command.requestId,
+              exitCode: 130,
+              stdout: "",
+              stderr: "Process canceled."
+            ))
+        }
+        return
+      }
       let outputLock = NSLock()
       var stdoutData = Data()
       var stderrData = Data()
@@ -3701,6 +4318,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
 
       do {
         try process.run()
+        if NativeProcessRegistry.shared.isCanceled(requestId: command.requestId) {
+          process.terminate()
+        }
         process.waitUntilExit()
         stdoutHandle.readabilityHandler = nil
         stderrHandle.readabilityHandler = nil
@@ -3713,6 +4333,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
         let stderr = String(data: stderrData, encoding: .utf8) ?? ""
         outputLock.unlock()
         await MainActor.run {
+          NativeProcessRegistry.shared.unregister(requestId: command.requestId)
           sendEvent(
             .processResult(
               requestId: command.requestId,
@@ -3725,6 +4346,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
         stdoutHandle.readabilityHandler = nil
         stderrHandle.readabilityHandler = nil
         await MainActor.run {
+          NativeProcessRegistry.shared.unregister(requestId: command.requestId)
           sendEvent(
             .processResult(
               requestId: command.requestId,
@@ -3763,7 +4385,7 @@ private final class NativeSettingsStore {
      Plain Cmd+Arrow belongs to terminal and prompt text editing.
      Directional pane focus uses Cmd+Alt+Arrow so AppKit no longer intercepts common text navigation shortcuts.
     */
-    "createSession": "cmd+n",
+    "createSession": "cmd+t",
     /**
      CDXC:CommandPalette 2026-05-17-01:32:
      Pane context-menu actions also need configurable defaults at the AppKit
@@ -3808,7 +4430,7 @@ private final class NativeSettingsStore {
      Keep the native defaults in sync so AppKit matches and dispatches openCommandsPanel instead of filtering the action out of persisted hotkeys.
      */
     "openCommandsPanel": "f12",
-    "openBrowserPane": "ctrl+shift+b",
+    "openBrowserPane": "cmd+n",
     "openSettings": "cmd+,",
     "popOutPane": "ctrl+shift+o",
     /**
@@ -3837,12 +4459,24 @@ private final class NativeSettingsStore {
      */
     "splitMore": "cmd+d",
     "splitMoreDown": "cmd+shift+d",
+    /**
+     CDXC:Hotkeys 2026-06-07-14:24:
+     Terminal-focused AppKit dispatch must use the same default hotkey table as
+     the shared sidebar model. Cmd+T creates a terminal tab, Cmd+N creates a
+     browser tab, and Option+1..4 switch Agents, Source, GitHub, and Kanban
+     without depending on the sidebar WebKit DOM receiving the keydown.
+     */
+    "switchAgentsView": "alt+1",
+    "switchSourceView": "alt+2",
+    "switchGitHubView": "alt+3",
+    "switchKanbanView": "alt+4",
   ]
   fileprivate static let defaultHotkeyAliases: [String: [String]] = [
     "focusNextSession": ["cmd+shift+]"],
     "focusPreviousSession": ["cmd+shift+["],
   ]
   private static let retiredDefaultHotkeys: [String: [String]] = [
+    "createSession": ["cmd+n"],
     "focusDown": ["cmd+down"],
     "focusLeft": ["cmd+left"],
     "focusNextGroup": ["cmd+shift+]"],
@@ -3851,6 +4485,23 @@ private final class NativeSettingsStore {
     "focusPreviousSession": ["cmd+["],
     "focusRight": ["cmd+right"],
     "focusUp": ["cmd+up"],
+    "openBrowserPane": ["ctrl+shift+b"],
+  ]
+  private static let shiftedDigitHotkeyTextKeys: [String: String] = [
+    "!": "1",
+    "@": "2",
+    "#": "3",
+    "$": "4",
+    "%": "5",
+    "^": "6",
+    "&": "7",
+    "*": "8",
+    "(": "9",
+    ")": "0",
+  ]
+  private static let shiftedSymbolHotkeyTextKeys: [String: String] = [
+    "{": "[",
+    "}": "]",
   ]
 
   /**
@@ -3883,6 +4534,19 @@ private final class NativeSettingsStore {
       return .left
     }
     return SidebarSide(rawValue: side) ?? .left
+  }
+
+  func readSidebarDefaultWidth() -> CGFloat? {
+    /**
+     CDXC:SidebarChrome 2026-06-05-04:40:
+     The shared Settings file owns the sidebar handle reset target, but native
+     startup must keep using settings.json sidebarWidth from readSidebarChrome.
+     Read this value only for explicit resize-handle double-click resets.
+     */
+    guard let settings = readSharedSidebarSettingsDictionary() else {
+      return nil
+    }
+    return Self.readCGFloat(settings["sidebarDefaultWidthPx"])
   }
 
   func readHotkeys() -> [String: String] {
@@ -3934,7 +4598,8 @@ private final class NativeSettingsStore {
       )
       try data.write(to: url, options: [.atomic])
     } catch {
-      Self.logger.error("Failed to persist sidebar width: \(error.localizedDescription)")
+      let sanitizedError = NativeLogPrivacy.sanitizeLogLine(error.localizedDescription)
+      Self.logger.error("Failed to persist sidebar width: \(sanitizedError)")
     }
   }
 
@@ -3951,8 +4616,9 @@ private final class NativeSettingsStore {
       )
       try data.write(to: url, options: [.atomic])
     } catch {
+      let sanitizedError = NativeLogPrivacy.sanitizeLogLine(error.localizedDescription)
       Self.logger.error(
-        "Failed to persist project editor companion width ratio: \(error.localizedDescription)")
+        "Failed to persist project editor companion width ratio: \(sanitizedError)")
     }
   }
 
@@ -4014,7 +4680,8 @@ private final class NativeSettingsStore {
       )
       try data.write(to: url, options: [.atomic])
     } catch {
-      Self.logger.error("Failed to persist main window chrome: \(error.localizedDescription)")
+      let sanitizedError = NativeLogPrivacy.sanitizeLogLine(error.localizedDescription)
+      Self.logger.error("Failed to persist main window chrome: \(sanitizedError)")
     }
   }
 
@@ -4049,6 +4716,23 @@ private final class NativeSettingsStore {
       .replacingOccurrences(of: "control", with: "ctrl")
       .replacingOccurrences(of: "\\bmod\\b", with: "cmd", options: .regularExpression)
       .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+      .split(separator: " ")
+      .map { normalizeHotkeyChordText(String($0)) }
+      .joined(separator: " ")
+  }
+
+  private static func normalizeHotkeyChordText(_ chord: String) -> String {
+    var parts = chord.split(separator: "+").map(String.init).filter { !$0.isEmpty }
+    guard let key = parts.last else {
+      return chord
+    }
+    if parts.contains("shift"), let unshiftedDigit = shiftedDigitHotkeyTextKeys[key] {
+      parts[parts.count - 1] = unshiftedDigit
+    }
+    if parts.contains("shift"), let unshiftedSymbol = shiftedSymbolHotkeyTextKeys[key] {
+      parts[parts.count - 1] = unshiftedSymbol
+    }
+    return parts.joined(separator: "+")
   }
 
   private func settingsURL() -> URL {
@@ -4174,6 +4858,38 @@ final class AppModalHostWebView: WKWebView {
   }
 }
 
+final class SidebarWebView: WKWebView {
+  var resizeHitExclusionSide: SidebarSide = .left
+  var resizeHitExclusionWidth: CGFloat = 0
+
+  override func hitTest(_ point: NSPoint) -> NSView? {
+    guard bounds.contains(point) else {
+      return nil
+    }
+    /**
+     CDXC:NativeSidebarChrome 2026-06-04-22:20:
+     The sidebar webview visually paints under the native resize divider to
+     remove the right-edge gap, but WebKit must not receive pointer events in
+     that divider strip. Yield that band so the AppKit resize handle remains
+     the single drag owner.
+     */
+    let excludedWidth = min(max(resizeHitExclusionWidth, 0), bounds.width)
+    if excludedWidth > 0 {
+      switch resizeHitExclusionSide {
+      case .left:
+        if point.x >= bounds.maxX - excludedWidth {
+          return nil
+        }
+      case .right:
+        if point.x <= bounds.minX + excludedWidth {
+          return nil
+        }
+      }
+    }
+    return super.hitTest(point)
+  }
+}
+
 final class SidebarModalBackdropView: NSView {
   var onDismiss: (() -> Void)?
 
@@ -4234,6 +4950,255 @@ final class WorkspaceInteractionShieldView: NSView {
   override func rightMouseDown(with event: NSEvent) {}
 
   override func otherMouseDown(with event: NSEvent) {}
+}
+
+final class TerminalPaneDropOverlayView: NSView {
+  private weak var workspaceView: TerminalWorkspaceView?
+  private var lastHitTestSignature: String?
+  private var isForwardingMouseEvent = false
+
+  override var acceptsFirstResponder: Bool { false }
+
+  init(workspaceView: TerminalWorkspaceView) {
+    self.workspaceView = workspaceView
+    super.init(frame: .zero)
+    wantsLayer = true
+    layer?.backgroundColor = NSColor.clear.cgColor
+    /*
+     CDXC:TerminalImageDrop 2026-06-08-04:50:
+     The 04:37 Dock-stack repro still never reached AppKit `NSDraggingInfo`
+     callbacks after geometry-only hit testing was passed through. Keep this
+     transparent view out of drag-destination registration entirely so the real
+     terminal surface/root/window destinations are the only candidates AppKit can
+     choose for file URL drops.
+     */
+    unregisterDraggedTypes()
+  }
+
+  required init?(coder: NSCoder) {
+    fatalError("init(coder:) is not supported")
+  }
+
+  func logRegistration() {
+    workspaceView?.logTerminalPaneDropOverlayVisualOnly()
+  }
+
+  override func hitTest(_ point: NSPoint) -> NSView? {
+    guard !isHidden, bounds.contains(point), let workspaceView else {
+      return nil
+    }
+    let eventType = NSApp.currentEvent?.type
+    let eventTypeName = Self.eventTypeName(eventType)
+    /*
+     CDXC:TerminalImageDrop 2026-06-08-03:51:
+     The 03:48 Dock-stack repro showed pane hover feedback but no paste because the geometry-only inactive monitor drew the target while the drag pasteboard stayed empty and AppKit never chose a terminal drop destination. That led to testing whether the transparent overlay should participate in drag hit testing, but later repros showed that approach still hid the real terminal destination.
+
+     CDXC:TerminalImageDrop 2026-06-08-04:42:
+     The 04:22 and 04:30 Dock-stack repros showed the overlay becoming the hit-test target from inactive-window drag geometry while the drag pasteboard advertised zero types. That drew the hover indicator but could prevent the registered terminal/root destination from receiving the real AppKit drop. Keep geometry hover diagnostics, but pass through geometry-only hit tests unless the pasteboard already has a relevant file/string URL payload.
+
+     CDXC:TerminalImageDrop 2026-06-08-04:50:
+     The 04:37 Dock-stack repro still never delivered AppKit drag callbacks after
+     geometry-only pass-through, so this overlay must never become the selected
+     hit-test view during a file drag. It remains only a diagnostic observer; the
+     terminal surface/root/window own the actual drag destination behavior.
+
+     CDXC:TerminalImageDrop 2026-06-08-06:27:
+     The repeated macOS app-data prompt is caused by reading global drag pasteboard
+     content outside AppKit's scoped `NSDraggingInfo` callbacks. The overlay now
+     logs geometry only and never asks `NSPasteboard.drag` for types or payloads.
+     */
+    let shouldCaptureInactiveGeometryDrag =
+      window?.isKeyWindow == false
+      && Self.isDragMouseEvent(eventType)
+      && bounds.contains(point)
+    let shouldLogHitTest =
+      shouldCaptureInactiveGeometryDrag || lastHitTestSignature != nil
+
+    guard shouldLogHitTest else {
+      return nil
+    }
+
+    let signature = [
+      eventTypeName,
+      "capture=false",
+      "inactiveGeometry=\(shouldCaptureInactiveGeometryDrag)",
+    ].joined(separator: "|")
+    if signature != lastHitTestSignature {
+      workspaceView.logTerminalPaneDropOverlayHitTest(
+        eventTypeName: eventTypeName,
+        dragPasteboardTypes: nil,
+        shouldCapture: false,
+        details: [
+          "geometryDragPassedThrough": true,
+          "hasRelevantPayload": false,
+          "overlayDragDestinationRegistered": false,
+          "readsGlobalDragPasteboard": false,
+          "shouldCaptureInactiveGeometryDestination": false,
+          "shouldCaptureInactiveGeometryDrag": shouldCaptureInactiveGeometryDrag,
+          "windowIsKey": window?.isKeyWindow ?? false,
+          "windowIsVisible": window?.isVisible ?? false,
+        ])
+      lastHitTestSignature = signature
+    }
+
+    return nil
+  }
+
+  /*
+   CDXC:TerminalImageDrop 2026-06-07-17:08:
+   Logs from the 17:07 repro tested whether the transparent overlay should complete a synthetic file drop after AppKit skipped a drag-destination callback.
+
+   CDXC:TerminalImageDrop 2026-06-08-06:27:
+   The overlay must not read global drag pasteboard data or synthesize terminal drops. It only forwards mouse events, while actual file/image insertion is owned by AppKit `NSDraggingInfo` callbacks on terminal/native chrome views.
+   */
+  override func mouseDragged(with event: NSEvent) {
+    forwardMouseEvent(event)
+  }
+
+  override func rightMouseDragged(with event: NSEvent) {
+    forwardMouseEvent(event)
+  }
+
+  override func otherMouseDragged(with event: NSEvent) {
+    forwardMouseEvent(event)
+  }
+
+  override func mouseUp(with event: NSEvent) {
+    forwardMouseEvent(event)
+  }
+
+  override func rightMouseUp(with event: NSEvent) {
+    forwardMouseEvent(event)
+  }
+
+  override func otherMouseUp(with event: NSEvent) {
+    forwardMouseEvent(event)
+  }
+
+  override func draggingEntered(_ sender: any NSDraggingInfo) -> NSDragOperation {
+    routeDragOperation(sender, phase: "entered")
+  }
+
+  override func draggingUpdated(_ sender: any NSDraggingInfo) -> NSDragOperation {
+    routeDragOperation(sender, phase: "updated")
+  }
+
+  override func draggingExited(_ sender: (any NSDraggingInfo)?) {
+    guard let workspaceView, let rootView = superview else {
+      return
+    }
+    workspaceView.terminalPaneRootDraggingExited(
+      sender,
+      rootView: rootView,
+      operationSource: "overlay")
+  }
+
+  override func prepareForDragOperation(_ sender: any NSDraggingInfo) -> Bool {
+    routeDragOperation(sender, phase: "prepare") == .copy
+  }
+
+  override func performDragOperation(_ sender: any NSDraggingInfo) -> Bool {
+    guard let workspaceView, let rootView = superview else {
+      return false
+    }
+    return workspaceView.performTerminalPaneRootDrop(
+      for: sender,
+      rootView: rootView,
+      operationSource: "overlay")
+  }
+
+  private func forwardMouseEvent(_ event: NSEvent) {
+    guard !isForwardingMouseEvent else { return }
+    guard let window, let contentView = window.contentView else { return }
+
+    isForwardingMouseEvent = true
+    isHidden = true
+    defer {
+      isHidden = false
+      isForwardingMouseEvent = false
+    }
+
+    let point = contentView.convert(event.locationInWindow, from: nil)
+    guard let target = contentView.hitTest(point), target !== self else {
+      return
+    }
+    switch event.type {
+    case .leftMouseDragged:
+      target.mouseDragged(with: event)
+    case .rightMouseDragged:
+      target.rightMouseDragged(with: event)
+    case .otherMouseDragged:
+      target.otherMouseDragged(with: event)
+    case .leftMouseUp:
+      target.mouseUp(with: event)
+    case .rightMouseUp:
+      target.rightMouseUp(with: event)
+    case .otherMouseUp:
+      target.otherMouseUp(with: event)
+    default:
+      break
+    }
+  }
+
+  private func routeDragOperation(_ sender: any NSDraggingInfo, phase: String) -> NSDragOperation {
+    guard let workspaceView, let rootView = superview else {
+      return []
+    }
+    return workspaceView.terminalPaneRootDragOperation(
+      for: sender,
+      rootView: rootView,
+      phase: phase,
+      operationSource: "overlay")
+  }
+
+  private static func isDragMouseEvent(_ eventType: NSEvent.EventType?) -> Bool {
+    switch eventType {
+    case .leftMouseDragged, .rightMouseDragged, .otherMouseDragged:
+      return true
+    default:
+      return false
+    }
+  }
+
+  private static func eventTypeName(_ eventType: NSEvent.EventType?) -> String {
+    guard let eventType else { return "none" }
+    switch eventType {
+    case .leftMouseDragged:
+      return "leftMouseDragged"
+    case .rightMouseDragged:
+      return "rightMouseDragged"
+    case .otherMouseDragged:
+      return "otherMouseDragged"
+    case .leftMouseUp:
+      return "leftMouseUp"
+    case .rightMouseUp:
+      return "rightMouseUp"
+    case .otherMouseUp:
+      return "otherMouseUp"
+    case .leftMouseDown:
+      return "leftMouseDown"
+    case .rightMouseDown:
+      return "rightMouseDown"
+    case .otherMouseDown:
+      return "otherMouseDown"
+    case .scrollWheel:
+      return "scrollWheel"
+    case .mouseMoved:
+      return "mouseMoved"
+    case .cursorUpdate:
+      return "cursorUpdate"
+    case .appKitDefined:
+      return "appKitDefined"
+    case .systemDefined:
+      return "systemDefined"
+    case .applicationDefined:
+      return "applicationDefined"
+    case .periodic:
+      return "periodic"
+    default:
+      return "other(\(eventType.rawValue))"
+    }
+  }
 }
 
 final class ghostexRootView: NSView {
@@ -4311,10 +5276,11 @@ final class ghostexRootView: NSView {
 
   let workspaceView: TerminalWorkspaceView
   var sidebarWebView: WKWebView { sidebarView }
-  private let sidebarView: WKWebView
+  private let sidebarView: SidebarWebView
   private let modalHostView: AppModalHostWebView
   private let sidebarModalBackdropView = SidebarModalBackdropView(frame: .zero)
   private let workspaceInteractionShieldView = WorkspaceInteractionShieldView(frame: .zero)
+  private let terminalPaneDropOverlayView: TerminalPaneDropOverlayView
   private let titlebarChromeView: ReactTitlebarChromeView
   private let titlebarChromeWebView: WKWebView
   private let startupOverlayView = NSView(frame: .zero)
@@ -4335,11 +5301,16 @@ final class ghostexRootView: NSView {
   private let setSessionStatusIndicators: (SetSessionStatusIndicators) -> Void
   private let setPetOverlayState: (SetPetOverlayState) -> Void
   private let showUpdateDialogFromTitlebar: () -> Void
+  private let startGxserverFromTitlebar: () -> Void
+  private let stopGxserverFromTitlebar: () -> Void
+  private let restartGxserverFromTitlebar: () -> Void
+  private let setGxserverAlwaysStartFromTitlebar: (Bool) -> Void
   private let sendHostEvent: (HostEvent) -> Void
   private let nativeSettingsStore = NativeSettingsStore()
   private var isModalHostReady = false
   private var activeAppModalKind: String?
   private var appModalPresentationPending = false
+  private var sidebarWorkspaceFocusRequestId: UInt64 = 0
   private var appModalReturnFocusSessionId: String?
   private var pendingModalHostOpenMessage: [String: Any]?
   private var latestModalHostSidebarState: [String: Any]?
@@ -4350,6 +5321,7 @@ final class ghostexRootView: NSView {
   private var pendingHotkeyPrefix: String?
   private var pendingHotkeyPrefixExpiresAt: Date?
   private var t3CodeRuntimeProcess: Process?
+  private var t3CodeRuntimeStartedAt: Date?
   private var t3RuntimeVisibleSessionCwd: String?
   private var t3RuntimeLivenessTimer: Timer?
   private var codeServerRuntimeProcess: Process?
@@ -4379,9 +5351,15 @@ final class ghostexRootView: NSView {
    resize handle should snap the sidebar back to the same 260px width.
    CDXC:NativeSidebarChrome 2026-05-28-12:18:
    New sidebar sessions should now start at 235px, and double-clicking the native resize handle should snap back to the same 235px default.
+   CDXC:SidebarChrome 2026-06-05-04:40:
+   The Settings-owned sidebar default width now controls only explicit
+   double-click resets. Startup continues restoring the last native sidebarWidth
+   from settings.json so user-resized chrome survives normal restarts.
    */
   init(
     ghostty: GhostexGhosttyApp,
+    defaultWorkspaceBackgroundColor: NSColor,
+    gxserverBootstrap: [String: Any],
     sendEvent: @escaping (HostEvent) -> Void,
     syncGhosttyTerminalSettings: @escaping (SyncGhosttyTerminalSettings) -> Void,
     applyGhosttyConfigSettings: @escaping (ApplyGhosttyConfigSettings) -> Void,
@@ -4392,18 +5370,24 @@ final class ghostexRootView: NSView {
     setAppTitlebarTitle: @escaping (String?) -> Void,
     setSessionStatusIndicators: @escaping (SetSessionStatusIndicators) -> Void,
     setPetOverlayState: @escaping (SetPetOverlayState) -> Void,
-    showUpdateDialogFromTitlebar: @escaping () -> Void
+    showUpdateDialogFromTitlebar: @escaping () -> Void,
+    startGxserverFromTitlebar: @escaping () -> Void,
+    stopGxserverFromTitlebar: @escaping () -> Void,
+    restartGxserverFromTitlebar: @escaping () -> Void,
+    setGxserverAlwaysStartFromTitlebar: @escaping (Bool) -> Void
   ) {
     let settingsStore = NativeSettingsStore()
     let storedSidebarChrome = settingsStore.readSidebarChrome()
     self.workspaceView = TerminalWorkspaceView(
       ghostty: ghostty,
       sendEvent: sendEvent,
+      defaultWorkspaceBackgroundColor: defaultWorkspaceBackgroundColor,
       initialProjectEditorCompanionWidthRatio: storedSidebarChrome.projectEditorCompanionWidthRatio,
       persistProjectEditorCompanionWidthRatio: { widthRatio in
         settingsStore.persistProjectEditorCompanionWidthRatio(widthRatio)
       }
     )
+    self.terminalPaneDropOverlayView = TerminalPaneDropOverlayView(workspaceView: workspaceView)
     self.scriptBridge = SidebarScriptBridge(router: sidebarCommandRouter)
     self.syncGhosttyTerminalSettings = syncGhosttyTerminalSettings
     self.applyGhosttyConfigSettings = applyGhosttyConfigSettings
@@ -4415,6 +5399,10 @@ final class ghostexRootView: NSView {
     self.setSessionStatusIndicators = setSessionStatusIndicators
     self.setPetOverlayState = setPetOverlayState
     self.showUpdateDialogFromTitlebar = showUpdateDialogFromTitlebar
+    self.startGxserverFromTitlebar = startGxserverFromTitlebar
+    self.stopGxserverFromTitlebar = stopGxserverFromTitlebar
+    self.restartGxserverFromTitlebar = restartGxserverFromTitlebar
+    self.setGxserverAlwaysStartFromTitlebar = setGxserverAlwaysStartFromTitlebar
     self.sendHostEvent = sendEvent
     self.sidebarWidth = storedSidebarChrome.width ?? Self.defaultSidebarWidth
     self.sidebarSide = nativeSettingsStore.readSidebarSide()
@@ -4434,7 +5422,9 @@ final class ghostexRootView: NSView {
     let workspaceName = URL(fileURLWithPath: cwd).lastPathComponent
     var bootstrap: [String: Any] = [
       "accessibilityPermissionGranted": AXIsProcessTrusted(),
+      "bundleIdentifier": Bundle.main.bundleIdentifier ?? "",
       "cwd": cwd,
+      "gxserver": gxserverBootstrap,
       "homeDir": FileManager.default.homeDirectoryForCurrentUser.path,
       "ghostexHomeDir": GhostexAppStorage.sharedRootDirectory.path,
       "sharedSidebarStorage": GhostexAppStorage.readSharedSidebarStorage(),
@@ -4454,6 +5444,11 @@ final class ghostexRootView: NSView {
        state lives in the sidebar webview. Inject the native Accessibility
        grant state into both webviews so settings can show a short disabled
        notice without asking the React layer to infer macOS privacy state.
+
+       CDXC:CliInstall 2026-06-07-13:53:
+       Include the bundle identifier in the native bootstrap so the sidebar's
+       production-only CLI auto-linker does not let ghostex-dev local starts
+       overwrite the user's public ghostex/gx command symlinks.
        */
       configuration.userContentController.addUserScript(bootstrapScript)
       modalHostConfiguration.userContentController.addUserScript(bootstrapScript)
@@ -4471,13 +5466,17 @@ final class ghostexRootView: NSView {
         injectionTime: .atDocumentStart,
         forMainFrameOnly: true
       ))
-    self.sidebarView = WKWebView(frame: .zero, configuration: configuration)
+    self.sidebarView = SidebarWebView(frame: .zero, configuration: configuration)
     self.modalHostView = AppModalHostWebView(frame: .zero, configuration: modalHostConfiguration)
     self.titlebarChromeWebView = WKWebView(frame: .zero, configuration: titlebarConfiguration)
     self.titlebarChromeView = ReactTitlebarChromeView(webView: titlebarChromeWebView)
     self.divider = PaneResizeHandleView()
     super.init(frame: .zero)
     workspaceView.setSidebarSide(sidebarSide)
+    configureTitlebarTerminalPaneDropForwarding()
+    workspaceView.onManagedT3PaneRuntimeStateChanged = { [weak self] state in
+      self?.setT3CodeRuntimePaneState(state)
+    }
     titlebarChromeView.titlebarHeight = Self.reactTitlebarHeight
 
     sidebarCommandRouter.onCommand = { [weak self] command in
@@ -4501,6 +5500,16 @@ final class ghostexRootView: NSView {
 
     wantsLayer = true
     layer?.backgroundColor = ghostexReferenceSidebarChromeBackgroundColor.cgColor
+    /*
+     CDXC:TerminalImageDrop 2026-06-07-16:55:
+     Some macOS image drags did not select the nested Ghostty surface as the AppKit drag destination even though terminal clicks hit that surface, so the root content view was temporarily registered for the same terminal drop types.
+
+     CDXC:TerminalImageDrop 2026-06-08-04:49:
+     The 04:45 Dock-stack repro still bypassed root/window drag callbacks, and keeping the root as a registered destination adds another candidate above the terminal surface. Disable root-level file-drop registration and let the terminal surface own the direct AppKit drop path.
+     */
+    unregisterDraggedTypes()
+    workspaceView.logTerminalPaneDropRegistrationDisabled(operationSource: "root")
+    terminalPaneDropOverlayView.logRegistration()
     sidebarView.setValue(false, forKey: "drawsBackground")
     modalHostView.setValue(false, forKey: "drawsBackground")
     titlebarChromeWebView.setValue(false, forKey: "drawsBackground")
@@ -4517,6 +5526,11 @@ final class ghostexRootView: NSView {
      AppKit pane chrome without changing the visible layering.
      */
     addSubview(workspaceInteractionShieldView)
+    /*
+     CDXC:TerminalImageDrop 2026-06-07-17:03:
+     Root and window drag registration still missed the 17:01 image drop because embedded terminal/browser views can win AppKit drag-destination hit testing before the workspace router is considered. Keep a transparent workspace-only overlay above those panes during file/image drags and forward accepted drops into the same terminal insertion path.
+     */
+    addSubview(terminalPaneDropOverlayView)
     /**
      CDXC:NativeWorkspaceChrome 2026-04-26-05:40
      Ghostty surfaces can keep native subviews/layers that draw and receive
@@ -4557,6 +5571,44 @@ final class ghostexRootView: NSView {
     if let titlebarOutsideClickMonitor {
       NSEvent.removeMonitor(titlebarOutsideClickMonitor)
     }
+  }
+
+  private func configureTitlebarTerminalPaneDropForwarding() {
+    /*
+     CDXC:TerminalImageDrop 2026-06-08-05:26:
+     Dock-stack image drags still reached the terminal as activation clicks at 05:22 with no `NSDraggingInfo` on the terminal surface or terminal wrappers.
+     The React titlebar uses a full-window transparent wrapper above the workspace for portals, so register that native chrome layer as a forwarding destination and route accepted file/string drags into the existing terminal root drop parser.
+
+     CDXC:TerminalImageDrop 2026-06-08-05:34:
+     The 05:31 Dock-stack repro crashed when the embedded titlebar WKWebView became the drag destination and terminal diagnostics tried to inspect the AppKit drag mask.
+     Keep drag registration on native AppKit views only; WebKit must not own terminal file-drop routing.
+     */
+    let operationSource = "titlebarChrome"
+    titlebarChromeView.configureTerminalPaneDropForwarding(
+      registeredTypes: workspaceView.terminalPaneDropRegisteredTypes,
+      operationSource: operationSource,
+      dragOperation: { [weak self] sender, phase in
+        guard let self else { return [] }
+        return self.workspaceView.terminalPaneRootDragOperation(
+          for: sender,
+          rootView: self,
+          phase: phase,
+          operationSource: operationSource)
+      },
+      draggingExited: { [weak self] sender in
+        guard let self else { return }
+        self.workspaceView.terminalPaneRootDraggingExited(
+          sender,
+          rootView: self,
+          operationSource: operationSource)
+      },
+      perform: { [weak self] sender in
+        guard let self else { return false }
+        return self.workspaceView.performTerminalPaneRootDrop(
+          for: sender,
+          rootView: self,
+          operationSource: operationSource)
+      })
   }
 
   private func installTitlebarOutsideClickMonitor() {
@@ -5444,10 +6496,11 @@ final class ghostexRootView: NSView {
       """
     sidebarView.evaluateJavaScript(script)
     /**
-     CDXC:ReactTitlebar 2026-05-09-17:34
-     The React titlebar can request native process work for Git stats. Broadcast
-     host events to that webview too so processResult replies resolve in the
-     same bridge contract used by the sidebar.
+     CDXC:ReactTitlebar 2026-06-02-13:41:
+     The React titlebar can request native process work for macOS-local actions
+     such as resource checks and Open In targets. Broadcast host events to that
+     webview too so processResult replies resolve in the same bridge contract
+     used by the sidebar, while shared Git state remains gxserver-owned.
      */
     titlebarChromeWebView.evaluateJavaScript(script)
   }
@@ -5527,8 +6580,8 @@ final class ghostexRootView: NSView {
     }
     if let git = command.activeProjectGitState {
       /**
-       CDXC:TitlebarGit 2026-05-24-17:41:
-       The titlebar Git split button must mirror the sidebar-owned git status instead of polling separately, so disabled states and commit/push/PR labels stay identical across chrome and sidebar.
+       CDXC:TitlebarGit 2026-06-02-15:27:
+       The titlebar Git split button mirrors the sidebar adapter's gxserver-backed Git status instead of polling separately, so disabled states and commit/push/PR labels stay identical across chrome and sidebar while repository command execution remains gxserver-owned.
        */
       payload["git"] = [
         "additions": git.additions,
@@ -5577,6 +6630,34 @@ final class ghostexRootView: NSView {
         "preventLidSleep": keepAwake.preventLidSleep,
       ]
     }
+    if let daemon = command.gxserverDaemon {
+      var daemonPayload: [String: Any] = [
+        "alwaysStart": daemon.alwaysStart ?? true,
+        "state": daemon.state,
+      ]
+      if let message = daemon.message {
+        daemonPayload["message"] = message
+      }
+      if let nodePath = daemon.nodePath {
+        daemonPayload["nodePath"] = nodePath
+      }
+      if let nodeVersion = daemon.nodeVersion {
+        daemonPayload["nodeVersion"] = nodeVersion
+      }
+      if let ok = daemon.ok {
+        daemonPayload["ok"] = ok
+      }
+      if let pid = daemon.pid {
+        daemonPayload["pid"] = pid
+      }
+      if let startedAt = daemon.startedAt {
+        daemonPayload["startedAt"] = startedAt
+      }
+      if let version = daemon.version {
+        daemonPayload["version"] = version
+      }
+      payload["gxserverDaemon"] = daemonPayload
+    }
     if let sidebarActions = command.sidebarActions {
       payload["sidebarActions"] = [
         "commands": sidebarActions.commands?.map { command in
@@ -5604,12 +6685,55 @@ final class ghostexRootView: NSView {
         } ?? []
       ]
     }
+    if let agentHookStatus = command.agentHookStatus {
+      /**
+       CDXC:AgentHookSettings 2026-06-04-03:05:
+       Titlebar Tips & Tricks only needs normalized hook status to warn about
+       live affected agents. Do not forward hook file paths or state-directory
+       paths into the isolated titlebar payload because the notice is not a
+       diagnostics surface.
+       */
+      var hookPayload: [String: Any] = [
+        "agents": agentHookStatus.agents.map { agent in
+          [
+            "agentId": agent.agentId,
+            "cliCommand": agent.cliCommand,
+            "cliInstalled": agent.cliInstalled,
+            "detail": "",
+            "hookInstalled": agent.hookInstalled,
+            "paths": [],
+            "status": agent.status,
+          ] as [String: Any]
+        },
+        "generatedAt": agentHookStatus.generatedAt,
+        "hookStateDirectory": "",
+        "notifyHookPath": "",
+        "type": agentHookStatus.type,
+      ]
+      if let errorMessage = agentHookStatus.errorMessage {
+        hookPayload["errorMessage"] = errorMessage
+      }
+      payload["agentHookStatus"] = hookPayload
+    }
+    if let ghostexCliStatus = command.ghostexCliStatus {
+      /**
+       CDXC:CliInstall 2026-06-07-15:26:
+       Titlebar Tips & Tricks only needs whether the app-owned CLI is
+       accessible. Forward booleans and timestamps, not command paths or status
+       detail text, so the isolated titlebar notice is actionable without
+       becoming a diagnostics surface.
+       */
+      payload["ghostexCliStatus"] = [
+        "generatedAt": ghostexCliStatus.generatedAt,
+        "gxUsable": ghostexCliStatus.gxUsable,
+        "installed": ghostexCliStatus.installed,
+        "type": ghostexCliStatus.type,
+      ] as [String: Any]
+    }
     if let resourceGroups = command.titlebarResourceGroups {
       /**
-       CDXC:TitlebarResources 2026-05-16-16:08:
-       Forward the sidebar-owned session grouping into the isolated React
-       titlebar so its resource dropdown can render Quick/project sections
-       while the titlebar webview polls process metrics independently.
+       CDXC:TitlebarResources 2026-06-02-15:27:
+       Forward the sidebar adapter's gxserver-backed presentation grouping into the isolated React titlebar so its resource dropdown can render shared project rows plus local Quick sections while the titlebar webview polls process metrics independently.
        */
       payload["resourceGroups"] = resourceGroups.map { group in
         var item: [String: Any] = [
@@ -5733,10 +6857,8 @@ final class ghostexRootView: NSView {
 
   private func openActiveProjectEditorFromTitlebar() {
     /**
-     CDXC:TitlebarOpenIn 2026-05-11-00:22
-     Titlebar Code and Embedded Editor clicks must enter the same sidebar-owned
-     project-editor flow as the project header. Forward the command into the
-     sidebar webview instead of reimplementing code-server startup in Swift.
+     CDXC:TitlebarOpenIn 2026-06-02-15:27:
+     Titlebar Code and Embedded Editor clicks are app-chrome actions that enter the same sidebar-adapter project-editor flow as the project header. Forward the command into the sidebar webview instead of reimplementing code-server startup or project surface state in Swift.
 
      CDXC:ModeSwitcher 2026-05-16-07:23:
      Code-tab lag reports need a native bridge timestamp before and after the
@@ -5765,8 +6887,8 @@ final class ghostexRootView: NSView {
 
   private func exitFocusModeFromTitlebar() {
     /**
-     CDXC:SessionFocusMode 2026-05-23-14:35:
-     The titlebar exit-focus control must restore the pre-focus Code/Git/Project surface through the same sidebar-owned toggle path as native pane-tab double click.
+     CDXC:SessionFocusMode 2026-06-02-15:27:
+     The titlebar exit-focus control restores current-window layout state. Route it through the sidebar adapter, matching native pane-tab double click, so Swift does not own pane focus or mode history.
      */
     sidebarView.evaluateJavaScript(
       """
@@ -5791,10 +6913,8 @@ final class ghostexRootView: NSView {
 
   private func openGitHubProjectFromTitlebar() {
     /**
-     CDXC:ModeSwitcher 2026-05-15-12:38:
-     Git mode must open the active project's GitHub remote inside the workarea,
-     not in an external browser, so the sidebar owner resolves the remote and
-     creates or focuses the browser-backed project surface.
+     CDXC:ModeSwitcher 2026-06-02-15:27:
+     Git mode opens the active project's GitHub remote inside the workarea, not in an external browser. Forward to the sidebar adapter so gxserver-backed Git inspection and macOS-owned browser surface focus stay in the normal paths.
      */
     sidebarView.evaluateJavaScript(
       """
@@ -5805,10 +6925,8 @@ final class ghostexRootView: NSView {
 
   private func showProjectEditorCompanionFromTitlebar() {
     /**
-     CDXC:ProjectEditorCompanion 2026-05-16-14:42:
-     The titlebar restore button must clear the sidebar-owned project
-     preference before native reopens the agent side pane. Forward through
-     React state so Code, Git, and Project modes continue sharing one value.
+     CDXC:ProjectEditorCompanion 2026-06-02-15:27:
+     The titlebar restore button updates macOS current-window companion-pane preference before native reopens the agent side pane. Forward through React state so Code, Git, and Project modes continue sharing one local value.
      */
     sidebarView.evaluateJavaScript(
       """
@@ -5819,10 +6937,8 @@ final class ghostexRootView: NSView {
 
   private func openTasksPlaceholderFromTitlebar() {
     /**
-     CDXC:ModeSwitcher 2026-05-15-12:38:
-     Project mode is currently a bundled placeholder React page backed by the
-     existing tasks bridge. Let the sidebar owner open it as a project workarea
-     surface so it keeps the sessions list visible like Code mode.
+     CDXC:ModeSwitcher 2026-06-02-15:27:
+     Project mode is a bundled React workarea backed by the project-board bridge. Let the sidebar adapter open it as a macOS project surface while gxserver remains responsible for Beads/project-board data and mutations.
      */
     sidebarView.evaluateJavaScript(
       """
@@ -5891,11 +7007,8 @@ final class ghostexRootView: NSView {
 
   private func focusResourceSessionFromTitlebar(_ command: FocusResourceSessionFromTitlebar) {
     /**
-     CDXC:TitlebarResources 2026-05-28-10:39:
-     Resource-row Focus is a React titlebar action, but the sidebar owns
-     project/session focus state. Forward the selected combined session id into
-     the sidebar webview so existing cross-project and sleeping-session focus
-     behavior remains authoritative.
+     CDXC:TitlebarResources 2026-06-02-15:27:
+     Resource-row Focus is React titlebar chrome, but current-window focus routing belongs to the sidebar adapter. Forward the selected combined session id into the sidebar webview so cross-project focus and gxserver-backed sleeping-session wake behavior stay in one path.
      */
     guard let sessionIdJson = Self.javascriptStringLiteral(command.sessionId) else {
       return
@@ -5909,10 +7022,8 @@ final class ghostexRootView: NSView {
 
   private func quitResourcesFromTitlebar(_ command: QuitResourcesFromTitlebar) {
     /**
-     CDXC:TitlebarResources 2026-05-21-16:38:
-     React titlebar resource Quit controls can only identify sidebar-owned
-     sessions and project editors. Forward those ids to the sidebar webview so
-     app state, persisted cards, and native surfaces close from one owner.
+     CDXC:TitlebarResources 2026-06-02-15:27:
+     React titlebar resource Quit controls identify presentation session ids and local project-editor ids. Forward them to the sidebar adapter so shared terminal lifecycle routes through gxserver while native surfaces and local panes close from the current-window coordinator.
      */
     guard
       let sessionIdsData = try? JSONSerialization.data(withJSONObject: command.sessionIds),
@@ -6006,6 +7117,10 @@ final class ghostexRootView: NSView {
       workspaceView.closeWebPane(sessionId: command.sessionId)
     case .focusTerminal(let command):
       focusWorkspaceSessionAfterSidebarActivation(sessionId: command.sessionId, kind: .terminal)
+    case .focusProjectEditorCompanionSession(let command):
+      focusWorkspaceSessionAfterSidebarActivation(
+        sessionId: command.sessionId,
+        kind: .projectEditorCompanion)
     case .focusWebPane(let command):
       focusWorkspaceSessionAfterSidebarActivation(sessionId: command.sessionId, kind: .webPane)
     case .reloadWebPane(let command):
@@ -6094,6 +7209,8 @@ final class ghostexRootView: NSView {
     case .appendSessionTitleDebugLog(let command):
       AppDelegate.appendSessionTitleDebugLog(
         event: command.event, details: command.details, force: command.force == true)
+    case .appendSidebarCollapseStateDebugLog(let command):
+      AppDelegate.appendSidebarCollapseStateDebugLog(event: command.event, details: command.details)
     case .appendSidebarRefreshDebugLog(let command):
       AppDelegate.appendSidebarRefreshDebugLog(event: command.event, details: command.details)
     case .appendWorkspaceDockIndicatorDebugLog(let command):
@@ -6113,6 +7230,46 @@ final class ghostexRootView: NSView {
       NativeSoundPlayer.shared.play(command)
     case .runProcess(let command):
       runProcess(command)
+    case .cancelRunProcess(let command):
+      NativeProcessRegistry.shared.cancel(requestId: command.requestId)
+    case .gxserverRequest(let command):
+      Task { [weak self] in
+        let event = await GxserverClient.request(command)
+        await MainActor.run {
+          self?.postHostEvent(event)
+        }
+      }
+    case .remoteGxserverConnect(let command):
+      postHostEvent(RemoteGxserverClient.shared.connectingStatus(
+        remoteMachineId: command.remoteMachineId,
+        requestId: command.requestId
+      ))
+      Task { [weak self] in
+        let event = await RemoteGxserverClient.shared.connect(command)
+        await MainActor.run {
+          self?.postHostEvent(event)
+        }
+      }
+    case .remoteGxserverRequest(let command):
+      Task { [weak self] in
+        let event = await RemoteGxserverClient.shared.request(command)
+        await MainActor.run {
+          self?.postHostEvent(event)
+        }
+      }
+    case .remoteGxserverSubscribePresentation(let command):
+      Task { [weak self] in
+        let event = await RemoteGxserverClient.shared.subscribePresentation(command) { event in
+          Task { [weak self] in
+            await MainActor.run {
+              self?.postHostEvent(event)
+            }
+          }
+        }
+        await MainActor.run {
+          self?.postHostEvent(event)
+        }
+      }
     case .setKeepAwakeLidSleepPrevention(let command):
       LidSleepPrivilegedHelperClient.shared.setEnabled(
         command.enabled,
@@ -6148,7 +7305,7 @@ final class ghostexRootView: NSView {
         target: command.target,
         bundleIdentifier: bundleIdentifier)
       if failures.isEmpty {
-        showMessage(.init(level: .info, message: "Updated macOS OS Integration defaults."))
+        presentAppToast(level: "success", title: "Updated macOS OS Integration defaults.")
       } else {
         showMessage(.init(level: .error, message: "Could not set defaults: \(failures.joined(separator: ", "))"))
       }
@@ -6204,6 +7361,14 @@ final class ghostexRootView: NSView {
       toggleCommandsPanelFromTitlebar()
     case .showUpdateDialogFromTitlebar:
       showUpdateDialogFromTitlebar()
+    case .startGxserverFromTitlebar:
+      startGxserverFromTitlebar()
+    case .stopGxserverFromTitlebar:
+      stopGxserverFromTitlebar()
+    case .restartGxserverFromTitlebar:
+      restartGxserverFromTitlebar()
+    case .setGxserverAlwaysStartFromTitlebar(let command):
+      setGxserverAlwaysStartFromTitlebar(command.enabled)
     case .focusResourceSessionFromTitlebar(let command):
       focusResourceSessionFromTitlebar(command)
     case .sleepInactiveSessionsFromTitlebar(let command):
@@ -6230,11 +7395,14 @@ final class ghostexRootView: NSView {
   }
 
   private enum SidebarWorkspaceFocusKind {
+    case projectEditorCompanion
     case terminal
     case webPane
 
     var debugName: String {
       switch self {
+      case .projectEditorCompanion:
+        return "projectEditorCompanion"
       case .terminal:
         return "terminal"
       case .webPane:
@@ -6247,6 +7415,8 @@ final class ghostexRootView: NSView {
     sessionId: String,
     kind: SidebarWorkspaceFocusKind
   ) {
+    sidebarWorkspaceFocusRequestId += 1
+    let focusRequestId = sidebarWorkspaceFocusRequestId
     /**
      CDXC:SidebarSessionFocus 2026-05-15-17:20:
      Sidebar session-card clicks run inside WebKit's click dispatch, and WebKit
@@ -6259,10 +7429,17 @@ final class ghostexRootView: NSView {
      reproduction shows whether focus is lost before the command leaves the
      sidebar bridge, inside TerminalWorkspaceView, or after AppKit accepts the
      new first responder.
+
+     CDXC:SidebarSessionFocus 2026-06-05-22:12:
+     Sidebar session clicks must leave the clicked session ready for typing.
+     WebKit can still win first responder after the deferred focus command, so
+     tag each click with a monotonic request id and run one idempotent
+     first-responder reinforcement after the sidebar event has settled.
      */
     TerminalFocusDebugLog.append(
       event: "nativeFocusTrace.sidebarFocusCommandQueued",
       details: [
+        "focusRequestId": focusRequestId,
         "kind": kind.debugName,
         "responderBeforeQueue": responderSnapshot(),
         "sessionId": sessionId,
@@ -6276,6 +7453,7 @@ final class ghostexRootView: NSView {
       TerminalFocusDebugLog.append(
         event: "nativeFocusTrace.sidebarFocusCommandDispatching",
         details: [
+          "focusRequestId": focusRequestId,
           "kind": kind.debugName,
           "responderBeforeDispatch": self.responderSnapshot(),
           "sessionId": sessionId,
@@ -6283,19 +7461,70 @@ final class ghostexRootView: NSView {
           "workspaceSnapshotBeforeDispatch": self.workspaceView.activationDebugSnapshot(),
         ])
       switch kind {
+      case .projectEditorCompanion:
+        self.workspaceView.focusProjectEditorCompanionSession(
+          sessionId: sessionId,
+          reason: "sidebarFocusCommand")
       case .terminal:
         self.workspaceView.focusTerminal(sessionId: sessionId, reason: "sidebarFocusCommand")
       case .webPane:
         self.workspaceView.focusWebPane(sessionId: sessionId, reason: "sidebarFocusCommand")
       }
+      let immediateReinforceResult = self.workspaceView.reinforceSidebarWorkspaceFocus(
+        sessionId: sessionId,
+        reason: "sidebarFocusCommand.immediate.\(kind.debugName)")
       TerminalFocusDebugLog.append(
         event: "nativeFocusTrace.sidebarFocusCommandDispatched",
         details: [
+          "focusRequestId": focusRequestId,
+          "immediateReinforceResult": immediateReinforceResult,
           "kind": kind.debugName,
           "responderAfterDispatch": self.responderSnapshot(),
           "sessionId": sessionId,
           "webChromeFirstResponder": self.isWebChromeFirstResponder(),
           "workspaceSnapshotAfterDispatch": self.workspaceView.activationDebugSnapshot(),
+        ])
+      self.scheduleSidebarWorkspaceFocusReinforcement(
+        sessionId: sessionId,
+        kind: kind,
+        focusRequestId: focusRequestId)
+    }
+  }
+
+  private func scheduleSidebarWorkspaceFocusReinforcement(
+    sessionId: String,
+    kind: SidebarWorkspaceFocusKind,
+    focusRequestId: UInt64
+  ) {
+    DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(140)) { [weak self] in
+      guard let self else {
+        return
+      }
+      guard self.sidebarWorkspaceFocusRequestId == focusRequestId else {
+        TerminalFocusDebugLog.append(
+          event: "nativeFocusTrace.sidebarFocusReinforcementSkipped",
+          details: [
+            "focusRequestId": focusRequestId,
+            "kind": kind.debugName,
+            "latestFocusRequestId": self.sidebarWorkspaceFocusRequestId,
+            "sessionId": sessionId,
+            "skipReason": "staleFocusRequest",
+          ])
+        return
+      }
+      let reinforceResult = self.workspaceView.reinforceSidebarWorkspaceFocus(
+        sessionId: sessionId,
+        reason: "sidebarFocusCommand.delayed.\(kind.debugName)")
+      TerminalFocusDebugLog.append(
+        event: "nativeFocusTrace.sidebarFocusReinforcementCompleted",
+        details: [
+          "focusRequestId": focusRequestId,
+          "kind": kind.debugName,
+          "reinforceResult": reinforceResult,
+          "responderAfterReinforcement": self.responderSnapshot(),
+          "sessionId": sessionId,
+          "webChromeFirstResponder": self.isWebChromeFirstResponder(),
+          "workspaceSnapshotAfterReinforcement": self.workspaceView.activationDebugSnapshot(),
         ])
     }
   }
@@ -6326,18 +7555,18 @@ final class ghostexRootView: NSView {
   }
 
   /**
-   CDXC:T3Code 2026-05-14-09:34:
-   The native sidebar can show T3 cards whose provider process was killed when
-   the main app closed or while the app was backgrounded. Use the sidebar's
-   running-session state as the source of truth and relaunch the provider in
-   the background whenever those cards remain awake but localhost is not live.
+   CDXC:T3Code 2026-06-06-05:13:
+   Runtime lifetime follows live native managed T3 panes, not sidebar session
+   cards. The pane registry reports all open T3 web panes, including inactive
+   tabs, so native can keep the heartbeat fresh and repair localhost when the
+   user still has an embedded T3 tab open.
    */
-  private func setT3CodeRuntimeSessionState(_ command: SetT3CodeRuntimeSessionState, reason: String) {
-    NativeT3RuntimeLauncher.setRunningSessionHeartbeat(
-      runningSessionIds: command.runningSessionIds,
-      reason: reason)
-    let runtimeCwd = command.runtimeCwd?.trimmingCharacters(in: .whitespacesAndNewlines)
-    guard !command.runningSessionIds.isEmpty, let runtimeCwd, !runtimeCwd.isEmpty else {
+  private func setT3CodeRuntimePaneState(_ state: ManagedT3PaneRuntimeState) {
+    NativeT3RuntimeLauncher.setLiveManagedPaneHeartbeat(
+      paneSessionIds: state.paneSessionIds,
+      reason: "nativePane.\(state.reason)")
+    let runtimeCwd = state.runtimeCwd?.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !state.paneSessionIds.isEmpty, let runtimeCwd, !runtimeCwd.isEmpty else {
       t3RuntimeVisibleSessionCwd = nil
       t3RuntimeLivenessTimer?.invalidate()
       t3RuntimeLivenessTimer = nil
@@ -6345,28 +7574,49 @@ final class ghostexRootView: NSView {
     }
 
     t3RuntimeVisibleSessionCwd = runtimeCwd
-    ensureT3CodeRuntimeForRunningSessions(reason: reason)
+    ensureT3CodeRuntimeForLivePanes(reason: "nativePane.\(state.reason)")
     if t3RuntimeLivenessTimer == nil {
       let timer = Timer(timeInterval: 10.0, repeats: true) { [weak self] _ in
-        self?.ensureT3CodeRuntimeForRunningSessions(reason: "livenessTimer")
+        self?.ensureT3CodeRuntimeForLivePanes(reason: "livenessTimer")
       }
       t3RuntimeLivenessTimer = timer
       RunLoop.main.add(timer, forMode: .common)
     }
   }
 
-  private func ensureT3CodeRuntimeForRunningSessions(reason: String) {
+  /**
+   CDXC:T3Code 2026-06-06-05:13:
+   A live managed T3 pane means the shared localhost provider is required even
+   if the sidebar projection currently omits the card. Probe and restart from
+   the pane-derived workspace root so an open T3 tab does not drift offline.
+   */
+  private func ensureT3CodeRuntimeForLivePanes(reason: String) {
     guard let runtimeCwd = t3RuntimeVisibleSessionCwd else {
       return
     }
     guard !NativeT3RuntimeLauncher.hasResponsiveManagedRuntimeListener() else {
       return
     }
-    NativeT3CodePaneReproLog.append("nativeSidebar.t3Runtime.runningSessions.autoStart", [
+    NativeT3CodePaneReproLog.append("nativeSidebar.t3Runtime.livePanes.autoStart", [
       "cwd": runtimeCwd,
       "reason": reason,
     ])
     startT3CodeRuntime(StartT3CodeRuntime(cwd: runtimeCwd))
+  }
+
+  /**
+   CDXC:T3Code 2026-06-06-05:13:
+   Sidebar-projected T3 session state is retained only for protocol
+   compatibility. It must not refresh or stop the managed provider because
+   gxserver presentation can exclude local T3 panes while native still owns a
+   live embedded tab.
+   */
+  private func setT3CodeRuntimeSessionState(_ command: SetT3CodeRuntimeSessionState, reason: String) {
+    NativeT3CodePaneReproLog.append("nativeSidebar.t3Runtime.sidebarSessionState.ignored", [
+      "hasRuntimeCwd": command.runtimeCwd?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false,
+      "reason": reason,
+      "runningSessionCount": command.runningSessionIds.count,
+    ])
   }
 
   /**
@@ -6392,6 +7642,18 @@ final class ghostexRootView: NSView {
        WKWebView.
        */
       guard NativeT3RuntimeLauncher.hasResponsiveManagedRuntimeListener() else {
+        if let startedAt = t3CodeRuntimeStartedAt {
+          let runtimeAgeSeconds = Date().timeIntervalSince(startedAt)
+          if runtimeAgeSeconds <= NativeT3RuntimeLauncher.startupGraceInterval {
+            NativeT3CodePaneReproLog.append("nativeSidebar.t3Runtime.start.booting", [
+              "pid": process.processIdentifier,
+              "runtimeAgeSeconds": runtimeAgeSeconds,
+              "startupGraceSeconds": NativeT3RuntimeLauncher.startupGraceInterval,
+            ])
+            workspaceView.reloadManagedT3WebPanes(reason: "runtimeRetainedDuringStartup")
+            return
+          }
+        }
         if NativeT3RuntimeLauncher.shouldRetainUnresponsiveManagedRuntime(
           pid: Int(process.processIdentifier))
         {
@@ -6417,6 +7679,7 @@ final class ghostexRootView: NSView {
         ])
         process.terminate()
         t3CodeRuntimeProcess = nil
+        t3CodeRuntimeStartedAt = nil
         NativeT3RuntimeLauncher.clearStaleRuntimeIfNeeded(logPrefix: "nativeSidebar")
         return startT3CodeRuntime(command)
       }
@@ -6425,6 +7688,13 @@ final class ghostexRootView: NSView {
         "pid": process.processIdentifier,
       ])
       return
+    }
+    if let process = t3CodeRuntimeProcess, !process.isRunning {
+      NativeT3CodePaneReproLog.append("nativeSidebar.t3Runtime.start.trackedExited", [
+        "pid": process.processIdentifier
+      ])
+      t3CodeRuntimeProcess = nil
+      t3CodeRuntimeStartedAt = nil
     }
 
     /**
@@ -6441,8 +7711,22 @@ final class ghostexRootView: NSView {
       return
     }
 
+    let launchStartedAt: Date
+    switch NativeT3RuntimeLauncher.claimLaunchStart() {
+    case .retained(let launchAgeSeconds):
+      NativeT3CodePaneReproLog.append("nativeSidebar.t3Runtime.start.launchInProgressRetained", [
+        "launchAgeSeconds": launchAgeSeconds,
+        "startupGraceSeconds": NativeT3RuntimeLauncher.startupGraceInterval,
+      ])
+      workspaceView.reloadManagedT3WebPanes(reason: "runtimeRetainedDuringStartup")
+      return
+    case .claimed(let claimedStartedAt):
+      launchStartedAt = claimedStartedAt
+    }
+
     NativeT3RuntimeLauncher.clearStaleRuntimeIfNeeded(logPrefix: "nativeSidebar")
     if NativeT3RuntimeLauncher.hasManagedRuntimeListener() {
+      NativeT3RuntimeLauncher.clearLaunchAttempt(startedAt: launchStartedAt)
       NativeT3CodePaneReproLog.append(
         "nativeSidebar.t3Runtime.start.retainedExistingUnresponsive",
         [
@@ -6461,14 +7745,17 @@ final class ghostexRootView: NSView {
       let process = launch.process
       try process.run()
       t3CodeRuntimeProcess = process
+      t3CodeRuntimeStartedAt = launchStartedAt
       NativeT3CodePaneReproLog.append("nativeSidebar.t3Runtime.start.spawned", [
         "args": process.arguments ?? [],
         "cwd": command.cwd,
         "executable": process.executableURL?.path ?? NSNull(),
         "pid": process.processIdentifier,
+        "startedAt": launchStartedAt.timeIntervalSince1970,
       ])
       workspaceView.reloadManagedT3WebPanes(reason: "runtimeSpawned")
-      process.terminationHandler = { [outputCapture = launch.outputCapture] terminatedProcess in
+      process.terminationHandler = { [outputCapture = launch.outputCapture, launchStartedAt] terminatedProcess in
+        NativeT3RuntimeLauncher.clearLaunchAttempt(startedAt: launchStartedAt)
         var details = outputCapture.finish()
         details["pid"] = terminatedProcess.processIdentifier
         details["reason"] = terminatedProcess.terminationReason.rawValue
@@ -6476,11 +7763,13 @@ final class ghostexRootView: NSView {
         NativeT3CodePaneReproLog.append("nativeSidebar.t3Runtime.exit", details)
       }
     } catch {
+      NativeT3RuntimeLauncher.clearLaunchAttempt(startedAt: launchStartedAt)
       NativeT3CodePaneReproLog.append("nativeSidebar.t3Runtime.start.failed", [
         "cwd": command.cwd,
         "error": error.localizedDescription,
       ])
-      ghostexRootView.logger.error("Failed to start T3 Code runtime: \(error.localizedDescription)")
+      let sanitizedError = NativeLogPrivacy.sanitizeLogLine(error.localizedDescription)
+      ghostexRootView.logger.error("Failed to start T3 Code runtime: \(sanitizedError)")
     }
   }
 
@@ -6500,6 +7789,7 @@ final class ghostexRootView: NSView {
         process.terminate()
       }
       t3CodeRuntimeProcess = nil
+      t3CodeRuntimeStartedAt = nil
     }
     NativeT3RuntimeLauncher.clearStaleRuntimeIfNeeded(
       logPrefix: "\(logPrefix).stop",
@@ -6586,8 +7876,19 @@ final class ghostexRootView: NSView {
       NativeT3CodePaneReproLog.append("nativeSidebar.codeServerRuntime.start.failed", [
         "cwd": command.cwd,
         "error": error.localizedDescription,
+        "level": "error",
+        "projectId": command.projectId ?? NSNull(),
       ])
-      ghostexRootView.logger.error("Failed to start code-server runtime: \(error.localizedDescription)")
+      let sanitizedError = NativeLogPrivacy.sanitizeLogLine(error.localizedDescription)
+      /**
+       CDXC:EditorPanes 2026-06-06-23:50:
+       VS Code server launch failures should surface immediately in the app as a
+       toast and project-editor error, while the support log records the same
+       failure as an error-level diagnostic after privacy sanitization.
+       */
+      let failureMessage = sanitizedError.isEmpty ? "Unknown startup error." : sanitizedError
+      sendHostEvent(.codeServerRuntimeStartFailed(projectId: command.projectId, message: failureMessage))
+      ghostexRootView.logger.error("Failed to start code-server runtime: \(sanitizedError)")
     }
   }
 
@@ -6630,6 +7931,17 @@ final class ghostexRootView: NSView {
       return true
     }
     let hotkeyText = Self.hotkeyText(for: event)
+    if Self.isSessionNavigationHotkeyText(hotkeyText) {
+      logNativeHotkeyNavigationRepro(
+        "appKitObserved",
+        [
+          "hotkey": hotkeyText ?? "",
+          "keyCode": String(event.keyCode),
+          "modalActive": String(!modalHostView.isHidden || activeAppModalKind != nil),
+          "nativeEditable": String(isNativeEditableFirstResponder()),
+          "webChromeFirstResponder": String(isWebChromeFirstResponder()),
+        ])
+    }
     if isNativeEditableFirstResponder() {
       /**
        CDXC:NativeTerminalSearch 2026-05-20-10:45:
@@ -6672,7 +7984,36 @@ final class ghostexRootView: NSView {
        Settings and sidebar WebKit views need first chance at shortcut recording
        and editable controls. AppKit should only preempt key equivalents while
        Ghostty/native workspace surfaces own focus.
+
+       CDXC:Hotkeys 2026-06-07-14:24:
+       Cmd+Tab, Cmd+Shift+Tab, Cmd+Shift+[ and Cmd+Shift+] must work even when
+       the native sidebar webview owns focus. WebKit does not reliably deliver
+       those app-navigation chords, so AppKit may handle only the next/previous
+       session actions here when no modal/recorder surface is open.
        */
+      if let hotkeyText,
+        let actionId = matchedHotkeyActionId(for: hotkeyText)
+      {
+        logNativeHotkeyNavigationRepro(
+          "webChromeMatch",
+          [
+            "actionId": actionId,
+            "hotkey": hotkeyText,
+            "keyCode": String(event.keyCode),
+            "modalActive": String(!modalHostView.isHidden || activeAppModalKind != nil),
+          ])
+        if shouldHandleHotkeyWhileWebChromeOwnsFocus(actionId: actionId) {
+          logNativeHotkeyNavigationRepro(
+            "webChromeDispatch",
+            [
+              "actionId": actionId,
+              "hotkey": hotkeyText,
+              "keyCode": String(event.keyCode),
+            ])
+          dispatchNativeHotkey(actionId)
+          return true
+        }
+      }
       if Self.isCommandHorizontalArrowEvent(event) {
         logNativeHotkeyDebug(
           "nativeHotkeys.commandArrowAppKitWebChromeBypass",
@@ -6952,6 +8293,13 @@ final class ghostexRootView: NSView {
     sendHostEvent(.nativeHotkey(actionId: actionId))
   }
 
+  private func shouldHandleHotkeyWhileWebChromeOwnsFocus(actionId: String) -> Bool {
+    guard modalHostView.isHidden && activeAppModalKind == nil else {
+      return false
+    }
+    return Self.isSessionNavigationHotkeyActionId(actionId)
+  }
+
   private func logNativeHotkeyDebug(_ event: String, _ details: [String: String]) {
     /**
      CDXC:Hotkeys 2026-04-28-05:36
@@ -6961,6 +8309,24 @@ final class ghostexRootView: NSView {
     AppDelegate.appendTerminalFocusDebugLog(
       event: event,
       details: AppDelegate.jsonObjectString(details))
+  }
+
+  private func logNativeHotkeyNavigationRepro(_ phase: String, _ details: [String: Any]) {
+    /**
+     CDXC:Hotkeys 2026-06-07-14:24:
+     A 14:14 repro showed no persistent hotkey breadcrumb while Debugging Mode
+     was off. Persist this narrow next/previous-session repro stream in the
+     existing sanitized terminal-focus log so a repeated failure can prove
+     whether AppKit observed, matched, and dispatched the shortcut without
+     writing session titles, project names, paths, URLs, or terminal content.
+     */
+    var payload = details
+    payload["phase"] = phase
+    payload["source"] = "appkit"
+    TerminalFocusDebugLog.append(
+      event: "nativeHotkeys.navigationRepro",
+      details: payload,
+      force: true)
   }
 
   private static func hotkeyText(for event: NSEvent) -> String? {
@@ -7004,6 +8370,19 @@ final class ghostexRootView: NSView {
       (event.keyCode == 123 || event.keyCode == 124)
   }
 
+  private static func isSessionNavigationHotkeyActionId(_ actionId: String) -> Bool {
+    actionId == "focusNextSession" || actionId == "focusPreviousSession"
+  }
+
+  private static func isSessionNavigationHotkeyText(_ hotkeyText: String?) -> Bool {
+    guard let hotkeyText else {
+      return false
+    }
+    return hotkeyText == "cmd+tab" || hotkeyText == "cmd+shift+tab"
+      || hotkeyText == "cmd+shift+[" || hotkeyText == "cmd+shift+]"
+      || hotkeyText == "cmd+shift+{" || hotkeyText == "cmd+shift+}"
+  }
+
   private static func normalizedHotkeyKey(_ event: NSEvent) -> String? {
     switch event.keyCode {
     case 126:
@@ -7038,6 +8417,17 @@ final class ghostexRootView: NSView {
        */
       return unshiftedDigit
     }
+    if event.modifierFlags.intersection(.deviceIndependentFlagsMask).contains(.shift),
+      let unshiftedSymbol = shiftedSymbolHotkeyKeys[normalizedCharacters]
+    {
+      /**
+       CDXC:Hotkeys 2026-06-07-14:24:
+       Some native paths report shifted bracket keys as "{" or "}" instead of
+       the physical "[" or "]" key. Normalize the glyph before matching
+       Cmd+Shift+[ and Cmd+Shift+] next/previous-session aliases.
+       */
+      return unshiftedSymbol
+    }
     return normalizedCharacters
   }
 
@@ -7054,24 +8444,59 @@ final class ghostexRootView: NSView {
     ")": "0",
   ]
 
-  private func showMessage(_ command: ShowMessage) {
-    let alert = NSAlert()
-    switch command.level {
+  private static let shiftedSymbolHotkeyKeys: [String: String] = [
+    "{": "[",
+    "}": "]",
+  ]
+
+  func presentAppToast(_ command: ShowMessage) {
+    presentAppToast(level: Self.appToastLevel(for: command.level), title: command.message)
+  }
+
+  func presentAppToast(level: String, title: String, description: String? = nil, interactive: Bool = false) {
+    /**
+     CDXC:AppToasts 2026-06-07-12:20:
+     Native-host status feedback that previously used blocking NSAlert sheets should render through the shared bottom-center modal-host toast layer so Settings, OS Integration, and workspace actions stay non-modal like the sidebar webview.
+     */
+    guard isModalHostReady else {
+      return
+    }
+    var payload: [String: Any] = [
+      "type": "toast",
+      "level": level,
+      "title": title,
+    ]
+    if let description, !description.isEmpty {
+      payload["description"] = description
+    }
+    if interactive {
+      payload["interactive"] = true
+    }
+    dispatchModalHostMessage(payload)
+    if activeAppModalKind == nil {
+      if interactive {
+        modalHostView.setTopLeftHitRegions(appModalToastHitRegions())
+      } else {
+        modalHostView.setTopLeftHitRegions([])
+      }
+    }
+    modalHostView.isHidden = false
+    updateSidebarModalBackdrop()
+  }
+
+  private static func appToastLevel(for level: MessageLevel) -> String {
+    switch level {
     case .info:
-      alert.alertStyle = .informational
+      return "info"
     case .warning:
-      alert.alertStyle = .warning
+      return "warning"
     case .error:
-      alert.alertStyle = .critical
+      return "error"
     }
-    alert.messageText = "Ghostex"
-    alert.informativeText = command.message
-    alert.addButton(withTitle: "OK")
-    if let window {
-      alert.beginSheetModal(for: window)
-    } else {
-      alert.runModal()
-    }
+  }
+
+  private func showMessage(_ command: ShowMessage) {
+    presentAppToast(command)
   }
 
   func setSidebarSide(_ side: SidebarSide) {
@@ -7088,10 +8513,33 @@ final class ghostexRootView: NSView {
     super.layout()
     let frames = rootLayoutFrames()
     validateRootLayoutFrames(frames)
-    sidebarView.frame = frames.sidebar
+    let sidebarVisualFrame = visualSidebarFrame(for: frames)
+    let sidebarResizeHitWidth = min(Self.dividerWidth, max(frames.divider.width, 0))
+    /**
+     CDXC:NativeSidebarChrome 2026-05-31-18:58:
+     The native #252525 sidebar/workarea border and resize strip must remain
+     owned by AppKit. Keep the divider and border views above the sidebar
+     WKWebView so web content cannot interfere with the transparent native drag
+     handle.
+
+     CDXC:NativeSidebarChrome 2026-06-04-22:14:
+     The reference sidebar must visually reach the workspace edge in the macOS
+     app. Paint the sidebar webview under the standard transparent resize
+     divider while keeping the divider above it for hit testing and drag
+     ownership.
+
+     CDXC:NativeSidebarChrome 2026-06-04-22:20:
+     The sidebar webview's excluded hit-test strip must match the fixed native
+     divider paint width so dragging continues to resize the sidebar after the
+     webview starts painting under that transparent divider.
+     */
+    sidebarView.frame = sidebarVisualFrame
+    sidebarView.resizeHitExclusionSide = sidebarSide
+    sidebarView.resizeHitExclusionWidth = sidebarResizeHitWidth
     divider.frame = frames.divider
     workspaceView.frame = frames.workspace
     workspaceInteractionShieldView.frame = frames.workspace
+    terminalPaneDropOverlayView.frame = frames.workspace
     modalHostView.frame = frames.modalHost
     sidebarModalBackdropView.frame = frames.sidebar.union(frames.divider)
     sidebarWorkareaBorderView.frame = frames.sidebarWorkareaBorder
@@ -7112,6 +8560,32 @@ final class ghostexRootView: NSView {
     titlebarChromeView.titlebarHeight = Self.reactTitlebarHeight
   }
 
+  private func visualSidebarFrame(for frames: RootLayoutFrames) -> CGRect {
+    /**
+     CDXC:NativeSidebarChrome 2026-06-04-22:14:
+     The transparent root divider is the source of the visible right-edge gap
+     beside left-side sidebars. Extend only the webview's paint frame across
+     the fixed divider width; do not include the dynamic workspace edge
+     extension because that belongs to split-pane resize ownership.
+     */
+    let dividerPaintWidth = min(Self.dividerWidth, max(frames.divider.width, 0))
+    guard dividerPaintWidth > 0 else {
+      return frames.sidebar
+    }
+    if sidebarSide == .left {
+      return CGRect(
+        x: frames.sidebar.minX,
+        y: frames.sidebar.minY,
+        width: frames.sidebar.width + dividerPaintWidth,
+        height: frames.sidebar.height)
+    }
+    return CGRect(
+      x: frames.sidebar.minX - dividerPaintWidth,
+      y: frames.sidebar.minY,
+      width: frames.sidebar.width + dividerPaintWidth,
+      height: frames.sidebar.height)
+  }
+
   private func promoteSidebarChrome() {
     /**
      CDXC:SidebarLayering 2026-05-23-01:51:
@@ -7119,9 +8593,17 @@ final class ghostexRootView: NSView {
      WKWebView, but no app overlay should cover the sidebar. Keep the sidebar
      and its resize divider visually above modal/titlebar web layers so session
      cards remain clickable while bottom-center toasts are visible.
+
+     CDXC:NativeSidebarChrome 2026-06-05-05:01:
+     The #252525 sidebar/workarea separator must remain visible on the
+     sidebar's right edge after both shrink and expand drags. The sidebar
+     WKWebView now paints under the transparent resize divider, so promote the
+     1px border above that webview and divider instead of leaving it in its
+     original insertion order where the extended webview can cover it.
      */
     addSubview(sidebarView, positioned: .above, relativeTo: titlebarChromeView)
     addSubview(divider, positioned: .above, relativeTo: sidebarView)
+    addSubview(sidebarWorkareaBorderView, positioned: .above, relativeTo: divider)
     addSubview(sidebarModalBackdropView, positioned: .above, relativeTo: divider)
   }
 
@@ -7154,10 +8636,15 @@ final class ghostexRootView: NSView {
        */
       return hitView
     }
-    if divider.frame.contains(point),
-      let hitView = divider.hitTest(convert(point, to: divider))
-    {
-      return hitView
+    if divider.frame.contains(point) {
+      /**
+       CDXC:NativeSidebarChrome 2026-06-04-22:20:
+       The resize divider is a transparent native overlay above a sidebar
+       webview that now paints beneath it. Return the divider directly for its
+       frame so AppKit resize dragging cannot fall through to WebKit hit
+       testing in the same pixels.
+       */
+      return divider
     }
     if sidebarView.frame.contains(point),
       let hitView = sidebarView.hitTest(convert(point, to: sidebarView))
@@ -7215,6 +8702,11 @@ final class ghostexRootView: NSView {
       return hitView
     }
     if workspaceView.frame.contains(point),
+      let hitView = terminalPaneDropOverlayView.hitTest(convert(point, to: terminalPaneDropOverlayView))
+    {
+      return hitView
+    }
+    if workspaceView.frame.contains(point),
       let nativeChromeHitView = workspaceView.nativeChromeHitView(at: convert(point, to: workspaceView))
     {
       /**
@@ -7231,6 +8723,22 @@ final class ghostexRootView: NSView {
       return hitView
     }
     return super.hitTest(point)
+  }
+
+  override func draggingEntered(_ sender: any NSDraggingInfo) -> NSDragOperation {
+    workspaceView.terminalPaneRootDragOperation(for: sender, rootView: self, phase: "entered")
+  }
+
+  override func draggingUpdated(_ sender: any NSDraggingInfo) -> NSDragOperation {
+    workspaceView.terminalPaneRootDragOperation(for: sender, rootView: self, phase: "updated")
+  }
+
+  override func draggingExited(_ sender: (any NSDraggingInfo)?) {
+    workspaceView.terminalPaneRootDraggingExited(sender, rootView: self)
+  }
+
+  override func performDragOperation(_ sender: any NSDraggingInfo) -> Bool {
+    workspaceView.performTerminalPaneRootDrop(for: sender, rootView: self)
   }
 
   private func rootLayoutFrames() -> RootLayoutFrames {
@@ -7418,8 +8926,9 @@ final class ghostexRootView: NSView {
   }
 
   private func resetSidebarWidth() {
+    let resetWidth = nativeSettingsStore.readSidebarDefaultWidth() ?? Self.sidebarResetWidth
     sidebarWidth = min(
-      max(Self.sidebarResetWidth, currentSidebarMinWidth()),
+      max(resetWidth, currentSidebarMinWidth()),
       currentMaxSidebarWidth()
     )
     needsLayout = true
@@ -7626,7 +9135,11 @@ final class ghostexRootView: NSView {
       }
       dispatchModalHostMessage(message)
       if activeAppModalKind == nil {
-        modalHostView.setTopLeftHitRegions([])
+        if (message["interactive"] as? Bool) == true {
+          modalHostView.setTopLeftHitRegions(appModalToastHitRegions())
+        } else {
+          modalHostView.setTopLeftHitRegions([])
+        }
       }
       modalHostView.isHidden = false
       updateSidebarModalBackdrop()
@@ -7642,6 +9155,16 @@ final class ghostexRootView: NSView {
       presentWorktreeImagePicker()
     case "sidebarState":
       latestModalHostSidebarState = message
+      dispatchModalHostMessage(message)
+    case "projectWorktreesResult":
+      /**
+       CDXC:WorktreeProjectRegistration 2026-06-01-21:33:
+       The Add Worktree modal asks the sidebar webview to list existing Git
+       worktrees, then the sidebar sends this result back through the native
+       modal bridge. Forward the result into the modal host instead of treating
+       it as an unknown bridge command, otherwise the Open Existing selector
+       remains stuck in its loading state.
+       */
       dispatchModalHostMessage(message)
     case "sidebarCommand":
       guard let sidebarMessage = message["message"] else {
@@ -7704,6 +9227,21 @@ final class ghostexRootView: NSView {
         )
       }
     }
+  }
+
+  private func appModalToastHitRegions() -> [CGRect] {
+    /**
+     CDXC:AddRepository 2026-06-01-10:33:
+     Clone progress toasts have a real Cancel action. Toast-only modal hosts
+     normally pass clicks through to the workspace, so interactive toasts need a
+     narrow bottom-center hit region that covers Sonner's toast without making
+     the full transparent WKWebView block terminal panes.
+     */
+    let width = min(CGFloat(520), max(CGFloat(280), modalHostView.bounds.width - 32))
+    let height = CGFloat(150)
+    let left = max(CGFloat(16), (modalHostView.bounds.width - width) / 2)
+    let top = max(CGFloat(16), modalHostView.bounds.height - height - 16)
+    return [CGRect(x: left, y: top, width: width, height: height)]
   }
 
   private func dispatchSidebarModalCommand(_ message: Any) {
@@ -7950,6 +9488,21 @@ final class ghostexRootView: NSView {
       process.standardInput = FileHandle.nullDevice
       process.standardOutput = stdoutPipe
       process.standardError = stderrPipe
+      guard NativeProcessRegistry.shared.register(requestId: command.requestId, process: process) else {
+        let result = HostEvent.processResult(
+          requestId: command.requestId,
+          exitCode: 130,
+          stdout: "",
+          stderr: "Process canceled."
+        )
+        await MainActor.run { [weak self] in
+          guard let self else {
+            return
+          }
+          self.postHostEvent(result)
+        }
+        return
+      }
       let outputLock = NSLock()
       var stdoutData = Data()
       var stderrData = Data()
@@ -7984,6 +9537,9 @@ final class ghostexRootView: NSView {
       let result: HostEvent
       do {
         try process.run()
+        if NativeProcessRegistry.shared.isCanceled(requestId: command.requestId) {
+          process.terminate()
+        }
         process.waitUntilExit()
         stdoutHandle.readabilityHandler = nil
         stderrHandle.readabilityHandler = nil
@@ -8012,6 +9568,7 @@ final class ghostexRootView: NSView {
         )
       }
       await MainActor.run { [weak self] in
+        NativeProcessRegistry.shared.unregister(requestId: command.requestId)
         guard let self else {
           return
         }
@@ -8025,7 +9582,8 @@ final class ghostexRootView: NSView {
       let url = URL(string: urlString)
     {
       if NativeDebugLogging.isEnabled {
-        Self.logger.info("Loading sidebar URL \(url.absoluteString, privacy: .public)")
+        let sanitizedURL = NativeLogPrivacy.sanitizeLogLine(url.absoluteString)
+        Self.logger.info("Loading sidebar URL \(sanitizedURL, privacy: .public)")
       }
       sidebarView.load(URLRequest(url: url))
       return
@@ -8035,13 +9593,15 @@ final class ghostexRootView: NSView {
     let builtSidebar = webAssets.appendingPathComponent("index.html")
     if FileManager.default.fileExists(atPath: builtSidebar.path) {
       if NativeDebugLogging.isEnabled {
-        Self.logger.info("Loading built sidebar from \(builtSidebar.path, privacy: .public)")
+        let sanitizedPath = NativeLogPrivacy.sanitizeLogLine(builtSidebar.path)
+        Self.logger.info("Loading built sidebar from \(sanitizedPath, privacy: .public)")
       }
       sidebarView.loadFileURL(builtSidebar, allowingReadAccessTo: webAssets)
       return
     }
 
-    Self.logger.error("Built sidebar not found at \(builtSidebar.path, privacy: .public)")
+    let sanitizedSidebarPath = NativeLogPrivacy.sanitizeLogLine(builtSidebar.path)
+    Self.logger.error("Built sidebar not found at \(sanitizedSidebarPath, privacy: .public)")
     let repoRoot = Self.resolveRepoRoot()
     let html = """
       <!doctype html>
@@ -8086,7 +9646,8 @@ final class ghostexRootView: NSView {
     let builtModalHost = webAssets.appendingPathComponent("modal-host.html")
     if FileManager.default.fileExists(atPath: builtModalHost.path) {
       if NativeDebugLogging.isEnabled {
-        Self.logger.info("Loading modal host from \(builtModalHost.path, privacy: .public)")
+        let sanitizedPath = NativeLogPrivacy.sanitizeLogLine(builtModalHost.path)
+        Self.logger.info("Loading modal host from \(sanitizedPath, privacy: .public)")
       }
       modalHostView.loadFileURL(
         builtModalHost,
@@ -8095,7 +9656,8 @@ final class ghostexRootView: NSView {
       return
     }
 
-    Self.logger.error("Built modal host not found at \(builtModalHost.path, privacy: .public)")
+    let sanitizedModalHostPath = NativeLogPrivacy.sanitizeLogLine(builtModalHost.path)
+    Self.logger.error("Built modal host not found at \(sanitizedModalHostPath, privacy: .public)")
     let repoRoot = Self.resolveRepoRoot()
     modalHostView.loadHTMLString(
       "<!doctype html><html><body style=\"margin:0;background:transparent\"></body></html>",
@@ -8108,7 +9670,8 @@ final class ghostexRootView: NSView {
     let builtTitlebarChrome = webAssets.appendingPathComponent("titlebar-host.html")
     if FileManager.default.fileExists(atPath: builtTitlebarChrome.path) {
       if NativeDebugLogging.isEnabled {
-        Self.logger.info("Loading React titlebar chrome from \(builtTitlebarChrome.path, privacy: .public)")
+        let sanitizedPath = NativeLogPrivacy.sanitizeLogLine(builtTitlebarChrome.path)
+        Self.logger.info("Loading React titlebar chrome from \(sanitizedPath, privacy: .public)")
       }
       titlebarChromeWebView.loadFileURL(
         builtTitlebarChrome,
@@ -8123,7 +9686,8 @@ final class ghostexRootView: NSView {
      missing-asset behavior observable and blank instead of silently falling
      back to native AppKit controls, because the requirement is React chrome.
      */
-    Self.logger.error("Built React titlebar chrome not found at \(builtTitlebarChrome.path, privacy: .public)")
+    let sanitizedTitlebarChromePath = NativeLogPrivacy.sanitizeLogLine(builtTitlebarChrome.path)
+    Self.logger.error("Built React titlebar chrome not found at \(sanitizedTitlebarChromePath, privacy: .public)")
     let repoRoot = Self.resolveRepoRoot()
     titlebarChromeWebView.loadHTMLString(
       "<!doctype html><html><body style=\"margin:0;background:transparent\"></body></html>",
@@ -8591,6 +10155,9 @@ final class ghostexFocusReportingWindow: NSWindow {
   var onKeyDownDispatch: ((NSEvent) -> Void)?
   var onKeyEquivalent: ((NSEvent) -> Bool)?
   var onActivationBoundaryEvent: ((NSEvent, String) -> Void)?
+  var onTerminalPaneDropDragOperation: (((any NSDraggingInfo), String) -> NSDragOperation)?
+  var onTerminalPaneDropDraggingExited: (((any NSDraggingInfo)?) -> Void)?
+  var onTerminalPaneDropPerform: (((any NSDraggingInfo)) -> Bool)?
 
   /**
    CDXC:NativeTerminalFocus 2026-04-26-21:32
@@ -8640,6 +10207,22 @@ final class ghostexFocusReportingWindow: NSWindow {
       return true
     }
     return super.performKeyEquivalent(with: event)
+  }
+
+  @objc func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+    onTerminalPaneDropDragOperation?(sender, "entered") ?? []
+  }
+
+  @objc func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
+    onTerminalPaneDropDragOperation?(sender, "updated") ?? []
+  }
+
+  @objc func draggingExited(_ sender: NSDraggingInfo?) {
+    onTerminalPaneDropDraggingExited?(sender)
+  }
+
+  @objc func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+    onTerminalPaneDropPerform?(sender) ?? false
   }
 
   private static func shouldReportActivationBoundaryEvent(_ event: NSEvent) -> Bool {
@@ -8750,25 +10333,29 @@ extension ghostexRootView: WKNavigationDelegate {
       "JSON.stringify({ text: document.body.innerText.slice(0, 240), rootHTML: document.getElementById('root')?.innerHTML.slice(0, 240) || '', bootError: window.__ghostex_BOOT_ERROR__ || null })"
     ) { result, error in
       if let error {
+        let sanitizedError = NativeLogPrivacy.sanitizeLogLine(error.localizedDescription)
         Self.logger.error(
-          "Sidebar DOM probe failed: \(error.localizedDescription, privacy: .public)")
+          "Sidebar DOM probe failed: \(sanitizedError, privacy: .public)")
         return
       }
-      Self.logger.info("Sidebar DOM probe: \(String(describing: result), privacy: .public)")
+      let sanitizedResult = NativeLogPrivacy.sanitizeLogLine(String(describing: result))
+      Self.logger.info("Sidebar DOM probe: \(sanitizedResult, privacy: .public)")
     }
   }
 
   func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
+    let sanitizedError = NativeLogPrivacy.sanitizeLogLine(error.localizedDescription)
     Self.logger.error(
-      "Sidebar webview navigation failed: \(error.localizedDescription, privacy: .public)")
+      "Sidebar webview navigation failed: \(sanitizedError, privacy: .public)")
   }
 
   func webView(
     _ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!,
     withError error: Error
   ) {
+    let sanitizedError = NativeLogPrivacy.sanitizeLogLine(error.localizedDescription)
     Self.logger.error(
-      "Sidebar webview provisional navigation failed: \(error.localizedDescription, privacy: .public)"
+      "Sidebar webview provisional navigation failed: \(sanitizedError, privacy: .public)"
     )
   }
 
@@ -8785,12 +10372,50 @@ extension ghostexRootView: WKNavigationDelegate {
   }
 }
 
+private func terminalPaneChromeDropRegistrationDetails(
+  registeredTypes: [NSPasteboard.PasteboardType],
+  operationSource: String
+) -> [String: Any] {
+  [
+    "operationSource": operationSource,
+    "registeredTypeCount": registeredTypes.count,
+    "registeredTypes": registeredTypes.map(\.rawValue).sorted(),
+  ]
+}
+
+private func terminalPaneChromeDropPasteboardDetails(
+  pasteboard: NSPasteboard,
+  registeredTypes: [NSPasteboard.PasteboardType],
+  operationSource: String,
+  phase: String
+) -> [String: Any] {
+  let types = (pasteboard.types ?? []).map(\.rawValue).sorted()
+  return [
+    "operationSource": operationSource,
+    "pasteboardChangeCount": pasteboard.changeCount,
+    "phase": phase,
+    "registeredTypeMatchCount": Set(pasteboard.types ?? []).intersection(Set(registeredTypes)).count,
+    "typeCount": types.count,
+    "types": types,
+  ]
+}
+
 final class ReactTitlebarChromeView: NSView {
   var titlebarHeight: CGFloat = 30
   private let webView: WKWebView
   private var hitRegions: [CGRect] = []
   private var overlayOpen = false
   private var frameBeforeTitlebarMaximize: NSRect?
+  private var terminalPaneDropRegisteredTypes: [NSPasteboard.PasteboardType] = []
+  private var operationSource = "titlebarChrome"
+  private var onTerminalPaneDropDragOperation: (((any NSDraggingInfo), String) -> NSDragOperation)?
+  private var onTerminalPaneDropDraggingExited: (((any NSDraggingInfo)?) -> Void)?
+  private var onTerminalPaneDropPerform: (((any NSDraggingInfo)) -> Bool)?
+  private var lastHitTestRouteLogSignature = ""
+  private var lastTerminalPaneDropHitTestLogSignature = ""
+  private var lastWebViewFootprintLogSignature = ""
+  private var windowStateObserverTokens: [NSObjectProtocol] = []
+  private var terminalPaneDropForwardingActive = false
 
   var hitRegionCount: Int {
     hitRegions.count
@@ -8808,15 +10433,48 @@ final class ReactTitlebarChromeView: NSView {
     webView.autoresizingMask = [.width, .height]
     webView.frame = bounds
     addSubview(webView)
+    disableTitlebarWebViewDropDestination()
+    DispatchQueue.main.async { [weak self] in
+      self?.disableTitlebarWebViewDropDestination()
+    }
+  }
+
+  deinit {
+    removeWindowStateObservers()
   }
 
   required init?(coder: NSCoder) {
     fatalError("init(coder:) is not supported")
   }
 
+  override func viewDidMoveToWindow() {
+    super.viewDidMoveToWindow()
+    installWindowStateObservers()
+    updateTitlebarWebViewFrame(reason: "viewDidMoveToWindow")
+  }
+
   override func layout() {
     super.layout()
-    webView.frame = bounds
+    updateTitlebarWebViewFrame(reason: "layout")
+  }
+
+  func configureTerminalPaneDropForwarding(
+    registeredTypes: [NSPasteboard.PasteboardType],
+    operationSource: String,
+    dragOperation: @escaping ((any NSDraggingInfo), String) -> NSDragOperation,
+    draggingExited: @escaping ((any NSDraggingInfo)?) -> Void,
+    perform: @escaping (any NSDraggingInfo) -> Bool
+  ) {
+    self.terminalPaneDropRegisteredTypes = registeredTypes
+    self.operationSource = operationSource
+    self.onTerminalPaneDropDragOperation = dragOperation
+    self.onTerminalPaneDropDraggingExited = draggingExited
+    self.onTerminalPaneDropPerform = perform
+    registerForDraggedTypes(registeredTypes)
+    disableTitlebarWebViewDropDestination()
+    updateTitlebarWebViewFrame(reason: "dropForwardingConfigured")
+    logTerminalPaneDropRegistration(registeredTypes: registeredTypes, operationSource: operationSource)
+    logTerminalPaneWebViewDropDisabled(operationSource: operationSource)
   }
 
   func setHitRegions(_ regions: [ReactTitlebarHitRegion], overlayOpen: Bool) {
@@ -8840,7 +10498,22 @@ final class ReactTitlebarChromeView: NSView {
      Below-titlebar regions are valid only while React says a titlebar dropdown
      is open. Stale dropdown measurements must not keep routing workspace clicks
      into the titlebar WKWebView after the dropdown closes.
+
+     CDXC:TerminalImageDrop 2026-06-08-05:34:
+     Dock-stack drags need the terminal surface to remain the AppKit drag owner.
+
+     CDXC:ReactTitlebar 2026-06-08-06:33:
+     Titlebar controls and their portaled tooltips need the titlebar WKWebView to keep the full-window viewport. Keep drop registration on the native wrapper only, and let native hit-testing restrict normal pointer events to measured React hit regions plus the blank titlebar drag strip.
+
+     CDXC:TerminalImageDrop 2026-06-08-07:16:
+     Finder and Dock drags start while another app owns focus, so there may be no
+     Ghostex drag-motion hit test before AppKit chooses a destination. Keep the
+     titlebar WebView's AppKit footprint clipped to the titlebar strip while the
+     app/window is inactive, exposing the registered native wrapper as the
+     full-window terminal drop destination before the external drag enters.
      */
+    needsLayout = true
+    updateTitlebarWebViewFrame(reason: "hitRegionsUpdated")
   }
 
   func containsInteractiveHitRegion(_ point: NSPoint) -> Bool {
@@ -8865,13 +10538,65 @@ final class ReactTitlebarChromeView: NSView {
     guard bounds.contains(point) else {
       return nil
     }
-    if containsInteractiveHitRegion(point) {
-      return webView.hitTest(point)
-    }
-    if isPointInFixedTitlebarStrip(point) {
+    if shouldForwardTerminalPaneDropHitTest(point) {
+      setTerminalPaneDropForwardingActive(true, reason: "hitTest")
+      logTerminalPaneDropHitTestForwarder(point: point)
       return self
     }
+    setTerminalPaneDropForwardingActive(false, reason: "normalHitTest")
+    if containsInteractiveHitRegion(point) {
+      let hitView = webView.hitTest(convert(point, to: webView))
+      logTitlebarHitTestRoute(point: point, route: "webView", hitViewFound: hitView != nil)
+      return hitView
+    }
+    if isPointInFixedTitlebarStrip(point) {
+      logTitlebarHitTestRoute(point: point, route: "blankTitlebarStrip", hitViewFound: true)
+      return self
+    }
+    logTitlebarHitTestRoute(point: point, route: "passThrough", hitViewFound: false)
     return nil
+  }
+
+  override func draggingEntered(_ sender: any NSDraggingInfo) -> NSDragOperation {
+    setTerminalPaneDropForwardingActive(true, reason: "draggingEntered")
+    return terminalPaneDropDragOperation(sender, phase: "entered")
+  }
+
+  override func draggingUpdated(_ sender: any NSDraggingInfo) -> NSDragOperation {
+    setTerminalPaneDropForwardingActive(true, reason: "draggingUpdated")
+    return terminalPaneDropDragOperation(sender, phase: "updated")
+  }
+
+  override func draggingExited(_ sender: (any NSDraggingInfo)?) {
+    TerminalFocusDebugLog.append(
+      event: "nativeWorkspace.terminalDrop.\(operationSource).exited",
+      details: [
+        "hasSender": sender != nil,
+        "operationSource": operationSource,
+      ],
+      force: true)
+    onTerminalPaneDropDraggingExited?(sender)
+    setTerminalPaneDropForwardingActive(false, reason: "draggingExited")
+  }
+
+  override func prepareForDragOperation(_ sender: any NSDraggingInfo) -> Bool {
+    setTerminalPaneDropForwardingActive(true, reason: "prepare")
+    return terminalPaneDropDragOperation(sender, phase: "prepare") == .copy
+  }
+
+  override func performDragOperation(_ sender: any NSDraggingInfo) -> Bool {
+    defer {
+      setTerminalPaneDropForwardingActive(false, reason: "perform")
+    }
+    TerminalFocusDebugLog.append(
+      event: "nativeWorkspace.terminalDrop.\(operationSource).perform.routeToRoot",
+      details: terminalPaneChromeDropPasteboardDetails(
+        pasteboard: sender.draggingPasteboard,
+        registeredTypes: terminalPaneDropRegisteredTypes,
+        operationSource: operationSource,
+        phase: "perform"),
+      force: true)
+    return onTerminalPaneDropPerform?(sender) ?? false
   }
 
   override func mouseDown(with event: NSEvent) {
@@ -8917,6 +10642,348 @@ final class ReactTitlebarChromeView: NSView {
     }
     let stripMinY = max(bounds.height - titlebarHeight, 0)
     return point.y >= stripMinY
+  }
+
+  private func updateTitlebarWebViewFrame(reason: String) {
+    /*
+     CDXC:ReactTitlebar 2026-06-08-06:33:
+     The React titlebar webview is a full-window transparent portal host even when no dropdown is open. Shrinking it to the titlebar strip makes tooltip placement use the wrong viewport and can make visible controls miss native hit routing.
+
+     CDXC:TerminalImageDrop 2026-06-08-07:04:
+     The 06:25 working Dock/Finder drop path selected the registered native
+     titlebar wrapper while the embedded WebView did not cover the terminal
+     workspace as an AppKit drag candidate. Keep the WebView full-window for
+     normal titlebar controls and tooltips, but temporarily shrink only its
+     AppKit footprint during external terminal-file drag forwarding so the
+     `titlebarChrome.updated -> perform` route is restored.
+
+     CDXC:TerminalImageDrop 2026-06-08-07:16:
+     The 07:13 repro showed the drag never reached a drag-motion hit test, so
+     shrinking only after `leftMouseDragged` is too late. Treat inactive app/window
+     focus as the external-drag precondition and expose the native drop wrapper
+     before AppKit performs destination selection.
+     */
+    let target = titlebarWebViewFootprint()
+    let didChange = !NSEqualRects(webView.frame, target.frame)
+    if didChange {
+      webView.frame = target.frame
+    }
+    logTitlebarWebViewFootprint(reason: reason, mode: target.mode, didChange: didChange)
+  }
+
+  private func setTerminalPaneDropForwardingActive(_ isActive: Bool, reason: String) {
+    guard terminalPaneDropForwardingActive != isActive else {
+      return
+    }
+    terminalPaneDropForwardingActive = isActive
+    updateTitlebarWebViewFrame(reason: reason)
+  }
+
+  private func titlebarWebViewFootprint() -> (frame: NSRect, mode: String) {
+    if shouldClipTitlebarWebViewForTerminalDrop() {
+      let height = min(max(titlebarHeight, 1), max(bounds.height, 1))
+      return (
+        NSRect(
+          x: bounds.minX,
+          y: max(bounds.maxY - height, bounds.minY),
+          width: bounds.width,
+          height: height),
+        "titlebarStrip")
+    }
+    return (bounds, "fullWindow")
+  }
+
+  private func shouldClipTitlebarWebViewForTerminalDrop() -> Bool {
+    guard !overlayOpen, titlebarHeight > 0, !terminalPaneDropRegisteredTypes.isEmpty else {
+      return false
+    }
+    if terminalPaneDropForwardingActive {
+      return true
+    }
+    if !NSApp.isActive {
+      return true
+    }
+    if let window, !window.isKeyWindow {
+      return true
+    }
+    return false
+  }
+
+  private func logTitlebarWebViewFootprint(
+    reason: String,
+    mode: String,
+    didChange: Bool
+  ) {
+    guard !terminalPaneDropRegisteredTypes.isEmpty else {
+      return
+    }
+    let signature = [
+      mode,
+      "appActive=\(NSApp.isActive)",
+      "didChange=\(didChange)",
+      "forwarding=\(terminalPaneDropForwardingActive)",
+      "overlay=\(overlayOpen)",
+      "windowKey=\(window?.isKeyWindow ?? false)",
+      formatRect(webView.frame),
+    ].joined(separator: "|")
+    guard signature != lastWebViewFootprintLogSignature else {
+      return
+    }
+    lastWebViewFootprintLogSignature = signature
+    TerminalFocusDebugLog.append(
+      event: "nativeWorkspace.terminalDrop.\(operationSource).webViewFootprint",
+      details: [
+        "appIsActive": NSApp.isActive,
+        "didChange": didChange,
+        "mode": mode,
+        "operationSource": operationSource,
+        "reason": reason,
+        "terminalPaneDropForwardingActive": terminalPaneDropForwardingActive,
+        "titlebarHeight": Double(titlebarHeight),
+        "webViewFrame": rectDetails(webView.frame),
+        "windowIsKey": window?.isKeyWindow ?? false,
+        "wrapperBounds": rectDetails(bounds),
+      ],
+      force: true)
+  }
+
+  private func installWindowStateObservers() {
+    removeWindowStateObservers()
+    let center = NotificationCenter.default
+    if let window {
+      windowStateObserverTokens.append(center.addObserver(
+        forName: NSWindow.didBecomeKeyNotification,
+        object: window,
+        queue: .main
+      ) { [weak self] _ in
+        self?.updateTitlebarWebViewFrame(reason: "windowDidBecomeKey")
+      })
+      windowStateObserverTokens.append(center.addObserver(
+        forName: NSWindow.didResignKeyNotification,
+        object: window,
+        queue: .main
+      ) { [weak self] _ in
+        self?.updateTitlebarWebViewFrame(reason: "windowDidResignKey")
+      })
+    }
+    windowStateObserverTokens.append(center.addObserver(
+      forName: NSApplication.didBecomeActiveNotification,
+      object: NSApp,
+      queue: .main
+    ) { [weak self] _ in
+      self?.updateTitlebarWebViewFrame(reason: "appDidBecomeActive")
+    })
+    windowStateObserverTokens.append(center.addObserver(
+      forName: NSApplication.didResignActiveNotification,
+      object: NSApp,
+      queue: .main
+    ) { [weak self] _ in
+      self?.updateTitlebarWebViewFrame(reason: "appDidResignActive")
+    })
+  }
+
+  private func removeWindowStateObservers() {
+    let center = NotificationCenter.default
+    for token in windowStateObserverTokens {
+      center.removeObserver(token)
+    }
+    windowStateObserverTokens.removeAll()
+  }
+
+  private func shouldForwardTerminalPaneDropHitTest(_ point: NSPoint) -> Bool {
+    guard bounds.contains(point), !terminalPaneDropRegisteredTypes.isEmpty else {
+      return false
+    }
+    /*
+     CDXC:TerminalImageDrop 2026-06-08-06:53:
+     The titlebar wrapper must keep a full-window WKWebView for controls and
+     tooltips, but AppKit still chooses drag destinations through hit testing.
+     During external drag-motion events, return the native registered wrapper so
+     the scoped `NSDraggingInfo` callback reaches the terminal drop router; keep
+     ordinary mouse events on the existing titlebar-region/pass-through path.
+     */
+    return Self.isTerminalPaneDropHitTestEvent(NSApp.currentEvent?.type)
+  }
+
+  private func logTerminalPaneDropHitTestForwarder(point: NSPoint) {
+    let currentEvent = NSApp.currentEvent
+    let eventTypeName = Self.eventTypeName(currentEvent?.type)
+    let signature = [
+      eventTypeName,
+      "interactive=\(containsInteractiveHitRegion(point))",
+      "strip=\(isPointInFixedTitlebarStrip(point))",
+      "registered=\(terminalPaneDropRegisteredTypes.count)",
+    ].joined(separator: "|")
+    guard signature != lastTerminalPaneDropHitTestLogSignature else {
+      return
+    }
+    lastTerminalPaneDropHitTestLogSignature = signature
+    TerminalFocusDebugLog.append(
+      event: "nativeWorkspace.terminalDrop.\(operationSource).hitTest.forwarder",
+      details: [
+        "eventNumber": currentEvent?.eventNumber ?? NSNull(),
+        "eventType": eventTypeName,
+        "hitRegionCount": hitRegions.count,
+        "interactiveHitRegion": containsInteractiveHitRegion(point),
+        "operationSource": operationSource,
+        "point": rectPointDetails(point),
+        "registeredTypeCount": terminalPaneDropRegisteredTypes.count,
+        "registeredTypes": terminalPaneDropRegisteredTypes.map(\.rawValue).sorted(),
+        "route": "nativeWrapper",
+        "titlebarHeight": Double(titlebarHeight),
+        "titlebarStrip": isPointInFixedTitlebarStrip(point),
+        "webViewFrame": rectDetails(webView.frame),
+        "webViewDropDestination": false,
+      ],
+      force: true)
+  }
+
+  private static func isTerminalPaneDropHitTestEvent(_ eventType: NSEvent.EventType?) -> Bool {
+    switch eventType {
+    case .leftMouseDragged, .rightMouseDragged, .otherMouseDragged:
+      return true
+    default:
+      return false
+    }
+  }
+
+  private static func eventTypeName(_ eventType: NSEvent.EventType?) -> String {
+    guard let eventType else { return "none" }
+    switch eventType {
+    case .leftMouseDragged:
+      return "leftMouseDragged"
+    case .rightMouseDragged:
+      return "rightMouseDragged"
+    case .otherMouseDragged:
+      return "otherMouseDragged"
+    case .leftMouseUp:
+      return "leftMouseUp"
+    case .rightMouseUp:
+      return "rightMouseUp"
+    case .otherMouseUp:
+      return "otherMouseUp"
+    case .leftMouseDown:
+      return "leftMouseDown"
+    case .rightMouseDown:
+      return "rightMouseDown"
+    case .otherMouseDown:
+      return "otherMouseDown"
+    default:
+      return String(describing: eventType)
+    }
+  }
+
+  private func logTitlebarHitTestRoute(
+    point: NSPoint,
+    route: String,
+    hitViewFound: Bool
+  ) {
+    guard NativeDebugLogging.isEnabled, let event = NSApp.currentEvent else {
+      return
+    }
+    switch event.type {
+    case .leftMouseDown, .leftMouseUp, .rightMouseDown, .rightMouseUp, .otherMouseDown, .otherMouseUp:
+      break
+    default:
+      return
+    }
+    let signature = [
+      String(event.eventNumber),
+      String(describing: event.type),
+      route,
+      String(Int(point.x.rounded())),
+      String(Int(point.y.rounded())),
+      hitViewFound ? "hit" : "miss",
+    ].joined(separator: "|")
+    guard signature != lastHitTestRouteLogSignature else {
+      return
+    }
+    lastHitTestRouteLogSignature = signature
+    TerminalFocusDebugLog.append(
+      event: "nativeWorkspace.reactTitlebar.hitTest.route",
+      details: [
+        "eventNumber": event.eventNumber,
+        "eventType": String(describing: event.type),
+        "hitRegionCount": hitRegions.count,
+        "hitViewFound": hitViewFound,
+        "overlayOpen": overlayOpen,
+        "point": rectPointDetails(point),
+        "route": route,
+        "titlebarHeight": Double(titlebarHeight),
+        "webViewFrame": rectDetails(webView.frame),
+        "wrapperBounds": rectDetails(bounds),
+      ])
+  }
+
+  private func rectPointDetails(_ point: NSPoint) -> [String: Double] {
+    [
+      "x": Double(point.x),
+      "y": Double(point.y),
+    ]
+  }
+
+  private func rectDetails(_ rect: CGRect) -> [String: Double] {
+    [
+      "height": Double(rect.height),
+      "maxX": Double(rect.maxX),
+      "maxY": Double(rect.maxY),
+      "minX": Double(rect.minX),
+      "minY": Double(rect.minY),
+      "width": Double(rect.width),
+    ]
+  }
+
+  private func logTerminalPaneDropRegistration(
+    registeredTypes: [NSPasteboard.PasteboardType],
+    operationSource: String
+  ) {
+    TerminalFocusDebugLog.append(
+      event: "nativeWorkspace.terminalDrop.\(operationSource).registeredTypes",
+      details: terminalPaneChromeDropRegistrationDetails(
+        registeredTypes: registeredTypes,
+        operationSource: operationSource),
+      force: true)
+  }
+
+  private func logTerminalPaneWebViewDropDisabled(operationSource: String) {
+    disableTitlebarWebViewDropDestination()
+    TerminalFocusDebugLog.append(
+      event: "nativeWorkspace.terminalDrop.\(operationSource)WebView.registrationDisabled",
+      details: [
+        "operationSource": "\(operationSource)WebView",
+        "registeredTypeCount": 0,
+        "registeredTypes": [],
+        "unregisterApplied": true,
+        "usesNativeChromeDropForwarder": true,
+        "webViewDropDestination": false,
+      ],
+      force: true)
+  }
+
+  private func disableTitlebarWebViewDropDestination() {
+    unregisterDraggedTypes(in: webView)
+  }
+
+  private func unregisterDraggedTypes(in view: NSView) {
+    view.unregisterDraggedTypes()
+    for subview in view.subviews {
+      unregisterDraggedTypes(in: subview)
+    }
+  }
+
+  private func terminalPaneDropDragOperation(
+    _ sender: any NSDraggingInfo,
+    phase: String
+  ) -> NSDragOperation {
+    TerminalFocusDebugLog.append(
+      event: "nativeWorkspace.terminalDrop.\(operationSource).\(phase).routeToRoot",
+      details: terminalPaneChromeDropPasteboardDetails(
+        pasteboard: sender.draggingPasteboard,
+        registeredTypes: terminalPaneDropRegisteredTypes,
+        operationSource: operationSource,
+        phase: phase),
+      force: phase != "updated" || NativeDebugLogging.isEnabled)
+    return onTerminalPaneDropDragOperation?(sender, phase) ?? []
   }
 
   private func formatPoint(_ point: CGPoint) -> String {
@@ -8986,12 +11053,13 @@ final class SidebarScriptBridge: NSObject, WKScriptMessageHandler {
   ) {
     if message.name == "ghostexNativeHostDiagnostics" {
       let diagnostic = String(describing: message.body)
+      let sanitizedDiagnostic = NativeLogPrivacy.sanitizeLogLine(diagnostic)
       if diagnostic.contains("diagnostics-ready") {
         if NativeDebugLogging.isEnabled {
-          Self.logger.info("Sidebar diagnostic: \(diagnostic, privacy: .public)")
+          Self.logger.info("Sidebar diagnostic: \(sanitizedDiagnostic, privacy: .public)")
         }
       } else {
-        Self.logger.error("Sidebar diagnostic: \(diagnostic, privacy: .public)")
+        Self.logger.error("Sidebar diagnostic: \(sanitizedDiagnostic, privacy: .public)")
       }
       return
     }
@@ -9037,8 +11105,9 @@ final class SidebarScriptBridge: NSObject, WKScriptMessageHandler {
         "messageName": message.name,
         "type": commandType,
       ])
+      let sanitizedError = NativeLogPrivacy.sanitizeLogLine(error.localizedDescription)
       Self.logger.error(
-        "Sidebar command decode failed type=\(commandType, privacy: .public) error=\(error.localizedDescription, privacy: .public)"
+        "Sidebar command decode failed type=\(commandType, privacy: .public) error=\(sanitizedError, privacy: .public)"
       )
     }
   }

@@ -8,8 +8,6 @@
   <a href="https://ghostex.dev"><img alt="Website" src="https://img.shields.io/badge/Website-ghostex.dev-0EA5E9"></a>
 </p>
 
-> If it's your first time using this app then please start with v4 (new architecture). It's working well, just need to test the migration from v3 more: [Download V4](https://github.com/maddada/Ghostex/releases/tag/v4.0.0-beta.2)
-
 # Ghostex
 
 Native Ghostty-based desktop app for running agent CLIs with persistent terminals, GUI panes, browser panes, notifications, mobile access, and a lightweight code editor.
@@ -140,16 +138,19 @@ Ghostex is moving quickly, and help is welcome on platform ports, missing agent 
 
 Join the Discord: https://discord.gg/df7b3G92CS
 
-## New screenshots of v4
+## Credits
 
-<img width="3456" height="2060" alt="2026-06-05_Ghostex_14-00-35@2x" src="https://github.com/user-attachments/assets/1e31c6e9-f024-4b02-80a6-66dff0f7c21d" />
+Ghostex builds on open source work from these projects and communities:
 
-<img width="3456" height="2060" alt="2026-06-05_Ghostex_20-37-14@2x" src="https://github.com/user-attachments/assets/e857705c-6c94-44f6-adf9-91fb3fa49ec1" />
-
-<img width="3456" height="2060" alt="2026-06-05_Ghostex_22-17-01@2x" src="https://github.com/user-attachments/assets/f60bbeed-ef21-436e-be49-b41ecd930f56" />
-
-<img width="3456" height="2060" alt="2026-06-05_Ghostex_22-19-27@2x" src="https://github.com/user-attachments/assets/d09e7938-bba2-4fbe-abfe-b1ab7478450e" />
-
-<img width="3456" height="2060" alt="HJ_fys1bkAA_NlA" src="https://github.com/user-attachments/assets/94898687-187a-4b95-a0bb-cdc477ec7acb" />
-
-<img width="3456" height="2060" alt="HJ_fzIHbcAAzq5x" src="https://github.com/user-attachments/assets/65f778ad-d7e0-468c-8361-d4fde52fa526" />
+- [CEF Project](https://github.com/chromiumembedded/cef) — embedded Chromium browser panes
+- [Agentation](https://github.com/benjitaylor/agentation) — browser annotation and feedback tooling
+- [CMUX](https://github.com/manaflow-ai/cmux) — agent hook patterns and notification integration
+- [T3 Code](https://github.com/pingdotgg/t3code) — GUI editor panes for coding agents
+- [VS Code](https://github.com/microsoft/vscode) and [code-server](https://github.com/coder/code-server) — embedded IDE surfaces
+- [zehn](https://github.com/al3rez/zehn) by [al3erz](https://github.com/al3rez) — searching sessions by prompt
+- [vvterm](https://github.com/vivy-company/vvterm) — iOS companion app base
+- [Termux](https://github.com/termux/termux-app) — Android companion app base
+- [Codex on Linux](https://github.com/ilysenko/codex-desktop-linux) — pets implementation
+- [Pierre Computer Company](https://github.com/pierrecomputer/pierre) — diffs and file rendering components
+- [Beads](https://github.com/steveyegge/beads) by [Steve Yegge](https://github.com/steveyegge) — kanban project board
+- [Beads Viewer](https://github.com/Dicklesworthstone/beads_viewer) by [doodlestein](https://github.com/Dicklesworthstone) — kanban view reference

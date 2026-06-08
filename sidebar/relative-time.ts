@@ -11,8 +11,8 @@ const BRIGHT_GREEN_WEIGHT = 86;
 const MID_GREEN_WEIGHT = 60;
 const FADED_GREEN_WEIGHT = 36;
 
-function getRelativeTimeDiffMs(isoDate: string): number {
-  return Math.max(0, Date.now() - new Date(isoDate).getTime());
+function getRelativeTimeDiffMs(isoDate: string, nowMs = Date.now()): number {
+  return Math.max(0, nowMs - new Date(isoDate).getTime());
 }
 
 function formatCompactRelativeUnit(value: number, unit: string): string {
@@ -29,13 +29,14 @@ function buildMutedMixedGreen(greenWeight: number): string {
 
 export type FormatRelativeTimeOptions = {
   allowJustNow?: boolean;
+  nowMs?: number;
 };
 
 export function formatRelativeTime(
   isoDate: string,
   options: FormatRelativeTimeOptions = {},
 ): { value: string; suffix: string | null } {
-  const diffMs = getRelativeTimeDiffMs(isoDate);
+  const diffMs = getRelativeTimeDiffMs(isoDate, options.nowMs);
   const seconds = Math.floor(diffMs / 1000);
   if (options.allowJustNow !== false && seconds < 5) {
     return { value: "just now", suffix: null };

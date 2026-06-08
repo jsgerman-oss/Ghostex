@@ -127,6 +127,29 @@ describe("getSessionCardTitleTooltip", () => {
     });
   });
 
+  test("should prefer routed session ids over display numbers in the tooltip", () => {
+    expect(
+      getSessionCardTitleTooltip({
+        session: {
+          activityLabel: undefined,
+          agentIcon: "codex",
+          alias: "Session 1",
+          detail: "OpenAI Codex",
+          isPrimaryTitleTerminalTitle: true,
+          primaryTitle: "Lost actions after migration",
+          sessionNumber: "05",
+          sessionRoutingId: "S7k-P3a91-G8v20",
+          terminalTitle: undefined,
+        },
+        showDebugSessionNumbers: true,
+      }),
+    ).toEqual({
+      headingText: "Lost actions after migration",
+      tooltip: "Lost actions after migration\n\nID: S7k-P3a91-G8v20",
+      tooltipWhen: "always",
+    });
+  });
+
   test("should expand ellipsized first-prompt titles in the tooltip heading", () => {
     expect(
       getSessionCardTitleTooltip({
@@ -372,9 +395,61 @@ describe("SessionFloatingAgentIcon", () => {
     expect(markup).not.toContain('data-provider="tmux"');
     expect(markup).not.toContain(">t</span>");
   });
+
+  test("should show delayed send clock instead of a tag icon", () => {
+    const markup = renderToStaticMarkup(
+      createElement(SessionFloatingAgentIcon, {
+        agentIcon: "codex",
+        delayedSendRemainingLabel: "04:32",
+        sessionTag: "todo",
+      }),
+    );
+
+    expect(markup).toContain("session-delayed-send-agent-icon");
+    expect(markup).toContain('aria-label="Delayed Send in 04:32"');
+    expect(markup).not.toContain("session-tag-agent-icon");
+    expect(markup).not.toContain('data-session-tag="todo"');
+  });
+
+  test("should show delayed send clock when only a deadline is projected", () => {
+    const markup = renderToStaticMarkup(
+      createElement(SessionFloatingAgentIcon, {
+        agentIcon: "codex",
+        delayedSendDeadlineAt: "2026-06-06T10:00:00.000Z",
+        sessionTag: "favorite",
+      }),
+    );
+
+    expect(markup).toContain("session-delayed-send-agent-icon");
+    expect(markup).toContain('aria-label="Delayed Send scheduled"');
+    expect(markup).not.toContain("session-tag-agent-icon");
+    expect(markup).not.toContain('data-session-tag="favorite"');
+  });
 });
 
 describe("formatSessionHeadingText", () => {
+  test("should render gxserver display titles without recomputing title provenance", () => {
+    expect(
+      formatSessionHeadingText({
+        alias: "Session 1",
+        displayTitle: "MacOS session working status Fork",
+        displayTitleTooltip: "MacOS session working status Fork",
+        isPrimaryTitleTerminalTitle: false,
+        primaryTitle: "Placeholder stale local title",
+      }),
+    ).toBe("MacOS session working status Fork");
+    expect(
+      formatSessionHeadingText({
+        alias: "Session 1",
+        displayTitle: "∗ Local draft",
+        displayTitleTooltip: "∗ Local draft (Unsynced title)",
+        includeUnsyncedTitleLabel: true,
+        isPrimaryTitleTerminalTitle: true,
+        primaryTitle: "Local draft",
+      }),
+    ).toBe("∗ Local draft (Unsynced title)");
+  });
+
   test("should append the unsynced marker when the displayed title comes from the user title", () => {
     expect(
       formatSessionHeadingText({

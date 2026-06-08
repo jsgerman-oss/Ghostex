@@ -628,7 +628,13 @@
    CDXC:SidebarSearch 2026-05-08-11:49: The top sidebar search field must use
    the same color surface as the Recent Projects search field, replace the
    Search nav row while active, animate the row swap, close on Escape or empty
-   focus-away, and sit 6px from the left sidebar edge and 7px from the right. */
+   focus-away, and sit 6px from the left sidebar edge and 7px from the right.
+   CDXC:SidebarResizeHandle 2026-05-31-15:13:
+   Do not correct the right-edge sidebar gap by over-bleeding button boxes or
+   increasing their padding. The native resize strip is responsible for that
+   visual area, so child hover actions must stay positioned by the normal
+   sidebar content box.
+ */
 .sidebar-reference-layout {
   display: contents;
 }
@@ -644,6 +650,12 @@ body:has(.sidebar-reference-layout[data-reference-sidebar="true"]) .stack {
 
 .sidebar-reference-layout[data-reference-sidebar="true"] {
   --sidebar-density-scale: 1;
+  --reference-sidebar-main-edge-bleed-left: 15px;
+  --reference-sidebar-scroll-edge-bleed-left: 8px;
+  --reference-sidebar-scroll-row-bleed-left: 7px;
+  --reference-sidebar-scroll-row-bleed-right: 0px;
+  --reference-sidebar-footer-edge-bleed-left: 8px;
+  --reference-sidebar-edge-bleed-right: 1px;
   --app-background: #0e0e0e;
   --app-foreground: #c8cdd5;
   --app-muted: #747b85;
@@ -671,7 +683,49 @@ body:has(.sidebar-reference-layout[data-reference-sidebar="true"]) .stack {
    * A symmetric 8px content-box inset rendered as about 7px on the left and
    * 14px on the right. Reduce only the right inset so the visible right gutter
    * matches the existing 7px left gutter instead of widening both sides.
+   *
+   * CDXC:SidebarReferenceBounds 2026-05-31-15:38:
+   * Native full-width sidebar rows must visually touch both sidebar edges.
+   * Keep the edge compensation in variables so row surfaces can expand without
+   * shifting the icon/text scan columns.
+   *
+   * CDXC:SidebarReferenceBounds 2026-05-31-16:16:
+   * Full-width rows must stop at the visible sidebar edge, not overrun the
+   * right side. Use only the layout padding compensation for right bleed so
+   * hover child controls, timestamps, and trailing labels keep their previous
+   * right-side positions.
+   *
+   * CDXC:SidebarReferenceBounds 2026-05-31-16:31:
+   * Quick/Projects headers, project headers, and session buttons still showed
+   * a native 7px left gap after the right-edge correction. Keep the safe
+   * 1px right bleed, but restore the stronger main-row left bleed so those
+   * button surfaces start at the sidebar edge.
+   *
+   * CDXC:SidebarReferenceBounds 2026-05-31-17:31:
+   * Scroll-area rows can be wider than their own boxes, but the scroll viewport
+   * itself clipped that paint back to the padded content column. Let the scroll
+   * viewport start at the sidebar edge, then use a smaller row bleed so project
+   * headers and session buttons keep their content columns while their visible
+   * surfaces reach the left edge.
+   *
+   * CDXC:SidebarReferenceBounds 2026-05-31-17:36:
+   * Scroll-area row surfaces should stop exactly at the right edge while the
+   * scroll viewport itself handles the layout padding. Keep a separate 0px
+   * right row bleed so trailing session chrome cannot paint outside the
+   * visible sidebar.
+   *
+   * CDXC:SidebarReferenceBounds 2026-06-04-22:14:
+   * The full reference sidebar container needs a 1px left margin so the whole
+   * sidebar shifts right together instead of changing individual row padding,
+   * hover backgrounds, icons, titles, or trailing controls independently.
+   *
+   * CDXC:SidebarReferenceBounds 2026-06-06-05:37:
+   * The shared sidebar component, not the macOS host, owns the 9px left inset
+   * formed by the 1px container margin and 8px content padding. Keep Electron
+   * and macOS on this same component-level edge contract so shared rows do not
+   * drift by host.
    */
+  margin-left: 1px;
   padding: 0 1px 7px 8px;
 }
 
@@ -745,10 +799,28 @@ body:focus-within .reference-sidebar-window-dot[data-window-dot="zoom"] {
    * sidebar-reference-layout content box. Horizontal negative margins made
    * buttons wider than the padded area and pushed folder icons into the left
    * gutter in Storybook.
+   *
+   * CDXC:SidebarReferenceBounds 2026-05-31-15:38:
+   * Top sidebar rows should have a 0px left gap in the native sidebar while
+   * keeping icons/labels where users already scan for them. Bleed the row
+   * surface left and right, then restore that distance as button padding.
    */
   margin: 14px 0 0;
   min-width: 0;
   padding: 0;
+}
+
+.sidebar-reference-layout[data-reference-sidebar="true"]
+  .reference-sidebar-primary-nav
+  > .reference-sidebar-nav-item,
+.sidebar-reference-layout[data-reference-sidebar="true"]
+  .reference-sidebar-primary-nav
+  > .reference-sidebar-nav-button,
+.sidebar-reference-layout[data-reference-sidebar="true"]
+  .reference-sidebar-primary-nav
+  > .reference-sidebar-search-slot[data-active="false"] {
+  margin-left: calc(-1 * var(--reference-sidebar-main-edge-bleed-left));
+  margin-right: calc(-1 * var(--reference-sidebar-edge-bleed-right));
 }
 
 .reference-sidebar-nav-item {
@@ -803,6 +875,31 @@ body:focus-within .reference-sidebar-window-dot[data-window-dot="zoom"] {
   width: 100%;
 }
 
+.sidebar-reference-layout[data-reference-sidebar="true"]
+  .reference-sidebar-primary-nav
+  > :is(
+    .reference-sidebar-nav-item,
+    .reference-sidebar-nav-button,
+    .reference-sidebar-search-slot[data-active="false"]
+  )
+  .reference-sidebar-nav-button,
+.sidebar-reference-layout[data-reference-sidebar="true"]
+  .reference-sidebar-primary-nav
+  > .reference-sidebar-nav-button {
+  padding-left: calc(10px + var(--reference-sidebar-main-edge-bleed-left));
+  padding-right: calc(10px + var(--reference-sidebar-edge-bleed-right));
+}
+
+.sidebar-reference-layout[data-reference-sidebar="true"]
+  .reference-sidebar-primary-nav
+  > .reference-sidebar-nav-button {
+  max-width: none;
+  width: calc(
+    100% + var(--reference-sidebar-main-edge-bleed-left) +
+      var(--reference-sidebar-edge-bleed-right)
+  );
+}
+
 .sidebar-reference-layout[data-reference-sidebar="true"] .reference-sidebar-actions-button {
   padding-right: 42px;
 }
@@ -810,7 +907,21 @@ body:focus-within .reference-sidebar-window-dot[data-window-dot="zoom"] {
 .sidebar-reference-layout[data-reference-sidebar="true"]
   .reference-sidebar-nav-item:has(.reference-sidebar-hover-action):is(:hover, :focus-within)
   .reference-sidebar-nav-button {
-  padding-right: 42px;
+  padding-right: 47px;
+}
+
+.sidebar-reference-layout[data-reference-sidebar="true"]
+  .reference-sidebar-search-slot[data-active="false"]
+  .reference-sidebar-nav-item:has(.reference-sidebar-text-search-button):is(:hover, :focus-within)
+  .reference-sidebar-nav-button {
+  /*
+   * CDXC:SidebarSearch 2026-06-07-12:37:
+   * The inactive Search row now exposes two hover actions: direct text search
+   * first, then Previous Sessions. Reserve enough right padding only while the
+   * buttons are visible so the primary Search label does not sit underneath
+   * either icon.
+   */
+  padding-right: 75px;
 }
 
 /*
@@ -858,6 +969,11 @@ body:focus-within .reference-sidebar-window-dot[data-window-dot="zoom"] {
  * creates a full-width pane in the active project. Reserve row padding only
  * while the hover icon is visible so the Settings label uses the full row at
  * rest.
+ *
+ * CDXC:SidebarReferenceBounds 2026-05-31-15:38:
+ * Hover child buttons for More, Previous Sessions, and Commands Pane should sit
+ * 5px farther left from the sidebar edge while their parent rows still occupy
+ * the full button width.
  */
 .reference-sidebar-hover-action {
   align-items: center;
@@ -871,12 +987,25 @@ body:focus-within .reference-sidebar-window-dot[data-window-dot="zoom"] {
   opacity: 0;
   pointer-events: none;
   position: absolute;
-  right: 4px;
+  right: 9px;
   top: 4px;
   transition:
     background-color 120ms ease,
     opacity 120ms ease;
   width: 26px;
+}
+
+.reference-sidebar-text-search-button {
+  /*
+   * CDXC:SidebarSearch 2026-06-07-12:37:
+   * The Search by Text action belongs immediately left of the existing
+   * Previous Sessions action in the Search row.
+   */
+  right: 37px;
+}
+
+.reference-sidebar-previous-sessions-button {
+  right: 9px;
 }
 
 .reference-sidebar-nav-item:hover .reference-sidebar-hover-action,
@@ -1112,15 +1241,18 @@ body[data-sidebar-tooltips-suppressed="true"] [data-slot="tooltip-content"] {
   grid-template-rows: minmax(0, 1fr);
   height: auto;
   /*
-   * CDXC:SidebarReferenceBounds 2026-05-26-22:59:
-   * Session and project rows should measure against the same padded content
-   * width as the top nav. Do not expand the scroll panel back across the
-   * sidebar-reference-layout gutter.
+   * CDXC:SidebarReferenceBounds 2026-05-31-17:39:
+   * Session/project row surfaces are clipped by this panel, so the panel itself
+   * must reach the sidebar edge. Child rows keep smaller compensated bleeds so
+   * text/icon columns stay stable while hover and active surfaces start at 0px.
    */
-  margin-left: 0;
-  margin-right: 0;
+  margin-left: calc(-1 * var(--reference-sidebar-scroll-edge-bleed-left));
+  margin-right: calc(-1 * var(--reference-sidebar-edge-bleed-right));
   min-height: 0;
-  width: 100%;
+  width: calc(
+    100% + var(--reference-sidebar-scroll-edge-bleed-left) +
+      var(--reference-sidebar-edge-bleed-right)
+  );
 }
 
 .sidebar-reference-layout[data-reference-sidebar="true"] .session-groups-top {
@@ -1131,7 +1263,14 @@ body[data-sidebar-tooltips-suppressed="true"] [data-slot="tooltip-content"] {
 
 .sidebar-reference-layout[data-reference-sidebar="true"] .session-search-toolbar {
   padding: 0;
-  width: 100%;
+  /*
+   * CDXC:SidebarSearch 2026-05-31-18:39:
+   * The active top Search sessions field needs 5px more right-edge gap. Shrink
+   * the toolbar width instead of changing parent padding so the search box's
+   * left edge and internal icon/text spacing stay fixed.
+   */
+  justify-self: start;
+  width: calc(100% - 5px);
 }
 
 .sidebar-reference-layout[data-reference-sidebar="true"] .session-search-input-shell {
@@ -1234,6 +1373,12 @@ body[data-sidebar-tooltips-suppressed="true"] [data-slot="tooltip-content"] {
   scrollbar-width: none;
 }
 
+.sidebar-reference-layout[data-reference-sidebar="true"] .session-groups-scroll-shell {
+  margin-left: 0;
+  margin-right: 0;
+  width: 100%;
+}
+
 .sidebar-reference-layout[data-reference-sidebar="true"] .session-groups-content::-webkit-scrollbar {
   height: 0;
   width: 0;
@@ -1264,15 +1409,33 @@ body[data-sidebar-tooltips-suppressed="true"] [data-slot="tooltip-content"] {
 .reference-sidebar-section-row {
   align-items: center;
   background: var(--app-background);
+  box-sizing: border-box;
   display: flex;
-  margin: 48px 3px 10px 5px;
   min-height: 22px;
+  margin: 48px calc(-1 * var(--reference-sidebar-scroll-row-bleed-right)) 10px
+    calc(-1 * var(--reference-sidebar-scroll-row-bleed-left));
+  padding-left: calc(18px + var(--reference-sidebar-scroll-row-bleed-left));
+  padding-right: calc(9px + var(--reference-sidebar-scroll-row-bleed-right));
   /*
    * CDXC:SidebarStickyHeaders 2026-05-20-08:08:
    * Quick and Projects started as scroll-context sticky headers, but review
    * showed the section label plus sticky project row created awkward stacked
    * whitespace. Keep section labels in normal document flow and let only
    * project folder headers stick while scrolling.
+   *
+   * CDXC:SidebarReferenceBounds 2026-05-31-15:38:
+   * Quick and Projects header buttons should start at the sidebar's left edge,
+   * not the padded content column. Compensated padding keeps the labels and
+   * header action icons in their existing visual columns.
+   *
+   * CDXC:SidebarReferenceBounds 2026-05-31-18:16:
+   * Quick and Projects section headers remain full-width hit targets, but
+   * their labels and action controls should sit 6px farther inward from both
+   * edges.
+   *
+   * CDXC:SidebarReferenceBounds 2026-05-31-18:24:
+   * Quick and Projects section header contents need another 7px of left inset
+   * only, while the right-side spacing and full-width row surface stay fixed.
    */
 }
 
@@ -1290,6 +1453,35 @@ body[data-sidebar-tooltips-suppressed="true"] [data-slot="tooltip-content"] {
    * positioning unchanged.
    */
   margin-bottom: 12px;
+}
+
+.reference-remote-section-list {
+  display: grid;
+  gap: 2px;
+  margin-top: 8px;
+}
+
+.reference-remote-machine-section[data-disconnected="true"] {
+  opacity: 0.48;
+}
+
+.reference-remote-machine-section[data-disconnected="true"]:hover,
+.reference-remote-machine-section[data-disconnected="true"]:focus-within {
+  opacity: 0.68;
+}
+
+.reference-remote-machine-section[data-dragging="true"] {
+  opacity: 0.28;
+}
+
+.reference-remote-machine-section .reference-sidebar-section-row {
+  margin-bottom: 0;
+  margin-top: 10px;
+}
+
+.reference-remote-machine-section .reference-sidebar-section-chevron {
+  opacity: 0;
+  visibility: hidden;
 }
 
 .sidebar-reference-layout[data-reference-sidebar="true"]
@@ -1549,6 +1741,32 @@ body[data-sidebar-tooltips-suppressed="true"] [data-slot="tooltip-content"] {
   width: 22px;
 }
 
+/*
+CDXC:ManualSessionSorting 2026-06-05-12:30:
+The Quick and Projects sort picker is compact header chrome, not a settings
+surface. Keep the filter icon aligned with existing hover actions while making
+manual mode visibly selected without adding text to the section row.
+*/
+.reference-sidebar-section-sort-action[data-selected="true"] {
+  color: color-mix(in srgb, var(--app-foreground) 86%, transparent);
+}
+
+.reference-sidebar-sort-menu {
+  min-width: 204px;
+}
+
+.reference-sidebar-sort-menu .session-context-menu-icon[data-visible="false"] {
+  opacity: 0;
+}
+
+.reference-sidebar-tag-filter-check[data-visible="false"] {
+  opacity: 0;
+}
+
+.reference-sidebar-tag-filter-item[data-selected="true"] {
+  color: var(--app-foreground);
+}
+
 .reference-sidebar-section-bulk-project-action svg {
   /*
    * CDXC:SidebarReference 2026-05-28-12:59:
@@ -1600,7 +1818,8 @@ body[data-sidebar-tooltips-suppressed="true"] [data-slot="tooltip-content"] {
 
 .reference-sidebar-settings-row {
   flex: none;
-  margin: 0 -5px 0;
+  margin: 0 calc(-1 * var(--reference-sidebar-edge-bleed-right)) 0
+    calc(-1 * var(--reference-sidebar-footer-edge-bleed-left));
 }
 
 .sidebar-reference-layout[data-reference-sidebar="true"] .recent-projects-drawer {
@@ -1609,6 +1828,16 @@ body[data-sidebar-tooltips-suppressed="true"] [data-slot="tooltip-content"] {
   gap: 6px;
   margin: 10px -5px 0;
   padding: 8px 0 0;
+}
+
+.sidebar-reference-layout[data-reference-sidebar="true"] .recent-projects-drawer[data-open="true"] {
+  /*
+   * CDXC:RecentProjects 2026-05-31-16:37:
+   * Expanded Recent Projects needs a full-width bottom divider so its search
+   * and previous-project rows read as a distinct drawer above Settings.
+   */
+  border-bottom: 1px solid color-mix(in srgb, var(--app-border) 64%, transparent);
+  padding-bottom: 8px;
 }
 
 /*
@@ -1634,6 +1863,29 @@ body[data-sidebar-tooltips-suppressed="true"] [data-slot="tooltip-content"] {
   min-height: 32px;
   padding: 10px;
   width: 100%;
+}
+
+.sidebar-reference-layout[data-reference-sidebar="true"] .recent-projects-drawer-toggle.group-head {
+  /*
+   * CDXC:RecentProjects 2026-05-31-15:38:
+   * Recent Projects and Settings had a smaller left gap than main sidebar rows.
+   * Bleed the header by the footer edge amount and compensate its padding so
+   * its icon/text remain aligned with Settings while the button surface starts
+   * at the sidebar edge.
+   */
+  justify-self: start;
+  margin-left: calc(5px - var(--reference-sidebar-footer-edge-bleed-left));
+  max-width: none;
+  padding-left: calc(10px + var(--reference-sidebar-footer-edge-bleed-left));
+  padding-right: calc(10px + var(--reference-sidebar-edge-bleed-right) - 5px);
+  width: calc(100% + var(--reference-sidebar-edge-bleed-right));
+}
+
+.sidebar-reference-layout[data-reference-sidebar="true"]
+  .reference-sidebar-settings-row
+  .reference-sidebar-nav-button {
+  padding-left: calc(10px + var(--reference-sidebar-footer-edge-bleed-left));
+  padding-right: calc(10px + var(--reference-sidebar-edge-bleed-right));
 }
 
 .sidebar-reference-layout[data-reference-sidebar="true"] .recent-projects-drawer-toggle.group-head {
@@ -1704,14 +1956,26 @@ body[data-sidebar-tooltips-suppressed="true"] [data-slot="tooltip-content"] {
   gap: 8px;
   justify-items: center;
   padding-left: 6px;
-  padding-right: 7px;
+  /*
+   * CDXC:RecentProjects 2026-05-31-16:37:
+   * Keep the expanded drawer content's left edge fixed, but give the search
+   * box and child recent-project buttons 5px more right-side gap.
+   */
+  padding-right: 12px;
   box-sizing: border-box;
 }
 
 .sidebar-reference-layout[data-reference-sidebar="true"]
   .recent-projects-search.session-search-input-shell {
+  /*
+   * CDXC:RecentProjects 2026-06-04-22:29:
+   * The Recent Projects search box should be 5px wider on its left side only.
+   * Keep the drawer body's right edge and project row geometry unchanged by
+   * expanding the shared search shell left with a negative margin.
+   */
   justify-self: center;
-  width: 100%;
+  margin-left: -5px;
+  width: calc(100% + 5px);
 }
 
 /*

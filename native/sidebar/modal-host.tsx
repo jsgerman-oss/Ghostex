@@ -13,6 +13,9 @@ import { FindPreviousSessionModal } from "../../sidebar/find-previous-session-mo
 import { FirstUserMessageModal } from "../../sidebar/first-user-message-modal";
 import { PinnedPromptsModal } from "../../sidebar/pinned-prompts-modal";
 import { PreviousSessionsModal } from "../../sidebar/previous-sessions-modal";
+import { RemoteGxserverInstallModal } from "../../sidebar/remote-gxserver-install-modal";
+import { RemoteProjectPickerModal } from "../../sidebar/remote-project-picker/remote-project-picker-modal";
+import type { T3FilesystemBrowseResult } from "../../sidebar/remote-project-picker/t3-filesystem";
 import { ScratchPadModal } from "../../sidebar/scratch-pad-modal";
 import {
   SettingsModal,
@@ -38,11 +41,12 @@ import type {
   SidebarGhostexCliStatusMessage,
   SidebarGhostexFolderStatsMessage,
   SidebarOSIntegrationStatusMessage,
+  SidebarToExtensionMessage,
 } from "../../shared/session-grid-contract";
 import {
   getWorkspaceThemeForeground,
   normalizeWorkspaceThemeColor,
-} from "../../shared/workspace-dock-icons";
+} from "../../shared/workspace-project-appearance";
 import {
   installAppModalGlobalErrorLogging,
   logAppModalError,
@@ -73,6 +77,8 @@ type AppModalKind =
   | "floatingPromptEditor"
   | "previousSessions"
   | "firstUserMessage"
+  | "remoteGxserverInstall"
+  | "remoteProjectPicker"
   | "renameSession"
   | "scratchPad"
   | "settings"
@@ -100,12 +106,17 @@ type AppModalHostMessage =
       message?: string;
       projectId?: string;
       projectName?: string;
+      projectPath?: string;
+      remoteMachineId?: string;
+      remoteMachineName?: string;
       filePath?: string;
       gitCommitDraft?: GitCommitModalDraft;
       gitFileDiff?: GitFileDiffModalDraft;
       worktreeDeleteDraft?: WorktreeDeleteModalDraft;
       initialFrame?: FloatingPromptEditorFrame;
       initialSection?: MainSettingsInitialSectionId;
+      initialSearchQuery?: string;
+      initialTab?: SettingsModalTab;
       initialText?: string;
       lockedActionType?: SidebarActionType;
       language?: string;
@@ -120,7 +131,12 @@ type AppModalHostMessage =
     }
   | { type: "close" }
   | {
+      action?: {
+        label: string;
+        sidebarMessage: SidebarToExtensionMessage;
+      };
       description?: string;
+      interactive?: boolean;
       level?: "info" | "success" | "warning" | "error";
       persistent?: boolean;
       title: string;
@@ -137,8 +153,36 @@ type AppModalHostMessage =
       requestId: string;
       type: "repositoryCloneResult";
     }
+  | {
+      error?: string;
+      ok: boolean;
+      preview?: unknown;
+      requestId: string;
+      type: "repositoryClonePreviewResult";
+    }
+  | {
+      error?: string;
+      ok: boolean;
+      requestId: string;
+      result?: T3FilesystemBrowseResult;
+      type: "remoteProjectDirectoryBrowseResult";
+    }
+  | {
+      error?: string;
+      ok: boolean;
+      projectPath?: string;
+      requestId: string;
+      type: "remoteProjectAddResult";
+    }
   | { type: "pickWorktreeImages" }
   | { paths: string[]; type: "worktreeImageFilesPicked" }
+  | {
+      error?: string;
+      ok: boolean;
+      requestId: string;
+      type: "projectWorktreesResult";
+      worktrees?: unknown;
+    }
   | { details?: string; event: string; type: "debugLog" }
   | { requestId: string; type: "floatingPromptEditorCloseAndSave" }
   | {
@@ -180,6 +224,22 @@ const PROMPT_AGENT_MODAL_STORAGE_KEYS: Record<PromptAgentModalKey, string> = {
 type FirstUserMessageModalState = {
   message: string;
   title?: string;
+};
+
+type RemoteProjectPickerState = {
+  initialQuery?: string;
+  remoteMachineId: string;
+  remoteMachineName: string;
+};
+
+type RemoteGxserverInstallState = {
+  remoteMachineId: string;
+  remoteMachineName: string;
+};
+
+type AddRepositoryModalState = {
+  remoteMachineId?: string;
+  remoteMachineName?: string;
 };
 
 type DelayedSendModalState = {
@@ -226,6 +286,13 @@ const floatingPromptEditorDefaultHeight = 320;
 const floatingPromptEditorDefaultWidth = 400;
 const floatingPromptEditorMaximumWidth = 700;
 /**
+ * CDXC:AppToasts 2026-06-03-16:12:
+ * macOS and crossplatform app-modal toasts should sit 23px higher than
+ * Sonner's 24px bottom default, so progress notices stay clear of lower app
+ * chrome while preserving the bottom-center stack behavior.
+ */
+const APP_MODAL_TOAST_BOTTOM_OFFSET_PX = 47;
+/**
  * CDXC:PromptEditor 2026-05-14-09:55:
  * Users can shrink the floating prompt editor after expanding it. The minimum
  * width must still leave room for both titlebar actions anchored to the live
@@ -254,6 +321,9 @@ type T3ThreadIdModalState = {
 type WorktreeModalState = {
   projectId?: string;
   projectName?: string;
+  projectPath?: string;
+  remoteMachineId?: string;
+  remoteMachineName?: string;
 };
 
 const APP_MODAL_CONTEXT_MENU_EDITABLE_SELECTOR =
@@ -284,9 +354,6 @@ declare global {
           postMessage: (message: unknown) => void;
         };
         ghostexNativeHostDiagnostics?: {
-          postMessage: (message: unknown) => void;
-        };
-        ghostexWorkspaceBar?: {
           postMessage: (message: unknown) => void;
         };
       };
@@ -747,6 +814,17 @@ function FloatingPromptEditorModal({
           quickSuggestions: false,
           renderLineHighlight: "none",
           scrollBeyondLastLine: false,
+          /*
+           * CDXC:PromptEditor 2026-06-04-19:29:
+           * The floating prompt editor uses Monaco's internal scrollbar; keep its rail as thin as the Agents Hub sidebar scrollbar so native overlays share one visual density.
+           *
+           * CDXC:PromptEditor 2026-06-04-19:48:
+           * The Monaco rail should be 7px wide after visual review showed 10px still felt too heavy for the macOS editor chrome.
+           */
+          scrollbar: {
+            horizontalScrollbarSize: 7,
+            verticalScrollbarSize: 7,
+          },
           selectionHighlight: false,
           snippetSuggestions: "none",
           suggestOnTriggerCharacters: false,
@@ -1349,7 +1427,7 @@ function FloatingPromptEditorModal({
              * current right edge during resize.
              */}
             <span className="floating-prompt-editor-title-text">{editor.title}</span>
-            <span className="floating-prompt-editor-title-shortcut">(Ctrl + G or Cmd + S to save)</span>
+            <span className="floating-prompt-editor-title-shortcut">(Save with ^G or ⌘S)</span>
           </div>
           <div className="floating-prompt-editor-actions">
             <button
@@ -1485,6 +1563,21 @@ function getSettingsInitialTab(modal: AppModalKind | undefined): SettingsModalTa
   return "settings";
 }
 
+function isSettingsModalTab(value: unknown): value is SettingsModalTab {
+  return (
+    value === "settings" ||
+    value === "ghostty" ||
+    value === "integrations" ||
+    value === "osIntegration" ||
+    value === "remote" ||
+    value === "projects" ||
+    value === "agents" ||
+    value === "actions" ||
+    value === "openTargets" ||
+    value === "hotkeys"
+  );
+}
+
 function readPromptAgentModalOverride(modal: PromptAgentModalKey): string | undefined {
   const value = localStorage.getItem(PROMPT_AGENT_MODAL_STORAGE_KEYS[modal])?.trim();
   return value || undefined;
@@ -1518,9 +1611,94 @@ function resolvePromptAgentModalSelection(
   );
 }
 
+function createRemoteProjectRequestId(kind: "add" | "browse"): string {
+  return `remote-project-${kind}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+}
+
+function waitForRemoteProjectDirectoryBrowseResult(
+  requestId: string,
+): Promise<T3FilesystemBrowseResult> {
+  return new Promise((resolve, reject) => {
+    let timeoutId = 0;
+    const handleMessage = (event: Event) => {
+      const message = (event as CustomEvent<AppModalHostMessage>).detail;
+      if (
+        !message ||
+        typeof message !== "object" ||
+        message.type !== "remoteProjectDirectoryBrowseResult" ||
+        message.requestId !== requestId
+      ) {
+        return;
+      }
+      window.clearTimeout(timeoutId);
+      window.removeEventListener("ghostex-app-modal-host-message", handleMessage);
+      if (!message.ok || !isT3FilesystemBrowseResult(message.result)) {
+        reject(new Error(message.error || "Remote directory browse failed."));
+        return;
+      }
+      resolve(message.result);
+    };
+
+    window.addEventListener("ghostex-app-modal-host-message", handleMessage);
+    timeoutId = window.setTimeout(() => {
+      window.removeEventListener("ghostex-app-modal-host-message", handleMessage);
+      reject(new Error("Remote directory browse timed out."));
+    }, 15_000);
+  });
+}
+
+function waitForRemoteProjectAddResult(requestId: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    let timeoutId = 0;
+    const handleMessage = (event: Event) => {
+      const message = (event as CustomEvent<AppModalHostMessage>).detail;
+      if (
+        !message ||
+        typeof message !== "object" ||
+        message.type !== "remoteProjectAddResult" ||
+        message.requestId !== requestId
+      ) {
+        return;
+      }
+      window.clearTimeout(timeoutId);
+      window.removeEventListener("ghostex-app-modal-host-message", handleMessage);
+      if (!message.ok) {
+        reject(new Error(message.error || "Remote project add failed."));
+        return;
+      }
+      resolve();
+    };
+
+    window.addEventListener("ghostex-app-modal-host-message", handleMessage);
+    timeoutId = window.setTimeout(() => {
+      window.removeEventListener("ghostex-app-modal-host-message", handleMessage);
+      reject(new Error("Remote project add timed out."));
+    }, 20_000);
+  });
+}
+
+function isT3FilesystemBrowseResult(value: unknown): value is T3FilesystemBrowseResult {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+  const candidate = value as Partial<T3FilesystemBrowseResult>;
+  return (
+    typeof candidate.parentPath === "string" &&
+    Array.isArray(candidate.entries) &&
+    candidate.entries.every(
+      (entry) =>
+        Boolean(entry) &&
+        typeof entry === "object" &&
+        typeof (entry as { fullPath?: unknown }).fullPath === "string" &&
+        typeof (entry as { name?: unknown }).name === "string",
+    )
+  );
+}
+
 function AppModalHost() {
   const {
     activeModal,
+    addRepository,
     agentsHubCatalog,
     config,
     delayedSend,
@@ -1533,6 +1711,8 @@ function AppModalHost() {
     floatingPromptEditorCloseAndSaveRequestId,
     closeGitFileDiff,
     closeModal,
+    remoteGxserverInstall,
+    remoteProjectPicker,
     renameSession,
     t3BrowserAccess,
     t3ThreadId,
@@ -1542,11 +1722,14 @@ function AppModalHost() {
     ghostexFolderStats,
     osIntegrationStatus,
     settingsInitialSection,
+    settingsInitialSearchQuery,
+    settingsInitialTabOverride,
   } = useModalStateFromNative();
   const [agentHookStatusLoading, setAgentHookStatusLoading] = useState(false);
   const [ghostexCliStatusLoading, setGhostexCliStatusLoading] = useState(false);
   const [ghostexFolderStatsLoading, setGhostexFolderStatsLoading] = useState(false);
   const [osIntegrationStatusLoading, setOSIntegrationStatusLoading] = useState(false);
+  const [isPreviousSessionsInitialLoadReady, setIsPreviousSessionsInitialLoadReady] = useState(false);
   const settings = useSidebarStore((state) => state.hud.settings);
   const agents = useSidebarStore((state) => state.hud.agents);
   const commands = useSidebarStore((state) => state.hud.commands);
@@ -1573,8 +1756,8 @@ function AppModalHost() {
     settings?.defaultPromptAgentId,
   );
   const isSettingsRenderable = isSettingsModalKind(activeModal) && settings !== undefined;
-  const settingsInitialTab = getSettingsInitialTab(activeModal);
-  const isActiveModalRenderable = isModalRenderable({
+  const settingsInitialTab = settingsInitialTabOverride ?? getSettingsInitialTab(activeModal);
+  const isBaseActiveModalRenderable = isModalRenderable({
     activeModal,
     config,
     delayedSend,
@@ -1584,12 +1767,31 @@ function AppModalHost() {
     gitFileDiff,
     worktreeDelete,
     floatingPromptEditor,
+    remoteGxserverInstall,
+    remoteProjectPicker,
     renameSession,
     settings,
     t3BrowserAccess,
     t3ThreadId,
     worktree,
   });
+  /*
+  CDXC:PreviousSessions 2026-06-02-20:39:
+  The native app-modal host is hidden until React posts `presented`. Previous Sessions must delay that presented signal until its first gxserver history query resolves, proves empty, or hits the two-second cap, otherwise the user sees the empty short modal before loaded rows expand it.
+  */
+  const isActiveModalRenderable =
+    isBaseActiveModalRenderable &&
+    (activeModal !== "previousSessions" || isPreviousSessionsInitialLoadReady);
+
+  useEffect(() => {
+    if (activeModal !== "previousSessions") {
+      setIsPreviousSessionsInitialLoadReady(false);
+    }
+  }, [activeModal]);
+
+  const handlePreviousSessionsInitialLoadReady = useCallback(() => {
+    setIsPreviousSessionsInitialLoadReady(true);
+  }, []);
 
   useEffect(() => {
     const previousDefaultPromptAgentId = previousDefaultPromptAgentIdRef.current;
@@ -1711,10 +1913,9 @@ function AppModalHost() {
     }
     /**
      * CDXC:FirstLaunchSetup 2026-05-26-17:12:
-     * The production first-launch modal should reflect an existing Homebrew CLI
-     * install before asking the user to install again. Request native PATH
-     * inspection when the setup flow opens and render Storybook through the same
-     * status prop.
+     * The production first-launch modal should reflect the app-bundled CLI that
+     * native auto-links on startup. Request native PATH inspection when the setup
+     * flow opens and render Storybook through the same status prop.
      *
      * CDXC:FirstLaunchSetup 2026-05-27-02:41:
      * Tips & Tricks now opens the first-launch modal, so the legacy modal id must
@@ -1753,6 +1954,7 @@ function AppModalHost() {
       <PreviousSessionsModal
         isOpen={activeModal === "previousSessions"}
         onClose={closeModal}
+        onInitialLoadReady={handlePreviousSessionsInitialLoadReady}
         vscode={vscode}
       />
       <PinnedPromptsModal
@@ -1770,6 +1972,54 @@ function AppModalHost() {
         message={firstUserMessage?.message ?? ""}
         onClose={closeModal}
         title={firstUserMessage?.title}
+      />
+      <RemoteGxserverInstallModal
+        isOpen={activeModal === "remoteGxserverInstall" && remoteGxserverInstall !== undefined}
+        machineName={remoteGxserverInstall?.remoteMachineName ?? "Remote"}
+        onApprove={() => {
+          if (!remoteGxserverInstall) {
+            return;
+          }
+          vscode.postMessage({
+            installApproved: true,
+            remoteMachineId: remoteGxserverInstall.remoteMachineId,
+            type: "reconnectRemoteMachine",
+          });
+          closeModal();
+        }}
+        onCancel={closeModal}
+      />
+      <RemoteProjectPickerModal
+        initialQuery={remoteProjectPicker?.initialQuery}
+        isOpen={activeModal === "remoteProjectPicker" && remoteProjectPicker !== undefined}
+        machineName={remoteProjectPicker?.remoteMachineName ?? "Remote"}
+        onAddProject={async (path) => {
+          if (!remoteProjectPicker) {
+            return;
+          }
+          const requestId = createRemoteProjectRequestId("add");
+          vscode.postMessage({
+            path,
+            remoteMachineId: remoteProjectPicker.remoteMachineId,
+            requestId,
+            type: "addRemoteProjectPath",
+          });
+          await waitForRemoteProjectAddResult(requestId);
+        }}
+        onBrowse={async (input) => {
+          if (!remoteProjectPicker) {
+            return null;
+          }
+          const requestId = createRemoteProjectRequestId("browse");
+          vscode.postMessage({
+            partialPath: input.partialPath,
+            remoteMachineId: remoteProjectPicker.remoteMachineId,
+            requestId,
+            type: "browseRemoteProjectDirectories",
+          });
+          return waitForRemoteProjectDirectoryBrowseResult(requestId);
+        }}
+        onClose={closeModal}
       />
       <DaemonSessionsModal
         isOpen={activeModal === "daemonSessions"}
@@ -1860,6 +2110,7 @@ function AppModalHost() {
           }
         }
         isOpen={activeModal === "gitCommit" && gitCommit !== undefined}
+        fileDiffDraft={gitFileDiff}
         onCancel={(requestId) => {
           vscode.postMessage({ requestId, type: "cancelSidebarGitCommit" });
           closeModal();
@@ -1891,22 +2142,24 @@ function AppModalHost() {
           vscode.postMessage({ agentId, requestId, type: "runSidebarGitMultipleCommits" });
           closeModal();
         }}
-        onOpenFileDiff={(filePath) => {
-          vscode.postMessage({ filePath, type: "openSidebarGitChangedFileDiff" });
+        onOpenFileDiff={(filePath, requestId) => {
+          vscode.postMessage({ filePath, requestId, type: "openSidebarGitChangedFileDiff" });
         }}
         onPromptAgentIdChange={updateGitCommitPromptAgentId}
         promptAgentId={resolvedGitCommitPromptAgentId}
       />
-      <GitFileDiffModal
-        draft={
-          gitFileDiff ?? {
-            filePath: "",
-            patch: "No diff is available for this file.",
+      {activeModal === "gitCommit" ? null : (
+        <GitFileDiffModal
+          draft={
+            gitFileDiff ?? {
+              filePath: "",
+              patch: "No diff is available for this file.",
+            }
           }
-        }
-        isOpen={gitFileDiff !== undefined}
-        onClose={closeGitFileDiff}
-      />
+          isOpen={gitFileDiff !== undefined}
+          onClose={closeGitFileDiff}
+        />
+      )}
       <WorktreeDeleteModal
         draft={
           worktreeDelete ?? {
@@ -1930,8 +2183,16 @@ function AppModalHost() {
         }}
       />
       {/*
-       * CDXC:Worktrees 2026-05-18-23:07:
-       * Creating a project worktree is a full-window modal flow because it selects an agent, collects a first prompt, and can attach image file paths before native creates the branch/worktree.
+       * CDXC:Worktrees 2026-06-02-13:41:
+       * Creating a project worktree is a full-window modal flow because macOS
+       * owns the agent, first prompt, and image attachment drafts before submit,
+       * while gxserver owns the branch/worktree mutation and returned project.
+       *
+       * CDXC:WorktreeProjectRegistration 2026-06-02-12:53:
+       * Open Existing mode in this same modal is selection-only UI. It sends
+       * only the selected worktree path through the native sidebar to gxserver
+       * and must not expose agent, first-prompt, image attachment, or prompt
+       * helper controls.
        */}
       <WorktreeCreateModal
         agents={agents}
@@ -1940,12 +2201,26 @@ function AppModalHost() {
         onCancel={closeModal}
         onConfirm={(draft) => {
           vscode.postMessage({
-            agentId: draft.agentId,
+            agentId: draft.mode === "create" ? draft.agentId : undefined,
+            existingWorktreePath:
+              draft.mode === "openExisting" ? draft.existingWorktreePath : undefined,
+            mode: draft.mode,
             projectId: worktree?.projectId,
-            prompt: draft.prompt,
+            projectPath: worktree?.projectPath,
+            prompt: draft.mode === "create" ? draft.prompt : undefined,
+            remoteMachineId: worktree?.remoteMachineId,
             type: "createProjectWorktree",
-          });
+          } satisfies SidebarToExtensionMessage);
           closeModal();
+        }}
+        onRequestExistingWorktrees={(requestId) => {
+          vscode.postMessage({
+            projectId: worktree?.projectId,
+            projectPath: worktree?.projectPath,
+            remoteMachineId: worktree?.remoteMachineId,
+            requestId,
+            type: "requestProjectWorktrees",
+          } satisfies SidebarToExtensionMessage);
         }}
         projectName={worktree?.projectName}
       />
@@ -1977,6 +2252,7 @@ function AppModalHost() {
         agentHookStatus={agentHookStatus}
         agentHookStatusLoading={agentHookStatusLoading}
         initialSection={settingsInitialSection}
+        initialSearchQuery={settingsInitialSearchQuery}
         initialTab={settingsInitialTab}
         isOpen={isSettingsRenderable}
         onChange={(nextSettings) => {
@@ -1998,6 +2274,18 @@ function AppModalHost() {
         onInstallBrowserControl={() => {
           setGhostexCliStatusLoading(true);
           vscode.postMessage({ type: "installBrowserControl" });
+        }}
+        onInstallComputerUseSkill={() => {
+          setGhostexCliStatusLoading(true);
+          vscode.postMessage({ type: "installComputerUseSkill" });
+        }}
+        onInstallAgentOrchestrationSkill={() => {
+          setGhostexCliStatusLoading(true);
+          vscode.postMessage({ type: "installAgentOrchestrationSkill" });
+        }}
+        onInstallGenerateTitleSkill={() => {
+          setGhostexCliStatusLoading(true);
+          vscode.postMessage({ type: "installGenerateTitleSkill" });
         }}
         onInstallCuaDriver={() => {
           setGhostexCliStatusLoading(true);
@@ -2093,6 +2381,18 @@ function AppModalHost() {
           setGhostexCliStatusLoading(true);
           vscode.postMessage({ type: "installBrowserControl" });
         }}
+        onInstallComputerUseSkill={() => {
+          setGhostexCliStatusLoading(true);
+          vscode.postMessage({ type: "installComputerUseSkill" });
+        }}
+        onInstallAgentOrchestrationSkill={() => {
+          setGhostexCliStatusLoading(true);
+          vscode.postMessage({ type: "installAgentOrchestrationSkill" });
+        }}
+        onInstallGenerateTitleSkill={() => {
+          setGhostexCliStatusLoading(true);
+          vscode.postMessage({ type: "installGenerateTitleSkill" });
+        }}
         onInstallCuaDriver={() => {
           setGhostexCliStatusLoading(true);
           vscode.postMessage({ type: "installCuaDriver" });
@@ -2165,16 +2465,57 @@ function AppModalHost() {
       />
       <AddRepositoryModal
         isOpen={activeModal === "addRepository"}
+        remoteMachineId={addRepository.remoteMachineId}
+        remoteMachineName={addRepository.remoteMachineName}
         onCancel={closeModal}
         onClone={(request) => {
+          /*
+           * CDXC:AddRepository 2026-06-01-10:33:
+           * Clone & Add should leave the dialog immediately and move long-running
+           * Git feedback into the app toast layer, including cancellation. Native
+           * owns clone progress and final success/error toasts after this message.
+           */
           vscode.postMessage({
+            branchName: request.branchName,
+            cloneMainOnly: request.cloneMainOnly,
             folderPath: request.folderPath,
+            newFolderName: request.newFolderName,
+            remoteMachineId: addRepository.remoteMachineId,
             repositoryInput: request.repositoryInput,
             requestId: request.requestId,
+            shallowClone: request.shallowClone,
             type: "cloneRepository",
           });
+          closeModal();
         }}
         onCloneSuccess={closeModal}
+        onRemoteBrowse={
+          addRepository.remoteMachineId
+            ? async (input) => {
+                if (!addRepository.remoteMachineId) {
+                  return null;
+                }
+                const requestId = createRemoteProjectRequestId("browse");
+                vscode.postMessage({
+                  partialPath: input.partialPath,
+                  remoteMachineId: addRepository.remoteMachineId,
+                  requestId,
+                  type: "browseRemoteProjectDirectories",
+                });
+                return waitForRemoteProjectDirectoryBrowseResult(requestId);
+              }
+            : undefined
+        }
+        onPreview={(request) => {
+          vscode.postMessage({
+            folderPath: request.folderPath,
+            newFolderName: request.newFolderName,
+            remoteMachineId: addRepository.remoteMachineId,
+            repositoryInput: request.repositoryInput,
+            requestId: request.requestId,
+            type: "previewRepositoryClone",
+          });
+        }}
       />
       <CommandConfigModal
         draft={config.commandDraft ?? createEmptyCommandDraft()}
@@ -2224,6 +2565,7 @@ function AppModalHost() {
        * and menu overlays instead of the older #181818 surface.
        */}
       <Toaster
+        offset={{ bottom: APP_MODAL_TOAST_BOTTOM_OFFSET_PX }}
         position="bottom-center"
         richColors
         theme="dark"
@@ -2247,6 +2589,7 @@ function AppModalHost() {
  */
 function useModalStateFromNative() {
   const [activeModal, setActiveModal] = useState<AppModalKind | undefined>();
+  const [addRepository, setAddRepository] = useState<AddRepositoryModalState>({});
   const [agentsHubCatalog, setAgentsHubCatalog] = useState<AgentsHubCatalogMessage>();
   const [config, setConfig] = useState<ConfigModalState>({});
   const [delayedSend, setDelayedSend] = useState<DelayedSendModalState>();
@@ -2258,6 +2601,9 @@ function useModalStateFromNative() {
   const [floatingPromptEditor, setFloatingPromptEditor] = useState<FloatingPromptEditorState>();
   const [floatingPromptEditorCloseAndSaveRequestId, setFloatingPromptEditorCloseAndSaveRequestId] =
     useState<string>();
+  const [remoteGxserverInstall, setRemoteGxserverInstall] =
+    useState<RemoteGxserverInstallState>();
+  const [remoteProjectPicker, setRemoteProjectPicker] = useState<RemoteProjectPickerState>();
   const [renameSession, setRenameSession] = useState<RenameSessionModalState>();
   const [t3BrowserAccess, setT3BrowserAccess] = useState<T3BrowserAccessMessage>();
   const [t3ThreadId, setT3ThreadId] = useState<T3ThreadIdModalState>();
@@ -2268,11 +2614,14 @@ function useModalStateFromNative() {
   const [osIntegrationStatus, setOSIntegrationStatus] = useState<OSIntegrationStatusMessage>();
   const [settingsInitialSection, setSettingsInitialSection] =
     useState<MainSettingsInitialSectionId>();
+  const [settingsInitialSearchQuery, setSettingsInitialSearchQuery] = useState<string>();
+  const [settingsInitialTabOverride, setSettingsInitialTabOverride] = useState<SettingsModalTab>();
   const activeModalRef = useRef<AppModalKind | undefined>(activeModal);
   const toastTokenRef = useRef(0);
 
   const clearActiveModalState = useCallback(() => {
     setActiveModal(undefined);
+    setAddRepository({});
     setConfig({});
     setDelayedSend(undefined);
     setFindPreviousSession(undefined);
@@ -2281,6 +2630,8 @@ function useModalStateFromNative() {
     setGitFileDiff(undefined);
     setWorktreeDelete(undefined);
     setFloatingPromptEditor(undefined);
+    setRemoteGxserverInstall(undefined);
+    setRemoteProjectPicker(undefined);
     setRenameSession(undefined);
     setT3BrowserAccess(undefined);
     setT3ThreadId(undefined);
@@ -2289,6 +2640,8 @@ function useModalStateFromNative() {
     setOSIntegrationStatus(undefined);
     setAgentsHubCatalog(undefined);
     setSettingsInitialSection(undefined);
+    setSettingsInitialSearchQuery(undefined);
+    setSettingsInitialTabOverride(undefined);
   }, []);
 
   const closeModal = useCallback(() => {
@@ -2347,6 +2700,8 @@ function useModalStateFromNative() {
             setFindPreviousSession(undefined);
             setFirstUserMessage(undefined);
             setFloatingPromptEditor(undefined);
+            setRemoteGxserverInstall(undefined);
+            setRemoteProjectPicker(undefined);
             setT3BrowserAccess(undefined);
             setT3ThreadId(undefined);
             setWorktree(undefined);
@@ -2363,6 +2718,66 @@ function useModalStateFromNative() {
             setDelayedSend(undefined);
             setFindPreviousSession(undefined);
             setFloatingPromptEditor(undefined);
+            setRemoteGxserverInstall(undefined);
+            setRemoteProjectPicker(undefined);
+            setRenameSession(undefined);
+            setT3BrowserAccess(undefined);
+            setT3ThreadId(undefined);
+            setWorktree(undefined);
+            setWorktreeDelete(undefined);
+          } else if (message.modal === "remoteGxserverInstall") {
+            if (
+              typeof message.remoteMachineId !== "string" ||
+              !message.remoteMachineId.trim() ||
+              typeof message.remoteMachineName !== "string" ||
+              !message.remoteMachineName.trim()
+            ) {
+              throw new Error("Remote gxserver install request is missing machine details.");
+            }
+            setRemoteGxserverInstall({
+              remoteMachineId: message.remoteMachineId,
+              remoteMachineName: message.remoteMachineName,
+            });
+            setConfig({});
+            setDelayedSend(undefined);
+            setFindPreviousSession(undefined);
+            setFirstUserMessage(undefined);
+            setFloatingPromptEditor(undefined);
+            setRemoteGxserverInstall(undefined);
+            setRemoteProjectPicker(undefined);
+            setRenameSession(undefined);
+            setT3BrowserAccess(undefined);
+            setT3ThreadId(undefined);
+            setWorktree(undefined);
+            setWorktreeDelete(undefined);
+          } else if (message.modal === "remoteProjectPicker") {
+            if (
+              typeof message.remoteMachineId !== "string" ||
+              !message.remoteMachineId.trim() ||
+              typeof message.remoteMachineName !== "string" ||
+              !message.remoteMachineName.trim()
+            ) {
+              throw new Error("Remote project picker request is missing machine details.");
+            }
+            /*
+             * CDXC:RemoteProjectPicker 2026-06-03-00:18:
+             * Remote machine Add Project opens in the full-window modal host
+             * with the selected machine carried as immutable request state.
+             * Directory browsing remains machine-scoped through native so the
+             * picker cannot accidentally browse local folders.
+             */
+            setRemoteProjectPicker({
+              initialQuery:
+                typeof message.initialQuery === "string" ? message.initialQuery : undefined,
+              remoteMachineId: message.remoteMachineId,
+              remoteMachineName: message.remoteMachineName,
+            });
+            setConfig({});
+            setDelayedSend(undefined);
+            setFindPreviousSession(undefined);
+            setFirstUserMessage(undefined);
+            setFloatingPromptEditor(undefined);
+            setRemoteGxserverInstall(undefined);
             setRenameSession(undefined);
             setT3BrowserAccess(undefined);
             setT3ThreadId(undefined);
@@ -2415,6 +2830,8 @@ function useModalStateFromNative() {
             setDelayedSend(undefined);
             setFindPreviousSession(undefined);
             setFirstUserMessage(undefined);
+            setRemoteGxserverInstall(undefined);
+            setRemoteProjectPicker(undefined);
             setRenameSession(undefined);
             setT3BrowserAccess(undefined);
             setT3ThreadId(undefined);
@@ -2440,6 +2857,8 @@ function useModalStateFromNative() {
             setFindPreviousSession(undefined);
             setFirstUserMessage(undefined);
             setFloatingPromptEditor(undefined);
+            setRemoteGxserverInstall(undefined);
+            setRemoteProjectPicker(undefined);
             setRenameSession(undefined);
             setT3BrowserAccess(undefined);
             setT3ThreadId(undefined);
@@ -2454,6 +2873,8 @@ function useModalStateFromNative() {
             setDelayedSend(undefined);
             setFirstUserMessage(undefined);
             setFloatingPromptEditor(undefined);
+            setRemoteGxserverInstall(undefined);
+            setRemoteProjectPicker(undefined);
             setRenameSession(undefined);
             setT3BrowserAccess(undefined);
             setT3ThreadId(undefined);
@@ -2475,6 +2896,8 @@ function useModalStateFromNative() {
             setFindPreviousSession(undefined);
             setFirstUserMessage(undefined);
             setFloatingPromptEditor(undefined);
+            setRemoteGxserverInstall(undefined);
+            setRemoteProjectPicker(undefined);
             setRenameSession(undefined);
             setT3ThreadId(undefined);
             setWorktree(undefined);
@@ -2492,6 +2915,8 @@ function useModalStateFromNative() {
             setFindPreviousSession(undefined);
             setFirstUserMessage(undefined);
             setFloatingPromptEditor(undefined);
+            setRemoteGxserverInstall(undefined);
+            setRemoteProjectPicker(undefined);
             setRenameSession(undefined);
             setT3BrowserAccess(undefined);
             setWorktree(undefined);
@@ -2500,12 +2925,17 @@ function useModalStateFromNative() {
             setWorktree({
               projectId: typeof message.projectId === "string" ? message.projectId : undefined,
               projectName: typeof message.projectName === "string" ? message.projectName : undefined,
+              projectPath: typeof message.projectPath === "string" ? message.projectPath : undefined,
+              remoteMachineId: typeof message.remoteMachineId === "string" ? message.remoteMachineId : undefined,
+              remoteMachineName: typeof message.remoteMachineName === "string" ? message.remoteMachineName : undefined,
             });
             setConfig({});
             setDelayedSend(undefined);
             setFindPreviousSession(undefined);
             setFirstUserMessage(undefined);
             setFloatingPromptEditor(undefined);
+            setRemoteGxserverInstall(undefined);
+            setRemoteProjectPicker(undefined);
             setRenameSession(undefined);
             setT3BrowserAccess(undefined);
             setT3ThreadId(undefined);
@@ -2521,6 +2951,8 @@ function useModalStateFromNative() {
             setFindPreviousSession(undefined);
             setFirstUserMessage(undefined);
             setFloatingPromptEditor(undefined);
+            setRemoteGxserverInstall(undefined);
+            setRemoteProjectPicker(undefined);
             setRenameSession(undefined);
             setT3BrowserAccess(undefined);
             setT3ThreadId(undefined);
@@ -2537,6 +2969,7 @@ function useModalStateFromNative() {
             setFindPreviousSession(undefined);
             setFirstUserMessage(undefined);
             setFloatingPromptEditor(undefined);
+            setRemoteProjectPicker(undefined);
             setRenameSession(undefined);
             setT3BrowserAccess(undefined);
             setT3ThreadId(undefined);
@@ -2560,6 +2993,8 @@ function useModalStateFromNative() {
             setFirstUserMessage(undefined);
             setFindPreviousSession(undefined);
             setFloatingPromptEditor(undefined);
+            setRemoteGxserverInstall(undefined);
+            setRemoteProjectPicker(undefined);
             setRenameSession(undefined);
             setT3BrowserAccess(undefined);
             setT3ThreadId(undefined);
@@ -2574,6 +3009,8 @@ function useModalStateFromNative() {
             setFirstUserMessage(undefined);
             setFindPreviousSession(undefined);
             setFloatingPromptEditor(undefined);
+            setRemoteGxserverInstall(undefined);
+            setRemoteProjectPicker(undefined);
             setRenameSession(undefined);
             setT3BrowserAccess(undefined);
             setT3ThreadId(undefined);
@@ -2585,6 +3022,8 @@ function useModalStateFromNative() {
             setFindPreviousSession(undefined);
             setFirstUserMessage(undefined);
             setFloatingPromptEditor(undefined);
+            setRemoteGxserverInstall(undefined);
+            setRemoteProjectPicker(undefined);
             setRenameSession(undefined);
             setT3BrowserAccess(undefined);
             setT3ThreadId(undefined);
@@ -2596,11 +3035,42 @@ function useModalStateFromNative() {
             setSettingsInitialSection(
               typeof message.initialSection === "string" ? message.initialSection : undefined,
             );
+            /**
+             * CDXC:SessionPersistence 2026-06-04-02:52:
+             * Titlebar Tips notices can open Settings directly to a searchable
+             * tab and pre-fill the query with a setting name. Carry that state
+             * through the full-window modal host instead of requiring titlebar
+             * code to know the Settings DOM.
+             */
+            setSettingsInitialSearchQuery(
+              typeof message.initialSearchQuery === "string"
+                ? message.initialSearchQuery
+                : undefined,
+            );
+            setSettingsInitialTabOverride(
+              isSettingsModalTab(message.initialTab) ? message.initialTab : undefined,
+            );
           } else {
             setSettingsInitialSection(undefined);
+            setSettingsInitialSearchQuery(undefined);
+            setSettingsInitialTabOverride(undefined);
           }
           if (message.modal !== "agentsHub") {
             setAgentsHubCatalog(undefined);
+          }
+          if (message.modal === "addRepository") {
+            setAddRepository({
+              remoteMachineId:
+                typeof message.remoteMachineId === "string" && message.remoteMachineId.trim()
+                  ? message.remoteMachineId
+                  : undefined,
+              remoteMachineName:
+                typeof message.remoteMachineName === "string" && message.remoteMachineName.trim()
+                  ? message.remoteMachineName
+                  : undefined,
+            });
+          } else {
+            setAddRepository({});
           }
           setActiveModal(message.modal);
           return;
@@ -2628,8 +3098,8 @@ function useModalStateFromNative() {
 
         if (message.type === "toast") {
           /**
-           * CDXC:Worktrees 2026-05-18-23:07:
-           * Native worktree and git actions report progress through the app-modal host toast layer so command feedback appears over the full Ghostex window without stealing focus from terminal panes.
+           * CDXC:Worktrees 2026-06-02-15:27:
+           * Git and worktree command execution belongs to gxserver after the ownership split. The app-modal host owns only the visible toast surface, so gxserver-backed progress feedback appears over the full Ghostex window without stealing focus from terminal panes.
            *
            * CDXC:GitActionModel 2026-05-30-05:34:
            * Long-running Git actions and agent workflows need persistent status
@@ -2654,6 +3124,16 @@ function useModalStateFromNative() {
             .filter(Boolean)
             .join(" ");
           const toastOptions = {
+            action: message.action
+              ? {
+                  label: message.action.label,
+                  onClick: () => {
+                    if (message.action) {
+                      vscode.postMessage(message.action.sidebarMessage);
+                    }
+                  },
+                }
+              : undefined,
             className: toastClassName,
             description: message.description,
             duration: isPersistent ? Number.POSITIVE_INFINITY : undefined,
@@ -2723,6 +3203,10 @@ function useModalStateFromNative() {
             setOSIntegrationStatus(message.message);
             return;
           }
+          if (isPreviousSessionsResultMessage(message.message)) {
+            window.postMessage(message.message, "*");
+            return;
+          }
           applySidebarStateMessage(message.message);
         }
       } catch (error) {
@@ -2743,6 +3227,7 @@ function useModalStateFromNative() {
 
   return {
     activeModal,
+    addRepository,
     agentsHubCatalog,
     config,
     delayedSend,
@@ -2755,7 +3240,9 @@ function useModalStateFromNative() {
     floatingPromptEditorCloseAndSaveRequestId,
     closeGitFileDiff,
     closeModal,
+    remoteProjectPicker,
     renameSession,
+    remoteGxserverInstall,
     t3BrowserAccess,
     t3ThreadId,
     worktree,
@@ -2764,6 +3251,8 @@ function useModalStateFromNative() {
     ghostexFolderStats,
     osIntegrationStatus,
     settingsInitialSection,
+    settingsInitialSearchQuery,
+    settingsInitialTabOverride,
   };
 }
 
@@ -2803,6 +3292,21 @@ function isOSIntegrationStatusMessage(message: unknown): message is SidebarOSInt
   );
 }
 
+function isPreviousSessionsResultMessage(
+  message: unknown,
+): message is Extract<ExtensionToSidebarMessage, { type: "previousSessionsResult" }> {
+  /*
+  CDXC:PreviousSessionsModal 2026-06-01-22:01:
+  The full-window Previous Sessions modal lives in the app modal host WebView, while gxserver previous-session queries are requested through the native sidebar bridge. Forward the result as a normal window message so the shared modal component receives the same response path it uses inside the sidebar WebView.
+  */
+  return Boolean(
+    message &&
+      typeof message === "object" &&
+      "type" in message &&
+      message.type === "previousSessionsResult",
+  );
+}
+
 function isAgentsHubCatalogMessage(message: unknown): message is AgentsHubCatalogMessage {
   return Boolean(
     message &&
@@ -2838,6 +3342,8 @@ function isModalRenderable({
   gitFileDiff,
   worktreeDelete,
   floatingPromptEditor,
+  remoteProjectPicker,
+  remoteGxserverInstall,
   renameSession,
   settings,
   t3BrowserAccess,
@@ -2853,6 +3359,8 @@ function isModalRenderable({
   gitFileDiff: GitFileDiffModalDraft | undefined;
   worktreeDelete: WorktreeDeleteModalDraft | undefined;
   floatingPromptEditor: FloatingPromptEditorState | undefined;
+  remoteProjectPicker: RemoteProjectPickerState | undefined;
+  remoteGxserverInstall: RemoteGxserverInstallState | undefined;
   renameSession: RenameSessionModalState | undefined;
   settings: unknown;
   t3BrowserAccess: T3BrowserAccessMessage | undefined;
@@ -2885,6 +3393,10 @@ function isModalRenderable({
       return worktreeDelete !== undefined;
     case "floatingPromptEditor":
       return floatingPromptEditor !== undefined;
+    case "remoteProjectPicker":
+      return remoteProjectPicker !== undefined;
+    case "remoteGxserverInstall":
+      return remoteGxserverInstall !== undefined;
     case "renameSession":
       return renameSession !== undefined;
     case "settings":

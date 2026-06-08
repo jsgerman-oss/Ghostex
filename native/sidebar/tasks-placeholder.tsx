@@ -21,6 +21,7 @@ import {
   type ComponentProps,
   type KeyboardEvent,
 } from "react";
+import { createPortal } from "react-dom";
 import { createRoot } from "react-dom/client";
 import { Button } from "@/components/ui/button";
 import {
@@ -69,14 +70,17 @@ import {
   extractDescriptionImageReferences,
   extractPreviewableDescriptionImageReferences,
   filterBoardTickets,
+  formatProjectBoardCommentText,
   formatShortDate,
   getBlockedByIds,
   getBlockingIds,
   normalizeBeadsPayload,
   normalizeDisplayIssueKey,
+  parseProjectBoardCommentText,
   parseBeadsJson,
   priorityLabel,
   prioritySelectValue,
+  projectBoardRawProjectIdFromUrlParam,
   removeDescriptionImageReference,
   isDescriptionImageSource,
   tshirtToEstimate,
@@ -86,6 +90,7 @@ import {
   type BeadsBridgeResponse,
   type BoardEstimateFilter,
   type BoardPriorityFilter,
+  type ProjectBoardCommentMetadata,
   type BeadsIssue,
   type BoardStatusKey,
   type BoardTicket,
@@ -163,6 +168,13 @@ const PROJECT_BOARD_LABEL_REFRESH_INTERVAL_MS = 60_000;
 const PROJECT_BOARD_MAX_DEPENDENCY_OPTIONS = 600;
 const PROJECT_BOARD_MAX_VISIBLE_TICKETS_PER_COLUMN = 120;
 const PROJECT_BOARD_GENERATING_TITLE = "Generating title...";
+const PROJECT_BOARD_START_LOCATION_SELECT_ITEMS: ReadonlyArray<{
+  label: string;
+  value: ProjectBoardStartLocation;
+}> = [
+  { label: "Current project", value: "currentProject" },
+  { label: "New worktree", value: "newWorktree" },
+];
 const PROJECT_BOARD_STATUS_SELECT_ITEMS = BOARD_COLUMNS.map((column) => ({
   label: column.label,
   value: column.key,
@@ -233,11 +245,15 @@ function createEmptyTicketFormDraft(): TicketFormDraft {
 }
 
 function ProjectBoardApp() {
-  const projectName = new URLSearchParams(window.location.search).get("projectName") || "Project";
-  const projectPath = new URLSearchParams(window.location.search).get("projectPath") || "";
-  const projectId = new URLSearchParams(window.location.search).get("projectId") || "";
+  const urlSearchParams = new URLSearchParams(window.location.search);
+  const projectName = urlSearchParams.get("projectName") || "Project";
+  const projectPath = urlSearchParams.get("projectPath") || "";
+  const projectIdParam = urlSearchParams.get("projectId") || "";
+  const projectId = projectBoardRawProjectIdFromUrlParam(projectIdParam);
+  const projectEditorId = urlSearchParams.get("projectEditorId") || projectIdParam;
+  const remoteMachineId = urlSearchParams.get("remoteMachineId") || "";
   const displayKey = normalizeDisplayIssueKey(
-    new URLSearchParams(window.location.search).get("beadsDisplayKey") ?? projectName,
+    urlSearchParams.get("beadsDisplayKey") ?? projectName,
   );
   const [tickets, setTickets] = useState<BoardTicket[]>([]);
   const [allIssues, setAllIssues] = useState<BeadsIssue[]>([]);
@@ -252,15 +268,15 @@ function ProjectBoardApp() {
   const [loadState, setLoadState] = useState<LoadState>("idle");
   const [errorMessage, setErrorMessage] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
+  const searchInputRef = useRef<HTMLInputElement>(null);
   const [priorityFilter, setPriorityFilter] = useState<BoardPriorityFilter>("all");
   const [estimateFilter, setEstimateFilter] = useState<BoardEstimateFilter>("all");
   const [detail, setDetail] = useState<DetailDraft>(createEmptyDetailDraft);
   const [newTicketOpen, setNewTicketOpen] = useState(false);
   const [newTicket, setNewTicket] = useState<TicketFormDraft>(createEmptyTicketFormDraft);
-  const [createAction, setCreateAction] = useState<"create" | "createStart">();
   const [newTicketStartLocation, setNewTicketStartLocation] =
     useState<ProjectBoardStartLocation>("currentProject");
-  const isCreating = Boolean(createAction);
+  const createInFlightRef = useRef(false);
   const [deleteConfirmingTicketId, setDeleteConfirmingTicketId] = useState("");
   const [imagePreviewDataUrls, setImagePreviewDataUrls] = useState<Record<string, string>>({});
   const pendingImagePreviewPathsRef = useRef(new Set<string>());
@@ -300,7 +316,15 @@ function ProjectBoardApp() {
    * CDXC:ProjectBoard 2026-05-28-16:21:
    * Ticket primary actions should reopen existing work before creating new work.
    * Treat live and previous-session-restorable conversation links as usable so "Start work" changes to "Go to Session" once a ticket already owns an openable agent conversation.
-   * Keep the ticket dialog open after Go to Session; focusing/restoring the session should reveal the workarea without discarding the user's ticket-editing context.
+   * Keep the edit dialog open after Go to Session; focusing/restoring the session should reveal the workarea without discarding the user's ticket-editing context.
+   *
+   * CDXC:ProjectBoard 2026-05-31-07:30:
+   * Create, Create & Start, and edit-ticket Start work must dismiss their dialog immediately on click so async Beads/create/start work never blocks the board behind the modal.
+   * Do not swap Create button labels to "Creating…" while the dialog is open; that footer layout shift is visible before close.
+   * Go to Session still keeps the edit dialog open; Start work closes it on click.
+   *
+   * CDXC:ProjectBoard 2026-05-31-08:05:
+   * New-ticket start location is a dropdown beside the agent dropdown, matching its height and sitting to the right (not centered radio buttons).
    *
    * CDXC:ProjectBoard 2026-05-30-07:46:
    * Collapsed macOS Project-page selects must show friendly labels for agents and ticket priority while preserving the raw Beads-compatible values used by bridge requests.
@@ -320,13 +344,19 @@ function ProjectBoardApp() {
    * Lane headers should expose a hover/focus + action in place of the ticket count so users can create a ticket directly in that workflow status.
    * Beads creates issues in Todo first, so non-Todo lane creation must immediately update the new issue status before refreshing the board or starting work.
    *
+   * CDXC:ProjectBoardLaneHeader 2026-06-05-14:30:
+   * The lane header action slot should sit 4px in from the right edge, keep ticket counts right-aligned within that slot, and place the hover + action 3px farther right than the count alignment.
+   *
    * CDXC:ProjectBoard 2026-05-30-08:54:
    * Create & Start must launch the selected agent session from the created bead before optional label hydration or auto-title generation runs.
    * A generated title improves the board card later, but terminal creation and prompt submission must not wait on or be canceled by board refreshes or title generation failures.
    *
    * CDXC:ProjectBoard 2026-05-30-09:36:
-   * The native Beads create command can persist the issue while the web create path still lacks a usable created-issue id.
-   * Resolve the newly persisted bead from refreshed Beads data before dependency/status/label updates, title generation, or Create & Start so the terminal session is keyed to the real board ticket instead of silently skipping start.
+   * The gxserver Beads create action can persist the issue while the board web surface still lacks a usable created-issue id.
+   * Resolve the newly persisted bead from refreshed gxserver Beads data before dependency/status/label updates, title generation, or Create & Start so the terminal session is keyed to the real board ticket instead of silently skipping start.
+   *
+   * CDXC:ProjectBoard 2026-06-02-15:10:
+   * Project Board Beads commands are gxserver-owned after the split. This React surface owns modal/form sequencing and bridge requests only; do not move bd command construction or subprocess execution back into the macOS sidebar.
    *
    * CDXC:ProjectBoard 2026-05-30-09:45:
    * Create & Start should hand the created bead to native session launch as soon as the bead id is available.
@@ -349,13 +379,22 @@ function ProjectBoardApp() {
       if (!projectPath) {
         throw new Error("No active project path is available.");
       }
-      const response = await sendBeadsRequest({ ...request, cwd: projectPath });
+      /*
+       * CDXC:ProjectBoardRouting 2026-06-04-23:51:
+       * Beads CRUD must address gxserver by the raw project id when the Project pane has one, not only by the URL path. Project paths in restored WKWebView URLs can be stale, while gxserver project ids are the canonical board scope.
+       */
+      const response = await sendBeadsRequest({
+        ...request,
+        cwd: projectPath,
+        ...(projectId ? { projectId } : {}),
+        ...(remoteMachineId ? { remoteMachineId } : {}),
+      });
       if (response.exitCode !== 0) {
         throw new Error(beadsErrorMessage(response.stderr || response.stdout));
       }
       return parseBeadsJson(response.stdout);
     },
-    [projectPath],
+    [projectId, projectPath, remoteMachineId],
   );
 
   const loadConversationState = useCallback(async () => {
@@ -363,7 +402,9 @@ function ProjectBoardApp() {
       const response = await sendProjectBoardRequest({
         action: "getState",
         projectId,
+        projectEditorId,
         projectPath,
+        ...(remoteMachineId ? { remoteMachineId } : {}),
       });
       if (!response.ok) {
         throw new Error(response.error || "Could not load linked conversations.");
@@ -374,7 +415,7 @@ function ProjectBoardApp() {
     } catch (error) {
       console.warn("Project board conversation state unavailable.", error);
     }
-  }, [projectId, projectPath]);
+  }, [projectEditorId, projectId, projectPath, remoteMachineId]);
 
   const logProjectBoardDebug = useCallback(
     (event: string, details?: Record<string, unknown>) => {
@@ -386,12 +427,14 @@ function ProjectBoardApp() {
         details: stringifyProjectBoardDebugDetails(details),
         event,
         projectId,
+        projectEditorId,
         projectPath,
+        ...(remoteMachineId ? { remoteMachineId } : {}),
       }).catch((error) => {
         console.warn("Project board debug log unavailable.", error);
       });
     },
-    [conversationState.debuggingMode, projectId, projectPath],
+    [conversationState.debuggingMode, projectEditorId, projectId, projectPath, remoteMachineId],
   );
 
   const loadTickets = useCallback(async (options: BoardRefreshOptions = {}) => {
@@ -712,7 +755,10 @@ function ProjectBoardApp() {
       if (trimmedComment) {
         await runBeads({
           action: "addComment",
-          comment: trimmedComment,
+          comment: formatProjectBoardCommentText(
+            trimmedComment,
+            projectBoardCommentMetadataFromLink(detailCommentMetadataLink),
+          ),
           issueId: detail.ticket.id,
         });
       }
@@ -726,7 +772,7 @@ function ProjectBoardApp() {
   };
 
   const createTicket = async (options: { startAfterCreate?: boolean } = {}) => {
-    if (isCreating) {
+    if (createInFlightRef.current) {
       return;
     }
     const startAfterCreate = options.startAfterCreate === true;
@@ -741,7 +787,13 @@ function ProjectBoardApp() {
     if (!prompt) {
       return;
     }
-    setCreateAction(startAfterCreate ? "createStart" : "create");
+    if (startAfterCreate && conversationState.agents.length === 0) {
+      return;
+    }
+    createInFlightRef.current = true;
+    setNewTicket(createEmptyTicketFormDraft());
+    setNewTicketStartLocation("currentProject");
+    setNewTicketOpen(false);
     logProjectBoardDebug("projectBoard.createTicket.started", {
       blockedByCount: draft.blockedByIds.length,
       blockingCount: draft.blockingIds.length,
@@ -823,9 +875,6 @@ function ProjectBoardApp() {
           });
         }
       }
-      setNewTicket(createEmptyTicketFormDraft());
-      setNewTicketStartLocation("currentProject");
-      setNewTicketOpen(false);
       const refreshedPayload = await runBeads({ action: "listIssues" });
       const refreshedIssues = normalizeBeadsPayload<BeadsIssue[]>(
         refreshedPayload,
@@ -930,7 +979,7 @@ function ProjectBoardApp() {
       });
       setErrorMessage(error instanceof Error ? error.message : "Could not create the ticket.");
     } finally {
-      setCreateAction(undefined);
+      createInFlightRef.current = false;
     }
   };
 
@@ -980,6 +1029,7 @@ function ProjectBoardApp() {
         projectId,
         projectPath,
         prompt,
+        ...(remoteMachineId ? { remoteMachineId } : {}),
         startLocation,
         ticketTitle: ticket.title,
       });
@@ -1029,6 +1079,7 @@ function ProjectBoardApp() {
         beadId: ticket.id,
         projectId,
         projectPath,
+        ...(remoteMachineId ? { remoteMachineId } : {}),
         ticketTitle: ticket.title,
       });
       if (!response.ok) {
@@ -1055,6 +1106,7 @@ function ProjectBoardApp() {
         beadId: link.beadId,
         projectId,
         projectPath,
+        ...(remoteMachineId ? { remoteMachineId } : {}),
         sessionId: link.ghostexSessionId,
       });
       if (!response.ok) {
@@ -1081,6 +1133,7 @@ function ProjectBoardApp() {
         beadId: link.beadId,
         projectId,
         projectPath,
+        ...(remoteMachineId ? { remoteMachineId } : {}),
         sessionId: link.ghostexSessionId,
       });
       if (!response.ok) {
@@ -1101,6 +1154,7 @@ function ProjectBoardApp() {
 
   const detailConversationLinks = detail.ticket ? (linksByBeadId.get(detail.ticket.id) ?? []) : [];
   const detailPrimaryConversationLink = getPrimaryUsableConversationLink(detailConversationLinks);
+  const detailCommentMetadataLink = detailPrimaryConversationLink ?? detailConversationLinks[0];
   const detailPrimaryActionLabel =
     conversationAction?.kind === "jump" && conversationAction.linkId === detailPrimaryConversationLink?.id
       ? "Opening"
@@ -1159,13 +1213,44 @@ function ProjectBoardApp() {
 
       <section className="project-board-filters" aria-label="Ticket filters">
         <div className="project-board-search">
-          <IconSearch aria-hidden="true" />
+          {/*
+           * CDXC:SearchInputs 2026-06-04-03:11:
+           * Project Board ticket search is hosted by the native tasks bundle,
+           * so mirror the sidebar search affordance locally: keep the search
+           * icon on the right while empty, replace it with an X button after
+           * typing, and let Escape clear the focused non-empty field.
+           */}
           <Input
             aria-label="Search tickets"
             onChange={(event) => setSearchQuery(event.currentTarget.value)}
+            onKeyDown={(event) => {
+              if (event.key !== "Escape" || searchQuery.length === 0) {
+                return;
+              }
+              event.preventDefault();
+              event.stopPropagation();
+              setSearchQuery("");
+              searchInputRef.current?.focus();
+            }}
             placeholder="Search tickets"
+            ref={searchInputRef}
             value={searchQuery}
           />
+          {searchQuery.length > 0 ? (
+            <button
+              aria-label="Clear ticket search"
+              className="project-board-search-clear-button"
+              onClick={() => {
+                setSearchQuery("");
+                searchInputRef.current?.focus();
+              }}
+              type="button"
+            >
+              <IconX aria-hidden="true" />
+            </button>
+          ) : (
+            <IconSearch aria-hidden="true" className="project-board-search-icon" />
+          )}
         </div>
         <Select
           items={PROJECT_BOARD_PRIORITY_FILTER_SELECT_ITEMS}
@@ -1341,15 +1426,39 @@ function ProjectBoardApp() {
               <div className="project-ticket-section-title">Comments</div>
               <ScrollArea className="project-ticket-comment-list">
                 {detail.ticket?.comments?.length ? (
-                  detail.ticket.comments.map((comment, index) => (
-                    <article className="project-ticket-comment" key={`${comment.created_at}-${index}`}>
-                      <div>
-                        <strong>{comment.author || "Comment"}</strong>
-                        <span>{formatShortDate(comment.created_at)}</span>
-                      </div>
-                      <p>{comment.text}</p>
-                    </article>
-                  ))
+                  detail.ticket.comments.map((comment, index) => {
+                    const parsedComment = parseProjectBoardCommentText(comment.text);
+                    const fallbackMetadata = projectBoardCommentMetadataFromLink(detailCommentMetadataLink);
+                    const agentName = parsedComment.agentName ?? fallbackMetadata.agentName;
+                    const sessionId = parsedComment.sessionId ?? fallbackMetadata.sessionId;
+                    const createdAtLabel = formatShortDate(comment.created_at);
+                    return (
+                      <article className="project-ticket-comment" key={`${comment.created_at}-${index}`}>
+                        <div className="project-ticket-comment-header">
+                          <div className="project-ticket-comment-author-row">
+                            <strong className="project-ticket-comment-author">
+                              {comment.author || "Comment"}
+                            </strong>
+                            {agentName ? (
+                              <span className="project-ticket-comment-agent">({agentName})</span>
+                            ) : null}
+                          </div>
+                          {createdAtLabel ? (
+                            <time dateTime={comment.created_at} className="project-ticket-comment-date">
+                              {createdAtLabel}
+                            </time>
+                          ) : null}
+                        </div>
+                        <p>{parsedComment.body || comment.text}</p>
+                        {sessionId ? (
+                          <footer className="project-ticket-comment-session">
+                            <span>Session</span>
+                            <code>{sessionId}</code>
+                          </footer>
+                        ) : null}
+                      </article>
+                    );
+                  })
                 ) : (
                   <p className="project-ticket-empty">No comments yet.</p>
                 )}
@@ -1389,11 +1498,15 @@ function ProjectBoardApp() {
             <div className="project-ticket-dialog-primary-actions">
               <Button
                 disabled={detailPrimaryActionDisabled}
-                onClick={() =>
-                  detailPrimaryConversationLink
-                    ? void jumpToConversation(detailPrimaryConversationLink)
-                    : void startTicketWork()
-                }
+                onClick={() => {
+                  if (detailPrimaryConversationLink) {
+                    void jumpToConversation(detailPrimaryConversationLink);
+                    return;
+                  }
+                  setDeleteConfirmingTicketId("");
+                  setDetail(createEmptyDetailDraft());
+                  void startTicketWork();
+                }}
                 type="button"
                 variant="outline"
               >
@@ -1519,12 +1632,16 @@ function ProjectBoardApp() {
               <div className="project-ticket-section-title">Start work</div>
               <div className="project-ticket-create-start-controls">
                 <Select
-                  disabled={conversationState.agents.length === 0 || isCreating}
+                  disabled={conversationState.agents.length === 0}
                   items={agentSelectItems}
                   onValueChange={setSelectedAgentId}
                   value={selectedAgentId}
                 >
-                  <SelectTrigger aria-label="Agent for Create and Start" size="sm">
+                  <SelectTrigger
+                    aria-label="Agent for Create and Start"
+                    className="project-ticket-footer-select"
+                    size="sm"
+                  >
                     <SelectValue placeholder="Choose agent" />
                   </SelectTrigger>
                   <SelectContent>
@@ -1535,44 +1652,41 @@ function ProjectBoardApp() {
                     ))}
                   </SelectContent>
                 </Select>
-                <div className="project-ticket-start-location" role="radiogroup" aria-label="Start location">
-                  <Button
-                    aria-checked={newTicketStartLocation === "currentProject"}
-                    disabled={isCreating}
-                    onClick={() => setNewTicketStartLocation("currentProject")}
-                    role="radio"
+                <Select
+                  items={PROJECT_BOARD_START_LOCATION_SELECT_ITEMS}
+                  onValueChange={(value) =>
+                    setNewTicketStartLocation(value as ProjectBoardStartLocation)
+                  }
+                  value={newTicketStartLocation}
+                >
+                  <SelectTrigger
+                    aria-label="Start location"
+                    className="project-ticket-footer-select"
                     size="sm"
-                    type="button"
-                    variant={newTicketStartLocation === "currentProject" ? "secondary" : "outline"}
                   >
-                    Current project
-                  </Button>
-                  <Button
-                    aria-checked={newTicketStartLocation === "newWorktree"}
-                    disabled={isCreating}
-                    onClick={() => setNewTicketStartLocation("newWorktree")}
-                    role="radio"
-                    size="sm"
-                    type="button"
-                    variant={newTicketStartLocation === "newWorktree" ? "secondary" : "outline"}
-                  >
-                    New worktree
-                  </Button>
-                </div>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {PROJECT_BOARD_START_LOCATION_SELECT_ITEMS.map((option) => (
+                      <SelectItem key={option.value} value={option.value}>
+                        {option.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
               </div>
             </section>
             <div className="project-ticket-create-actions">
               <Button
-                disabled={isCreating || !newTicket.description.trim()}
+                disabled={!newTicket.description.trim()}
                 onClick={() => void createTicket()}
                 type="button"
                 variant="outline"
               >
-                {createAction === "create" ? "Creating" : "Create"}
+                Create
               </Button>
               <Button
                 disabled={
-                  isCreating ||
                   !newTicket.description.trim() ||
                   conversationState.agents.length === 0 ||
                   Boolean(conversationAction)
@@ -1581,7 +1695,7 @@ function ProjectBoardApp() {
                 type="button"
               >
                 <IconLink data-icon="inline-start" />
-                {createAction === "createStart" ? "Creating & Starting" : "Create & Start"}
+                Create & Start
               </Button>
             </div>
           </DialogFooter>
@@ -1861,32 +1975,92 @@ function ImagePreviewStrip({
   imagePreviewDataUrls: Record<string, string>;
   onRemove?: (image: DescriptionImageReference) => void;
 }) {
+  const [openImage, setOpenImage] = useState<DescriptionImageReference | undefined>();
   const images = extractPreviewableDescriptionImageReferences(description);
+  const openPreviewSrc = openImage ? imagePreviewDataUrls[openImage.src] : undefined;
+
+  useEffect(() => {
+    if (!openImage) {
+      return;
+    }
+    if (!images.some((image) => image.id === openImage.id)) {
+      setOpenImage(undefined);
+      return;
+    }
+    const onKeyDown = (event: globalThis.KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setOpenImage(undefined);
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [images, openImage]);
+
   if (images.length === 0) {
     return null;
   }
+
   return (
-    <div className="project-ticket-image-strip" aria-label="Image previews">
-      {images.map((image) => (
-        <div className="project-ticket-image-thumb" key={image.id}>
-          {imagePreviewDataUrls[image.src] ? (
-            <img alt="" src={imagePreviewDataUrls[image.src]} />
-          ) : (
-            <span aria-hidden="true" />
-          )}
-          {onRemove ? (
-            <button
-              aria-label="Remove pasted image"
-              className="project-ticket-image-remove"
-              onClick={() => onRemove(image)}
-              type="button"
+    <>
+      <div className="project-ticket-image-strip" aria-label="Image previews">
+        {images.map((image) => {
+          const previewSrc = imagePreviewDataUrls[image.src];
+          return (
+            <div
+              aria-label={previewSrc ? `Open image preview ${image.src}` : undefined}
+              className="project-ticket-image-thumb"
+              key={image.id}
+              onClick={() => {
+                if (previewSrc) {
+                  setOpenImage(image);
+                }
+              }}
+              onKeyDown={(event) => {
+                if (!previewSrc) {
+                  return;
+                }
+                if (event.key === "Enter" || event.key === " ") {
+                  event.preventDefault();
+                  setOpenImage(image);
+                }
+              }}
+              role={previewSrc ? "button" : undefined}
+              tabIndex={previewSrc ? 0 : undefined}
             >
-              <IconX aria-hidden="true" />
-            </button>
-          ) : null}
-        </div>
-      ))}
-    </div>
+              {previewSrc ? <img alt="" src={previewSrc} /> : <span aria-hidden="true" />}
+              {onRemove ? (
+                <button
+                  aria-label="Remove pasted image"
+                  className="project-ticket-image-remove"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    onRemove(image);
+                    if (openImage?.id === image.id) {
+                      setOpenImage(undefined);
+                    }
+                  }}
+                  type="button"
+                >
+                  <IconX aria-hidden="true" />
+                </button>
+              ) : null}
+            </div>
+          );
+        })}
+      </div>
+      {openImage && openPreviewSrc
+        ? createPortal(
+            <div
+              className="project-ticket-image-popup"
+              onClick={() => setOpenImage(undefined)}
+              role="presentation"
+            >
+              <img alt="" src={openPreviewSrc} />
+            </div>,
+            document.body,
+          )
+        : null}
+    </>
   );
 }
 
@@ -2042,6 +2216,25 @@ function conversationLinkStatusText(link: ProjectBoardConversationLinkView): str
         : "Unavailable";
   const agentSessionPreview = link.agentSessionId ? ` · ${link.agentSessionId.slice(0, 8)}` : "";
   return `${sessionStatus}${agentSessionPreview}`;
+}
+
+function projectBoardCommentMetadataFromLink(
+  link: ProjectBoardConversationLinkView | undefined,
+): ProjectBoardCommentMetadata {
+  /*
+   * CDXC:ProjectBoardComments 2026-06-05-06:43:
+   * UI-added comments should use the linked agent conversation as their metadata source so the rendered author line can show the agent beside the Beads user and the footer can show the resumable agent CLI session id instead of the truncated status preview.
+   *
+   * CDXC:ProjectBoardComments 2026-06-05-06:55:
+   * The comment Session footer must be the saved session id from the agent CLI, not the Ghostex pane id. If the linked conversation has not reported an agent session id yet, omit the footer rather than displaying the wrong id as resumable.
+   */
+  if (!link) {
+    return {};
+  }
+  return {
+    agentName: link.agentName || link.agentId,
+    sessionId: link.agentSessionId,
+  };
 }
 
 function compareConversationLinksNewestFirst(
@@ -2741,19 +2934,49 @@ styleElement.textContent = `
     position: relative;
   }
 
-  .project-board-search svg {
+  .project-board-search-icon {
     color: rgba(244, 244, 245, 0.42);
     height: 16px;
-    left: 12px;
     pointer-events: none;
     position: absolute;
+    right: 12px;
     width: 16px;
     z-index: 1;
   }
 
   .project-board-search input {
     height: var(--project-board-control-height);
-    padding-left: 36px;
+    padding-right: 36px;
+  }
+
+  .project-board-search-clear-button {
+    align-items: center;
+    background: transparent;
+    border: none;
+    border-radius: 0;
+    color: rgba(244, 244, 245, 0.42);
+    display: inline-flex;
+    height: 24px;
+    justify-content: center;
+    padding: 0;
+    position: absolute;
+    right: 8px;
+    top: 50%;
+    transform: translateY(-50%);
+    width: 24px;
+    z-index: 1;
+  }
+
+  .project-board-search-clear-button:hover,
+  .project-board-search-clear-button:focus-visible {
+    color: rgba(244, 244, 245, 0.78);
+    outline: none;
+  }
+
+  .project-board-search-clear-button svg {
+    height: 16px;
+    pointer-events: none;
+    width: 16px;
   }
 
   .project-board-filter-select,
@@ -2821,6 +3044,7 @@ styleElement.textContent = `
   .project-board-lane-header-action {
     height: 28px;
     justify-content: flex-end;
+    margin-right: 4px;
     position: relative;
     width: 28px;
   }
@@ -2831,14 +3055,17 @@ styleElement.textContent = `
   }
 
   .project-board-lane-count {
+    display: block;
+    min-width: 100%;
     opacity: 1;
+    text-align: right;
   }
 
   .project-board-lane-add {
     opacity: 0;
     pointer-events: none;
     position: absolute;
-    right: 0;
+    right: -3px;
     top: 0;
   }
 
@@ -3234,11 +3461,17 @@ styleElement.textContent = `
     align-items: center;
     display: grid;
     gap: 8px;
-    grid-template-columns: minmax(150px, 220px) auto;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    justify-items: stretch;
     min-width: 0;
   }
 
-  .project-ticket-start-location,
+  .project-ticket-footer-select {
+    height: var(--project-board-control-height);
+    min-width: 0;
+    width: 100%;
+  }
+
   .project-ticket-create-actions {
     align-items: center;
     display: flex;
@@ -3326,6 +3559,30 @@ styleElement.textContent = `
     gap: 8px;
   }
 
+  /*
+   * CDXC:ProjectBoard 2026-05-31-07:15:
+   * Prompt image thumbnails below the ticket Prompt field open a full-screen
+   * preview on click with a dark overlay; any click on the overlay dismisses
+   * the preview and the enlarged image is capped at 90vw by 90vh.
+   */
+  .project-ticket-image-popup {
+    align-items: center;
+    background: rgb(0 0 0 / 74%);
+    display: flex;
+    inset: 0;
+    justify-content: center;
+    padding: 28px;
+    position: fixed;
+    z-index: 2000;
+  }
+
+  .project-ticket-image-popup img {
+    box-shadow: 0 18px 60px rgb(0 0 0 / 50%);
+    max-height: 90vh;
+    max-width: 90vw;
+    object-fit: contain;
+  }
+
   .project-ticket-image-thumb {
     background: rgba(0, 0, 0, 0.24);
     border: 1px solid rgba(255, 255, 255, 0.1);
@@ -3334,6 +3591,15 @@ styleElement.textContent = `
     overflow: hidden;
     position: relative;
     width: 72px;
+  }
+
+  .project-ticket-image-thumb[role="button"] {
+    cursor: pointer;
+  }
+
+  .project-ticket-image-thumb[role="button"]:hover,
+  .project-ticket-image-thumb[role="button"]:focus-visible {
+    border-color: rgba(255, 255, 255, 0.28);
   }
 
   .project-ticket-image-thumb img {
@@ -3468,15 +3734,76 @@ styleElement.textContent = `
   }
 
   .project-ticket-comment-list {
-    background: rgba(255, 255, 255, 0.03);
+    background: rgba(255, 255, 255, 0.02);
     border: 1px solid rgba(255, 255, 255, 0.08);
     max-height: 180px;
     min-height: 92px;
+    padding: 6px;
   }
 
-  .project-ticket-comment,
+  .project-ticket-comment-list [data-slot="scroll-area-viewport"] > div {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  /*
+   * CDXC:ProjectBoardComments 2026-06-05-06:43:
+   * Ticket comments in the edit dialog need readable author/date separation, author (agent) attribution, and a bottom-aligned full session id while preserving multiline comment text.
+   */
+  .project-ticket-comment {
+    background: rgba(250, 250, 250, 0.04);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-left: 2px solid rgba(125, 211, 252, 0.72);
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 10px 12px;
+  }
+
   .project-ticket-empty {
     padding: 12px;
+  }
+
+  .project-ticket-comment-header {
+    align-items: baseline;
+    display: flex;
+    gap: 10px;
+    justify-content: space-between;
+    min-width: 0;
+  }
+
+  .project-ticket-comment-author-row {
+    align-items: baseline;
+    display: flex;
+    gap: 4px;
+    min-width: 0;
+  }
+
+  .project-ticket-comment-author {
+    color: rgba(250, 250, 250, 0.94);
+    font-size: 13px;
+    font-weight: 700;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .project-ticket-comment-agent {
+    color: rgba(186, 230, 253, 0.86);
+    font-size: 12px;
+    font-weight: 620;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .project-ticket-comment-date {
+    color: rgba(244, 244, 245, 0.46);
+    flex: 0 0 auto;
+    font-size: 11px;
+    font-weight: 600;
   }
 
   .project-ticket-comment p,
@@ -3489,6 +3816,38 @@ styleElement.textContent = `
     word-break: break-word;
   }
 
+  .project-ticket-comment p {
+    margin: 0;
+  }
+
+  .project-ticket-comment-session {
+    align-items: center;
+    border-top: 1px solid rgba(255, 255, 255, 0.07);
+    color: rgba(244, 244, 245, 0.48);
+    display: flex;
+    gap: 8px;
+    justify-content: space-between;
+    min-width: 0;
+    padding-top: 8px;
+  }
+
+  .project-ticket-comment-session span {
+    flex: 0 0 auto;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0;
+    text-transform: uppercase;
+  }
+
+  .project-ticket-comment-session code {
+    color: rgba(244, 244, 245, 0.74);
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+    font-size: 11px;
+    min-width: 0;
+    overflow-wrap: anywhere;
+    text-align: right;
+  }
+
   @media (max-width: 900px) {
     .project-board-shell { padding: 18px 16px; }
     .project-ticket-create-footer,
@@ -3498,8 +3857,7 @@ styleElement.textContent = `
     .project-ticket-create-actions {
       justify-content: stretch;
     }
-    .project-ticket-create-actions > button,
-    .project-ticket-start-location > button {
+    .project-ticket-create-actions > button {
       flex: 1 1 auto;
     }
     .project-ticket-conversation-controls { grid-template-columns: 1fr; }

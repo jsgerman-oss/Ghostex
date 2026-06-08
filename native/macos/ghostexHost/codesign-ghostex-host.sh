@@ -55,6 +55,34 @@ cat >"$CEF_ENTITLEMENTS" <<'EOF_ENTITLEMENTS'
 </plist>
 EOF_ENTITLEMENTS
 
+can_reuse_local_adhoc_signature() {
+	[[ "$CODE_SIGN_IDENTITY" == "-" && "$CODE_SIGN_TIMESTAMP_FLAG" == "--timestamp=none" ]]
+}
+
+has_linker_signed_signature() {
+	local code_path="$1"
+	local signature_details
+	signature_details="$(codesign -dv --verbose=4 "$code_path" 2>&1 || true)"
+	[[ "$signature_details" == *linker-signed* ]]
+}
+
+sign_plain_macho_if_needed() {
+	local code_path="$1"
+	# CDXC:LocalStartFast 2026-06-07-16:23: Local ad-hoc starts should not force-sign plain Mach-O payloads that are already valid after incremental copies. Keep Developer ID and entitlement-bearing app/helper signing strict, but skip repeated local signatures for CEF dylibs and bundled tools that already have explicit reusable signatures.
+	# CDXC:LocalStartFast 2026-06-07-17:32: Linker-signed Mach-O payloads can pass `codesign --verify` while still being denied when Node loads a bundled native module from the app bundle. Treat linker-signed payloads as unsigned for local starts so the preflight validates the same explicit signature the launched app will use.
+	# CDXC:LocalStartFast 2026-06-07-17:40: Keep the linker-signed test in a helper instead of an inline negated pipeline so Bash evaluates the runtime-load blocker as a single boolean before deciding to skip signing.
+	# CDXC:LocalStartFast 2026-06-07-17:45: Do not pipe `codesign -dv` into `grep -q` under pipefail; grep can exit before codesign finishes writing and make a real linker-signed payload look reusable. Capture the signature text first so local starts always re-sign runtime-loaded native modules.
+	if can_reuse_local_adhoc_signature && codesign --verify --strict "$code_path" >/dev/null 2>&1 && ! has_linker_signed_signature "$code_path"; then
+		return 0
+	fi
+	codesign \
+		--force \
+		--options runtime \
+		"$CODE_SIGN_TIMESTAMP_FLAG" \
+		--sign "$CODE_SIGN_IDENTITY" \
+		"$code_path"
+}
+
 if [[ -d "$FRAMEWORKS_PATH/Chromium Embedded Framework.framework" ]]; then
 	# CDXC:ChromiumBrowserPanes 2026-05-04-16:38
 	# CEF bundles nested dylibs and helper apps. Sign those concrete code
@@ -65,12 +93,7 @@ if [[ -d "$FRAMEWORKS_PATH/Chromium Embedded Framework.framework" ]]; then
 		-type f \
 		-print0 2>/dev/null |
 		while IFS= read -r -d '' dylib_path; do
-			codesign \
-				--force \
-				--options runtime \
-				"$CODE_SIGN_TIMESTAMP_FLAG" \
-				--sign "$CODE_SIGN_IDENTITY" \
-				"$dylib_path"
+			sign_plain_macho_if_needed "$dylib_path"
 		done
 	codesign \
 		--force \
@@ -125,15 +148,31 @@ if [[ -d "$RESOURCE_BIN_PATH" ]]; then
 		-print0 |
 		while IFS= read -r -d '' resource_executable; do
 			if file "$resource_executable" | grep -q 'Mach-O'; then
-				codesign \
-					--force \
-					--options runtime \
-					"$CODE_SIGN_TIMESTAMP_FLAG" \
-					--sign "$CODE_SIGN_IDENTITY" \
-					"$resource_executable"
+				sign_plain_macho_if_needed "$resource_executable"
 			fi
 	done
 fi
+
+sign_nested_resource_code() {
+	local resource_path="$1"
+	if [[ ! -d "$resource_path" ]]; then
+		return 0
+	fi
+
+	# CDXC:BetaDistribution 2026-06-06-07:54: The 4.0 beta release bundles server runtimes with nested native Node modules and vendor tools. Apple notarization validates those Mach-O payloads independently, so sign each nested executable, module, dylib, or packaged vendor helper with Developer ID, secure timestamp, and hardened runtime before signing the outer app.
+	find "$resource_path" \
+		-type f \
+		\( -perm -111 -o -name '*.node' -o -name '*.dylib' -o -name 'spawn-helper' \) \
+		-print0 |
+		while IFS= read -r -d '' resource_code; do
+			if file "$resource_code" | grep -q 'Mach-O'; then
+				sign_plain_macho_if_needed "$resource_code"
+			fi
+		done
+}
+
+sign_nested_resource_code "$APP_PATH/Contents/Resources/Web/gxserver"
+sign_nested_resource_code "$APP_PATH/Contents/Resources/Web/t3code-server"
 
 sign_lid_sleep_helper() {
 	local helper_executable="$1"

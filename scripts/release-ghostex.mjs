@@ -73,6 +73,11 @@ Options:
   --with-tests        Run bun run test before building.
   --skip-typecheck   Skip bun run typecheck.
   --skip-brew-fetch  Skip final brew fetch checks.
+  --skip-sparkle     Do not update or validate Sparkle appcasts.
+  --github-prerelease
+                     Mark the GitHub release as a prerelease.
+  --release-branch <branch>
+                     Branch that receives the release commit. Defaults to main.
   --no-push          Commit release metadata but do not push, tag, publish GitHub, or update Homebrew.
   --no-terminal-delegate
                      Fail instead of handing off to Terminal.app when the agent shell cannot see signing/notary credentials.
@@ -80,7 +85,7 @@ Options:
 
 Expected state:
   Run this only after the agent/user has split-committed feature changes,
-  updated CHANGELOG.md and AllFeatures.md, and pushed main.
+  updated CHANGELOG.md and docs/product/AllFeatures.md, and pushed the release branch.
 
 Timeouts and progress:
   Build steps log heartbeat updates about every minute.
@@ -90,17 +95,35 @@ Timeouts and progress:
 `;
 }
 
+/*
+CDXC:ReleaseDocs 2026-06-04-01:42:
+Product and review documentation moved out of the repository root, so release
+operator guidance must name docs/product/AllFeatures.md instead of the old
+root-level AllFeatures.md path.
+*/
+
+/*
+CDXC:BetaDistribution 2026-06-05-22:26:
+Nightly beta releases must be installable from GitHub Releases and Homebrew without
+advancing the Sparkle feeds that production users poll for automatic updates.
+Keep beta controls explicit so the public release path still updates appcasts by
+default while prerelease tags can target nightly and skip Sparkle entirely.
+*/
 function parseArgs(argv) {
   const options = {
     withTests: false,
     skipTypecheck: false,
     skipBrewFetch: false,
+    skipSparkle: false,
+    githubPrerelease: false,
+    releaseBranch: "main",
     noPush: false,
     noTerminalDelegate: false,
   };
   const positional = [];
 
-  for (const arg of argv) {
+  for (let index = 0; index < argv.length; index += 1) {
+    const arg = argv[index];
     if (arg === "--help" || arg === "-h") {
       options.help = true;
     } else if (arg === "--with-tests") {
@@ -109,6 +132,17 @@ function parseArgs(argv) {
       options.skipTypecheck = true;
     } else if (arg === "--skip-brew-fetch") {
       options.skipBrewFetch = true;
+    } else if (arg === "--skip-sparkle") {
+      options.skipSparkle = true;
+    } else if (arg === "--github-prerelease") {
+      options.githubPrerelease = true;
+    } else if (arg === "--release-branch") {
+      const branch = argv[index + 1]?.trim();
+      if (!branch || branch.startsWith("-")) {
+        throw new ReleaseError("--release-branch requires a branch name.");
+      }
+      options.releaseBranch = branch;
+      index += 1;
     } else if (arg === "--no-push") {
       options.noPush = true;
     } else if (arg === "--no-terminal-delegate") {
@@ -129,16 +163,23 @@ function parseArgs(argv) {
   }
 
   const version = positional[0];
-  if (!/^\d+\.\d+\.\d+$/.test(version)) {
-    throw new ReleaseError(`Version must be semver-like x.y.z. Received: ${version}`);
+  if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(version)) {
+    throw new ReleaseError(`Version must be semver-like x.y.z or x.y.z-prerelease. Received: ${version}`);
   }
 
   return { ...options, version };
 }
 
 function releaseBuildVersion(version) {
-  const [major, minor, patch] = version.split(".").map((part) => Number.parseInt(part, 10));
+  const [major, minor, patch] = version
+    .split("-")[0]
+    .split(".")
+    .map((part) => Number.parseInt(part, 10));
   return major * 10000 + minor * 100 + patch;
+}
+
+function isPrereleaseVersion(version) {
+  return version.includes("-");
 }
 
 function timestampForComment(date = new Date()) {
@@ -533,7 +574,33 @@ function terminalReleasePaths(version) {
   };
 }
 
-async function writeTerminalReleaseRunner(version) {
+function releaseCommandArgs(version, options, extraArgs = []) {
+  const args = [version, ...extraArgs];
+  if (options.withTests) {
+    args.push("--with-tests");
+  }
+  if (options.skipTypecheck) {
+    args.push("--skip-typecheck");
+  }
+  if (options.skipBrewFetch) {
+    args.push("--skip-brew-fetch");
+  }
+  if (options.skipSparkle) {
+    args.push("--skip-sparkle");
+  }
+  if (options.githubPrerelease) {
+    args.push("--github-prerelease");
+  }
+  if (options.releaseBranch !== "main") {
+    args.push("--release-branch", options.releaseBranch);
+  }
+  if (options.noPush) {
+    args.push("--no-push");
+  }
+  return args.map(shellQuote).join(" ");
+}
+
+async function writeTerminalReleaseRunner(version, options) {
   const { logPath, runnerPath, startedPath, donePath, exitPath } = terminalReleasePaths(version);
   const identity = releaseSigningIdentity();
   await rm(logPath, { force: true });
@@ -566,7 +633,7 @@ release_status=0
   security find-identity -v -p codesigning | rg ${shellQuote("Developer ID Application: Mohamad Youssef \\(KTKP595G3B\\)")} || true
   xcrun notarytool history --keychain-profile ${shellQuote(config.notaryProfile)} | head -n 8
   gh auth status -h github.com
-  bun run release:local -- ${shellQuote(version)} --no-terminal-delegate
+  bun run release:local -- ${releaseCommandArgs(version, options, ["--no-terminal-delegate"])}
 } || {
   release_status=$?
 }
@@ -675,8 +742,8 @@ async function agentShellCredentialsReady() {
   return true;
 }
 
-async function delegateReleaseToTerminal(version) {
-  const paths = await writeTerminalReleaseRunner(version);
+async function delegateReleaseToTerminal(version, options) {
+  const paths = await writeTerminalReleaseRunner(version, options);
   await launchTerminalReleaseRunner(paths.runnerPath);
   await monitorTerminalReleaseLog(version, paths);
 }
@@ -713,31 +780,23 @@ async function ensureCleanWorktree() {
   }
 }
 
-async function ensureMainSynced() {
+async function ensureReleaseBranchSynced(releaseBranch) {
   const branch = await capture("git branch --show-current");
-  if (branch !== "main") {
-    throw new ReleaseError(`Release script must run on main. Current branch: ${branch}`);
-  }
-
   const head = await capture("git rev-parse HEAD");
-  const originMain = await capture("git rev-parse origin/main");
-  if (head === originMain) {
-    console.log("Local main already matches origin/main; skipping git fetch.");
-    return;
-  }
-
+  await runGitNetwork(`git fetch origin ${shellQuote(releaseBranch)} --tags`);
+  const originBranch = await capture(`git rev-parse ${shellQuote(`origin/${releaseBranch}`)}`);
   try {
-    await run(`git merge-base --is-ancestor ${shellQuote(originMain)} ${shellQuote(head)}`);
-    console.log("Local main is ahead of origin/main; continuing without fetch.");
+    await run(`git merge-base --is-ancestor ${shellQuote(originBranch)} ${shellQuote(head)}`);
+    if (head === originBranch) {
+      console.log(`Local HEAD matches origin/${releaseBranch}.`);
+    } else {
+      console.log(`Local HEAD is ahead of origin/${releaseBranch}; continuing.`);
+    }
     return;
   } catch {
-    // Local main is not a simple fast-forward ahead of origin/main.
-  }
-
-  await runGitNetwork("git fetch origin main --tags");
-  const fetchedOriginMain = await capture("git rev-parse origin/main");
-  if (head !== fetchedOriginMain) {
-    throw new ReleaseError("Local main must match origin/main before the script creates the release commit.");
+    throw new ReleaseError(
+      `Current HEAD on ${branch || "(detached HEAD)"} must include origin/${releaseBranch} before the script creates the release commit.`,
+    );
   }
 }
 
@@ -820,17 +879,19 @@ async function preflight(version, buildVersion, options) {
   logStep("Preflight");
   await ensureGhAuthForRelease();
   await ensureCleanWorktree();
-  await ensureMainSynced();
+  await ensureReleaseBranchSynced(options.releaseBranch);
   await ensureTagMissing(version);
   if (!options.noPush) {
     await ensureReleaseMissing(version);
   }
 
-  const previousBuild = await latestSparkleVersion();
-  if (buildVersion <= previousBuild) {
-    throw new ReleaseError(
-      `Build version ${buildVersion} must be greater than the latest Sparkle build ${previousBuild}.`,
-    );
+  if (!options.skipSparkle) {
+    const previousBuild = await latestSparkleVersion();
+    if (buildVersion <= previousBuild) {
+      throw new ReleaseError(
+        `Build version ${buildVersion} must be greater than the latest Sparkle build ${previousBuild}.`,
+      );
+    }
   }
 
   try {
@@ -864,7 +925,7 @@ async function updatePackageJson(version) {
   await writeFile(packagePath, `${JSON.stringify(packageJson, null, 2)}\n`);
 }
 
-async function updateProjectYml(version, buildVersion) {
+async function updateProjectYml(version, buildVersion, options) {
   const projectPath = path.join(repoRoot, "native/macos/ghostexHost/project.yml");
   const timestamp = timestampForComment();
   let text = await readFile(projectPath, "utf8");
@@ -874,22 +935,38 @@ async function updateProjectYml(version, buildVersion) {
    The local release script owns only deterministic release metadata after the agent has already split feature commits and written user-facing notes.
    Keep Sparkle's numeric build value monotonic and update the adjacent CDXC release comments so future agents can audit why the version fields changed.
    */
+  const distributionComment = options.skipSparkle
+    ? `# CDXC:BetaDistribution ${timestamp}: GitHub and Homebrew beta release v${version} must`
+    : `# CDXC:Distribution ${timestamp}: GitHub and Sparkle release v${version} must`;
+  const distributionContinuationLines = options.skipSparkle
+    ? [
+        "# publish a notarized Developer ID Ghostex app whose bundle metadata",
+        "# matches GitHub release assets while Sparkle appcasts remain on the",
+        "# current public update so existing Sparkle users are not offered the beta.",
+      ]
+    : [
+        "# publish a notarized Developer ID Ghostex app whose bundle metadata",
+        "# matches both GitHub release assets, Sparkle appcasts, and the",
+        "# architecture-aware Ghostex update feed.",
+      ];
+  const distributionContinuation = distributionContinuationLines.join("\n    ");
+
   text = text
     .replace(/# CDXC:AutoUpdate \d{4}-\d{2}-\d{2}-\d{2}:\d{2}:/, `# CDXC:AutoUpdate ${timestamp}:`)
     .replace(/CURRENT_PROJECT_VERSION:\s*\d+/, `CURRENT_PROJECT_VERSION: ${buildVersion}`)
     .replace(
-      /# CDXC:Distribution \d{4}-\d{2}-\d{2}-\d{2}:\d{2}: .*release v[\d.]+ must/,
-      `# CDXC:Distribution ${timestamp}: GitHub and Sparkle release v${version} must`,
+      /# CDXC:(?:Distribution|BetaDistribution) \d{4}-\d{2}-\d{2}-\d{2}:\d{2}: .*release v[\w.-]+ must\n\s*# publish a notarized Developer ID Ghostex app whose bundle metadata\n\s*# matches .*\n\s*# .*/,
+      `${distributionComment}\n    ${distributionContinuation}`,
     )
     .replace(/MARKETING_VERSION:\s*"[^"]+"/, `MARKETING_VERSION: "${version}"`);
 
   await writeFile(projectPath, text);
 }
 
-async function bumpReleaseMetadata(version, buildVersion) {
+async function bumpReleaseMetadata(version, buildVersion, options) {
   logStep(`Bump release metadata to ${version} (${buildVersion})`);
   await updatePackageJson(version);
-  await updateProjectYml(version, buildVersion);
+  await updateProjectYml(version, buildVersion, options);
   await run(`rg 'CURRENT_PROJECT_VERSION: ${buildVersion}|MARKETING_VERSION: "${version}"' native/macos/ghostexHost/project.yml -g '!node_modules/**' -g '!dist/**' -g '!build/**' -g '!coverage/**' -g '!.git/**'`);
 }
 
@@ -907,7 +984,7 @@ async function buildArch(version, entry) {
   }
 
   logStep(`Build ${entry.arch}`);
-  await run("native/macos/ghostexHost/build-ghostex-host.sh", {
+  await run("/bin/bash native/macos/ghostexHost/build-ghostex-host.sh", {
     env,
     timeoutMs: releaseTimeouts.buildArchMs,
   });
@@ -1141,6 +1218,13 @@ async function generateAppcast(version, buildVersion, sparkleBinDir, artifact) {
   await run(`cp ${shellQuote(workAppcast)} ${shellQuote(appcastPath)}`);
   await run(`xmllint --noout ${shellQuote(appcastPath)}`);
   await run(`${shellQuote(path.join(sparkleBinDir, "sign_update"))} ${shellQuote(appcastPath)}`);
+  /*
+   CDXC:ReleaseAutomation 2026-06-03-20:28:
+   Sparkle verification must prove the appcast enclosure signature validates
+   the generated DMG artifact, not merely that the XML feed can be signed.
+   Use namespace-agnostic XPath because appcast namespace prefixes can vary
+   across generated feeds.
+   */
   const enclosureSignature = await capture(
     `xmllint --xpath "string((//*[local-name()='item'][1]/*[local-name()='enclosure']/@*[local-name()='edSignature'])[1])" ${shellQuote(appcastPath)}`,
   );
@@ -1162,11 +1246,15 @@ async function updateSparkleFeeds(version, buildVersion, sparkleBinDir, artifact
 
 async function commitReleaseMetadata(version, options) {
   logStep("Commit release metadata");
-  await run(`git add package.json native/macos/ghostexHost/project.yml ${config.armFeed} ${config.intelFeed}`);
+  const metadataFiles = ["package.json", "native/macos/ghostexHost/project.yml"];
+  if (!options.skipSparkle) {
+    metadataFiles.push(config.armFeed, config.intelFeed);
+  }
+  await run(`git add ${metadataFiles.map(shellQuote).join(" ")}`);
   await run(`git commit -m ${shellQuote(`chore: release ${version}`)}`);
 
   if (!options.noPush) {
-    await runGitNetwork("git push origin main");
+    await runGitNetwork(`git push origin HEAD:${shellQuote(options.releaseBranch)}`);
     await run(`git tag -a ${shellQuote(`v${version}`)} -m ${shellQuote(`Release v${version}`)}`);
     await runGitNetwork(`git push origin ${shellQuote(`v${version}`)}`);
   }
@@ -1200,7 +1288,7 @@ async function extractChangelogSection(version) {
   return notes;
 }
 
-async function createGithubRelease(version, artifacts) {
+async function createGithubRelease(version, artifacts, options) {
   logStep("Create GitHub release");
   const notesPath = path.join(await mkdtemp(path.join(tmpdir(), `ghostex-${version}-notes-`)), "notes.md");
   const changelogNotes = await extractChangelogSection(version);
@@ -1239,6 +1327,7 @@ async function createGithubRelease(version, artifacts) {
       shellQuote(`Ghostex ${version}`),
       "--notes-file",
       shellQuote(notesPath),
+      ...(options.githubPrerelease || isPrereleaseVersion(version) ? ["--prerelease"] : []),
     ].join(" "),
   );
 
@@ -1340,11 +1429,17 @@ async function updateHomebrew(version, artifacts, options) {
  * 13.0 appcast requirement. Keep the explicit string form because older
  * Homebrew clients can parse the symbol shorthand as exact Ventura and block
  * newer macOS releases such as 26.x before Homebrew can install Ghostex.
+ *
+ * CDXC:CliInstall 2026-06-07-13:53:
+ * CLI resources now live under Contents/Resources/CLI. Normalize both old
+ * Web/cli casks and already-updated CLI casks before inserting the current
+ * ghostex/gx binary stanzas so the release script remains idempotent.
  */
 function normalizeGhostexCliCask(cask) {
-  const ghostexBinary = '  binary "#{appdir}/ghostex.app/Contents/Resources/Web/cli/ghostex"';
-  const gxBinary = '  binary "#{appdir}/ghostex.app/Contents/Resources/Web/cli/gx"';
+  const ghostexBinary = '  binary "#{appdir}/ghostex.app/Contents/Resources/CLI/ghostex"';
+  const gxBinary = '  binary "#{appdir}/ghostex.app/Contents/Resources/CLI/gx"';
   const cliPreflight = `  # CDXC:CliBranding 2026-05-26-15:11: Install gx only when another tool does not already own that command name.
+  # CDXC:CliInstall 2026-06-07-13:53: Homebrew links the app-owned CLI from Contents/Resources/CLI, matching direct DMG auto-linking.
   preflight do
     gx_candidates = [HOMEBREW_PREFIX/"bin/gx"]
     ENV.fetch("PATH", "").split(File::PATH_SEPARATOR).each do |entry|
@@ -1355,7 +1450,7 @@ function normalizeGhostexCliCask(cask) {
       next if [gx_path.exist?, gx_path.symlink?].none?
 
       gx_target = gx_path.symlink? ? gx_path.readlink.to_s : gx_path.to_s
-      next if gx_target.include?("ghostex.app/Contents/Resources/Web/cli/gx")
+      next if gx_target.include?("ghostex.app/Contents/Resources/CLI/gx")
 
       raise "Ghostex cannot install the gx CLI because #{gx_path} already exists. " \\
             "Remove or rename the existing gx command, then reinstall Ghostex."
@@ -1364,19 +1459,30 @@ function normalizeGhostexCliCask(cask) {
 
   let next = cask
     .replace(
-      /\n  # CDXC:CliBranding 2026-05-26-15:11: Install gx only when another tool does not already own that command name\.\n  preflight do[\s\S]*?\n  end(?=\n\n  zap trash:|\n  binary "#\{appdir\}\/ghostex\.app\/Contents\/Resources\/Web\/cli\/gx")/g,
+      /\n  # CDXC:CliBranding 2026-05-26-15:11: Install gx only when another tool does not already own that command name\.\n(?:  # CDXC:CliInstall 2026-06-07-13:53: Homebrew links the app-owned CLI from Contents\/Resources\/CLI, matching direct DMG auto-linking\.\n)?  preflight do[\s\S]*?\n  end(?=\n\n  zap trash:|\n  binary "#\{appdir\}\/ghostex\.app\/Contents\/Resources\/(?:Web\/cli|CLI)\/gx")/g,
       "",
     )
     .replace(/^  depends_on macos: :ventura$/m, '  depends_on macos: ">= :ventura"')
     .replace(/^  binary "#\{appdir\}\/ghostex\.app\/Contents\/Resources\/Web\/cli\/gtx"\n/gm, "")
-    .replace(/^  binary "#\{appdir\}\/ghostex\.app\/Contents\/Resources\/Web\/cli\/gx"\n/gm, "");
+    .replace(/^  binary "#\{appdir\}\/ghostex\.app\/Contents\/Resources\/Web\/cli\/gx"\n/gm, "")
+    .replace(/^  binary "#\{appdir\}\/ghostex\.app\/Contents\/Resources\/CLI\/gx"\n/gm, "");
+  next = next
+    .replace(
+      /^  binary "#\{appdir\}\/ghostex\.app\/Contents\/Resources\/Web\/cli\/ghostex"\n/gm,
+      `${ghostexBinary}\n`,
+    )
+    .replace(
+      /^  binary "#\{appdir\}\/ghostex\.app\/Contents\/Resources\/Web\/cli\/gx"\n/gm,
+      "",
+    );
 
   if (!next.includes(`${ghostexBinary}\n`)) {
     throw new ReleaseError("Ghostex cask is missing the primary ghostex CLI binary stanza.");
   }
 
   next = next.replace(`${ghostexBinary}\n`, `${ghostexBinary}\n${gxBinary}\n\n${cliPreflight}\n`);
-  if (!next.includes(gxBinary) || next.includes("/Web/cli/gtx")) {
+  next = next.replace(/\n{3,}(?=  zap trash:)/g, "\n\n");
+  if (!next.includes(gxBinary) || next.includes("/Resources/Web/cli")) {
     throw new ReleaseError("Failed to normalize Ghostex cask CLI binary aliases.");
   }
   if (!next.includes('depends_on macos: ">= :ventura"')) {
@@ -1406,27 +1512,35 @@ async function main() {
     console.warn(
       "Agent shell cannot access Developer ID signing or notary credentials. Delegating to Terminal.app.",
     );
-    await delegateReleaseToTerminal(version);
+    await delegateReleaseToTerminal(version, options);
     return;
   }
 
   assertReleaseWithinOverallBudget(releaseStartedAt, "preflight");
   await preflight(version, buildVersion, options);
   assertReleaseWithinOverallBudget(releaseStartedAt, "metadata bump");
-  await bumpReleaseMetadata(version, buildVersion);
+  await bumpReleaseMetadata(version, buildVersion, options);
   assertReleaseWithinOverallBudget(releaseStartedAt, "build and notarize");
   const { artifactDir, artifacts } = await buildAndPackage(version, buildVersion);
-  assertReleaseWithinOverallBudget(releaseStartedAt, "sparkle feeds");
-  const sparkleBinDir = await findAndVerifySparkleBinDir();
-  await updateSparkleFeeds(version, buildVersion, sparkleBinDir, artifacts);
+  let sparkleBinDir = null;
+  if (options.skipSparkle) {
+    logStep("Skip Sparkle feeds");
+    console.log("Sparkle appcasts were not updated for this release.");
+  } else {
+    assertReleaseWithinOverallBudget(releaseStartedAt, "sparkle feeds");
+    sparkleBinDir = await findAndVerifySparkleBinDir();
+    await updateSparkleFeeds(version, buildVersion, sparkleBinDir, artifacts);
+  }
   const releaseCommit = await commitReleaseMetadata(version, options);
 
   let releaseUrl = "(not published; --no-push was used)";
   let tapCommit = "(not updated; --no-push was used)";
 
   if (!options.noPush) {
-    releaseUrl = await createGithubRelease(version, artifacts);
-    await validateLiveSparkleAndAssets(version, buildVersion, sparkleBinDir);
+    releaseUrl = await createGithubRelease(version, artifacts, options);
+    if (!options.skipSparkle) {
+      await validateLiveSparkleAndAssets(version, buildVersion, sparkleBinDir);
+    }
     assertReleaseWithinOverallBudget(releaseStartedAt, "homebrew update");
     const brewResult = await updateHomebrew(version, artifacts, options);
     tapCommit = brewResult.tapCommit;

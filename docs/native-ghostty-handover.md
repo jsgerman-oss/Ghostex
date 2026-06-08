@@ -254,9 +254,7 @@ src/node/terminal-host-node.cjs
 
 <!-- CDXC:NativeWorkspaceChrome 2026-04-27-04:40: The old Electrobun
      src/mainview rail and src/bun runtime were removed after the native macOS
-     workspace rail became the only supported launch path for `bun start`.
      Future workspace-rail changes belong in native/sidebar and the native
-     host workspaceBarHTML, not in a second Electrobun shell. -->
 
 Do not delete these until the native host owns equivalent session lifecycle/control behavior.
 

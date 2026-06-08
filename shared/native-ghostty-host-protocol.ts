@@ -157,15 +157,10 @@ export type NativeGhosttyHostCommand =
     }
   | {
       /**
-       * CDXC:T3Code 2026-05-10-22:48
-       * The sidebar owns T3 card visibility and sleep state. Send the native
-       * host the shown, non-sleeping T3 sessions so the managed provider
-       * keepalive follows "running in sidebar" instead of workspace pane focus.
-       *
-       * CDXC:T3Code 2026-05-14-09:34:
-       * Include the cwd for an awake T3 card so native can relaunch the
-       * background t3code provider when the localhost server disappeared while
-       * the sidebar still shows T3 sessions.
+       * CDXC:T3Code 2026-06-06-05:13:
+       * This message remains for protocol compatibility only. Native managed T3
+       * web panes now own provider lifetime, so stale sidebar/gxserver projection
+       * cannot stop t3code while an embedded T3 tab is still open.
        */
       runtimeCwd?: string;
       runningSessionIds: string[];
@@ -186,9 +181,14 @@ export type NativeGhosttyHostCommand =
        * The runtime command carries the VS Code user-config link setting so the
        * native launcher can pass code-server's CLI flags before the editor
        * process starts instead of mutating the embedded VS Code UI later.
+       *
+       * CDXC:EditorPanes 2026-06-06-23:50:
+       * VS Code server startup failures must be tied back to the project editor
+       * row so the sidebar can show the real launch error and toast immediately.
        */
       cwd: string;
       linkVscodeUserConfig?: boolean;
+      projectId?: string;
       type: "startCodeServerRuntime";
       vscodeUserConfigDir?: string;
     }
@@ -257,6 +257,7 @@ export type NativeGhosttyHostCommand =
       commandsPanelActiveSessionIds?: string[];
       commandsPanelFocusedSessionId?: string;
       commandsPanelHeightRatio?: number;
+      commandsPanelDefaultHeightPx?: number;
       commandsPanelIsVisible?: boolean;
       commandsPanelLayout?: NativeTerminalLayout;
       commandsPanelMode?: "floating" | "pinned";
@@ -291,8 +292,14 @@ export type NativeGhosttyHostCommand =
        * Sidebar status/title/icon updates must still reach native pane chrome,
        * but they must not be treated as geometry changes. This flag lets the
        * native host skip AppKit surface relayout when only metadata changed.
+       *
+       * CDXC:PaneTabs 2026-06-04-12:54:
+       * Tab owner selection is not full split geometry. The host needs a
+       * separate signal so it can surface the selected tab without reframing
+       * adjacent CEF/editor panes.
        */
       layoutChanged?: boolean;
+      paneOwnerSelectionChanged?: boolean;
       layout?: NativeTerminalLayout;
       paneGap?: number;
       /**
@@ -557,6 +564,16 @@ export type NativeGhosttyHostEvent =
       projectId: string;
       status: "opening" | "running" | "error";
       type: "projectEditorLoadState";
+    }
+  | {
+      /**
+       * CDXC:EditorPanes 2026-06-06-23:50:
+       * Native reports code-server startup failures before browser navigation so
+       * the app can show a toast instead of waiting for the generic open timeout.
+       */
+      message: string;
+      projectId?: string;
+      type: "codeServerRuntimeStartFailed";
     }
   | {
       projectId: string;

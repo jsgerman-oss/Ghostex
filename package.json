@@ -1,13 +1,14 @@
 {
   "name": "ghostex",
-  "version": "3.26.2",
+  "version": "4.0.0-beta.2",
   "private": true,
   "description": "ghostex native macOS workarea and sessions UI.",
   "type": "module",
   "scripts": {
     "s": "bun run start",
-    "start": "bun scripts/build-t3code-if-needed.mjs && native/macos/ghostexHost/run-ghostex-host.sh",
-    "start:dev": "bun scripts/start-ghostex-dev.mjs",
+    "start": "bun scripts/start-ghostex.mjs",
+    "start:dev": "bun scripts/start-ghostex.mjs dev",
+    "electron": "bun scripts/start-electron.mjs",
     "build": "native/macos/ghostexHost/build-ghostex-host.sh",
     "build:dev": "GHOSTEX_APP_VARIANT=dev native/macos/ghostexHost/build-ghostex-host.sh",
     "android:verify-release": "scripts/ghostex-android-release-readiness.sh",
@@ -15,8 +16,8 @@
     "release:local": "node scripts/release-ghostex.mjs",
     "build:sidebar-css": "tailwindcss -i sidebar/styles/shadcn.css -o sidebar/styles/shadcn.generated.css --minify",
     "cli": "node scripts/ghostex-cli.mjs",
-    "storybook": "bun run build:sidebar-css && storybook dev -p 6006 --no-open",
-    "build:storybook": "bun run build:sidebar-css && storybook build",
+    "storybook": "bun run build:sidebar-css && storybook dev -p 6006 --no-open -c config/storybook",
+    "build:storybook": "bun run build:sidebar-css && storybook build -c config/storybook",
     "typecheck": "tsc --noEmit --pretty false",
     "test": "vitest run"
   },
@@ -51,6 +52,7 @@
     "zustand": "^5.0.12"
   },
   "devDependencies": {
+    "@babel/core": "^7.29.7",
     "@storybook/react-vite": "^10.3.5",
     "@tailwindcss/cli": "^4.1.17",
     "@types/node": "^25.5.0",
@@ -58,6 +60,7 @@
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
     "@types/ws": "^8.18.1",
+    "babel-plugin-react-compiler": "^1.0.0",
     "storybook": "^10.3.5",
     "typescript": "~5.9.3",
     "vite": "^8.0.10",

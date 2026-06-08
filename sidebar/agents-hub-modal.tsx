@@ -4,10 +4,13 @@ import {
   IconDeviceFloppy,
   IconEdit,
   IconFile,
+  IconFolderOpen,
+  IconRefresh,
   IconSearch,
   IconX,
 } from "@tabler/icons-react";
 import { useEffect, useMemo, useRef, useState } from "react";
+import type { ReactNode } from "react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
@@ -259,6 +262,15 @@ function AgentsHubSurface({
               <EditorPane
                 editorCommand={editorCommand}
                 file={activeFile}
+                onRefreshCatalog={() => {
+                  /**
+                   * CDXC:AgentsHub 2026-06-04-20:08:
+                   * External file edits need a user-triggered refresh inside the open editor because Agents Hub catalogs file contents on demand instead of watching every local profile folder.
+                   * Clear the saved-content overlay before requesting a new native scan so stale in-modal buffers cannot mask the latest disk contents.
+                   */
+                  setSavedContentOverlay({ contentsByPath: emptySavedContentsByPath });
+                  vscode.postMessage({ type: "requestAgentsHubCatalog" });
+                }}
                 onSaveContent={(filePath, content) => {
                   /**
                    * CDXC:AgentsHub 2026-05-16-07:19:
@@ -386,7 +398,10 @@ function GroupList({
 function ProfileRow({ profiles, vscode }: { profiles: AgentsHubProfile[]; vscode: WebviewApi }) {
   /**
    * CDXC:AgentsHub 2026-05-15-15:41:
-   * Profile icon tooltips must keep the same profile label, instruction file path, optional resolved target path, and Finder action as the original tooltip, but render them as organized sections instead of a loose preformatted text block so dense path content remains scannable.
+   * Profile icon tooltips must keep the same profile label, instruction file path, optional resolved target path, and folder-opening action as the original tooltip, but render them as organized sections instead of a loose preformatted text block so dense path content remains scannable.
+   *
+   * CDXC:AgentsHub 2026-06-04-13:39:
+   * Filesystem actions in Agents Hub should use OS-agnostic "Open Folder" language so the shared modal does not expose Finder-specific copy outside macOS implementation details.
    */
   return (
     <div className="agents-hub-profile-row" aria-label="Profiles using this item">
@@ -398,7 +413,7 @@ function ProfileRow({ profiles, vscode }: { profiles: AgentsHubProfile[]; vscode
             <TooltipTrigger
               render={
                 <button
-                  aria-label={`Open ${profile.label} profile in Finder`}
+                  aria-label={`Open ${profile.label} profile folder`}
                   className="agents-hub-agent-icon"
                   onClick={(event) => {
                     event.stopPropagation();
@@ -439,7 +454,7 @@ function ProfileRow({ profiles, vscode }: { profiles: AgentsHubProfile[]; vscode
                     <div className="agents-hub-profile-tooltip-path">{profile.targetPath}</div>
                   </div>
                 ) : null}
-                <div className="agents-hub-profile-tooltip-action">Click to open in Finder</div>
+                <div className="agents-hub-profile-tooltip-action">Click to open folder</div>
               </div>
             </TooltipContent>
           </Tooltip>
@@ -468,11 +483,13 @@ function getAgentProfileBadge(profilePath: string): string | undefined {
 function EditorPane({
   editorCommand,
   file,
+  onRefreshCatalog,
   onSaveContent,
   vscode,
 }: {
   editorCommand: string;
   file: AgentsHubFile;
+  onRefreshCatalog: () => void;
   onSaveContent: (filePath: string, content: string) => void;
   vscode: WebviewApi;
 }) {
@@ -513,6 +530,17 @@ function EditorPane({
           minimap: { enabled: false },
           padding: { bottom: 16, top: 16 },
           scrollBeyondLastLine: false,
+          /*
+           * CDXC:AgentsHub 2026-06-04-19:29:
+           * Agents Hub's inline Monaco editor must use the same thin rail as the Hub file-list sidebar so editor scrollbars do not look heavier than adjacent modal chrome.
+           *
+           * CDXC:AgentsHub 2026-06-04-19:48:
+           * The inline editor scrollbar should be 7px wide so the code editor matches the requested lighter macOS treatment.
+           */
+          scrollbar: {
+            horizontalScrollbarSize: 7,
+            verticalScrollbarSize: 7,
+          },
           theme: "vs-dark",
           value: initialFile.content,
         });
@@ -582,30 +610,48 @@ function EditorPane({
           <span className="agents-hub-path">{file.path}</span>
         </div>
         <div className="agents-hub-editor-actions">
-          <Button
+          {/*
+           * CDXC:AgentsHub 2026-06-04-13:39:
+           * The selected file header needs an explicit Open Folder action before the external-editor button so users can jump to the file's containing location without switching their configured code editor.
+           *
+           * CDXC:AgentsHub 2026-06-04-20:08:
+           * Editor toolbar actions should be compact icon-only controls with descriptive hover tooltips, and Refresh should sit immediately before Save so externally edited files can be reloaded without closing Agents Hub.
+           */}
+          <EditorToolbarButton
+            label="Open containing folder"
+            onClick={() =>
+              vscode.postMessage({
+                path: file.path,
+                type: "openAgentsHubPathInFinder",
+              })
+            }
+          >
+            <IconFolderOpen aria-hidden="true" />
+          </EditorToolbarButton>
+          <EditorToolbarButton
+            label={`Open in ${editorCommand}`}
             onClick={() =>
               vscode.postMessage({
                 filePath: file.path,
                 type: "openAgentsHubFileInDefaultEditor",
               })
             }
-            size="sm"
-            type="button"
-            variant="outline"
           >
-            <IconEdit data-icon="inline-start" />
-            {editorCommand}
-          </Button>
-          <Button
+            <IconEdit aria-hidden="true" />
+          </EditorToolbarButton>
+          <EditorToolbarButton
+            label="Refresh contents from disk"
+            onClick={onRefreshCatalog}
+          >
+            <IconRefresh aria-hidden="true" />
+          </EditorToolbarButton>
+          <EditorToolbarButton
             disabled={!isDirty || isSaving}
+            label={isDirty ? "Save changes" : "No changes to save"}
             onClick={handleSave}
-            size="sm"
-            type="button"
-            variant="outline"
           >
-            <IconDeviceFloppy data-icon="inline-start" />
-            Save
-          </Button>
+            <IconDeviceFloppy aria-hidden="true" />
+          </EditorToolbarButton>
         </div>
       </div>
       <Separator />
@@ -623,6 +669,45 @@ function EditorPane({
         )}
       </div>
     </div>
+  );
+}
+
+function EditorToolbarButton({
+  children,
+  disabled,
+  label,
+  onClick,
+}: {
+  children: ReactNode;
+  disabled?: boolean;
+  label: string;
+  onClick: () => void;
+}) {
+  return (
+    <Tooltip>
+      <TooltipTrigger
+        render={
+          <Button
+            aria-disabled={disabled}
+            aria-label={label}
+            className={cn("agents-hub-editor-action-button", disabled && "is-disabled")}
+            onClick={() => {
+              if (!disabled) {
+                onClick();
+              }
+            }}
+            size="icon-sm"
+            type="button"
+            variant="outline"
+          >
+            {children}
+          </Button>
+        }
+      />
+      <TooltipContent className="agents-hub-editor-action-tooltip" sideOffset={6}>
+        {label}
+      </TooltipContent>
+    </Tooltip>
   );
 }
 

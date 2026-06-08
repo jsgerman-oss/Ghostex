@@ -6,6 +6,7 @@ import {
 import {
   clampAgentManagerZoomPercent,
   clampSidebarThemeSetting,
+  DEFAULT_COMMANDS_PANEL_HEIGHT_PX,
   normalizeTerminalEngine,
 } from "./session-grid-contract-session";
 import {
@@ -55,12 +56,57 @@ export type SessionStatusIndicatorSize = "small" | "medium" | "large" | "x-large
 export type SidebarSide = "left" | "right";
 export type SidebarSettingsPresetId = "codex" | "minimal" | "detailed";
 export type PromptEditorBackend = "inherit" | "monaco" | "gte" | "custom";
+export type SessionTitleGenerationAgent = "codex" | "cursor" | "claude" | "grok" | "custom";
 export type KeepAwakeDurationMinutes = 0 | 120 | 300;
 export type AutoSleepIdleMinutes = 5 | 10 | 15 | 30 | 60 | 120 | 300;
+export type RemoteMachineSettings = {
+  id: string;
+  name: string;
+  sshHost: string;
+  sshIdentityFile?: string;
+  sshPort?: number;
+  sshUser?: string;
+};
 const MIN_GHOSTTY_MOUSE_SCROLL_MULTIPLIER = 0.25;
 const MAX_GHOSTTY_MOUSE_SCROLL_MULTIPLIER = 8;
 const MIN_GHOSTTY_SCROLLBACK_LIMIT_MB = 1;
 const MAX_GHOSTTY_SCROLLBACK_LIMIT_MB = 200;
+export const MIN_COMMANDS_PANEL_DEFAULT_HEIGHT_PX = 40;
+export const MAX_COMMANDS_PANEL_DEFAULT_HEIGHT_PX = 600;
+export const DEFAULT_SIDEBAR_DEFAULT_WIDTH_PX = 235;
+export const MIN_SIDEBAR_DEFAULT_WIDTH_PX = 150;
+export const MAX_SIDEBAR_DEFAULT_WIDTH_PX = 520;
+export const SESSION_TITLE_GENERATION_AGENT_OPTIONS: ReadonlyArray<{
+  label: string;
+  value: SessionTitleGenerationAgent;
+}> = [
+  { label: "Codex", value: "codex" },
+  { label: "Cursor CLI", value: "cursor" },
+  { label: "Claude", value: "claude" },
+  { label: "Grok Build", value: "grok" },
+  { label: "Custom", value: "custom" },
+];
+export const SESSION_TITLE_GENERATION_PROMPT_PLACEHOLDER = "<title generation prompt>";
+
+export function clampCommandsPanelDefaultHeightPx(value: number): number {
+  if (!Number.isFinite(value)) {
+    return DEFAULT_COMMANDS_PANEL_HEIGHT_PX;
+  }
+  return Math.min(
+    MAX_COMMANDS_PANEL_DEFAULT_HEIGHT_PX,
+    Math.max(MIN_COMMANDS_PANEL_DEFAULT_HEIGHT_PX, Math.round(value)),
+  );
+}
+
+export function clampSidebarDefaultWidthPx(value: number): number {
+  if (!Number.isFinite(value)) {
+    return DEFAULT_SIDEBAR_DEFAULT_WIDTH_PX;
+  }
+  return Math.min(
+    MAX_SIDEBAR_DEFAULT_WIDTH_PX,
+    Math.max(MIN_SIDEBAR_DEFAULT_WIDTH_PX, Math.round(value)),
+  );
+}
 
 /**
  * CDXC:Branding 2026-05-12-07:35
@@ -80,10 +126,10 @@ const MAX_GHOSTTY_SCROLLBACK_LIMIT_MB = 200;
 export type ghostexSettings = {
   actionCompletionSound: CompletionSoundSetting;
   /**
-   * CDXC:SidebarAgents 2026-05-19-10:05:
-   * When enabled, built-in and custom agent launches inherit Accept All mode and
-   * append each CLI's permission-bypass flag at runtime unless a specific agent
-   * overrides the behavior in its own configuration.
+   * CDXC:GxserverAgentSettings 2026-06-02-22:23:
+   * This field is the sidebar render cache for gxserver-owned global Accept All
+   * settings. Settings UI can display and edit it, but gxserver persists the
+   * canonical value and applies runtime permission-bypass flags.
    */
   agentAcceptAllEnabled: boolean;
   agentManagerZoomPercent: number;
@@ -94,6 +140,20 @@ export type ghostexSettings = {
    * agent instead of hardcoding Codex in each launcher.
    */
   defaultPromptAgentId: string;
+  /**
+   * CDXC:GxserverSessionTitle 2026-06-04-08:24:
+   * First-prompt session-title generation is gxserver-owned, but Settings owns
+   * which headless agent command should produce those titles. Keep this scoped
+   * away from Default Prompt Agent so changing title generation does not alter
+   * Git prompts, worktree starts, project-board prompts, or search prompts.
+   *
+   * CDXC:GxserverSessionTitle 2026-06-04-22:44:
+   * The selector includes Grok Build and its Composer 2.5 command preview, so
+   * users can see the exact headless CLI command Ghostex will send before
+   * automatic first-prompt session naming runs.
+   */
+  sessionTitleGenerationAgent: SessionTitleGenerationAgent;
+  customSessionTitleGenerationCommand: string;
   browserFeedbackTool: BrowserFeedbackTool;
   browserOpenMode: BrowserOpenMode;
   codeServerLinkVscodeUserConfig: boolean;
@@ -125,7 +185,6 @@ export type ghostexSettings = {
   autoSleepBrowserIdleMinutes: AutoSleepIdleMinutes;
   autoSleepCodeEditorEnabled: boolean;
   autoSleepCodeEditorIdleMinutes: AutoSleepIdleMinutes;
-  autoSleepFocusedAgentSessions: boolean;
   autoSleepGitEditorEnabled: boolean;
   autoSleepGitEditorIdleMinutes: AutoSleepIdleMinutes;
   autoSleepProjectEditorEnabled: boolean;
@@ -151,6 +210,14 @@ export type ghostexSettings = {
   sessionPersistenceProvider: SessionPersistenceProvider;
   showSessionIdInTerminalPanes: boolean;
   sidebarSide: SidebarSide;
+  /**
+   * CDXC:SidebarChrome 2026-06-05-04:40:
+   * The sidebar default width is the reset target for a double-click on the
+   * sidebar drag handle in Electron and native macOS. Restart hydration must
+   * continue using the last persisted sidebarWidth so changing this default
+   * does not erase the user's last manual resize.
+   */
+  sidebarDefaultWidthPx: number;
   sidebarTheme: SidebarThemeSetting;
   terminalCursorStyle: TerminalCursorStyle;
   terminalCursorStyleBlink: boolean;
@@ -183,6 +250,18 @@ export type ghostexSettings = {
   workspaceOpenTargetAvailability: WorkspaceOpenTargetAvailability;
   workspaceOpenTargetHiddenIds: string[];
   workspacePaneGap: number;
+  /**
+   * CDXC:RemoteMachines 2026-06-02-23:47:
+   * Settings owns the saved Remote machine list and its sidebar section order. Each machine requires a user-visible name and SSH host; live connection state, projects, sessions, and gxserver tokens stay outside settings so reconnect/start/install flows refresh from the remote daemon.
+   */
+  remoteMachines: RemoteMachineSettings[];
+  /**
+   * CDXC:CommandsPanel 2026-05-30-10:05:
+   * Opening the command pane (F12, sidebar button) and double-clicking its top
+   * resize rail must restore this pixel height, clamped to the same 5%-90%
+   * workspace limits enforced during drag resize.
+   */
+  commandsPanelDefaultHeightPx: number;
 };
 
 export const SIDEBAR_SETTINGS_PRESET_KEYS = [
@@ -255,13 +334,16 @@ export const DEFAULT_ghostex_SETTINGS: ghostexSettings = {
    */
   actionCompletionSound: "shamisen",
   /**
-   * CDXC:SidebarAgents 2026-05-29-12:00:
-   * New installs should start with Accept All enabled so built-in and custom
-   * agent launches inherit permission-bypass mode unless the user turns it off.
+   * CDXC:GxserverAgentSettings 2026-06-02-22:23:
+   * New installs should start with gxserver-owned Accept All enabled so built-in
+   * and custom agent launches inherit permission-bypass mode unless the user
+   * turns it off.
    */
   agentAcceptAllEnabled: true,
   agentManagerZoomPercent: DEFAULT_AGENT_MANAGER_ZOOM_PERCENT,
   defaultPromptAgentId: "codex",
+  sessionTitleGenerationAgent: "codex",
+  customSessionTitleGenerationCommand: "",
   /**
    * CDXC:BrowserFeedbackTools 2026-05-22-09:18:
    * Browser panes can inject either React Grab or Agentation for visual
@@ -372,14 +454,22 @@ export const DEFAULT_ghostex_SETTINGS: ghostexSettings = {
    * Background VS Code, Project, and Git panes auto-sleep after fifteen minutes
    * of idle time by default. Browser and agent auto-sleep start opt-in because
    * they close live user-created session surfaces.
+   *
+   * CDXC:AutoSleep 2026-06-07-00:53:
+   * Agent auto-sleep keeps its opt-in policy, but the default idle threshold is
+   * now fifteen minutes so enabled agent sessions retire on the same window as
+   * editor surfaces.
+   *
+   * CDXC:AutoSleep 2026-06-07-00:56:
+   * Focused agent sessions must never auto-sleep and no longer have a Settings
+   * override because sleeping the active conversation is not a supported UX.
    */
   autoSleepAgentSessionsEnabled: false,
-  autoSleepAgentIdleMinutes: 60,
+  autoSleepAgentIdleMinutes: 15,
   autoSleepBrowserSessionsEnabled: false,
   autoSleepBrowserIdleMinutes: 30,
   autoSleepCodeEditorEnabled: true,
   autoSleepCodeEditorIdleMinutes: 15,
-  autoSleepFocusedAgentSessions: false,
   autoSleepGitEditorEnabled: true,
   autoSleepGitEditorIdleMinutes: 15,
   autoSleepProjectEditorEnabled: true,
@@ -456,17 +546,29 @@ export const DEFAULT_ghostex_SETTINGS: ghostexSettings = {
   sessionPersistenceProvider: "zmx",
   /**
    * CDXC:SessionPersistence 2026-05-23-00:50:
-   * The session-id pane overlay preference is enabled by default, but the
+   * The session-id pane overlay preference is configurable, and the
    * native label itself must still render only for terminal panes that carry
    * zmx/tmux/zellij persistence metadata.
+   *
+   * CDXC:SessionPersistence 2026-06-06-05:47:
+   * Provider session ids in terminal panes are opt-in chrome. Keep the setting
+   * disabled for default settings so new users do not see top-right provider
+   * identifiers unless they explicitly enable the pane overlay.
    */
-  showSessionIdInTerminalPanes: true,
+  showSessionIdInTerminalPanes: false,
   /**
    * CDXC:SidebarPlacement 2026-05-06-17:32
    * Sidebar side is a first-class setting so users can choose left or right
    * placement from Settings instead of relying only on the move-sidebar hotkey.
    */
   sidebarSide: "left",
+  /**
+   * CDXC:SidebarChrome 2026-06-05-04:40:
+   * First-run reset target remains 235px, but users can change this Settings
+   * value for explicit sidebar-handle double-click resets without changing the
+   * last-width restore path used at app restart.
+   */
+  sidebarDefaultWidthPx: DEFAULT_SIDEBAR_DEFAULT_WIDTH_PX,
   /**
    * CDXC:SidebarTheme 2026-05-08-11:14
    * Dark Gray is the only active user-facing sidebar theme while the broader
@@ -533,7 +635,11 @@ export const DEFAULT_ghostex_SETTINGS: ghostexSettings = {
   useGteForCtrlGPromptEditing: false,
   hotkeys: DEFAULT_ghostex_HOTKEYS,
   workspaceActivePaneBorderColor: "#3b82f6",
-  workspaceBackgroundColor: "#151515",
+  /**
+   * CDXC:WorkspaceLayout 2026-06-07-16:53:
+   * Black is the fallback workspace background when Ghostty has no readable terminal background. Native layout sync treats this default as automatic so the macOS workarea can use the loaded Ghostty `background` color instead of forcing a separate app gray.
+   */
+  workspaceBackgroundColor: "#000000",
   /**
    * CDXC:TitlebarOpenIn 2026-05-11-00:22
    * The titlebar Open In menu is configurable: built-in editor targets can be
@@ -543,8 +649,11 @@ export const DEFAULT_ghostex_SETTINGS: ghostexSettings = {
   customWorkspaceOpenTargets: [],
   /**
    * CDXC:TitlebarOpenIn 2026-05-11-02:03
-   * First launch starts with only ghostex/Finder until the native sidebar performs
+   * First launch starts with only ghostex/Open Folder until the native sidebar performs
    * its one startup installed-target scan and persists the detected IDE list.
+   *
+   * CDXC:TitlebarOpenIn 2026-06-04-13:39:
+   * The default folder target should be described with OS-agnostic Open Folder copy even though the persisted target id remains finder for compatibility.
    */
   workspaceOpenTargetAvailability: DEFAULT_WORKSPACE_OPEN_TARGET_AVAILABILITY,
   workspaceOpenTargetHiddenIds: [],
@@ -555,6 +664,8 @@ export const DEFAULT_ghostex_SETTINGS: ghostexSettings = {
    * native panes always render without configurable spacing.
    */
   workspacePaneGap: 0,
+  remoteMachines: [],
+  commandsPanelDefaultHeightPx: DEFAULT_COMMANDS_PANEL_HEIGHT_PX,
 };
 
 export const SIDEBAR_THEME_SETTING_OPTIONS: ReadonlyArray<{
@@ -746,6 +857,20 @@ export function normalizeghostexSettings(candidate: unknown): ghostexSettings {
     defaultPromptAgentId: normalizeDefaultPromptAgentId(
       readString(source, "defaultPromptAgentId", DEFAULT_ghostex_SETTINGS.defaultPromptAgentId),
     ),
+    sessionTitleGenerationAgent: normalizeSessionTitleGenerationAgent(
+      readString(
+        source,
+        "sessionTitleGenerationAgent",
+        DEFAULT_ghostex_SETTINGS.sessionTitleGenerationAgent,
+      ),
+    ),
+    customSessionTitleGenerationCommand: normalizeCustomSessionTitleGenerationCommand(
+      readString(
+        source,
+        "customSessionTitleGenerationCommand",
+        DEFAULT_ghostex_SETTINGS.customSessionTitleGenerationCommand,
+      ),
+    ),
     /**
      * CDXC:BrowserFeedbackTools 2026-05-22-09:18:
      * Normalize the browser feedback injector choice so missing or invalid
@@ -915,11 +1040,6 @@ export function normalizeghostexSettings(candidate: unknown): ghostexSettings {
       ),
       DEFAULT_ghostex_SETTINGS.autoSleepCodeEditorIdleMinutes,
     ),
-    autoSleepFocusedAgentSessions: readBoolean(
-      source,
-      "autoSleepFocusedAgentSessions",
-      DEFAULT_ghostex_SETTINGS.autoSleepFocusedAgentSessions,
-    ),
     autoSleepGitEditorEnabled: readBoolean(
       source,
       "autoSleepGitEditorEnabled",
@@ -1068,7 +1188,8 @@ export function normalizeghostexSettings(candidate: unknown): ghostexSettings {
     sessionPersistenceProvider,
     /**
      * CDXC:SessionPersistence 2026-05-23-00:50:
-     * Older settings should gain the default-on session-id overlay preference.
+     * Older settings should normalize the session-id overlay preference from
+     * the canonical default while preserving explicit user choices.
      * The native pane still suppresses the actual label unless that terminal is
      * backed by zmx, tmux, or zellij.
      */
@@ -1085,6 +1206,13 @@ export function normalizeghostexSettings(candidate: unknown): ghostexSettings {
      */
     sidebarSide: normalizeSidebarSide(
       readString(source, "sidebarSide", DEFAULT_ghostex_SETTINGS.sidebarSide),
+    ),
+    sidebarDefaultWidthPx: clampSidebarDefaultWidthPx(
+      readNumber(
+        source,
+        "sidebarDefaultWidthPx",
+        DEFAULT_ghostex_SETTINGS.sidebarDefaultWidthPx,
+      ),
     ),
     sidebarTheme: clampSidebarThemeSetting(
       readString(source, "sidebarTheme", DEFAULT_ghostex_SETTINGS.sidebarTheme),
@@ -1290,7 +1418,53 @@ export function normalizeghostexSettings(candidate: unknown): ghostexSettings {
       source.workspaceOpenTargetHiddenIds,
     ),
     workspacePaneGap: 0,
+    remoteMachines: normalizeRemoteMachineSettings(source.remoteMachines),
+    commandsPanelDefaultHeightPx: clampCommandsPanelDefaultHeightPx(
+      readNumber(
+        source,
+        "commandsPanelDefaultHeightPx",
+        DEFAULT_ghostex_SETTINGS.commandsPanelDefaultHeightPx,
+      ),
+    ),
   };
+}
+
+export function normalizeRemoteMachineSettings(candidate: unknown): RemoteMachineSettings[] {
+  if (!Array.isArray(candidate)) {
+    return [];
+  }
+  const seenIds = new Set<string>();
+  const normalized: RemoteMachineSettings[] = [];
+  for (const item of candidate) {
+    if (!isRecord(item)) {
+      continue;
+    }
+    const name = readLooseString(item.name).slice(0, 80);
+    const sshHost = readLooseString(item.sshHost).slice(0, 200);
+    if (!name || !sshHost) {
+      continue;
+    }
+    let id = normalizeRemoteMachineId(item.id);
+    if (!id || seenIds.has(id)) {
+      id = `remote-${normalized.length + 1}`;
+      while (seenIds.has(id)) {
+        id = `remote-${normalized.length + 1}-${seenIds.size + 1}`;
+      }
+    }
+    seenIds.add(id);
+    const sshUser = readLooseString(item.sshUser).slice(0, 120);
+    const sshIdentityFile = readLooseString(item.sshIdentityFile).slice(0, 500);
+    const sshPort = normalizeRemoteMachineSshPort(item.sshPort);
+    normalized.push({
+      id,
+      name,
+      sshHost,
+      ...(sshIdentityFile ? { sshIdentityFile } : {}),
+      ...(sshPort ? { sshPort } : {}),
+      ...(sshUser ? { sshUser } : {}),
+    });
+  }
+  return normalized;
 }
 
 export function getTerminalFontFamilyForghostexSettings(settings: ghostexSettings): string {
@@ -1348,6 +1522,71 @@ function normalizeDefaultPromptAgentId(value: string | undefined): string {
   return ((value ?? "").trim() || DEFAULT_ghostex_SETTINGS.defaultPromptAgentId).slice(0, 120);
 }
 
+function normalizeSessionTitleGenerationAgent(
+  value: string | undefined,
+): SessionTitleGenerationAgent {
+  return value === "cursor" || value === "claude" || value === "grok" || value === "custom"
+    ? value
+    : DEFAULT_ghostex_SETTINGS.sessionTitleGenerationAgent;
+}
+
+function normalizeCustomSessionTitleGenerationCommand(value: string | undefined): string {
+  return (value ?? "").trim().slice(0, 240);
+}
+
+export function getSessionTitleGenerationCommandPreview(
+  agent: SessionTitleGenerationAgent,
+  options: { command?: string } = {},
+): string {
+  const command = readSessionTitleGenerationPreviewCommand(agent, options.command);
+  const prompt = SESSION_TITLE_GENERATION_PROMPT_PLACEHOLDER;
+  switch (agent) {
+    case "codex":
+      /*
+      CDXC:SessionTitleSettings 2026-06-07-01:57:
+      Settings must preview the same internal Codex title-generation command gxserver runs. Include `--ephemeral` so users see that generated titles do not create restorable Codex sessions.
+      */
+      return createSessionTitleGenerationHereDocPreview(
+        `${command} exec --ephemeral --skip-git-repo-check -m gpt-5.4-mini -c 'model_reasoning_effort="low"'`,
+        prompt,
+      );
+    case "cursor":
+      return `${command} --print --yolo --trust --output-format text '${prompt}'`;
+    case "claude":
+      return createSessionTitleGenerationHereDocPreview(`${command} -p --model haiku`, prompt);
+    case "grok":
+      return `${command} -p --model grok-composer-2.5-fast --output-format plain --no-alt-screen --no-plan --no-subagents --disable-web-search --max-turns 1 '${prompt}'`;
+    case "custom":
+      return createSessionTitleGenerationHereDocPreview(command, prompt);
+  }
+}
+
+function readSessionTitleGenerationPreviewCommand(
+  agent: SessionTitleGenerationAgent,
+  command: string | undefined,
+): string {
+  const configured = command?.trim();
+  if (configured) {
+    return configured;
+  }
+  switch (agent) {
+    case "codex":
+      return "codex";
+    case "cursor":
+      return "cursor-agent";
+    case "claude":
+      return "claude";
+    case "grok":
+      return "grok";
+    case "custom":
+      return "<custom command>";
+  }
+}
+
+function createSessionTitleGenerationHereDocPreview(command: string, prompt: string): string {
+  return `${command} <<'PROMPT'\n${prompt}\nPROMPT`;
+}
+
 function normalizeCustomPromptEditorCommand(value: string | undefined): string {
   return ((value ?? "").trim() || DEFAULT_ghostex_SETTINGS.customPromptEditorCommand).slice(0, 240);
 }
@@ -1402,6 +1641,22 @@ function normalizePromptEditorBackend(source: Record<string, unknown>): PromptEd
     return "gte";
   }
   return DEFAULT_ghostex_SETTINGS.promptEditorBackend;
+}
+
+function normalizeRemoteMachineId(input: unknown): string | undefined {
+  const id = readLooseString(input).slice(0, 80);
+  return /^remote-[a-z0-9_-]+$/iu.test(id) ? id : undefined;
+}
+
+function normalizeRemoteMachineSshPort(input: unknown): number | undefined {
+  if (input === undefined || input === null || input === "") {
+    return undefined;
+  }
+  const value = typeof input === "number" ? input : Number(input);
+  if (!Number.isInteger(value) || value < 1 || value > 65535) {
+    return undefined;
+  }
+  return value;
 }
 
 function normalizeGhosttyTheme(value: string | undefined): string {
@@ -1474,4 +1729,8 @@ function readString(
 ): string {
   const value = source[key];
   return typeof value === "string" ? value : fallback;
+}
+
+function readLooseString(value: unknown): string {
+  return typeof value === "string" ? value.trim() : "";
 }

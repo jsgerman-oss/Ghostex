@@ -1,7 +1,8 @@
 import { IconChevronRight, IconRefresh, IconX } from "@tabler/icons-react";
 import { createPortal } from "react-dom";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { ConfirmationModal } from "./confirmation-modal";
+import { SidebarSessionSearchField } from "./sidebar-session-search-overlay";
 import { useSidebarStore } from "./sidebar-store";
 import type { WebviewApi } from "./webview-api";
 
@@ -14,6 +15,7 @@ export type DaemonSessionsModalProps = {
 export function DaemonSessionsModal({ isOpen, onClose, vscode }: DaemonSessionsModalProps) {
   const state = useSidebarStore((storeState) => storeState.daemonSessionsState);
   const [searchQuery, setSearchQuery] = useState("");
+  const searchInputRef = useRef<HTMLInputElement>(null);
   const [expandedPanels, setExpandedPanels] = useState<Record<string, boolean>>({});
   const [isKillDaemonConfirmOpen, setIsKillDaemonConfirmOpen] = useState(false);
   const [isKillT3ServerConfirmOpen, setIsKillT3ServerConfirmOpen] = useState(false);
@@ -76,6 +78,7 @@ export function DaemonSessionsModal({ isOpen, onClose, vscode }: DaemonSessionsM
         session.agentName,
         session.cwd,
         session.errorMessage,
+        session.ownership,
         session.sessionId,
         session.shell,
         session.status,
@@ -96,6 +99,7 @@ export function DaemonSessionsModal({ isOpen, onClose, vscode }: DaemonSessionsM
     return (state?.t3Sessions ?? []).filter((session) =>
       [
         session.detail,
+        session.ownership,
         session.lastInteractionAt,
         session.sessionId,
         session.threadId,
@@ -139,15 +143,15 @@ export function DaemonSessionsModal({ isOpen, onClose, vscode }: DaemonSessionsM
             {/* </div> */}
           </div>
           <div className="daemon-sessions-toolbar">
-            <input
-              aria-label="Search daemon sessions"
-              className="group-title-input daemon-sessions-search-input"
-              onChange={(event) => {
-                setSearchQuery(event.target.value);
-              }}
+            <SidebarSessionSearchField
+              ariaLabel="Search daemon sessions"
+              clearLabel="Clear daemon sessions search"
+              inputClassName="daemon-sessions-search-input"
+              inputRef={searchInputRef}
               placeholder="Search by workspace, session, cwd, title, or agent"
-              type="text"
-              value={searchQuery}
+              query={searchQuery}
+              setQuery={setSearchQuery}
+              toolbarClassName="daemon-sessions-search-control"
             />
             <div className="daemon-sessions-toolbar-actions">
               <button
@@ -339,6 +343,9 @@ export function DaemonSessionsModal({ isOpen, onClose, vscode }: DaemonSessionsM
                                   </span>
                                 </button>
                                 <div className="daemon-session-card-badges">
+                                  {session.isLocalOnly ? (
+                                    <span className="daemon-session-badge">Local</span>
+                                  ) : null}
                                   {session.isFocused ? (
                                     <span className="daemon-session-badge daemon-session-badge-current">
                                       Focused
@@ -363,6 +370,9 @@ export function DaemonSessionsModal({ isOpen, onClose, vscode }: DaemonSessionsM
                                   <Detail label="Workspace">{session.workspaceId}</Detail>
                                   <Detail label="Root">{session.workspaceRoot ?? "Pending"}</Detail>
                                   <Detail label="Thread">{session.threadId ?? "Pending"}</Detail>
+                                  <Detail label="Ownership">
+                                    {session.isLocalOnly ? "Local" : session.ownership ?? "Local"}
+                                  </Detail>
                                   <Detail label="Last Active">
                                     {session.lastInteractionAt
                                       ? formatTimestamp(session.lastInteractionAt)
@@ -437,6 +447,15 @@ export function DaemonSessionsModal({ isOpen, onClose, vscode }: DaemonSessionsM
                               </span>
                             </button>
                             <div className="daemon-session-card-badges">
+                              {/*
+                               * CDXC:RunningSessionsModal 2026-06-02-17:19:
+                               * Local-only rows need an in-modal label because gxserver-owned terminal rows and macOS-local panes can appear together after the ownership cutover.
+                               */}
+                              {session.isLocalOnly ? (
+                                <span className="daemon-session-badge">Local</span>
+                              ) : session.ownership === "gxserver" ? (
+                                <span className="daemon-session-badge">gxserver</span>
+                              ) : null}
                               {session.isCurrentWorkspace ? (
                                 <span className="daemon-session-badge daemon-session-badge-current">
                                   Current Workspace
@@ -456,6 +475,9 @@ export function DaemonSessionsModal({ isOpen, onClose, vscode }: DaemonSessionsM
                               <Detail label="CWD">{session.cwd}</Detail>
                               <Detail label="Shell">{session.shell}</Detail>
                               <Detail label="Agent">{session.agentName ?? "Unknown"}</Detail>
+                              <Detail label="Ownership">
+                                {session.isLocalOnly ? "Local" : session.ownership ?? "Unknown"}
+                              </Detail>
                               <Detail label="Restore">{session.restoreState}</Detail>
                               <Detail label="Size">{`${String(session.cols)} x ${String(session.rows)}`}</Detail>
                               <Detail label="Started">{formatTimestamp(session.startedAt)}</Detail>

@@ -8,8 +8,11 @@ import {
   extractDescriptionImagePreviews,
   extractDescriptionImageReferences,
   filterBoardTickets,
+  formatProjectBoardCommentText,
+  parseProjectBoardCommentText,
   priorityLabel,
   prioritySelectValue,
+  projectBoardRawProjectIdFromUrlParam,
   removeDescriptionImageReference,
   type BoardTicket,
 } from "./project-board-shared";
@@ -150,11 +153,44 @@ describe("buildAgentWorkPrompt", () => {
     expect(prompt).toContain('bd comment zmux-zkr "<summary>"');
     expect(prompt).toContain("user-facing requirements");
     expect(prompt).toContain("Do not list specific files or line numbers.");
+    expect(prompt).toContain("Agent: <agent name>");
+    expect(prompt).toContain("Session: <saved agent CLI session id>");
     expect(prompt).toContain("bd update zmux-zkr --status backlog");
     expect(prompt).toContain("bd update zmux-zkr --status in_progress");
     expect(prompt).toContain("bd update zmux-zkr --status test");
     expect(prompt).toContain("bd update zmux-zkr --status review");
     expect(prompt).toContain("bd close zmux-zkr");
+  });
+});
+
+describe("project board comment metadata", () => {
+  test("formats agent and session attribution as a bd-compatible footer", () => {
+    expect(
+      formatProjectBoardCommentText("Delivered the nicer ticket comments.", {
+        agentName: "Cursor CLI",
+        sessionId: "019e95a9-58aa-7850-ab86-5c109fe456fc",
+      }),
+    ).toBe(
+      "Delivered the nicer ticket comments.\n\n---\nAgent: Cursor CLI\nSession: 019e95a9-58aa-7850-ab86-5c109fe456fc",
+    );
+  });
+
+  test("parses agent and session metadata without showing footer lines in the body", () => {
+    expect(
+      parseProjectBoardCommentText(
+        "Implemented the comment polish.\n\n---\nAgent: Codex\nSession: 019e95a9-58aa-7850-ab86-5c109fe456fc",
+      ),
+    ).toEqual({
+      agentName: "Codex",
+      body: "Implemented the comment polish.",
+      sessionId: "019e95a9-58aa-7850-ab86-5c109fe456fc",
+    });
+  });
+
+  test("leaves legacy comments unchanged", () => {
+    expect(parseProjectBoardCommentText("Legacy note without metadata.")).toEqual({
+      body: "Legacy note without metadata.",
+    });
   });
 });
 
@@ -170,5 +206,19 @@ describe("project board statuses", () => {
     ]);
     expect(beadsStatusToBoardStatus("backlog")).toBe("backlog");
     expect(boardStatusBeadsValue("backlog")).toBe("backlog");
+  });
+});
+
+describe("project board routing", () => {
+  test("normalizes old editor ids to raw project ids", () => {
+    /*
+     * CDXC:ProjectBoardRouting 2026-06-04-23:51:
+     * Open Project panes from older builds can keep `project-editor:<projectId>:tasks` in the URL. The board must strip the editor wrapper before calling gxserver so stale paths do not decide the Beads project.
+     */
+    expect(projectBoardRawProjectIdFromUrlParam("project-editor:P3lv0:tasks")).toBe("P3lv0");
+    expect(projectBoardRawProjectIdFromUrlParam("project-editor:remote%3Amachine%3AP9:tasks")).toBe(
+      "remote:machine:P9",
+    );
+    expect(projectBoardRawProjectIdFromUrlParam("P3lv0")).toBe("P3lv0");
   });
 });

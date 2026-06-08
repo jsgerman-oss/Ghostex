@@ -52,6 +52,18 @@
   opacity: 1;
 }
 
+/*
+ * CDXC:SidebarDragDrop 2026-06-02-20:22:
+ * A pointer between two session rows can make adjacent droppable halves both
+ * resolve the same gap. Keep only one visual insertion line for that boundary
+ * so dragging never shows stacked/double separators between two sessions.
+ */
+.session-local-tooltip-shell:has(.session-frame[data-drop-position="after"])
+  + .session-local-tooltip-shell
+  .session-frame[data-drop-position="before"]::before {
+  opacity: 0;
+}
+
 .session {
   --session-visible-surface: linear-gradient(
     160deg,
@@ -352,6 +364,21 @@
   padding: 0 var(--reference-session-trailing-inset) 0 var(--reference-session-title-inset);
 }
 
+/*
+ * CDXC:PreviousSessions 2026-06-06-04:17:
+ * Inline Previous Sessions search rows must match normal project-session row
+ * spacing in the macOS and Electron reference sidebars. The terminal glyph is
+ * visually wider than the agent-logo slot, so use the same expanded title
+ * padding formula as project session buttons instead of the compact modal
+ * padding that lets the glyph overlap the title.
+ */
+.sidebar-reference-layout[data-reference-sidebar="true"] .session.session-history-card {
+  padding-left: calc(
+    var(--reference-session-title-inset) + var(--reference-sidebar-scroll-row-bleed-left, 7px) +
+      var(--reference-session-full-width-left-padding)
+  );
+}
+
 .previous-sessions-modal .session-history-card::before {
   display: none;
 }
@@ -487,6 +514,10 @@
 
 .session-history-frame .session-floating-agent-icon,
 .session-history-frame .session-floating-agent-tabler-icon {
+  /*
+   * CDXC:PreviousSessions 2026-05-31-20:55:
+   * Agentless Terminal history rows must keep the Tabler terminal glyph in the same left identity slot as agent-logo rows. The active-card terminal glyph nudge is scoped away from history frames so previous-session modal buttons do not pull terminal icons off the left edge.
+   */
   left: calc(10px * var(--sidebar-density-scale));
   opacity: 0.52;
   top: 50%;
@@ -937,6 +968,7 @@
   align-items: center;
   background: color-mix(in srgb, var(--app-card-active) 88%, #000000 12%);
   border: 1px solid color-mix(in srgb, var(--app-button-background) 42%, var(--app-border));
+  border-inline-width: 0;
   border-radius: 0;
   color: color-mix(in srgb, var(--app-foreground) 76%, #82b7ff 24%);
   display: flex;
@@ -952,6 +984,11 @@
    * The visible generating label inherits the normal session title typography,
    * uses a slight blue tint, and replaces the extra left-side spinner with a
    * one/two/three-dot loop that advances every 0.75s.
+   *
+   * CDXC:SessionTitleLoading 2026-06-04-23:48
+   * Automatic session rename loading chrome keeps only the horizontal top and
+   * bottom separators, because the macOS sidebar row should not show left or
+   * right borders while "Generating title..." is displayed.
    */
   justify-content: flex-start;
   line-height: 1.3;
@@ -1004,7 +1041,7 @@
   width: calc(16px * var(--sidebar-density-scale));
 }
 
-.session-floating-agent-tabler-icon[data-agent-icon="terminal"] {
+.session-frame:not(.session-history-frame) .session-floating-agent-tabler-icon[data-agent-icon="terminal"] {
   left: calc(-5px * var(--sidebar-density-scale));
   top: calc(4px * var(--sidebar-density-scale));
 }
@@ -1058,6 +1095,91 @@
   --session-agent-icon-color: #c8ff62;
 }
 
+.session-tag-colored-icon,
+.session-tag-agent-icon {
+  /*
+   * CDXC:SessionTags 2026-06-05-14:45:
+   * Tag picker and filter menu icons must use the same color mapping as the
+   * sidebar row tag icons so a tag reads as one visual state across menus,
+   * active sessions, and Previous Sessions.
+   */
+  color: color-mix(in srgb, #9aa8b6 84%, var(--app-foreground) 16%);
+}
+
+.session-tag-agent-icon {
+  opacity: 1;
+}
+
+.session-tag-colored-icon[data-session-tag="favorite"],
+.session-tag-agent-icon[data-session-tag="favorite"] {
+  color: color-mix(in srgb, #ffdf75 78%, #c78b12 22%);
+}
+
+.session-tag-colored-icon[data-session-tag="high-priority"],
+.session-tag-agent-icon[data-session-tag="high-priority"] {
+  color: #ff8b6b;
+}
+
+.session-tag-colored-icon[data-session-tag="research"],
+.session-tag-agent-icon[data-session-tag="research"] {
+  color: #8fb8ff;
+}
+
+.session-tag-colored-icon[data-session-tag="todo"],
+.session-tag-agent-icon[data-session-tag="todo"] {
+  color: #d9dee6;
+}
+
+.session-tag-colored-icon[data-session-tag="in-progress"],
+.session-tag-agent-icon[data-session-tag="in-progress"] {
+  color: #4ee6b8;
+}
+
+.session-tag-colored-icon[data-session-tag="testing"],
+.session-tag-agent-icon[data-session-tag="testing"] {
+  color: #59d9ff;
+}
+
+.session-tag-colored-icon[data-session-tag="blocked"],
+.session-tag-agent-icon[data-session-tag="blocked"] {
+  color: #ff5f73;
+}
+
+.session-tag-colored-icon[data-session-tag="low-priority"],
+.session-tag-agent-icon[data-session-tag="low-priority"] {
+  color: #8e949d;
+}
+
+.session-tag-colored-icon[data-session-tag="on-hold"],
+.session-tag-agent-icon[data-session-tag="on-hold"] {
+  color: #d2a7ff;
+}
+
+.session-tag-colored-icon[data-session-tag="done"],
+.session-tag-agent-icon[data-session-tag="done"] {
+  color: #73e79c;
+}
+
+.session-tag-colored-icon[data-session-tag="bug"],
+.session-tag-agent-icon[data-session-tag="bug"] {
+  /*
+   * CDXC:SessionTags 2026-06-05-20:17:
+   * Bug uses a muted red, not the brighter pink-red tag color, so it reads as
+   * issue severity without competing with higher-priority status colors.
+   */
+  color: #a54646;
+}
+
+.session-tag-colored-icon[data-session-tag="feature"],
+.session-tag-agent-icon[data-session-tag="feature"] {
+  color: #f0c66e;
+}
+
+.session-tag-colored-icon[data-session-tag="design"],
+.session-tag-agent-icon[data-session-tag="design"] {
+  color: #ff9ee7;
+}
+
 .session-floating-agent-icon[data-favorite="true"],
 .session-floating-agent-tabler-icon[data-favorite="true"],
 .session-header-agent-icon[data-favorite="true"],
@@ -1075,6 +1197,8 @@
 
 .session-frame[data-pinned="true"]:is(:hover, :has(.session:hover), :has(.session:focus-visible), :has(.session:focus-within))
   .session-pinned-agent-icon,
+.session-frame[data-tagged="true"]:is(:hover, :has(.session:hover), :has(.session:focus-visible), :has(.session:focus-within))
+  .session-tag-agent-icon,
 .session-frame[data-pinned="true"]:is(:hover, :has(.session:hover), :has(.session:focus-visible), :has(.session:focus-within))
   .session-delayed-send-agent-icon {
   /*
@@ -1495,21 +1619,77 @@
    move both active indicators 1px right from the earlier May 30 placement.
    CDXC:SessionStatusIndicators 2026-05-30-06:54: The old border spinner must
    explicitly override the base square status-dot radius so the working
-   indicator renders as a rounded ring. */
+   indicator renders as a rounded ring.
+
+   CDXC:SidebarSessions 2026-05-31-15:38:
+   Session button surfaces must also reach the native sidebar's left edge.
+   Expand the frame with the shared main-row bleed while increasing the
+   session's left padding by the same amount so session titles keep their
+   existing scan position.
+
+   CDXC:SidebarSessions 2026-05-31-16:31:
+   Session buttons need 13px more left padding after becoming fully flush with
+   the sidebar edge, so titles retain a comfortable inset inside the expanded
+   row surface.
+
+   CDXC:SidebarSessions 2026-05-31-17:31:
+   The reference scroll viewport now expands to the sidebar edge, so session
+   rows use the scroll-row bleed instead of the main navigation bleed. This
+   keeps row surfaces visible from the left edge without pushing leading icons
+   or titles into the wrong columns.
+
+   CDXC:SidebarSessions 2026-05-31-17:36:
+   Scroll-area session rows should stop at the right edge instead of relying on
+   clipping, so trailing agent/status chrome never appears to overflow.
+
+   CDXC:SidebarSessions 2026-05-31-17:43:
+   The additional 6px should move the leading agent icon, not the session title.
+   Keep the title padding at the previous 13px offset and move only the
+   leading icon inset right.
+
+   CDXC:SidebarSessions 2026-05-31-18:02:
+   Session titles should sit 6px further left while the leading session icons
+   move 2px right, so adjust the reference-only title padding and icon inset
+   independently without changing the full-width row surface.
+
+   CDXC:SidebarSessions 2026-05-31-18:08:
+   Session title text needs another 2px left shift while preserving the icon
+   position and full-width button bounds.
+
+   CDXC:SidebarSessions 2026-05-31-18:16:
+   Session rows stay full-width, but all internal content should move 6px
+   inward from both edges. Increase the leading icon/title offsets and trailing
+   inset without changing the row bleed.
+
+   CDXC:SidebarSessions 2026-05-31-18:24:
+   Session row contents need another 2px left inset only. Move the leading icon
+   and title padding together while preserving the right inset and full-width
+   button surface.
+
+   CDXC:SidebarSessions 2026-05-31-18:31:
+   Session title text needs a 2px left correction without moving the leading
+   icons, trailing chrome, or full-width button surface.
+ */
 .sidebar-reference-layout[data-reference-sidebar="true"] .session-frame {
   --reference-session-agent-icon-size: 13px;
   --reference-session-icon-size: 15px;
-  --reference-session-leading-inset: 10px;
+  --reference-session-leading-inset: 26px;
   --reference-session-title-inset: 36px;
-  --reference-session-trailing-inset: 10px;
+  --reference-session-full-width-left-padding: 11px;
+  --reference-session-trailing-inset: 16px;
   /*
    * CDXC:SidebarSessions 2026-05-10-13:49
    * Terminal, T3 Code, and browser session titles need 15px more readable
    * width before the right-side status/close slot starts.
-   */
+  */
   --reference-session-trailing-slot-width: 29px;
+  margin-left: calc(-1 * var(--reference-sidebar-scroll-row-bleed-left, 7px));
+  margin-right: calc(-1 * var(--reference-sidebar-scroll-row-bleed-right, 0px));
   min-height: 34px;
-  width: 100%;
+  width: calc(
+    100% + var(--reference-sidebar-scroll-row-bleed-left, 7px) +
+      var(--reference-sidebar-scroll-row-bleed-right, 0px)
+  );
 }
 
 .sidebar-reference-layout[data-reference-sidebar="true"] .session {
@@ -1520,11 +1700,18 @@
   min-height: 34px;
   outline: none;
   padding: 7px var(--reference-session-trailing-inset) 7px
-    var(--reference-session-title-inset);
+    calc(
+      var(--reference-session-title-inset) +
+        var(--reference-sidebar-scroll-row-bleed-left, 7px) +
+        var(--reference-session-full-width-left-padding)
+    );
 }
 
 .sidebar-reference-layout[data-reference-sidebar="true"] .group[data-project-group="true"] .session {
-  padding-left: var(--reference-session-title-inset);
+  padding-left: calc(
+    var(--reference-session-title-inset) + var(--reference-sidebar-scroll-row-bleed-left, 7px) +
+      var(--reference-session-full-width-left-padding)
+  );
 }
 
 .sidebar-reference-layout[data-reference-sidebar="true"] .session::before {
@@ -1595,7 +1782,11 @@
   letter-spacing: 0;
   line-height: 20px;
   padding: 7px var(--reference-session-trailing-inset) 7px
-    var(--reference-session-title-inset);
+    calc(
+      var(--reference-session-title-inset) +
+        var(--reference-sidebar-scroll-row-bleed-left, 7px) +
+        var(--reference-session-full-width-left-padding)
+    );
 }
 
 .sidebar-reference-layout[data-reference-sidebar="true"]
@@ -1890,7 +2081,11 @@
 .session-frame[data-pinned="true"][data-agent-icon-hover-only="true"]:not(:hover):not(
     :has(.session:hover)
   ):not(:has(.session:focus-visible)):not(:has(.session:focus-within))
-  .session-pinned-agent-icon {
+  .session-pinned-agent-icon,
+.session-frame[data-tagged="true"][data-agent-icon-hover-only="true"]:not(:hover):not(
+    :has(.session:hover)
+  ):not(:has(.session:focus-visible)):not(:has(.session:focus-within))
+  .session-tag-agent-icon {
   opacity: 1 !important;
 }
 
@@ -1926,6 +2121,15 @@
   width: var(--reference-session-icon-size);
 }
 
+.sidebar-reference-layout[data-reference-sidebar="true"] .session-tag-agent-icon {
+  height: var(--reference-session-icon-size);
+  left: var(--reference-session-leading-inset);
+  opacity: 1;
+  top: 50%;
+  translate: 0 -50%;
+  width: var(--reference-session-icon-size);
+}
+
 .sidebar-reference-layout[data-reference-sidebar="true"]
   .session-frame[data-pinned="true"]:is(
     :hover,
@@ -1934,6 +2138,14 @@
     :has(.session:focus-within)
   )
   .session-pinned-agent-icon,
+.sidebar-reference-layout[data-reference-sidebar="true"]
+  .session-frame[data-tagged="true"]:is(
+    :hover,
+    :has(.session:hover),
+    :has(.session:focus-visible),
+    :has(.session:focus-within)
+  )
+  .session-tag-agent-icon,
 .sidebar-reference-layout[data-reference-sidebar="true"]
   .session-frame[data-pinned="true"]:is(
     :hover,

@@ -1,4 +1,5 @@
 import {
+  IconAlertTriangle,
   IconArrowsDiagonal2,
   IconArrowsDiagonalMinimize,
   IconBox,
@@ -22,6 +23,7 @@ import {
   IconLoader2,
   IconMoon,
   IconPlayerPlay,
+  IconRefresh,
   IconRocket,
   IconSearch,
   IconSettings,
@@ -39,8 +41,11 @@ import {
   useMemo,
   useRef,
   useState,
+  type ComponentProps,
   type CSSProperties,
+  type Dispatch,
   type ReactNode,
+  type SetStateAction,
 } from "react";
 import { createRoot } from "react-dom/client";
 import { motion } from "motion/react";
@@ -73,11 +78,19 @@ import {
 } from "../../shared/sidebar-command-icons";
 import type { CommandConfigDraft } from "../../sidebar/command-config-modal";
 import { AGENT_LOGO_COLORS, AGENT_LOGOS } from "../../sidebar/agent-logos";
-import type { SidebarAgentIcon } from "../../shared/sidebar-agents";
+import {
+  getDefaultSidebarAgentByIcon,
+  type SidebarAgentIcon,
+} from "../../shared/sidebar-agents";
+import type {
+  SidebarAgentHookStatusMessage,
+  SidebarGhostexCliStatusMessage,
+} from "../../shared/session-grid-contract-sidebar";
 import {
   KEEP_AWAKE_DURATION_OPTIONS,
   normalizeghostexSettings,
   type KeepAwakeDurationMinutes,
+  type SessionPersistenceProvider,
 } from "../../shared/ghostex-settings";
 import {
   BUILT_IN_WORKSPACE_OPEN_TARGETS,
@@ -147,6 +160,10 @@ type TitlebarResourceGroup = {
 type TitlebarResourceSession = {
   activity: "attention" | "idle" | "working";
   agentIcon?: string;
+  delayedSendDeadlineAt?: string;
+  delayedSendRemainingLabel?: string;
+  delayedSendRemainingMs?: number;
+  isLive?: boolean;
   isRunning: boolean;
   isSleeping?: boolean;
   lastInteractionAt?: string;
@@ -159,10 +176,27 @@ type TitlebarResourceSession = {
   title: string;
 };
 
+type TitlebarTipIcon =
+  | "browser"
+  | "command"
+  | "moon"
+  | "resources"
+  | "search"
+  | "sidebar"
+  | "warning";
+
 type TitlebarTip = {
   body: string;
-  icon: "browser" | "command" | "moon" | "resources" | "search";
+  icon: TitlebarTipIcon;
   id: string;
+  title: string;
+};
+
+type TitlebarNotice = {
+  body: string;
+  icon: TitlebarTipIcon;
+  id: string;
+  settingsTarget: "agentHooks" | "debuggingMode" | "ghostexCli" | "sessionPersistence";
   title: string;
 };
 
@@ -177,15 +211,30 @@ type TitlebarBrowserTabResource = {
   url?: string;
 };
 
+type TitlebarGxserverDaemonStatus = {
+  alwaysStart: boolean;
+  message?: string;
+  nodePath?: string;
+  nodeVersion?: string;
+  ok?: boolean;
+  pid?: number;
+  startedAt?: string;
+  state: string;
+  version?: string;
+};
+
 type TitlebarProjectState = {
   activeMode: TitlebarMode;
   browserTabs: TitlebarBrowserTabResource[];
+  agentHookStatus?: SidebarAgentHookStatusMessage;
+  ghostexCliStatus?: SidebarGhostexCliStatusMessage;
   debuggingMode: boolean;
   diffStats: SidebarProjectDiffStats;
   editorIsOpen: boolean;
   editorIsSleeping: boolean;
   editorStatus: ProjectEditorLoadStatus;
   git: SidebarGitState;
+  gxserverDaemon: TitlebarGxserverDaemonStatus;
   keepAwake: TitlebarKeepAwakeSettings;
   projectEditorCompanionPaneHidden: boolean;
   projectIconDataUrl?: string | null;
@@ -196,7 +245,7 @@ type TitlebarProjectState = {
   resourceGroups: TitlebarResourceGroup[];
   sidebarActions: TitlebarSidebarActionsSettings;
   showProjectEditorDiffFileCount: boolean;
-  sessionPersistenceProvider?: "tmux" | "zmx" | "zellij";
+  sessionPersistenceProvider: SessionPersistenceProvider;
   workspaceOpenTargets: TitlebarOpenTargetsSettings;
   isFocusModeActive?: boolean;
   updateAvailable: boolean;
@@ -254,6 +303,10 @@ type NativeTitlebarCommand =
   | { type: "refreshWorkspaceOpenTargetAvailabilityFromTitlebar" }
   | { type: "toggleCommandsPanelFromTitlebar" }
   | { type: "showUpdateDialogFromTitlebar" }
+  | { type: "startGxserverFromTitlebar" }
+  | { type: "stopGxserverFromTitlebar" }
+  | { type: "restartGxserverFromTitlebar" }
+  | { enabled: boolean; type: "setGxserverAlwaysStartFromTitlebar" }
   | { sessionId: string; type: "focusResourceSessionFromTitlebar" }
   | { sessionIds: string[]; type: "sleepInactiveSessionsFromTitlebar" }
   | { projectIds: string[]; sessionIds: string[]; type: "quitResourcesFromTitlebar" }
@@ -317,12 +370,19 @@ const TITLEBAR_PROJECT_TOP = TITLEBAR_CONTROL_TOP;
 const TITLEBAR_CENTER_CONTROLS_TOP = TITLEBAR_CONTROL_TOP;
 const TITLEBAR_RIGHT_CONTROLS_TOP = TITLEBAR_CONTROL_TOP;
 const RESOURCE_POLL_INTERVAL_MS = 5_000;
+type DropdownMenuOpenChange = NonNullable<ComponentProps<typeof DropdownMenu>["onOpenChange"]>;
+type TitlebarDropdownOpenChangeDetails = Parameters<DropdownMenuOpenChange>[1];
 /**
  * CDXC:ReactTitlebar 2026-05-11-09:17
  * Titlebar split-button menus are triggered from their chevrons but should
  * visually land under the whole grouped control. Use shadcn/Radix tooltips for
  * hover labels instead of native title attributes so the titlebar matches the
  * sidebar interaction model.
+ *
+ * CDXC:ReactTitlebar 2026-06-02-19:21:
+ * Top-right macOS titlebar dropdowns must stay open when the pointer leaves
+ * the dropdown or the isolated titlebar WKWebView. Dismiss them only from an
+ * explicit item/escape/outside-click close or the native AppKit close hook.
  */
 const TITLEBAR_SPLIT_MENU_CENTER_OFFSET = -14;
 
@@ -331,6 +391,10 @@ const TITLEBAR_SPLIT_MENU_CENTER_OFFSET = -14;
  * Tips are authored in code, not by end users in the dropdown. Keep this array
  * as the ordered source of truth so adding, removing, or reordering tips is a
  * normal code edit while read state survives app updates by stable tip id.
+ *
+ * CDXC:TipsAndTricks 2026-06-05-12:39:
+ * The dropdown should teach users early that the sidebar is highly customizable.
+ * Keep this as the second built-in tip so it appears immediately after the command-palette pane-move hint for users who have not marked it read.
  */
 const TITLEBAR_TIPS: TitlebarTip[] = [
   {
@@ -338,6 +402,12 @@ const TITLEBAR_TIPS: TitlebarTip[] = [
     icon: "command",
     id: "command-palette-pane-moves",
     title: "Use Command Palette for pane moves",
+  },
+  {
+    body: "Open Settings to customize sidebar presets, visible details, agents, actions, project tools, and workspace open targets.",
+    icon: "sidebar",
+    id: "customize-sidebar-layout-and-tools",
+    title: "Customize the sidebar",
   },
   {
     body: "The Resources menu can sleep inactive terminal sessions while keeping them restorable in the sidebar.",
@@ -371,6 +441,148 @@ const TITLEBAR_TIPS: TitlebarTip[] = [
   },
 ];
 
+/**
+ * CDXC:SessionPersistence 2026-06-04-01:57:
+ * When Session Persistence is Off, Android and iOS attach can reconnect to the
+ * macOS native terminal instead of a durable zmx/tmux/zellij session. Surface
+ * this as a non-dismissable Tips & Tricks notice, not a normal read tip, so it
+ * stays visible until persistence is enabled again.
+ */
+const TITLEBAR_PERSISTENCE_OFF_NOTICE: TitlebarNotice = {
+  body: "Android and iOS attach can have issues while Session Persistence is Off. Enable zmx persistence so mobile clients reconnect to durable terminal sessions.",
+  icon: "warning",
+  id: "session-persistence-off-mobile-attach",
+  settingsTarget: "sessionPersistence",
+  title: "Mobile attach needs persistence",
+};
+
+/**
+ * CDXC:DiagnosticsSettings 2026-06-06-07:09:
+ * Debugging Mode intentionally writes detailed diagnostics to disk and can
+ * affect app performance. Surface a non-dismissable Tips & Tricks notice while
+ * it is enabled so users turn it off after reproducing an issue.
+ */
+const TITLEBAR_DEBUGGING_MODE_NOTICE: TitlebarNotice = {
+  body: "Ghostex is writing detailed diagnostics to disk. Turn Debug logging and UI off when you are not actively debugging to reduce CPU and disk use.",
+  icon: "warning",
+  id: "debugging-mode-enabled",
+  settingsTarget: "debuggingMode",
+  title: "Debug mode is on",
+};
+
+function createTitlebarGhostexCliNotice(
+  ghostexCliStatus: SidebarGhostexCliStatusMessage | undefined,
+): TitlebarNotice | undefined {
+  /**
+   * CDXC:CliInstall 2026-06-07-15:26:
+   * Tips & Tricks should warn when either public CLI command is not accessible
+   * on PATH. Keep the description to three lines or less while naming concrete
+   * benefits: terminal commands, mobile attach, and agent integration skills.
+   */
+  if (
+    !ghostexCliStatus ||
+    (ghostexCliStatus.installed === true && ghostexCliStatus.gxUsable === true)
+  ) {
+    return undefined;
+  }
+  return {
+    body: "Install or repair the CLI to use ghostex/gx in any terminal, attach mobile clients, and install Browser/Computer/Orchestration agent skills.",
+    icon: "warning",
+    id: "ghostex-cli-not-accessible",
+    settingsTarget: "ghostexCli",
+    title: "Ghostex CLI is not accessible",
+  };
+}
+
+function createTitlebarMissingAgentHooksNotice(
+  resourceGroups: TitlebarResourceGroup[],
+  agentHookStatus: SidebarAgentHookStatusMessage | undefined,
+): TitlebarNotice | undefined {
+  if (!agentHookStatus || agentHookStatus.errorMessage) {
+    return undefined;
+  }
+  const hookStatusByAgentId = new Map(
+    agentHookStatus.agents.map((status) => [status.agentId, status]),
+  );
+  const missingLiveAgents = new Map<string, string>();
+  const outdatedLiveAgents = new Map<string, string>();
+  for (const group of resourceGroups) {
+    for (const session of group.sessions) {
+      if (!isTitlebarLiveTerminalAgentSession(session)) {
+        continue;
+      }
+      const agent = getDefaultSidebarAgentByIcon(session.agentIcon as SidebarAgentIcon | undefined);
+      if (!agent || agent.agentId === "t3") {
+        continue;
+      }
+      const status = hookStatusByAgentId.get(agent.agentId);
+      if (!status || status.status === "installed" || status.status === "notRequired") {
+        continue;
+      }
+      if (status.status === "updateRequired") {
+        outdatedLiveAgents.set(agent.agentId, agent.name);
+      } else {
+        missingLiveAgents.set(agent.agentId, agent.name);
+      }
+    }
+  }
+  const agentNames = [...outdatedLiveAgents.values(), ...missingLiveAgents.values()];
+  if (agentNames.length === 0) {
+    return undefined;
+  }
+
+  /**
+   * CDXC:AgentHookSettings 2026-06-07-08:51:
+   * Live supported agents without installed Ghostex hooks should surface in
+   * Tips & Tricks as non-dismissable runtime notices. Hooks power gxserver's
+   * working/attention status transitions, exact resume metadata, and
+   * first-message naming, so read-once tips are the wrong model while affected
+   * sessions are still running.
+   *
+   * CDXC:AgentHooks 2026-06-07-11:05:
+   * gxserver now distinguishes old Ghostex hooks from absent hooks. The
+   * titlebar notice should ask users to update old hooks instead of saying they
+   * are not installed, because the reliable fix is migration to the current
+   * gxserver ingest hook rather than accepting stale native-era artifacts.
+   */
+  const formattedAgents = formatTitlebarNoticeNameList(agentNames);
+  const plural = agentNames.length > 1;
+  const hasOutdatedHooks = outdatedLiveAgents.size > 0;
+  const hasMissingHooks = missingLiveAgents.size > 0;
+  const action = hasOutdatedHooks && hasMissingHooks ? "setup" : hasOutdatedHooks ? "update" : "install";
+  const actionVerb = action === "setup" ? "set up" : action === "update" ? "updated" : "installed";
+  return {
+    body: `${formattedAgents} ${plural ? "need" : "needs"} ${plural ? "their" : "its"} Ghostex ${plural ? "hooks" : "hook"} ${actionVerb}. Working/done statuses, attention state, resume metadata, and first-message session naming can be unreliable until hooks are ${action === "setup" ? "installed or updated" : actionVerb}.`,
+    icon: "warning",
+    id: `agent-hooks-${action}-${[...outdatedLiveAgents.keys(), ...missingLiveAgents.keys()].sort().join("-")}`,
+    settingsTarget: "agentHooks",
+    title: action === "setup"
+      ? "Set up hooks for live agents"
+      : action === "update"
+        ? plural ? "Update hooks for live agents" : `${formattedAgents} hook needs update`
+        : plural ? "Install hooks for live agents" : `${formattedAgents} hook is missing`,
+  };
+}
+
+function isTitlebarLiveTerminalAgentSession(session: TitlebarResourceSession): boolean {
+  return (
+    session.sessionKind === "terminal" &&
+    session.isRunning === true &&
+    session.isSleeping !== true &&
+    Boolean(session.agentIcon)
+  );
+}
+
+function formatTitlebarNoticeNameList(names: string[]): string {
+  if (names.length <= 1) {
+    return names[0] ?? "";
+  }
+  if (names.length === 2) {
+    return `${names[0]} and ${names[1]}`;
+  }
+  return `${names.slice(0, -1).join(", ")}, and ${names[names.length - 1]}`;
+}
+
 type KeepAwakeRuntimeState = {
   durationMinutes: KeepAwakeDurationMinutes;
   fireAtMs?: number;
@@ -389,6 +601,24 @@ const pendingProcessResults = new Map<
 
 function postNative(command: NativeTitlebarCommand): void {
   window.webkit?.messageHandlers?.ghostexNativeHost?.postMessage(command);
+}
+
+function postTitlebarSidebarCommand(message: { type: "requestAgentHookStatus" } | { type: "requestGhostexCliStatus" }): void {
+  /*
+  CDXC:AgentHooks 2026-06-07-11:05:
+  Opening Tips & Tricks should refresh gxserver hook status instead of relying
+  on the titlebar's cached layout snapshot. Route through the existing
+  app-modal sidebarCommand bridge so the native sidebar remains the owner of
+  authenticated gxserver requests and hook-status state publication.
+
+  CDXC:CliInstall 2026-06-07-15:26:
+  Tips & Tricks CLI notices must use the native sidebar's real PATH inspection
+  instead of probing from the isolated titlebar webview.
+  */
+  window.webkit?.messageHandlers?.ghostexAppModalHost?.postMessage({
+    message,
+    type: "sidebarCommand",
+  });
 }
 
 function appendTitlebarActionCrashDebugLog(event: string, details?: unknown): void {
@@ -512,6 +742,24 @@ async function readResourceProcesses(): Promise<ResourceProcess[]> {
   return result.exitCode === 0 ? parseResourceProcessTable(result.stdout) : [];
 }
 
+function setTitlebarDropdownOpen(
+  setOpen: Dispatch<SetStateAction<boolean>>,
+  open: boolean,
+  details?: TitlebarDropdownOpenChangeDetails,
+): void {
+  if (!open && shouldIgnoreTitlebarPointerExitClose(details)) {
+    details?.cancel();
+    return;
+  }
+  setOpen(open);
+}
+
+function shouldIgnoreTitlebarPointerExitClose(
+  details?: TitlebarDropdownOpenChangeDetails,
+): boolean {
+  return details?.reason === "trigger-hover" || details?.reason === "focus-out";
+}
+
 /**
  * CDXC:TitlebarResources 2026-05-23-10:46:
  * Resource-manager Quit is a process-manager action, so it must terminate the
@@ -582,6 +830,12 @@ function createResourceGroupViews(
   const orphanBundles = createOrphanBundles(processes, childrenByParent, claimedPids);
   return { browserBundles, groupViews, orphanBundles };
 }
+
+const EMPTY_RESOURCE_GROUP_VIEWS: ReturnType<typeof createResourceGroupViews> = {
+  browserBundles: [],
+  groupViews: [],
+  orphanBundles: [],
+};
 
 function createFirstOpenCollapsedResourceKeys(
   resourceViews: ReturnType<typeof createResourceGroupViews>,
@@ -1002,6 +1256,11 @@ function createInactiveTerminalSleepSessionIds(resourceGroups: TitlebarResourceG
    * Resources dropdown, not only old agent-detected rows. Keep working,
    * attention, and already sleeping sessions awake, but do not require agent
    * metadata or a seven-minute age gate.
+   *
+   * CDXC:TitlebarResources 2026-06-06-06:09:
+   * Delayed Send means a terminal has a staged Enter that must fire while the
+   * pane is awake. Exclude delayed-send sessions from the Resources sleep count
+   * and payload so macOS and Electron do not hide pending sends behind sleep.
    */
   return resourceGroups.flatMap((group) =>
     group.sessions
@@ -1010,7 +1269,8 @@ function createInactiveTerminalSleepSessionIds(resourceGroups: TitlebarResourceG
           session.sessionKind !== "terminal" ||
           session.isSleeping === true ||
           session.activity === "working" ||
-          session.activity === "attention"
+          session.activity === "attention" ||
+          hasTitlebarResourceDelayedSend(session)
         );
       })
       .map((session) =>
@@ -1018,6 +1278,19 @@ function createInactiveTerminalSleepSessionIds(resourceGroups: TitlebarResourceG
           ? createCombinedProjectSessionId(session.projectId, session.sessionId)
           : session.sessionId,
       ),
+  );
+}
+
+function hasTitlebarResourceDelayedSend(
+  session: Pick<
+    TitlebarResourceSession,
+    "delayedSendDeadlineAt" | "delayedSendRemainingLabel" | "delayedSendRemainingMs"
+  >,
+): boolean {
+  return Boolean(
+    session.delayedSendRemainingLabel ||
+      session.delayedSendDeadlineAt ||
+      typeof session.delayedSendRemainingMs === "number",
   );
 }
 
@@ -1131,12 +1404,17 @@ function App() {
   const [optimisticMode, setOptimisticMode] = useState<TitlebarMode>();
   const rootRef = useRef<HTMLDivElement | null>(null);
   const lastCompanionHitRegionSignatureRef = useRef("");
+  const resourceRefreshGenerationRef = useRef(0);
+  const resourceRefreshInFlightRef = useRef(false);
   const resourcesFirstOpenActiveRef = useRef(false);
   const resourcesFirstOpenSeededRef = useRef(false);
   const activeMode = optimisticMode ?? projectState.activeMode;
   const resourceViews = useMemo(
-    () => createResourceGroupViews(projectState.browserTabs, projectState.resourceGroups, resourceProcesses),
-    [projectState.browserTabs, projectState.resourceGroups, resourceProcesses],
+    () =>
+      resourcesMenuOpen
+        ? createResourceGroupViews(projectState.browserTabs, projectState.resourceGroups, resourceProcesses)
+        : EMPTY_RESOURCE_GROUP_VIEWS,
+    [projectState.browserTabs, projectState.resourceGroups, resourceProcesses, resourcesMenuOpen],
   );
   const inactiveTerminalSleepSessionIds = useMemo(
     () => createInactiveTerminalSleepSessionIds(projectState.resourceGroups),
@@ -1149,6 +1427,30 @@ function App() {
   const readTips = useMemo(
     () => TITLEBAR_TIPS.filter((tip) => readTipIds.has(tip.id)),
     [readTipIds],
+  );
+  const missingAgentHooksNotice = useMemo(
+    () => createTitlebarMissingAgentHooksNotice(projectState.resourceGroups, projectState.agentHookStatus),
+    [projectState.agentHookStatus, projectState.resourceGroups],
+  );
+  const ghostexCliNotice = useMemo(
+    () => createTitlebarGhostexCliNotice(projectState.ghostexCliStatus),
+    [projectState.ghostexCliStatus],
+  );
+  const notices = useMemo(
+    () => [
+      ...(ghostexCliNotice ? [ghostexCliNotice] : []),
+      ...(projectState.sessionPersistenceProvider === "off"
+        ? [TITLEBAR_PERSISTENCE_OFF_NOTICE]
+        : []),
+      ...(projectState.debuggingMode ? [TITLEBAR_DEBUGGING_MODE_NOTICE] : []),
+      ...(missingAgentHooksNotice ? [missingAgentHooksNotice] : []),
+    ],
+    [
+      ghostexCliNotice,
+      missingAgentHooksNotice,
+      projectState.debuggingMode,
+      projectState.sessionPersistenceProvider,
+    ],
   );
   const markTipRead = useCallback((tipId: string) => {
     setReadTipIds((current) => {
@@ -1178,6 +1480,23 @@ function App() {
       return next;
     });
   }, []);
+  const requestRuntimeStatusForTips = useCallback(() => {
+    postTitlebarSidebarCommand({ type: "requestAgentHookStatus" });
+    postTitlebarSidebarCommand({ type: "requestGhostexCliStatus" });
+  }, []);
+  const openTipsMenuFromTitlebar = useCallback(() => {
+    requestRuntimeStatusForTips();
+    setTipsMenuOpen(true);
+  }, [requestRuntimeStatusForTips]);
+  const handleTipsMenuOpenChange = useCallback(
+    (open: boolean, details?: TitlebarDropdownOpenChangeDetails) => {
+      setTitlebarDropdownOpen(setTipsMenuOpen, open, details);
+      if (open) {
+        requestRuntimeStatusForTips();
+      }
+    },
+    [requestRuntimeStatusForTips],
+  );
 
   useEffect(() => {
     const suppressTitlebarWebviewContextMenu = (event: MouseEvent) => {
@@ -1388,6 +1707,7 @@ function App() {
     tipsMenuOpen,
     resourceProcesses.length,
     projectState.projectEditorCompanionPaneHidden,
+    projectState.gxserverDaemon.state,
     projectState.projectIconDataUrl,
     projectState.isFocusModeActive,
     projectState.projectName,
@@ -1428,6 +1748,7 @@ function App() {
         setActionsMenuOpen(false);
         setGitMenuOpen(false);
         setKeepAwakeMenuOpen(false);
+        setModeMenuOpen(false);
         setOpenInMenuOpen(false);
         setResourcesMenuOpen(false);
         setTipsMenuOpen(false);
@@ -1440,9 +1761,12 @@ function App() {
             state.activeMode === undefined
               ? current.activeMode
               : normalizeTitlebarMode(state.activeMode),
+          agentHookStatus: state.agentHookStatus ?? current.agentHookStatus,
+          ghostexCliStatus: state.ghostexCliStatus ?? current.ghostexCliStatus,
           debuggingMode: state.debuggingMode ?? current.debuggingMode,
           diffStats: state.diffStats ?? current.diffStats,
           git: state.git ?? current.git,
+          gxserverDaemon: state.gxserverDaemon ?? current.gxserverDaemon,
           keepAwake: state.keepAwake ?? current.keepAwake,
           browserTabs: state.browserTabs ?? current.browserTabs,
           projectEditorCompanionPaneHidden:
@@ -1489,11 +1813,20 @@ function App() {
     return () => window.removeEventListener("ghostex-native-host-event", handleHostEvent);
   }, []);
 
-  const refreshResources = useCallback(async () => {
+  const refreshResources = useCallback(async (generation: number) => {
+    if (resourceRefreshInFlightRef.current) {
+      return;
+    }
+    resourceRefreshInFlightRef.current = true;
     try {
-      setResourceProcesses(await readResourceProcesses());
+      const processes = await readResourceProcesses();
+      if (generation === resourceRefreshGenerationRef.current) {
+        setResourceProcesses(processes);
+      }
     } catch (error) {
       console.warn("Failed to refresh Ghostex resources", error);
+    } finally {
+      resourceRefreshInFlightRef.current = false;
     }
   }, []);
 
@@ -1506,12 +1839,23 @@ function App() {
      * The Resources dropdown should show live process CPU and memory without a
      * native push channel. Poll `ps` only while the wide dropdown is open so
      * the compact titlebar does not spend idle work on hidden diagnostics.
+     *
+     * CDXC:TitlebarResources 2026-06-07-16:20:
+     * Hidden Resources UI should hold no sampled process table and should never
+     * stack overlapping `ps` runs. Treat each open as a generation so slow native
+     * process replies cannot repopulate closed-menu state.
      */
-    void refreshResources();
+    const generation = resourceRefreshGenerationRef.current + 1;
+    resourceRefreshGenerationRef.current = generation;
+    void refreshResources(generation);
     const interval = window.setInterval(() => {
-      void refreshResources();
+      void refreshResources(generation);
     }, RESOURCE_POLL_INTERVAL_MS);
-    return () => window.clearInterval(interval);
+    return () => {
+      window.clearInterval(interval);
+      resourceRefreshGenerationRef.current += 1;
+      setResourceProcesses((current) => current.length === 0 ? current : []);
+    };
   }, [refreshResources, resourcesMenuOpen]);
 
   useEffect(() => {
@@ -1728,16 +2072,17 @@ function App() {
           .map((process) => [process.pid, process]),
       ).values(),
     );
+    const resourceRefreshGeneration = resourceRefreshGenerationRef.current;
     if (processes.length > 0) {
       void terminateResourceProcesses(processes).finally(() => {
         window.setTimeout(() => {
-          void refreshResources();
+          void refreshResources(resourceRefreshGeneration);
         }, 1_800);
       });
       return;
     }
     window.setTimeout(() => {
-      void refreshResources();
+      void refreshResources(resourceRefreshGeneration);
     }, 250);
   };
 
@@ -1749,6 +2094,22 @@ function App() {
       sessionIds: inactiveTerminalSleepSessionIds,
       type: "sleepInactiveSessionsFromTitlebar",
     });
+  };
+
+  const startGxserverDaemon = () => {
+    postNative({ type: "startGxserverFromTitlebar" });
+  };
+
+  const stopGxserverDaemon = () => {
+    postNative({ type: "stopGxserverFromTitlebar" });
+  };
+
+  const restartGxserverDaemon = () => {
+    postNative({ type: "restartGxserverFromTitlebar" });
+  };
+
+  const setGxserverAlwaysStart = (enabled: boolean) => {
+    postNative({ enabled, type: "setGxserverAlwaysStartFromTitlebar" });
   };
 
   const stopKeepAwake = useCallback(async () => {
@@ -1812,6 +2173,80 @@ function App() {
       modal: "settings",
       type: "open",
     });
+  };
+
+  const openSessionPersistenceSettings = () => {
+    /**
+     * CDXC:SessionPersistence 2026-06-04-02:52:
+     * The persistence-off Tips notice is an actionable warning. Clicking it
+     * should open the Ghostty/Terminal settings tab and pre-fill search with
+     * the exact setting label so users land on Session Persistence immediately.
+     */
+    setTipsMenuOpen(false);
+    window.webkit?.messageHandlers?.ghostexAppModalHost?.postMessage({
+      initialSearchQuery: "Session Persistence",
+      initialTab: "ghostty",
+      modal: "settings",
+      type: "open",
+    });
+  };
+
+  const openAgentHooksSettings = () => {
+    /**
+     * CDXC:AgentHookSettings 2026-06-07-08:51:
+     * Missing-hook Tips notices are actionable runtime warnings. Clicking one
+     * should open Settings on the Integrations tab because that page exposes
+     * the direct Agent Hooks install row without requiring an expanded details
+     * panel.
+     */
+    setTipsMenuOpen(false);
+    window.webkit?.messageHandlers?.ghostexAppModalHost?.postMessage({
+      initialTab: "integrations",
+      modal: "settings",
+      type: "open",
+    });
+  };
+
+  const openDebuggingModeSettings = () => {
+    setTipsMenuOpen(false);
+    window.webkit?.messageHandlers?.ghostexAppModalHost?.postMessage({
+      initialSearchQuery: "Debug logging and UI",
+      initialTab: "settings",
+      modal: "settings",
+      type: "open",
+    });
+  };
+
+  const openGhostexCliSettings = () => {
+    /**
+     * CDXC:CliInstall 2026-06-07-15:26:
+     * The CLI-not-accessible Tips notice should deep-link to Settings where
+     * Repair CLI lives, so the notice is actionable without adding titlebar
+     * install controls.
+     */
+    setTipsMenuOpen(false);
+    window.webkit?.messageHandlers?.ghostexAppModalHost?.postMessage({
+      initialSearchQuery: "Ghostex CLI",
+      initialTab: "integrations",
+      modal: "settings",
+      type: "open",
+    });
+  };
+
+  const openNoticeSettings = (target: TitlebarNotice["settingsTarget"]) => {
+    if (target === "agentHooks") {
+      openAgentHooksSettings();
+      return;
+    }
+    if (target === "debuggingMode") {
+      openDebuggingModeSettings();
+      return;
+    }
+    if (target === "ghostexCli") {
+      openGhostexCliSettings();
+      return;
+    }
+    openSessionPersistenceSettings();
   };
 
   useEffect(() => {
@@ -1892,16 +2327,21 @@ function App() {
   }, [keepAwakeRuntime, stopKeepAwake]);
 
   useEffect(() => {
-    if (
-      !keepAwakeRuntime &&
-      !projectState.keepAwake.activateOnExternalDisplay &&
-      !projectState.keepAwake.deactivateBelowBatteryThreshold &&
-      !projectState.keepAwake.deactivateOnLowPowerMode
-    ) {
+    const shouldCheckExternalDisplay =
+      !keepAwakeRuntime && projectState.keepAwake.activateOnExternalDisplay;
+    const shouldCheckBattery =
+      Boolean(keepAwakeRuntime && projectState.keepAwake.deactivateBelowBatteryThreshold);
+    const shouldCheckLowPowerMode =
+      Boolean(keepAwakeRuntime && projectState.keepAwake.deactivateOnLowPowerMode);
+    if (!shouldCheckExternalDisplay && !shouldCheckBattery && !shouldCheckLowPowerMode) {
       return;
     }
     const checkPowerRules = async () => {
-      const snapshot = await readKeepAwakePowerSnapshot();
+      const snapshot = await readKeepAwakePowerSnapshot({
+        includeBattery: shouldCheckBattery,
+        includeExternalDisplay: shouldCheckExternalDisplay,
+        includeLowPowerMode: shouldCheckLowPowerMode,
+      });
       if (!snapshot) {
         return;
       }
@@ -1997,24 +2437,28 @@ function App() {
     projectState.editorIsOpen &&
     !projectState.editorIsSleeping &&
     projectState.projectEditorCompanionPaneHidden;
+  /*
+   * CDXC:TitlebarModeTabs 2026-05-31-12:00:
+   * macOS titlebar mode switcher labels use title case (Agents, Source, GitHub, Kanban), not all-caps, so the segmented control reads like navigation chrome rather than shouting labels.
+   */
   const titlebarModes = [
     {
-      label: "AGENTS",
+      label: "Agents",
       onSelect: openAgentsMode,
       value: "agents" as const,
     },
     {
-      label: "SOURCE",
+      label: "Source",
       onSelect: openCodeMode,
       value: "code" as const,
     },
     {
-      label: "GITHUB",
+      label: "GitHub",
       onSelect: openGitMode,
       value: "git" as const,
     },
     {
-      label: "KANBAN",
+      label: "Kanban",
       onSelect: openTasksMode,
       value: "tasks" as const,
     },
@@ -2067,7 +2511,9 @@ function App() {
             <TitlebarModeDropdown
               activeMode={activeMode}
               modes={titlebarModes}
-              onOpenChange={setModeMenuOpen}
+              onOpenChange={(open, details) =>
+                setTitlebarDropdownOpen(setModeMenuOpen, open, details)
+              }
               open={modeMenuOpen}
             />
           </div>
@@ -2129,24 +2575,25 @@ function App() {
              * titlebar control order, keeping the info/help affordance closer to
              * the mode switcher while power controls remain farther right.
              */}
-            <DropdownMenu onOpenChange={setTipsMenuOpen} open={tipsMenuOpen}>
+            <DropdownMenu
+              onOpenChange={handleTipsMenuOpenChange}
+              open={tipsMenuOpen}
+            >
               <ButtonGroup className="titlebar-open-group titlebar-tips-group" data-titlebar-hit-region>
                 <Tooltip>
                   <TooltipTrigger
                     render={
                       <Button
                         aria-label={
-                          unreadTips.length > 0
-                            ? `Tips and tricks, ${unreadTips.length} unread`
+                          unreadTips.length + notices.length > 0
+                            ? `Tips and tricks, ${unreadTips.length + notices.length} unread`
                             : "Tips and tricks"
                         }
                         className="titlebar-session-button titlebar-tips-button"
-                        onClick={() => {
-                          setTipsMenuOpen(true);
-                        }}
+                        onClick={openTipsMenuFromTitlebar}
                         onContextMenu={(event) => {
                           event.preventDefault();
-                          setTipsMenuOpen(true);
+                          openTipsMenuFromTitlebar();
                         }}
                         type="button"
                         variant="ghost"
@@ -2158,7 +2605,7 @@ function App() {
                          * blue dot without a visible number so the icon stays quiet.
                          */}
                         <IconInfoCircle aria-hidden="true" size={16} stroke={1.8} />
-                        {unreadTips.length > 0 ? (
+                        {unreadTips.length + notices.length > 0 ? (
                           <span aria-hidden="true" className="titlebar-tips-unread-badge" />
                         ) : null}
                       </Button>
@@ -2187,15 +2634,22 @@ function App() {
                 style={{ backgroundColor: "#0e0e0e" }}
               >
                 <TitlebarTipsMenu
+                  notices={notices}
                   onMarkAllRead={markAllTipsRead}
                   onMarkRead={markTipRead}
+                  onOpenNoticeSettings={openNoticeSettings}
                   readTips={readTips}
                   unreadTips={unreadTips}
                 />
               </DropdownMenuContent>
             </DropdownMenu>
             {!projectState.keepAwake.hideTitlebarControl ? (
-              <DropdownMenu onOpenChange={setKeepAwakeMenuOpen} open={keepAwakeMenuOpen}>
+              <DropdownMenu
+                onOpenChange={(open, details) =>
+                  setTitlebarDropdownOpen(setKeepAwakeMenuOpen, open, details)
+                }
+                open={keepAwakeMenuOpen}
+              >
                 <ButtonGroup className="titlebar-open-group titlebar-keep-awake-group" data-titlebar-hit-region>
                   <Tooltip>
                     <TooltipTrigger
@@ -2283,7 +2737,12 @@ function App() {
                 </DropdownMenuContent>
               </DropdownMenu>
             ) : null}
-            <DropdownMenu onOpenChange={setResourcesMenuOpen} open={resourcesMenuOpen}>
+            <DropdownMenu
+              onOpenChange={(open, details) =>
+                setTitlebarDropdownOpen(setResourcesMenuOpen, open, details)
+              }
+              open={resourcesMenuOpen}
+            >
               <ButtonGroup className="titlebar-open-group" data-titlebar-hit-region>
                 <Tooltip>
                   <TooltipTrigger
@@ -2316,7 +2775,7 @@ function App() {
                       </Button>
                     }
                   />
-                  <TooltipContent>Click or right-click for resources.</TooltipContent>
+                  <TooltipContent>Resources Monitor</TooltipContent>
                 </Tooltip>
                 <DropdownMenuTrigger
                   render={
@@ -2341,20 +2800,34 @@ function App() {
                 <TitlebarResourcesMenu
                   browserBundles={resourceViews.browserBundles}
                   collapsedKeys={collapsedResourceKeys}
+                  daemon={projectState.gxserverDaemon}
                   groupViews={resourceViews.groupViews}
                   inactiveTerminalSleepSessionCount={inactiveTerminalSleepSessionIds.length}
                   onFocusSession={focusResourceSession}
+                  onGxserverAlwaysStartChange={setGxserverAlwaysStart}
+                  onGxserverRestart={restartGxserverDaemon}
+                  onGxserverStart={startGxserverDaemon}
+                  onGxserverStop={stopGxserverDaemon}
                   onQuit={quitResourceBundles}
                   onSetSectionsCollapsed={setResourceSectionsCollapsed}
                   onSleepInactiveSessions={sleepInactiveTerminalSessions}
                   onToggle={toggleResourceCollapse}
                   orphanBundles={resourceViews.orphanBundles}
                   quittingKeys={quittingResourceKeys}
-                  sessionPersistenceProvider={projectState.sessionPersistenceProvider}
+                  sessionPersistenceProvider={
+                    projectState.sessionPersistenceProvider === "off"
+                      ? undefined
+                      : projectState.sessionPersistenceProvider
+                  }
                 />
               </DropdownMenuContent>
             </DropdownMenu>
-            <DropdownMenu onOpenChange={setGitMenuOpen} open={gitMenuOpen}>
+            <DropdownMenu
+              onOpenChange={(open, details) =>
+                setTitlebarDropdownOpen(setGitMenuOpen, open, details)
+              }
+              open={gitMenuOpen}
+            >
               <ButtonGroup className="titlebar-open-group titlebar-git-group" data-titlebar-hit-region>
                 <Tooltip>
                   <TooltipTrigger
@@ -2396,7 +2869,7 @@ function App() {
                       </Button>
                     }
                   />
-                  <TooltipContent>Click to run. Right-click for Git actions.</TooltipContent>
+                  <TooltipContent>Commit. Right-click for more actions</TooltipContent>
                 </Tooltip>
                 <DropdownMenuTrigger
                   render={
@@ -2434,7 +2907,12 @@ function App() {
                 ))}
               </DropdownMenuContent>
             </DropdownMenu>
-            <DropdownMenu onOpenChange={setActionsMenuOpen} open={actionsMenuOpen}>
+            <DropdownMenu
+              onOpenChange={(open, details) =>
+                setTitlebarDropdownOpen(setActionsMenuOpen, open, details)
+              }
+              open={actionsMenuOpen}
+            >
               <ButtonGroup className="titlebar-open-group titlebar-actions-group" data-titlebar-hit-region>
                 <Tooltip>
                   <TooltipTrigger
@@ -2541,7 +3019,12 @@ function App() {
                 </DropdownMenuItem>
               </DropdownMenuContent>
             </DropdownMenu>
-            <DropdownMenu onOpenChange={setOpenInMenuOpen} open={openInMenuOpen}>
+            <DropdownMenu
+              onOpenChange={(open, details) =>
+                setTitlebarDropdownOpen(setOpenInMenuOpen, open, details)
+              }
+              open={openInMenuOpen}
+            >
               <ButtonGroup className="titlebar-open-group" data-titlebar-hit-region>
                 <Tooltip>
                   <TooltipTrigger
@@ -2634,6 +3117,8 @@ function createInitialProjectState(bootstrap: Record<string, unknown>): Titlebar
   const settings = normalizeghostexSettings(parseSharedSettings(sharedSettingsJson));
   return {
     activeMode: resolveInitialTitlebarMode(bootstrap),
+    agentHookStatus: undefined,
+    ghostexCliStatus: undefined,
     browserTabs: [],
     debuggingMode: settings.debuggingMode,
     diffStats: createDefaultSidebarProjectDiffStats(false),
@@ -2641,6 +3126,10 @@ function createInitialProjectState(bootstrap: Record<string, unknown>): Titlebar
     editorIsSleeping: false,
     editorStatus: "idle",
     git: createDefaultSidebarGitState(),
+    gxserverDaemon: {
+      alwaysStart: true,
+      state: "unknown",
+    },
     keepAwake: createTitlebarKeepAwakeSettings(settings),
     projectEditorCompanionPaneHidden: false,
     projectName:
@@ -2654,8 +3143,7 @@ function createInitialProjectState(bootstrap: Record<string, unknown>): Titlebar
       commands: [],
     },
     showProjectEditorDiffFileCount: settings.showProjectEditorDiffFileCount,
-    sessionPersistenceProvider:
-      settings.sessionPersistenceProvider === "off" ? undefined : settings.sessionPersistenceProvider,
+    sessionPersistenceProvider: settings.sessionPersistenceProvider,
     workspaceOpenTargets: {
       availability: settings.workspaceOpenTargetAvailability,
       customTargets: settings.customWorkspaceOpenTargets,
@@ -2753,7 +3241,11 @@ async function applyKeepAwakeLidSleepPrevention(
   return true;
 }
 
-async function readKeepAwakePowerSnapshot(): Promise<
+async function readKeepAwakePowerSnapshot(options: {
+  includeBattery: boolean;
+  includeExternalDisplay: boolean;
+  includeLowPowerMode: boolean;
+}): Promise<
   | {
       batteryPercent?: number;
       externalDisplayConnected: boolean;
@@ -2762,12 +3254,25 @@ async function readKeepAwakePowerSnapshot(): Promise<
   | undefined
 > {
   try {
+    /*
+    CDXC:TitlebarKeepAwake 2026-06-07-16:20:
+    Keep Awake automation should not run heavyweight power probes just because
+    Keep Awake is active. Build the shell command from the enabled rules so
+    hidden checks skip system_profiler, pmset battery, or low-power reads when no
+    rule can act on that value.
+    */
     const result = await runNativeProcess("/bin/sh", [
       "-lc",
       [
-        "battery=$(/usr/bin/pmset -g batt 2>/dev/null | /usr/bin/awk -F';' '/InternalBattery/ {gsub(/[^0-9]/, \"\", $1); print $1; exit}')",
-        "low=$(/usr/bin/pmset -g 2>/dev/null | /usr/bin/awk '/lowpowermode/ {print $2; exit}')",
-        "displays=$(/usr/sbin/system_profiler SPDisplaysDataType 2>/dev/null | /usr/bin/awk '/Resolution:/ {count++} END {print count+0}')",
+        options.includeBattery
+          ? "battery=$(/usr/bin/pmset -g batt 2>/dev/null | /usr/bin/awk -F';' '/InternalBattery/ {gsub(/[^0-9]/, \"\", $1); print $1; exit}')"
+          : "battery=",
+        options.includeLowPowerMode
+          ? "low=$(/usr/bin/pmset -g 2>/dev/null | /usr/bin/awk '/lowpowermode/ {print $2; exit}')"
+          : "low=",
+        options.includeExternalDisplay
+          ? "displays=$(/usr/sbin/system_profiler SPDisplaysDataType 2>/dev/null | /usr/bin/awk '/Resolution:/ {count++} END {print count+0}')"
+          : "displays=0",
         "/bin/echo \"battery=${battery:-};low=${low:-};displays=${displays:-0}\"",
       ].join("; "),
     ]);
@@ -2797,13 +3302,17 @@ async function readKeepAwakePowerSnapshot(): Promise<
 }
 
 function TitlebarTipsMenu({
+  notices,
   onMarkAllRead,
   onMarkRead,
+  onOpenNoticeSettings,
   readTips,
   unreadTips,
 }: {
+  notices: TitlebarNotice[];
   onMarkAllRead: () => void;
   onMarkRead: (tipId: string) => void;
+  onOpenNoticeSettings: (target: TitlebarNotice["settingsTarget"]) => void;
   readTips: TitlebarTip[];
   unreadTips: TitlebarTip[];
 }) {
@@ -2818,6 +3327,7 @@ function TitlebarTipsMenu({
     setReadSectionCollapsed(unreadTips.length > 0);
   }, [unreadTips.length]);
   const readSectionOpen = !readSectionCollapsed;
+  const unreadTotal = notices.length + unreadTips.length;
   return (
     <div className="titlebar-tips-panel" onClick={(event) => event.stopPropagation()}>
       <div className="titlebar-tips-header">
@@ -2836,10 +3346,25 @@ function TitlebarTipsMenu({
             <IconCheck aria-hidden="true" size={14} stroke={1.9} />
             <span>Read all</span>
           </button>
-          <span className="titlebar-tips-summary">{unreadTips.length} unread</span>
+          <span className="titlebar-tips-summary">{unreadTotal} unread</span>
         </div>
       </div>
       <div className="titlebar-tips-scroll">
+        {notices.length > 0 ? (
+          <TitlebarTipsSection
+            count={notices.length}
+            emptyText=""
+            title="Notices"
+          >
+            {notices.map((notice) => (
+              <TitlebarNoticeRow
+                key={notice.id}
+                notice={notice}
+                onOpenSettings={() => onOpenNoticeSettings(notice.settingsTarget)}
+              />
+            ))}
+          </TitlebarTipsSection>
+        ) : null}
         <TitlebarTipsSection
           count={unreadTips.length}
           emptyText="All caught up."
@@ -2914,6 +3439,30 @@ function TitlebarTipsSection({
   );
 }
 
+function TitlebarNoticeRow({
+  notice,
+  onOpenSettings,
+}: {
+  notice: TitlebarNotice;
+  onOpenSettings: () => void;
+}) {
+  return (
+    <button
+      aria-label={`${notice.title}. Open related settings.`}
+      className="titlebar-tip-row titlebar-tip-row-notice"
+      data-read="false"
+      onClick={onOpenSettings}
+      type="button"
+    >
+      <div className="titlebar-tip-icon">{getTitlebarTipIcon(notice.icon)}</div>
+      <div className="titlebar-tip-copy">
+        <div className="titlebar-tip-title">{notice.title}</div>
+        <div className="titlebar-tip-body">{notice.body}</div>
+      </div>
+    </button>
+  );
+}
+
 function TitlebarTipRow({
   onMarkRead,
   read,
@@ -2948,7 +3497,7 @@ function TitlebarTipRow({
   );
 }
 
-function getTitlebarTipIcon(icon: TitlebarTip["icon"]): ReactNode {
+function getTitlebarTipIcon(icon: TitlebarTipIcon): ReactNode {
   switch (icon) {
     case "browser":
       return <IconWorld aria-hidden="true" size={16} stroke={1.8} />;
@@ -2960,15 +3509,24 @@ function getTitlebarTipIcon(icon: TitlebarTip["icon"]): ReactNode {
       return <IconDeviceDesktop aria-hidden="true" size={16} stroke={1.8} />;
     case "search":
       return <IconSearch aria-hidden="true" size={16} stroke={1.8} />;
+    case "sidebar":
+      return <IconLayoutSidebarLeftExpand aria-hidden="true" size={16} stroke={1.8} />;
+    case "warning":
+      return <IconAlertTriangle aria-hidden="true" size={16} stroke={1.8} />;
   }
 }
 
 function TitlebarResourcesMenu({
   browserBundles,
   collapsedKeys,
+  daemon,
   groupViews,
   inactiveTerminalSleepSessionCount,
   onFocusSession,
+  onGxserverAlwaysStartChange,
+  onGxserverRestart,
+  onGxserverStart,
+  onGxserverStop,
   onQuit,
   onSetSectionsCollapsed,
   onSleepInactiveSessions,
@@ -2979,16 +3537,21 @@ function TitlebarResourcesMenu({
 }: {
   browserBundles: ResourceProcessBundle[];
   collapsedKeys: Set<string>;
+  daemon: TitlebarGxserverDaemonStatus;
   groupViews: ResourceGroupView[];
   inactiveTerminalSleepSessionCount: number;
   onFocusSession: (sessionId: string) => void;
+  onGxserverAlwaysStartChange: (enabled: boolean) => void;
+  onGxserverRestart: () => void;
+  onGxserverStart: () => void;
+  onGxserverStop: () => void;
   onQuit: (bundles: ResourceProcessBundle[]) => void;
   onSetSectionsCollapsed: (keys: string[], collapsed: boolean) => void;
   onSleepInactiveSessions: () => void;
   onToggle: (key: string) => void;
   orphanBundles: ResourceProcessBundle[];
   quittingKeys: Set<string>;
-  sessionPersistenceProvider?: "tmux" | "zmx" | "zellij";
+  sessionPersistenceProvider?: Exclude<SessionPersistenceProvider, "off">;
 }) {
   const visibleGroupViews = groupViews.filter((view) => view.bundles.length > 0);
   const allBundles = [
@@ -3048,8 +3611,7 @@ function TitlebarResourcesMenu({
    * tooltips so Live CPU and Live memory do not stretch across the toolbar.
    *
    * CDXC:TitlebarResources 2026-05-28-12:16:
-   * The Resources header needs a compact collapse-all / expand-all control
-   * beside the title.
+   * The Resources header needs a compact collapse-all / expand-all control.
    *
    * CDXC:TitlebarResources 2026-05-28-12:28:
    * Match the sidebar reference Projects bulk-action icons: Collapse All uses
@@ -3061,6 +3623,10 @@ function TitlebarResourcesMenu({
    * hovered or focused, matching Sleep Inactive and Sleep All. Reuse the same
    * action-button surface and rotate the diagonal icons 90deg clockwise so
    * Resources and the sidebar share the same bulk-control orientation.
+   *
+   * CDXC:TitlebarResources 2026-06-02-19:54:
+   * Place the Resources bulk toggle in the header action cluster immediately
+   * before Sleep Inactive so all resource actions are grouped on the right side.
    */
   const resourceTooltipStyle = { maxWidth: 220 };
   return (
@@ -3069,6 +3635,8 @@ function TitlebarResourcesMenu({
         <div className="titlebar-resources-title">
           <IconDeviceDesktop aria-hidden="true" size={18} />
           <span>Resources</span>
+        </div>
+        <div className="titlebar-resources-actions">
           <button
             aria-label={allResourceSectionsCollapsed ? "Expand all resources" : "Collapse all resources"}
             className="titlebar-resources-collapse-all-button titlebar-resources-action-button"
@@ -3080,8 +3648,6 @@ function TitlebarResourcesMenu({
           >
             <ResourceBulkCollapseIcon aria-hidden="true" size={14} stroke={1.9} />
           </button>
-        </div>
-        <div className="titlebar-resources-actions">
           <Tooltip>
             <TooltipTrigger
               render={
@@ -3160,6 +3726,13 @@ function TitlebarResourcesMenu({
         </div>
       </div>
       <div className="titlebar-resources-scroll">
+        <TitlebarGxserverDaemonSection
+          daemon={daemon}
+          onAlwaysStartChange={onGxserverAlwaysStartChange}
+          onRestart={onGxserverRestart}
+          onStart={onGxserverStart}
+          onStop={onGxserverStop}
+        />
         <div className="titlebar-resources-info-note">
           This app uses native Ghostty terminals as they're lighter on CPU & RAM than electron/web terminals.<br />
           Long conversations with agents will still take up 100-200mbs each.<br />
@@ -3204,6 +3777,96 @@ function TitlebarResourcesMenu({
         />
       </div>
     </div>
+  );
+}
+
+function TitlebarGxserverDaemonSection({
+  daemon,
+  onAlwaysStartChange,
+  onRestart,
+  onStart,
+  onStop,
+}: {
+  daemon: TitlebarGxserverDaemonStatus;
+  onAlwaysStartChange: (enabled: boolean) => void;
+  onRestart: () => void;
+  onStart: () => void;
+  onStop: () => void;
+}) {
+  const isRunning = daemon.state === "running";
+  const isStarting = daemon.state === "starting";
+  const statusLabel = daemon.version
+    ? `${daemon.state} - v${daemon.version}`
+    : daemon.state;
+  return (
+    <section className="titlebar-gxserver-daemon">
+      <div className="titlebar-gxserver-daemon-main">
+        <span className="titlebar-gxserver-daemon-dot" data-state={daemon.ok === false ? "error" : daemon.state} />
+        <div className="titlebar-gxserver-daemon-copy">
+          <span>Daemon</span>
+          <span>{statusLabel}</span>
+        </div>
+      </div>
+      <div className="titlebar-gxserver-daemon-controls">
+        <Tooltip>
+          <TooltipTrigger
+            render={
+              <button
+                aria-label="Start gxserver"
+                className="titlebar-gxserver-daemon-icon-button"
+                disabled={isRunning || isStarting}
+                onClick={onStart}
+                type="button"
+              >
+                <IconPlayerPlay aria-hidden="true" size={14} stroke={1.9} />
+              </button>
+            }
+          />
+          <TooltipContent className="titlebar-resource-tooltip">Start daemon</TooltipContent>
+        </Tooltip>
+        <Tooltip>
+          <TooltipTrigger
+            render={
+              <button
+                aria-label="Restart gxserver"
+                className="titlebar-gxserver-daemon-icon-button"
+                disabled={isStarting}
+                onClick={onRestart}
+                type="button"
+              >
+                <IconRefresh aria-hidden="true" size={14} stroke={1.9} />
+              </button>
+            }
+          />
+          <TooltipContent className="titlebar-resource-tooltip">Restart daemon</TooltipContent>
+        </Tooltip>
+        <Tooltip>
+          <TooltipTrigger
+            render={
+              <button
+                aria-label="Stop gxserver"
+                className="titlebar-gxserver-daemon-icon-button"
+                disabled={!isRunning && !isStarting}
+                onClick={onStop}
+                type="button"
+              >
+                <IconX aria-hidden="true" size={14} stroke={1.9} />
+              </button>
+            }
+          />
+          <TooltipContent className="titlebar-resource-tooltip">Stop daemon</TooltipContent>
+        </Tooltip>
+        <label className="titlebar-gxserver-daemon-checkbox">
+          <input
+            checked={daemon.alwaysStart}
+            onChange={(event) => onAlwaysStartChange(event.currentTarget.checked)}
+            type="checkbox"
+          />
+          <span>Always start</span>
+        </label>
+      </div>
+      {daemon.message ? <div className="titlebar-gxserver-daemon-message">{daemon.message}</div> : null}
+    </section>
   );
 }
 
@@ -3598,34 +4261,10 @@ function resolveInitialTitlebarMode(bootstrap: Record<string, unknown>): Titleba
   if (explicitMode !== "agents") {
     return explicitMode;
   }
-  const sharedProjectsJson = isRecord(bootstrap.sharedSidebarStorage)
-    ? bootstrap.sharedSidebarStorage.projects
-    : undefined;
-  if (typeof sharedProjectsJson !== "string") {
-    return "agents";
-  }
-  try {
-    const candidate = JSON.parse(sharedProjectsJson);
-    const projects = Array.isArray(candidate?.projects) ? candidate.projects : [];
-    const activeProjectId =
-      typeof candidate?.activeProjectId === "string" ? candidate.activeProjectId : undefined;
-    const activeProject =
-      projects.find(
-        (project: unknown) =>
-          isRecord(project) &&
-          typeof project.projectId === "string" &&
-          project.projectId === activeProjectId,
-      ) ?? projects[0];
-    if (
-      isRecord(activeProject) &&
-      isRecord(activeProject.projectEditor) &&
-      activeProject.projectEditor.isOpen === true
-    ) {
-      return "code";
-    }
-  } catch {
-    return "agents";
-  }
+  /*
+  CDXC:ProjectSidebarOwnership 2026-06-02-12:29:
+  The titlebar must not infer startup mode from the old native-sidebar-projects.json payload. gxserver owns shared project/session inventory now, while the macOS window owns the explicit active mode passed in bootstrap state.
+  */
   return "agents";
 }
 
@@ -3664,7 +4303,7 @@ function TitlebarModeDropdown({
 }: {
   activeMode: TitlebarMode;
   modes: TitlebarModeOption[];
-  onOpenChange: (open: boolean) => void;
+  onOpenChange: (open: boolean, details?: TitlebarDropdownOpenChangeDetails) => void;
   open: boolean;
 }) {
   const activeModeOption = modes.find((mode) => mode.value === activeMode) ?? modes[0];
@@ -4066,7 +4705,14 @@ document.body.style.overflow = "hidden";
 const styleElement = document.createElement("style");
 styleElement.textContent = `
   :root {
-    --titlebar-font-family: "JetBrains Mono", "SF Mono", SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+    /**
+     * CDXC:ReactTitlebar 2026-06-04-18:37:
+     * Titlebar text should use the same font family as the macOS sidebar. Bind
+     * the titlebar font token to the imported sidebar shadcn sans token instead
+     * of the older bespoke monospace stack while leaving titlebar sizing and
+     * weight rules unchanged.
+     */
+    --titlebar-font-family: var(--font-sans, "Inter Variable", sans-serif);
     --titlebar-button-border-color: #252525;
   }
   /**
@@ -4176,6 +4822,13 @@ styleElement.textContent = `
     color: rgba(255,255,255,0.84);
   }
   .titlebar-project-title {
+    /**
+     * CDXC:ReactTitlebar 2026-06-04-18:55:
+     * The React titlebar project title in the macOS app should sit 2px lower
+     * without changing the shared titlebar height or moving neighboring
+     * controls. Use a visual transform so layout and hit-region math stay
+     * anchored to the existing titlebar row.
+     */
     align-items: center;
     color: rgba(255,255,255,0.9);
     cursor: default;
@@ -4188,6 +4841,7 @@ styleElement.textContent = `
     min-width: 0;
     overflow: hidden;
     padding: 0 3px;
+    transform: translateY(2px);
   }
   .titlebar-project-title > .truncate {
     display: block;
@@ -4297,6 +4951,13 @@ styleElement.textContent = `
     }
   }
   .titlebar-mode-tab {
+    /**
+     * CDXC:ReactTitlebar 2026-06-04-20:08:
+     * The macOS titlebar mode tabs should be 2px smaller and 100 weight units
+     * heavier than the primary sidebar navigation buttons after visual review.
+     * Use 13.55px / 400 typography while preserving the titlebar-owned line
+     * height for vertical containment.
+     */
     appearance: none;
     -webkit-appearance: none;
     align-items: center;
@@ -4307,7 +4968,7 @@ styleElement.textContent = `
     color: rgba(255,255,255,0.68);
     cursor: default;
     display: inline-flex;
-    font: 720 12px/${TITLEBAR_CONTROL_HEIGHT}px var(--titlebar-font-family);
+    font: 400 13.55px/${TITLEBAR_CONTROL_HEIGHT}px var(--titlebar-font-family);
     height: ${TITLEBAR_CONTROL_HEIGHT}px;
     justify-content: center;
     letter-spacing: 0;
@@ -4675,6 +5336,30 @@ styleElement.textContent = `
   .titlebar-tip-row[data-read="true"] {
     opacity: 0.72;
   }
+  .titlebar-tip-row-notice {
+    cursor: pointer;
+    grid-template-columns: 28px minmax(0, 1fr);
+    text-align: left;
+    transition: background 120ms ease, border-color 120ms ease;
+    width: 100%;
+  }
+  .titlebar-tip-row-notice:hover {
+    background: rgba(245,158,11,0.06);
+    border-color: rgba(245,158,11,0.34);
+  }
+  .titlebar-tip-row-notice .titlebar-tip-icon {
+    background: rgba(245,158,11,0.14);
+    color: rgba(251,191,36,0.95);
+  }
+  .titlebar-tip-row-notice .titlebar-tip-body {
+    /**
+     * CDXC:CliInstall 2026-06-07-15:26:
+     * Runtime notices can describe an action plus a short benefit list, but
+     * Tips & Tricks should remain dense. Clamp notice descriptions to three
+     * lines so the CLI accessibility warning cannot dominate the dropdown.
+     */
+    -webkit-line-clamp: 3;
+  }
   .titlebar-tip-icon {
     align-items: center;
     align-self: start;
@@ -4930,6 +5615,109 @@ styleElement.textContent = `
     font: 600 12px/1.35 -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif;
     margin-bottom: 8px;
     padding: 8px 10px;
+  }
+  .titlebar-gxserver-daemon {
+    /*
+     * CDXC:TitlebarResources 2026-05-31-03:56:
+     * The Resources dropdown must expose gxserver daemon status, version, stop/restart controls, and a small Always start checkbox without changing the sidebar session restore list.
+     */
+    align-items: center;
+    background: rgba(255,255,255,0.045);
+    border: 1px solid rgba(255,255,255,0.1);
+    color: rgba(255,255,255,0.72);
+    display: grid;
+    gap: 6px 10px;
+    grid-template-columns: minmax(0, 1fr) auto;
+    margin-bottom: 8px;
+    min-width: 0;
+    padding: 8px 10px;
+  }
+  .titlebar-gxserver-daemon-main,
+  .titlebar-gxserver-daemon-controls,
+  .titlebar-gxserver-daemon-checkbox {
+    align-items: center;
+    display: inline-flex;
+    min-width: 0;
+  }
+  .titlebar-gxserver-daemon-main {
+    gap: 8px;
+  }
+  .titlebar-gxserver-daemon-dot {
+    background: rgba(255,255,255,0.35);
+    border-radius: 999px;
+    box-shadow: 0 0 0 3px rgba(255,255,255,0.05);
+    flex: 0 0 auto;
+    height: 7px;
+    width: 7px;
+  }
+  .titlebar-gxserver-daemon-dot[data-state="running"] {
+    background: #4ade80;
+    box-shadow: 0 0 0 3px rgba(74,222,128,0.14);
+  }
+  .titlebar-gxserver-daemon-dot[data-state="starting"] {
+    background: #facc15;
+    box-shadow: 0 0 0 3px rgba(250,204,21,0.16);
+  }
+  .titlebar-gxserver-daemon-dot[data-state="error"],
+  .titlebar-gxserver-daemon-dot[data-state="nodeUnavailable"],
+  .titlebar-gxserver-daemon-dot[data-state="startFailed"] {
+    background: #fb7185;
+    box-shadow: 0 0 0 3px rgba(251,113,133,0.16);
+  }
+  .titlebar-gxserver-daemon-copy {
+    display: grid;
+    font: 650 11px/1.25 -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif;
+    gap: 1px;
+    min-width: 0;
+  }
+  .titlebar-gxserver-daemon-copy span {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .titlebar-gxserver-daemon-copy span:first-child {
+    color: rgba(255,255,255,0.92);
+    font-weight: 760;
+  }
+  .titlebar-gxserver-daemon-controls {
+    gap: 6px;
+  }
+  .titlebar-gxserver-daemon-icon-button {
+    align-items: center;
+    background: rgba(255,255,255,0.08);
+    border: 1px solid rgba(255,255,255,0.12);
+    color: rgba(255,255,255,0.78);
+    display: inline-flex;
+    height: 24px;
+    justify-content: center;
+    width: 24px;
+  }
+  .titlebar-gxserver-daemon-icon-button:disabled {
+    color: rgba(255,255,255,0.28);
+  }
+  .titlebar-gxserver-daemon-icon-button:not(:disabled):hover {
+    background: rgba(255,255,255,0.14);
+    color: rgba(255,255,255,0.94);
+  }
+  .titlebar-gxserver-daemon-checkbox {
+    color: rgba(255,255,255,0.58);
+    gap: 4px;
+    font: 650 10px -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif;
+    white-space: nowrap;
+  }
+  .titlebar-gxserver-daemon-checkbox input {
+    height: 12px;
+    margin: 0;
+    width: 12px;
+  }
+  .titlebar-gxserver-daemon-message {
+    color: rgba(255,255,255,0.48);
+    font: 600 10px/1.25 -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif;
+    grid-column: 1 / -1;
+    max-height: 26px;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
   .titlebar-resource-section + .titlebar-resource-section {
     margin-top: 8px;

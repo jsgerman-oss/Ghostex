@@ -29,8 +29,14 @@ export type ProjectBoardAgentOption = {
   agentId: string;
   /**
    * CDXC:PromptAgents 2026-05-29-10:53:
-   * Project-board title generation runs through the native Beads bridge, so the
+   * Project-board title generation runs through the board bridge, so the
    * board state must carry the configured prompt-agent command as well as the id.
+   *
+   * CDXC:PromptAgents 2026-06-01-12:23:
+   * The command carried here is the gxserver launch-plan command, not the raw stored command, so Accept All policy is still resolved in gxserver before the board bridge starts title generation.
+   *
+   * CDXC:PromptAgents 2026-06-02-15:18:
+   * Shared conversation-link types must not describe Beads execution as native-owned. The board bridge carries UI request data; gxserver owns Beads command construction and execution.
    */
   command?: string;
   label: string;
@@ -80,9 +86,11 @@ export type ProjectBoardBridgeRequest = {
   beadId?: string;
   details?: string;
   event?: string;
+  projectEditorId?: string;
   prompt?: string;
   projectId?: string;
   projectPath?: string;
+  remoteMachineId?: string;
   requestId: string;
   sessionId?: string;
   startLocation?: ProjectBoardStartLocation;

@@ -36,6 +36,7 @@ import {
   swapVisibleSessionsInSimpleWorkspace,
   syncSessionOrderAcrossSimpleWorkspaceGroups,
   syncSessionOrderInSimpleWorkspace,
+  toggleFullscreenSessionInSimpleWorkspace,
   wakePaneTabSessionInSimpleWorkspace,
 } from "./simple-grouped-session-workspace-state";
 
@@ -799,6 +800,190 @@ describe("focusSessionInSimpleWorkspace", () => {
     });
   });
 
+  test("should preserve the split layout when virtual tab materialization runs during focus mode", () => {
+    const leftSessionId = sessionIdForDisplay(0);
+    const rightSessionId = sessionIdForDisplay(1);
+    const rightSiblingSessionId = sessionIdForDisplay(2);
+    const originalPaneLayout: SessionPaneLayoutNode = {
+      children: [
+        { kind: "leaf", sessionId: leftSessionId },
+        {
+          activeSessionId: rightSessionId,
+          kind: "tabs",
+          sessionIds: [rightSessionId, rightSiblingSessionId],
+        },
+      ],
+      direction: "horizontal",
+      kind: "split",
+    };
+    const focused = focusSessionExclusivelyInSimpleWorkspace(
+      createWorkspaceSnapshot({
+        activeGroupId: DEFAULT_MAIN_GROUP_ID,
+        groups: [
+          {
+            groupId: DEFAULT_MAIN_GROUP_ID,
+            snapshot: {
+              focusedSessionId: leftSessionId,
+              fullscreenRestoreVisibleCount: undefined,
+              paneLayout: originalPaneLayout,
+              sessions: [
+                createSessionRecord(1, 0),
+                createSessionRecord(2, 1),
+                createSessionRecord(3, 2),
+              ],
+              viewMode: "grid",
+              visibleCount: 4,
+              visibleSessionIds: [leftSessionId, rightSessionId, rightSiblingSessionId],
+            },
+            title: "Main",
+          },
+        ],
+      }),
+      rightSiblingSessionId,
+    ).snapshot;
+
+    const materialized = ensureAllSessionsInFocusedPaneTabGroupInSimpleWorkspace(
+      focused,
+      DEFAULT_MAIN_GROUP_ID,
+    ).snapshot;
+    const restored = toggleFullscreenSessionInSimpleWorkspace(materialized);
+
+    /*
+     * CDXC:SessionFocusMode 2026-06-02-18:45:
+     * publish() calls virtual tab materialization before native layout sync.
+     * While Focus mode is active that materialization must be a no-op for paneLayout, otherwise Exit focus can restore the saved visible count but has no preserved split tree left to render.
+     */
+    expect(materialized.groups[0]?.snapshot.visibleCount).toBe(1);
+    expect(materialized.groups[0]?.snapshot.paneLayout).toEqual({
+      children: [
+        { kind: "leaf", sessionId: leftSessionId },
+        {
+          activeSessionId: rightSiblingSessionId,
+          kind: "tabs",
+          sessionIds: [rightSessionId, rightSiblingSessionId],
+        },
+      ],
+      direction: "horizontal",
+      kind: "split",
+    });
+    expect(restored.groups[0]?.snapshot.visibleCount).toBe(4);
+    expect(restored.groups[0]?.snapshot.fullscreenRestoreVisibleCount).toBeUndefined();
+    expect(restored.groups[0]?.snapshot.paneLayout).toEqual({
+      children: [
+        { kind: "leaf", sessionId: leftSessionId },
+        {
+          activeSessionId: rightSiblingSessionId,
+          kind: "tabs",
+          sessionIds: [rightSessionId, rightSiblingSessionId],
+        },
+      ],
+      direction: "horizontal",
+      kind: "split",
+    });
+  });
+
+  test("should preserve the split layout when selecting a focused-pane tab during focus mode", () => {
+    const leftSessionId = sessionIdForDisplay(0);
+    const leftSiblingSessionId = sessionIdForDisplay(1);
+    const rightSessionId = sessionIdForDisplay(2);
+    const rightSiblingSessionId = sessionIdForDisplay(3);
+    const rightBackgroundSessionId = sessionIdForDisplay(4);
+    const originalPaneLayout: SessionPaneLayoutNode = {
+      children: [
+        {
+          activeSessionId: leftSiblingSessionId,
+          kind: "tabs",
+          sessionIds: [leftSessionId, leftSiblingSessionId],
+        },
+        {
+          activeSessionId: rightSessionId,
+          kind: "tabs",
+          sessionIds: [rightSessionId, rightSiblingSessionId, rightBackgroundSessionId],
+        },
+      ],
+      direction: "horizontal",
+      kind: "split",
+    };
+    const focused = focusSessionExclusivelyInSimpleWorkspace(
+      createWorkspaceSnapshot({
+        activeGroupId: DEFAULT_MAIN_GROUP_ID,
+        groups: [
+          {
+            groupId: DEFAULT_MAIN_GROUP_ID,
+            snapshot: {
+              focusedSessionId: leftSiblingSessionId,
+              fullscreenRestoreVisibleCount: undefined,
+              paneLayout: originalPaneLayout,
+              sessions: [
+                createSessionRecord(1, 0),
+                createSessionRecord(2, 1),
+                createSessionRecord(3, 2),
+                createSessionRecord(4, 3),
+                createSessionRecord(5, 4),
+              ],
+              viewMode: "grid",
+              visibleCount: 4,
+              visibleSessionIds: [leftSiblingSessionId, rightSessionId],
+            },
+            title: "Main",
+          },
+        ],
+      }),
+      rightSessionId,
+    ).snapshot;
+
+    const selected = selectPaneTabInSimpleWorkspace(
+      focused,
+      DEFAULT_MAIN_GROUP_ID,
+      rightSiblingSessionId,
+    ).snapshot;
+    const restored = toggleFullscreenSessionInSimpleWorkspace(selected);
+
+    /*
+     * CDXC:SessionFocusMode 2026-06-04-20:37:
+     * Native tab selection can run while Focus mode is active, and that path
+     * must not materialize hidden split branches into the focused tab group.
+     * Keep the left and right pane tab groups separate so Exit focus restores
+     * the original split with all tabs still in their owning panes.
+     */
+    expect(selected.groups[0]?.snapshot.visibleCount).toBe(1);
+    expect(selected.groups[0]?.snapshot.visibleSessionIds).toEqual([rightSiblingSessionId]);
+    expect(selected.groups[0]?.snapshot.paneLayout).toEqual({
+      children: [
+        {
+          activeSessionId: leftSiblingSessionId,
+          kind: "tabs",
+          sessionIds: [leftSessionId, leftSiblingSessionId],
+        },
+        {
+          activeSessionId: rightSiblingSessionId,
+          kind: "tabs",
+          sessionIds: [rightSessionId, rightSiblingSessionId, rightBackgroundSessionId],
+        },
+      ],
+      direction: "horizontal",
+      kind: "split",
+    });
+    expect(restored.groups[0]?.snapshot.visibleCount).toBe(4);
+    expect(restored.groups[0]?.snapshot.fullscreenRestoreVisibleCount).toBeUndefined();
+    expect(restored.groups[0]?.snapshot.paneLayout).toEqual({
+      children: [
+        {
+          activeSessionId: leftSiblingSessionId,
+          kind: "tabs",
+          sessionIds: [leftSessionId, leftSiblingSessionId],
+        },
+        {
+          activeSessionId: rightSiblingSessionId,
+          kind: "tabs",
+          sessionIds: [rightSessionId, rightSiblingSessionId, rightBackgroundSessionId],
+        },
+      ],
+      direction: "horizontal",
+      kind: "split",
+    });
+  });
+
   test("should not enter focus mode for a single pane tab group", () => {
     const firstSessionId = sessionIdForDisplay(0);
     const secondSessionId = sessionIdForDisplay(1);
@@ -1250,6 +1435,210 @@ describe("moveSessionToGroupInSimpleWorkspace", () => {
 });
 
 describe("removeSessionInSimpleWorkspace", () => {
+  test("should select the next tab to the right when closing the active split-pane tab", () => {
+    const parkedLeftSessionId = sessionIdForDisplay(0);
+    const closingT3SessionId = sessionIdForDisplay(1);
+    const nextRightSessionId = sessionIdForDisplay(2);
+    const rightPaneSessionId = sessionIdForDisplay(3);
+
+    const result = removeSessionInSimpleWorkspace(
+      createWorkspaceSnapshot({
+        activeGroupId: DEFAULT_MAIN_GROUP_ID,
+        groups: [
+          {
+            groupId: DEFAULT_MAIN_GROUP_ID,
+            snapshot: {
+              focusedSessionId: closingT3SessionId,
+              fullscreenRestoreVisibleCount: undefined,
+              paneLayout: {
+                children: [
+                  {
+                    activeSessionId: closingT3SessionId,
+                    kind: "tabs",
+                    sessionIds: [
+                      parkedLeftSessionId,
+                      closingT3SessionId,
+                      nextRightSessionId,
+                    ],
+                  },
+                  { kind: "leaf", sessionId: rightPaneSessionId },
+                ],
+                direction: "horizontal",
+                kind: "split",
+              },
+              sessions: [
+                { ...createSessionRecord(1, 0), isSleeping: true },
+                createSessionRecord(2, 1, {
+                  kind: "t3",
+                  t3: {
+                    projectId: "project-1",
+                    serverOrigin: "http://127.0.0.1:3774",
+                    threadId: "thread-1",
+                    workspaceRoot: "/workspace",
+                  },
+                }),
+                { ...createSessionRecord(3, 2), isSleeping: true },
+                createSessionRecord(4, 3),
+              ],
+              viewMode: "grid",
+              visibleCount: 2,
+              visibleSessionIds: [closingT3SessionId, rightPaneSessionId],
+            },
+            title: "Main",
+          },
+        ],
+        nextGroupNumber: 2,
+        nextSessionDisplayId: 4,
+        nextSessionNumber: 5,
+      }),
+      closingT3SessionId,
+    );
+
+    expect(result.changed).toBe(true);
+    const groupSnapshot = result.snapshot.groups[0]?.snapshot;
+    expect(groupSnapshot?.focusedSessionId).toBe(nextRightSessionId);
+    expect(groupSnapshot?.visibleCount).toBe(2);
+    expect(groupSnapshot?.visibleSessionIds).toEqual([nextRightSessionId, rightPaneSessionId]);
+    expect(groupSnapshot?.sessions.find((session) => session.sessionId === nextRightSessionId)?.isSleeping).toBe(false);
+    /*
+     * CDXC:PaneTabs 2026-06-06-04:32:
+     * Closing an active T3/web tab in a split pane must promote the next tab in that pane before sidebar publish materializes virtual tabs.
+     * This keeps a concrete owner in the split branch, so the materializer preserves the split instead of collapsing every project tab under the other pane.
+     */
+    expect(groupSnapshot?.paneLayout).toEqual({
+      children: [
+        {
+          activeSessionId: nextRightSessionId,
+          kind: "tabs",
+          sessionIds: [parkedLeftSessionId, nextRightSessionId],
+        },
+        { kind: "leaf", sessionId: rightPaneSessionId },
+      ],
+      direction: "horizontal",
+      kind: "split",
+    });
+
+    const materialized = ensureAllSessionsInFocusedPaneTabGroupInSimpleWorkspace(
+      result.snapshot,
+      DEFAULT_MAIN_GROUP_ID,
+    );
+    expect(materialized.snapshot.groups[0]?.snapshot.paneLayout).toEqual({
+      children: [
+        {
+          activeSessionId: nextRightSessionId,
+          kind: "tabs",
+          sessionIds: [parkedLeftSessionId, nextRightSessionId],
+        },
+        { kind: "leaf", sessionId: rightPaneSessionId },
+      ],
+      direction: "horizontal",
+      kind: "split",
+    });
+  });
+
+  test("should select the left sibling when closing the rightmost active tab", () => {
+    const leftSiblingSessionId = sessionIdForDisplay(0);
+    const closingSessionId = sessionIdForDisplay(1);
+
+    const result = removeSessionInSimpleWorkspace(
+      createWorkspaceSnapshot({
+        activeGroupId: DEFAULT_MAIN_GROUP_ID,
+        groups: [
+          {
+            groupId: DEFAULT_MAIN_GROUP_ID,
+            snapshot: {
+              focusedSessionId: closingSessionId,
+              fullscreenRestoreVisibleCount: undefined,
+              paneLayout: {
+                activeSessionId: closingSessionId,
+                kind: "tabs",
+                sessionIds: [leftSiblingSessionId, closingSessionId],
+              },
+              sessions: [createSessionRecord(1, 0), createSessionRecord(2, 1)],
+              viewMode: "grid",
+              visibleCount: 1,
+              visibleSessionIds: [closingSessionId],
+            },
+            title: "Main",
+          },
+        ],
+        nextGroupNumber: 2,
+        nextSessionDisplayId: 2,
+        nextSessionNumber: 3,
+      }),
+      closingSessionId,
+    );
+
+    expect(result.snapshot.groups[0]?.snapshot.focusedSessionId).toBe(leftSiblingSessionId);
+    expect(result.snapshot.groups[0]?.snapshot.visibleSessionIds).toEqual([leftSiblingSessionId]);
+    expect(result.snapshot.groups[0]?.snapshot.paneLayout).toEqual({
+      kind: "leaf",
+      sessionId: leftSiblingSessionId,
+    });
+  });
+
+  test("should collapse the split branch when closing the pane's last tab", () => {
+    const closingOnlyTabSessionId = sessionIdForDisplay(0);
+    const remainingActiveSessionId = sessionIdForDisplay(1);
+    const remainingSiblingSessionId = sessionIdForDisplay(2);
+
+    const result = removeSessionInSimpleWorkspace(
+      createWorkspaceSnapshot({
+        activeGroupId: DEFAULT_MAIN_GROUP_ID,
+        groups: [
+          {
+            groupId: DEFAULT_MAIN_GROUP_ID,
+            snapshot: {
+              focusedSessionId: closingOnlyTabSessionId,
+              fullscreenRestoreVisibleCount: undefined,
+              paneLayout: {
+                children: [
+                  { kind: "leaf", sessionId: closingOnlyTabSessionId },
+                  {
+                    activeSessionId: remainingActiveSessionId,
+                    kind: "tabs",
+                    sessionIds: [remainingActiveSessionId, remainingSiblingSessionId],
+                  },
+                ],
+                direction: "horizontal",
+                kind: "split",
+              },
+              sessions: [
+                createSessionRecord(1, 0),
+                createSessionRecord(2, 1),
+                createSessionRecord(3, 2),
+              ],
+              viewMode: "grid",
+              visibleCount: 2,
+              visibleSessionIds: [closingOnlyTabSessionId, remainingActiveSessionId],
+            },
+            title: "Main",
+          },
+        ],
+        nextGroupNumber: 2,
+        nextSessionDisplayId: 3,
+        nextSessionNumber: 4,
+      }),
+      closingOnlyTabSessionId,
+    );
+
+    /*
+     * CDXC:PaneTabs 2026-06-06-04:32:
+     * A split pane with no remaining tab owner should close as a pane, not pull a background session into that branch.
+     * After a two-pane split loses that branch, the remaining pane owns the visible workspace and its tabs stay together.
+     */
+    expect(result.snapshot.groups[0]?.snapshot.focusedSessionId).toBe(remainingActiveSessionId);
+    expect(result.snapshot.groups[0]?.snapshot.visibleCount).toBe(1);
+    expect(result.snapshot.groups[0]?.snapshot.visibleSessionIds).toEqual([
+      remainingActiveSessionId,
+    ]);
+    expect(result.snapshot.groups[0]?.snapshot.paneLayout).toEqual({
+      activeSessionId: remainingActiveSessionId,
+      kind: "tabs",
+      sessionIds: [remainingActiveSessionId, remainingSiblingSessionId],
+    });
+  });
+
   test("should switch to the previous non-empty group when closing the active group's last session", () => {
     const result = removeSessionInSimpleWorkspace(
       createWorkspaceSnapshot({
@@ -1830,6 +2219,21 @@ describe("syncSessionOrderAcrossSimpleWorkspaceGroups", () => {
 });
 
 describe("createSessionInSimpleWorkspace", () => {
+  test("should preserve an explicit session id when daemon-created sessions are placed locally", () => {
+    const result = createSessionInSimpleWorkspace(
+      createDefaultGroupedSessionWorkspaceSnapshot(),
+      {
+        sessionId: "G1abc",
+        title: "Daemon Session",
+      },
+    );
+
+    expect(result.session?.sessionId).toBe("G1abc");
+    expect(result.session?.displayId).toBe("00");
+    expect(result.snapshot.groups[0]?.snapshot.focusedSessionId).toBe("G1abc");
+    expect(result.snapshot.groups[0]?.snapshot.visibleSessionIds).toEqual(["G1abc"]);
+  });
+
   test("should keep split mode and surface the new session when adding a session", () => {
     let snapshot = createDefaultGroupedSessionWorkspaceSnapshot();
     const firstResult = createSessionInSimpleWorkspace(snapshot);
@@ -2400,6 +2804,58 @@ describe("createSessionInSimpleWorkspace", () => {
       ],
       direction: "horizontal",
       kind: "split",
+    });
+  });
+
+  test("should insert a new focused tab immediately after the target tab when requested", () => {
+    const result = createSessionInSimpleWorkspace(
+      createWorkspaceSnapshot({
+        activeGroupId: DEFAULT_MAIN_GROUP_ID,
+        groups: [
+          {
+            groupId: DEFAULT_MAIN_GROUP_ID,
+            snapshot: {
+              focusedSessionId: sessionIdForDisplay(0),
+              fullscreenRestoreVisibleCount: undefined,
+              paneLayout: {
+                activeSessionId: sessionIdForDisplay(0),
+                kind: "tabs",
+                sessionIds: [sessionIdForDisplay(0), sessionIdForDisplay(1)],
+              },
+              sessions: [createSessionRecord(1, 0), createSessionRecord(2, 1)],
+              viewMode: "grid",
+              visibleCount: 2,
+              visibleSessionIds: [sessionIdForDisplay(0), sessionIdForDisplay(1)],
+            },
+            title: "Main",
+          },
+        ],
+        nextGroupNumber: 2,
+        nextSessionDisplayId: 2,
+        nextSessionNumber: 3,
+      }),
+      undefined,
+      {
+        /**
+         * CDXC:PaneTabs 2026-06-06-04:36:
+         * Cmd+T and Cmd+N create the new terminal/browser tab immediately after the focused tab in the current split pane, so keyboard-created tabs appear beside the user's current work instead of at the end of a long tab group.
+         */
+        visiblePlacement: {
+          kind: "appendToTabGroup",
+          position: "after",
+          targetSessionId: sessionIdForDisplay(0),
+        },
+      },
+    );
+
+    expect(result.snapshot.groups[0]?.snapshot.paneLayout).toEqual({
+      activeSessionId: result.session?.sessionId,
+      kind: "tabs",
+      sessionIds: [
+        sessionIdForDisplay(0),
+        result.session?.sessionId,
+        sessionIdForDisplay(1),
+      ],
     });
   });
 
@@ -3581,6 +4037,62 @@ describe("setSessionSleepingInSimpleWorkspace", () => {
       activeSessionId: sleepingSessionId,
       kind: "tabs",
       sessionIds: [awakeSessionId, sleepingSessionId],
+    });
+  });
+
+  test("should preserve focus and active tab when a background session sleeps", () => {
+    const focusedSessionId = sessionIdForDisplay(2);
+    const backgroundSessionId = sessionIdForDisplay(0);
+    const otherAwakeSessionId = sessionIdForDisplay(1);
+    const slept = setSessionSleepingInSimpleWorkspace(
+      createWorkspaceSnapshot({
+        activeGroupId: DEFAULT_MAIN_GROUP_ID,
+        groups: [
+          {
+            groupId: DEFAULT_MAIN_GROUP_ID,
+            snapshot: {
+              focusedSessionId,
+              fullscreenRestoreVisibleCount: undefined,
+              paneLayout: {
+                activeSessionId: focusedSessionId,
+                kind: "tabs",
+                sessionIds: [backgroundSessionId, otherAwakeSessionId, focusedSessionId],
+              },
+              sessions: [
+                createSessionRecord(1, 0),
+                createSessionRecord(2, 1),
+                createSessionRecord(3, 2),
+              ],
+              viewMode: "grid",
+              visibleCount: 3,
+              visibleSessionIds: [backgroundSessionId, otherAwakeSessionId, focusedSessionId],
+            },
+            title: "Main",
+          },
+        ],
+        nextGroupNumber: 2,
+        nextSessionDisplayId: 3,
+        nextSessionNumber: 4,
+      }),
+      backgroundSessionId,
+      true,
+    );
+
+    /*
+     * CDXC:SessionSleep 2026-06-06-22:52:
+     * Auto-sleeping a background pane tab must park only that tab. The focused
+     * tab remains the active pane owner so native/sidebar sync does not redirect
+     * keyboard input to the next project-list session.
+     */
+    expect(slept.snapshot.groups[0]?.snapshot.focusedSessionId).toBe(focusedSessionId);
+    expect(slept.snapshot.groups[0]?.snapshot.visibleSessionIds).toEqual([
+      otherAwakeSessionId,
+      focusedSessionId,
+    ]);
+    expect(slept.snapshot.groups[0]?.snapshot.paneLayout).toEqual({
+      activeSessionId: focusedSessionId,
+      kind: "tabs",
+      sessionIds: [backgroundSessionId, otherAwakeSessionId, focusedSessionId],
     });
   });
 

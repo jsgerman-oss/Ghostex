@@ -51,6 +51,39 @@ struct GhostexCEFProfileFlushState {
   GhostexCEFCompletionBlock completion;
 };
 
+struct GhostexCEFCookieImportState {
+  explicit GhostexCEFCookieImportState(void (^completionBlock)(NSInteger))
+      : completion([completionBlock copy]) {}
+
+  ~GhostexCEFCookieImportState() {
+    completion = nil;
+  }
+
+  std::atomic<int> pending{0};
+  std::atomic<int> imported{0};
+  void (^completion)(NSInteger);
+};
+
+static void GhostexCEFFinishCookieImport(std::shared_ptr<GhostexCEFCookieImportState> state,
+                                         bool success) {
+  if (!state) {
+    return;
+  }
+  if (success) {
+    state->imported.fetch_add(1);
+  }
+  if (state->pending.fetch_sub(1) != 1) {
+    return;
+  }
+  auto importedCount = state->imported.load();
+  void (^completion)(NSInteger) = [state->completion copy];
+  dispatch_async(dispatch_get_main_queue(), ^{
+    if (completion) {
+      completion(importedCount);
+    }
+  });
+}
+
 static void GhostexCEFFinishProfileFlush(std::shared_ptr<GhostexCEFProfileFlushState> state) {
   if (!state || state->pending.fetch_sub(1) != 1) {
     return;
@@ -77,6 +110,22 @@ class GhostexCEFCookieFlushCallback : public CefCompletionCallback {
 
   IMPLEMENT_REFCOUNTING(GhostexCEFCookieFlushCallback);
   DISALLOW_COPY_AND_ASSIGN(GhostexCEFCookieFlushCallback);
+};
+
+class GhostexCEFCookieImportCallback : public CefSetCookieCallback {
+ public:
+  explicit GhostexCEFCookieImportCallback(std::shared_ptr<GhostexCEFCookieImportState> state)
+      : state_(std::move(state)) {}
+
+  void OnComplete(bool success) override {
+    GhostexCEFFinishCookieImport(state_, success);
+  }
+
+ private:
+  std::shared_ptr<GhostexCEFCookieImportState> state_;
+
+  IMPLEMENT_REFCOUNTING(GhostexCEFCookieImportCallback);
+  DISALLOW_COPY_AND_ASSIGN(GhostexCEFCookieImportCallback);
 };
 
 static bool GhostexCEFFlushCookieManager(CefRefPtr<CefCookieManager> manager,
@@ -411,14 +460,236 @@ static bool GhostexCEFPointAlmostEqual(NSPoint lhs, NSPoint rhs) {
     fabs(lhs.y - rhs.y) < epsilon;
 }
 
+static NSString* GhostexCEFRedactedText(void) {
+  return @"[redacted]";
+}
+
+static NSString* GhostexCEFRedactedPath(void) {
+  return @"[redacted:path]";
+}
+
+static NSString* GhostexCEFRedactedURL(void) {
+  return @"[redacted:url]";
+}
+
+static NSString* GhostexCEFRedactedSecret(void) {
+  return @"[redacted:secret]";
+}
+
+static BOOL GhostexCEFKeyHasSuffix(NSString* key, NSString* suffix) {
+  return [key hasSuffix:suffix];
+}
+
+static BOOL GhostexCEFIsIdentifierKey(NSString* key) {
+  return [key isEqualToString:@"id"] ||
+    GhostexCEFKeyHasSuffix(key, @"id") ||
+    GhostexCEFKeyHasSuffix(key, @"ids") ||
+    GhostexCEFKeyHasSuffix(key, @"ref") ||
+    GhostexCEFKeyHasSuffix(key, @"refs");
+}
+
+static BOOL GhostexCEFIsSecretKey(NSString* key) {
+  return [key containsString:@"token"] ||
+    [key containsString:@"bearer"] ||
+    [key containsString:@"secret"] ||
+    [key containsString:@"credential"] ||
+    [key containsString:@"password"] ||
+    [key containsString:@"cookie"] ||
+    [key containsString:@"authorization"] ||
+    [key containsString:@"auth"];
+}
+
+static BOOL GhostexCEFIsURLKey(NSString* key) {
+  return [key isEqualToString:@"url"] ||
+    GhostexCEFKeyHasSuffix(key, @"url") ||
+    [key containsString:@"uri"] ||
+    [key isEqualToString:@"href"] ||
+    [key isEqualToString:@"origin"];
+}
+
+static BOOL GhostexCEFIsPathKey(NSString* key) {
+  return [key isEqualToString:@"path"] ||
+    [key isEqualToString:@"cwd"] ||
+    GhostexCEFKeyHasSuffix(key, @"path") ||
+    GhostexCEFKeyHasSuffix(key, @"dir") ||
+    GhostexCEFKeyHasSuffix(key, @"directory") ||
+    GhostexCEFKeyHasSuffix(key, @"root") ||
+    GhostexCEFKeyHasSuffix(key, @"file") ||
+    GhostexCEFKeyHasSuffix(key, @"filename") ||
+    [key containsString:@"workspace"];
+}
+
+static BOOL GhostexCEFIsSensitiveTextKey(NSString* key) {
+  return [key isEqualToString:@"title"] ||
+    GhostexCEFKeyHasSuffix(key, @"title") ||
+    [key isEqualToString:@"name"] ||
+    GhostexCEFKeyHasSuffix(key, @"name") ||
+    [key isEqualToString:@"message"] ||
+    [key isEqualToString:@"details"] ||
+    GhostexCEFKeyHasSuffix(key, @"details") ||
+    [key isEqualToString:@"input"] ||
+    [key isEqualToString:@"text"] ||
+    GhostexCEFKeyHasSuffix(key, @"text") ||
+    [key isEqualToString:@"comment"] ||
+    [key isEqualToString:@"description"] ||
+    [key isEqualToString:@"label"] ||
+    [key isEqualToString:@"command"] ||
+    GhostexCEFKeyHasSuffix(key, @"command") ||
+    [key isEqualToString:@"stdout"] ||
+    [key isEqualToString:@"stderr"] ||
+    [key isEqualToString:@"body"] ||
+    GhostexCEFKeyHasSuffix(key, @"body");
+}
+
+static BOOL GhostexCEFIsSensitiveCollectionKey(NSString* key) {
+  return [key isEqualToString:@"args"] ||
+    GhostexCEFKeyHasSuffix(key, @"args") ||
+    [key isEqualToString:@"arguments"] ||
+    GhostexCEFKeyHasSuffix(key, @"arguments");
+}
+
+static NSString* GhostexCEFRegexReplace(NSString* value, NSString* pattern, NSString* replacement) {
+  NSError* error = nil;
+  NSRegularExpression* regex = [NSRegularExpression regularExpressionWithPattern:pattern options:0 error:&error];
+  if (error || !regex) {
+    return value;
+  }
+  return [regex stringByReplacingMatchesInString:value
+                                         options:0
+                                           range:NSMakeRange(0, value.length)
+                                    withTemplate:replacement];
+}
+
+static BOOL GhostexCEFStringMatches(NSString* value, NSString* pattern) {
+  NSError* error = nil;
+  NSRegularExpression* regex = [NSRegularExpression regularExpressionWithPattern:pattern options:0 error:&error];
+  if (error || !regex) {
+    return NO;
+  }
+  return [regex firstMatchInString:value options:0 range:NSMakeRange(0, value.length)] != nil;
+}
+
+static BOOL GhostexCEFIsSafeIdentifier(NSString* value) {
+  return GhostexCEFStringMatches(value, @"^[A-Za-z0-9._:-]{1,128}$");
+}
+
+static BOOL GhostexCEFLooksLikeURL(NSString* value) {
+  return GhostexCEFStringMatches(value, @"(?i)^https?://");
+}
+
+static BOOL GhostexCEFLooksLikePath(NSString* value) {
+  return GhostexCEFStringMatches(value, @"^(~/|/Users/|/Volumes/|/private/|/tmp/|/var/folders/)");
+}
+
+static NSDictionary* GhostexCEFSummarizeURL(NSString* value) {
+  NSURLComponents* components = [NSURLComponents componentsWithString:value];
+  NSMutableDictionary* summary = [NSMutableDictionary dictionaryWithDictionary:@{
+    @"redacted": @(YES),
+    @"type": @"url",
+  }];
+  if (components.scheme.length > 0) {
+    summary[@"protocol"] = components.scheme;
+  }
+  if (components.host.length > 0) {
+    summary[@"host"] = components.port
+      ? [NSString stringWithFormat:@"%@:%@", components.host, components.port]
+      : components.host;
+  }
+  return summary;
+}
+
+static NSString* GhostexCEFRedactSensitiveText(NSString* value) {
+  NSString* redacted = value ?: @"";
+  redacted = GhostexCEFRegexReplace(
+    redacted,
+    @"(?i)\"(title|name|projectName|sessionName|cwd|path|projectPath|workspaceRoot|worktreePath|url|input|comment|description|command|text|message|details|token|authToken|bearer|credential|password|secret)\"\\s*:\\s*\"[^\"]*\"",
+    @"\"$1\":\"[redacted]\"");
+  redacted = GhostexCEFRegexReplace(
+    redacted,
+    @"(?i)\\b(bearer|token|authorization|password|secret|credential)=?[^\\s\"']+",
+    GhostexCEFRedactedSecret());
+  redacted = GhostexCEFRegexReplace(redacted, @"https?://[^\\s\"')]+", GhostexCEFRedactedURL());
+  redacted = GhostexCEFRegexReplace(redacted, @"(~|/Users/[^\\s/\"']+|/(private/)?tmp|/var/folders|/Volumes)/[^\\s\"']+", GhostexCEFRedactedPath());
+  return redacted;
+}
+
+static id GhostexCEFSanitizeDiagnosticValue(id value, NSString* key);
+
+static NSDictionary* GhostexCEFSanitizeDiagnosticPayload(NSDictionary* payload) {
+  NSMutableDictionary* sanitized = [NSMutableDictionary dictionary];
+  for (id rawKey in payload) {
+    NSString* key = [rawKey isKindOfClass:[NSString class]]
+      ? (NSString*)rawKey
+      : [rawKey description];
+    sanitized[key] = GhostexCEFSanitizeDiagnosticValue(payload[rawKey], key);
+  }
+  return sanitized;
+}
+
+static id GhostexCEFSanitizeDiagnosticString(NSString* value, NSString* key) {
+  NSString* normalizedKey = [[key lowercaseString] copy] ?: @"";
+  if (GhostexCEFIsSecretKey(normalizedKey)) {
+    return GhostexCEFRedactedSecret();
+  }
+  if (GhostexCEFIsIdentifierKey(normalizedKey) && GhostexCEFIsSafeIdentifier(value)) {
+    return value;
+  }
+  if (GhostexCEFIsURLKey(normalizedKey) || GhostexCEFLooksLikeURL(value)) {
+    return GhostexCEFSummarizeURL(value);
+  }
+  if (GhostexCEFIsPathKey(normalizedKey) || GhostexCEFLooksLikePath(value)) {
+    return GhostexCEFRedactedPath();
+  }
+  if (GhostexCEFIsSensitiveTextKey(normalizedKey)) {
+    return GhostexCEFRedactedText();
+  }
+  return GhostexCEFRedactSensitiveText(value);
+}
+
+static id GhostexCEFSanitizeDiagnosticValue(id value, NSString* key) {
+  if (!value || value == [NSNull null]) {
+    return [NSNull null];
+  }
+  NSString* normalizedKey = [[key lowercaseString] copy] ?: @"";
+  if ([value isKindOfClass:[NSString class]]) {
+    return GhostexCEFSanitizeDiagnosticString((NSString*)value, normalizedKey);
+  }
+  if ([value isKindOfClass:[NSNumber class]]) {
+    return value;
+  }
+  if ([value isKindOfClass:[NSArray class]]) {
+    NSArray* array = (NSArray*)value;
+    if (GhostexCEFIsSensitiveCollectionKey(normalizedKey)) {
+      return @{@"count": @(array.count), @"redacted": @(YES)};
+    }
+    NSMutableArray* sanitizedArray = [NSMutableArray arrayWithCapacity:array.count];
+    for (id item in array) {
+      [sanitizedArray addObject:GhostexCEFSanitizeDiagnosticValue(item, key) ?: [NSNull null]];
+    }
+    return sanitizedArray;
+  }
+  if ([value isKindOfClass:[NSDictionary class]]) {
+    if (GhostexCEFIsSensitiveCollectionKey(normalizedKey)) {
+      return @{@"redacted": @(YES)};
+    }
+    return GhostexCEFSanitizeDiagnosticPayload((NSDictionary*)value);
+  }
+  return GhostexCEFRedactSensitiveText([value description]);
+}
+
 static void GhostexCEFAppendDiagnosticLog(NSString* event, NSDictionary* details) {
   if (!GhostexCEFNativeDebugLoggingEnabled()) {
     return;
   }
   NSMutableDictionary* payload = [NSMutableDictionary dictionaryWithDictionary:details ? details : @{}];
   [payload setObject:event forKey:@"event"];
+  /*
+   CDXC:DiagnosticsPrivacy 2026-05-31-00:33:
+   CEF diagnostics write directly from Objective-C++ into the same support-bundle log as Swift pane diagnostics. Sanitize the payload before JSON serialization so raw browser URLs, page titles, source paths, console text, and credentials cannot bypass NativeLogPrivacy when users zip and send logs.
+   */
+  NSDictionary* sanitizedPayload = GhostexCEFSanitizeDiagnosticPayload(payload);
   NSError* serializationError = nil;
-  NSData* jsonData = [NSJSONSerialization dataWithJSONObject:payload
+  NSData* jsonData = [NSJSONSerialization dataWithJSONObject:sanitizedPayload
                                                      options:NSJSONWritingSortedKeys
                                                        error:&serializationError];
   NSString* json = serializationError || !jsonData
@@ -481,11 +752,90 @@ static CefRefPtr<CefRequestContext> GhostexCEFRequestContextForProfile(NSString*
   CefString(&contextSettings.cache_path) = [profilePath UTF8String];
   CefRefPtr<CefRequestContext> context = CefRequestContext::CreateContext(contextSettings, nullptr);
   if (!context) {
-    NSLog(@"[CEF] Failed to create persistent request context for profile %@; using global context.", identifier);
+    NSLog(@"[CEF] Failed to create persistent request context for profile <redacted>; using global context.");
     return CefRequestContext::GetGlobalContext();
   }
   g_persistentRequestContexts[key] = context;
   return context;
+}
+
+void GhostexCEFImportCookiesForProfile(
+  NSString* profileIdentifier,
+  NSArray<NSHTTPCookie*>* cookies,
+  void (^completion)(NSInteger importedCount)) {
+  if (!g_cefInitialized || cookies.count == 0) {
+    if (completion) {
+      dispatch_async(dispatch_get_main_queue(), ^{
+        completion(0);
+      });
+    }
+    return;
+  }
+
+  CefRefPtr<CefRequestContext> requestContext = GhostexCEFRequestContextForProfile(profileIdentifier);
+  CefRefPtr<CefCookieManager> cookieManager = requestContext ? requestContext->GetCookieManager(nullptr) : nullptr;
+  if (!cookieManager) {
+    if (completion) {
+      dispatch_async(dispatch_get_main_queue(), ^{
+        completion(0);
+      });
+    }
+    return;
+  }
+
+  /*
+   CDXC:BrowserImport 2026-06-04-11:40:
+   Browser data import must populate the selected Ghostex browser profile through CEF's cookie manager instead of copying another browser's raw profile database. Chromium profile stores include browser-specific encryption, locks, and schema state; importing compatible cookies at the writer boundary keeps the destination profile owned by Ghostex and lets CEF decide which cookies are valid.
+   */
+  auto state = std::make_shared<GhostexCEFCookieImportState>(completion);
+  for (NSHTTPCookie* cookie in cookies) {
+    NSString* name = cookie.name ?: @"";
+    NSString* value = cookie.value ?: @"";
+    NSString* domain = cookie.domain ?: @"";
+    if (name.length == 0 || domain.length == 0) {
+      continue;
+    }
+    NSString* normalizedHost = domain;
+    while ([normalizedHost hasPrefix:@"."]) {
+      normalizedHost = [normalizedHost substringFromIndex:1];
+    }
+    if (normalizedHost.length == 0) {
+      continue;
+    }
+
+    NSString* path = cookie.path.length > 0 ? cookie.path : @"/";
+    NSString* scheme = cookie.isSecure ? @"https" : @"http";
+    NSString* url = [NSString stringWithFormat:@"%@://%@%@", scheme, normalizedHost, path];
+
+    CefCookie cefCookie;
+    CefString(&cefCookie.name) = [name UTF8String];
+    CefString(&cefCookie.value) = [value UTF8String];
+    CefString(&cefCookie.domain) = [domain UTF8String];
+    CefString(&cefCookie.path) = [path UTF8String];
+    cefCookie.secure = cookie.isSecure;
+    cefCookie.httponly = cookie.isHTTPOnly;
+    if (cookie.expiresDate) {
+      cefCookie.has_expires = true;
+      cefCookie.expires.val = static_cast<int64_t>(
+        (cookie.expiresDate.timeIntervalSince1970 + 11644473600.0) * 1000000.0);
+    }
+
+    state->pending.fetch_add(1);
+    if (!cookieManager->SetCookie(
+          CefString([url UTF8String]),
+          cefCookie,
+          new GhostexCEFCookieImportCallback(state))) {
+      GhostexCEFFinishCookieImport(state, false);
+    }
+  }
+
+  if (state->pending.load() == 0) {
+    if (completion) {
+      dispatch_async(dispatch_get_main_queue(), ^{
+        completion(0);
+      });
+    }
+  }
 }
 
 static NSString* GhostexCEFFrameworkExecutablePath(void) {
@@ -1626,13 +1976,13 @@ void GhostexCEFBrowserClient::OpenRemoteDevToolsFrontend(CefRefPtr<CefBrowser> b
     dataTaskWithURL:targetsURL
   completionHandler:^(NSData* data, NSURLResponse* response, NSError* error) {
     if (error || !data) {
-      NSLog(@"[CEF] Remote DevTools target lookup failed: %@", error);
+      NSLog(@"[CEF] Remote DevTools target lookup failed: %@", GhostexCEFRedactSensitiveText([error description]));
       return;
     }
     NSError* jsonError = nil;
     id json = [NSJSONSerialization JSONObjectWithData:data options:0 error:&jsonError];
     if (jsonError || ![json isKindOfClass:[NSArray class]]) {
-      NSLog(@"[CEF] Remote DevTools target JSON was invalid: %@", jsonError);
+      NSLog(@"[CEF] Remote DevTools target JSON was invalid: %@", GhostexCEFRedactSensitiveText([jsonError description]));
       return;
     }
     NSDictionary* selected = nil;

@@ -11,6 +11,11 @@ daemon.log
 daemon.pid
 bd.sock
 .local_version
+backup/
+embeddeddolt/
+
+# CDXC:ProjectBoard 2026-06-02-17:00:
+# Beads backup archives and embedded Dolt runtime state are generated local storage, not repo source. Keep JSONL exports and config tracked below so project-board state remains reviewable while locks/binary backup files stay out of commits.
 
 # Legacy database files
 db.sqlite

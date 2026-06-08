@@ -1,7 +1,6 @@
 /**
- * CDXC:CommandIcons 2026-04-28-05:23: Command and workspace icon pickers use
- * this explicit Tabler allowlist so users get app-relevant action, agent,
- * project, code, git, and runtime glyphs without exposing the full icon pack.
+ * CDXC:CommandIcons 2026-04-28-05:23:
+ * Command icon pickers use this explicit Tabler allowlist so users get app-relevant action, agent, project, code, git, and runtime glyphs without exposing the full icon pack.
  */
 export const SIDEBAR_COMMAND_ICON_IDS = [
   "playerPlay",

@@ -1,4 +1,6 @@
 import {
+  IconChevronRight,
+  IconCheck,
   IconCopy,
   IconCode,
   IconClock,
@@ -17,7 +19,7 @@ import {
   IconPlayerPlay,
   IconRefresh,
   IconSparkles,
-  IconStar,
+  IconTag,
   IconUserCircle,
   IconX,
 } from "@tabler/icons-react";
@@ -27,6 +29,7 @@ import { useDroppable } from "@dnd-kit/react";
 import { useSortable } from "@dnd-kit/react/sortable";
 import {
   Fragment,
+  useCallback,
   useEffect,
   useEffectEvent,
   useRef,
@@ -58,7 +61,16 @@ import {
 import { openAppModal } from "./app-modal-host-bridge";
 import { SidebarContextMenuPortal } from "./sidebar-context-menu-portal";
 import { useSidebarStore } from "./sidebar-store";
+import {
+  getEffectiveSessionTag,
+  getSidebarSessionTagLabel,
+  SessionTagIcon,
+  SIDEBAR_SESSION_TAG_OPTIONS,
+  SIDEBAR_SESSION_TAG_SECTIONS,
+  type SidebarSessionTag,
+} from "./session-tag-ui";
 import type { WebviewApi } from "./webview-api";
+import { createPortal, flushSync } from "react-dom";
 
 const CONTEXT_MENU_MARGIN_PX = 12;
 const CONTEXT_MENU_WIDTH_PX = 178;
@@ -70,6 +82,18 @@ const SESSION_CARD_DRAG_HOLD_TOLERANCE_PX = 12;
 const TOUCH_SESSION_CARD_DRAG_HOLD_DELAY_MS = 130;
 const TOUCH_SESSION_CARD_DRAG_HOLD_TOLERANCE_PX = 12;
 const COMPLETION_FLASH_DURATION_MS = 3_000;
+const DND_SESSION_CARD_AX_ATTRIBUTES = [
+  "aria-describedby",
+  "aria-disabled",
+  "aria-grabbed",
+  "aria-pressed",
+  "aria-roledescription",
+] as const;
+const DND_SESSION_FRAME_AX_ATTRIBUTES = [
+  ...DND_SESSION_CARD_AX_ATTRIBUTES,
+  "role",
+  "tabindex",
+] as const;
 
 function getBrowserFeedbackToolLabel(tool: BrowserFeedbackTool): string {
   return tool === "agentation" ? "Agentation" : "React Grab";
@@ -108,7 +132,8 @@ type SessionContextMenuAction = {
   icon: ReactNode;
   key: string;
   label: string;
-  onClick: () => void;
+  onClick: (event: ReactMouseEvent<HTMLButtonElement>) => void;
+  submenu?: "session-tags";
 };
 
 export type SortableSessionCardProps = {
@@ -120,6 +145,7 @@ export type SortableSessionCardProps = {
   index: number;
   isSearchSelected?: boolean;
   onFocusRequested?: (groupId: string, sessionId: string) => void;
+  sessionIdsBelow?: readonly string[];
   sessionId: string;
   showGroupDropTargetChrome?: boolean;
   showGroupConnector?: boolean;
@@ -127,8 +153,57 @@ export type SortableSessionCardProps = {
   vscode: WebviewApi;
 };
 
+export function getSessionCardAccessibleLabel({
+  isFocused,
+  title,
+}: {
+  isFocused: boolean;
+  title: string;
+}): string {
+  const fallbackTitle = title.trim() || "Session";
+  return isFocused ? `${fallbackTitle}, current session` : fallbackTitle;
+}
+
+export type SidebarBulkContextMenuScheduler = (operation: () => void) => void;
+
+/**
+ * CDXC:SidebarContextMenu 2026-06-07-13:00:
+ * Sleep below and Close below can fan out to many native lifecycle messages.
+ * Run those targets from scheduled background tasks so the menu click returns
+ * immediately, the context menu can dismiss before lifecycle work starts, and
+ * the sidebar remains responsive between target operations.
+ *
+ * CDXC:SidebarContextMenu 2026-06-07-13:09:
+ * Bulk lifecycle menu items should still close like normal menu actions. Only
+ * the fan-out work runs in the background; menu visibility should not be used
+ * as an operation progress indicator.
+ */
+export function runSidebarBulkContextMenuActionInBackground(
+  sessionIds: readonly string[],
+  runForSessionId: (sessionId: string) => void,
+  scheduler: SidebarBulkContextMenuScheduler = (operation) => {
+    globalThis.setTimeout(operation, 0);
+  },
+): void {
+  const pendingSessionIds = [...sessionIds];
+  const runNext = () => {
+    const nextSessionId = pendingSessionIds.shift();
+    if (!nextSessionId) {
+      return;
+    }
+
+    runForSessionId(nextSessionId);
+    if (pendingSessionIds.length > 0) {
+      scheduler(runNext);
+    }
+  };
+
+  if (pendingSessionIds.length > 0) {
+    scheduler(runNext);
+  }
+}
+
 function clampContextMenuPosition(
-  clientX: number,
   clientY: number,
   itemCount: number,
   dividerCount: number,
@@ -138,15 +213,25 @@ function clampContextMenuPosition(
     itemCount * CONTEXT_MENU_ITEM_HEIGHT_PX +
     dividerCount * CONTEXT_MENU_DIVIDER_HEIGHT_PX;
   return {
-    x: Math.max(
-      CONTEXT_MENU_MARGIN_PX,
-      Math.min(clientX, window.innerWidth - CONTEXT_MENU_WIDTH_PX - CONTEXT_MENU_MARGIN_PX),
-    ),
+    x: getCenteredSidebarMenuX(CONTEXT_MENU_WIDTH_PX),
     y: Math.max(
       CONTEXT_MENU_MARGIN_PX,
       Math.min(clientY, window.innerHeight - menuHeight - CONTEXT_MENU_MARGIN_PX),
     ),
   };
+}
+
+function getCenteredSidebarMenuX(menuWidth: number): number {
+  /*
+   * CDXC:SidebarContextMenu 2026-06-05-21:23:
+   * Session context menus and the Tag as submenu should be horizontally
+   * centered in the sidebar webview rather than opening at the pointer x.
+   * Clamp against the sidebar viewport so narrow sidebars cap menu width at
+   * the available sidebar width instead of overflowing into native surfaces.
+   */
+  const availableWidth = Math.max(0, window.innerWidth - CONTEXT_MENU_MARGIN_PX * 2);
+  const renderedWidth = Math.min(menuWidth, availableWidth);
+  return Math.max(CONTEXT_MENU_MARGIN_PX, (window.innerWidth - renderedWidth) / 2);
 }
 
 export function SortableSessionCard({
@@ -158,6 +243,7 @@ export function SortableSessionCard({
   index,
   isSearchSelected = false,
   onFocusRequested,
+  sessionIdsBelow = [],
   sessionId,
   showGroupDropTargetChrome = true,
   showGroupConnector = false,
@@ -165,7 +251,26 @@ export function SortableSessionCard({
   vscode,
 }: SortableSessionCardProps) {
   const session = useSidebarStore((state) => state.sessionsById[sessionId]);
+  const sleepableSessionIdsBelow = useSidebarStore(
+    useShallow((state) =>
+      sessionIdsBelow.filter((candidateSessionId) =>
+        canSleepSidebarSession(state.sessionsById[candidateSessionId]),
+      ),
+    ),
+  );
   const canFocusMode = useSidebarStore((state) => state.groupsById[groupId]?.canFocusMode === true);
+  const shouldKeepLastProjectSessionVisibleOnClose = useSidebarStore(
+    useShallow((state) => {
+      const group = state.groupsById[groupId];
+      const groupSessionIds = state.sessionIdsByGroup[groupId] ?? [];
+      return (
+        group?.projectContext !== undefined &&
+        group.isChatCollection !== true &&
+        groupSessionIds.length === 1 &&
+        groupSessionIds[0] === sessionId
+      );
+    }),
+  );
   const {
     hideSessionAgentIconUntilHover,
     hideBrowserFaviconUntilHover,
@@ -202,14 +307,17 @@ export function SortableSessionCard({
     })),
   );
   const [contextMenuPosition, setContextMenuPosition] = useState<ContextMenuPosition>();
+  const [tagSubmenuPosition, setTagSubmenuPosition] = useState<ContextMenuPosition>();
   const [completionFlashRunId, setCompletionFlashRunId] = useState(0);
   const menuRef = useRef<HTMLDivElement>(null);
   const aliasHeadingRef = useRef<HTMLDivElement>(null);
+  const sessionFrameRef = useRef<HTMLDivElement | null>(null);
+  const sessionCardRef = useRef<HTMLElement | null>(null);
   const debugInstanceIdRef = useRef(createSidebarDebugInstanceId());
   const lastAgentIconRenderDebugKeyRef = useRef<string | undefined>(undefined);
   const isBrowserSession = session?.sessionKind === "browser" || session?.kind === "browser";
   const isT3Session = session?.sessionKind === "t3";
-  const canFavoriteSession = !isBrowserSession;
+  const canTagSession = !isBrowserSession;
   const canForkSession = session ? !isBrowserSession && supportsFork(session) : false;
   const canDelayedSend = session ? !isBrowserSession && !isT3Session : false;
   const canCopyResumeCommand = session
@@ -307,14 +415,20 @@ export function SortableSessionCard({
     return null;
   }
 
+  const currentSessionTag = getEffectiveSessionTag(session);
   const sessionTitleTooltip = getSessionCardTitleTooltip({
     session,
     showDebugSessionNumbers,
+  });
+  const sessionAccessibleLabel = getSessionCardAccessibleLabel({
+    isFocused: session.isFocused,
+    title: sessionTitleTooltip.headingText,
   });
   const lifecycleState = getSidebarSessionLifecycleState(session);
   const showTerminalSessionIcon = shouldShowTerminalSessionIcon(session);
   const hasSessionCardIcon =
     session.isPinned === true ||
+    Boolean(currentSessionTag) ||
     Boolean(session.delayedSendRemainingLabel) ||
     Boolean(session.agentIcon) ||
     showTerminalSessionIcon ||
@@ -322,10 +436,85 @@ export function SortableSessionCard({
   const sessionAnchorStyle = {
     anchorName: getSessionStatusAnchorName(sessionId),
   } as CSSProperties;
+  const setSessionFrameElement = useCallback(
+    (element: HTMLDivElement | null) => {
+      sessionFrameRef.current = element;
+      sortable.ref(element);
+    },
+    [sortable],
+  );
+  const setSessionCardElement = useCallback(
+    (element: HTMLElement | null) => {
+      sessionCardRef.current = element;
+      sortable.sourceRef(element);
+    },
+    [sortable],
+  );
 
   useEffect(() => {
     setContextMenuPosition(undefined);
+    setTagSubmenuPosition(undefined);
   }, [session.alias, session.sessionId]);
+
+  useEffect(() => {
+    const targets: Array<{ attributes: readonly string[]; element: HTMLElement }> = [];
+    if (sessionFrameRef.current) {
+      targets.push({
+        attributes: DND_SESSION_FRAME_AX_ATTRIBUTES,
+        element: sessionFrameRef.current,
+      });
+    }
+    if (sessionCardRef.current) {
+      targets.push({
+        attributes: DND_SESSION_CARD_AX_ATTRIBUTES,
+        element: sessionCardRef.current,
+      });
+    }
+    if (targets.length === 0) {
+      return;
+    }
+
+    const scrubDndAccessibilityAttributes = (target: {
+      attributes: readonly string[];
+      element: HTMLElement;
+    }) => {
+      for (const attribute of target.attributes) {
+        target.element.removeAttribute(attribute);
+      }
+    };
+
+    for (const target of targets) {
+      scrubDndAccessibilityAttributes(target);
+    }
+
+    const observers = targets.map((target) => {
+      const observer = new MutationObserver((mutations) => {
+        if (
+          mutations.some(
+            (mutation) =>
+              mutation.type === "attributes" &&
+              mutation.attributeName !== null &&
+              target.attributes.includes(mutation.attributeName),
+          )
+        ) {
+          window.queueMicrotask(() => scrubDndAccessibilityAttributes(target));
+        }
+      });
+
+      observer.observe(target.element, {
+        attributeFilter: [...target.attributes],
+        attributes: true,
+      });
+
+      return observer;
+    });
+
+    return () => {
+      for (const observer of observers) {
+        observer.disconnect();
+      }
+    };
+  }, [sessionAccessibleLabel]);
 
   useEffect(() => {
     if (completionFlashNonce <= 0) {
@@ -484,9 +673,10 @@ export function SortableSessionCard({
     vscode,
   ]);
 
-  const openContextMenu = (clientX: number, clientY: number) => {
+  const openContextMenu = (clientY: number) => {
+    setTagSubmenuPosition(undefined);
     setContextMenuPosition(
-      clampContextMenuPosition(clientX, clientY, contextMenuItemCount, contextMenuDividerCount),
+      clampContextMenuPosition(clientY, contextMenuItemCount, contextMenuDividerCount),
     );
   };
 
@@ -531,6 +721,15 @@ export function SortableSessionCard({
     }
 
     setContextMenuPosition(undefined);
+    if (shouldKeepLastProjectSessionVisibleOnClose) {
+      /*
+      CDXC:LocalFirstSidebar 2026-06-01-20:52:
+      Closing a project's final sidebar session parks it instead of removing it. Keep the card visible immediately and mark it sleeping locally so the project does not blink out before gxserver publishes the parked-session presentation.
+      */
+      useSidebarStore.getState().setSessionSleepingLocally(session.sessionId, true);
+    } else {
+      useSidebarStore.getState().hideSessionLocally(session.sessionId);
+    }
     vscode.postMessage({
       sessionId: session.sessionId,
       type: "closeSession",
@@ -719,7 +918,10 @@ export function SortableSessionCard({
   };
 
   const requestSetSleeping = (sleeping: boolean) => {
-    setContextMenuPosition(undefined);
+    flushSync(() => {
+      setContextMenuPosition(undefined);
+      useSidebarStore.getState().setSessionSleepingLocally(session.sessionId, sleeping);
+    });
     vscode.postMessage({
       sessionId: session.sessionId,
       sleeping,
@@ -727,12 +929,64 @@ export function SortableSessionCard({
     });
   };
 
-  const requestSetFavorite = (favorite: boolean) => {
-    setContextMenuPosition(undefined);
+  const requestSleepBelow = () => {
+    const targetSessionIds = sessionIdsBelow.filter((candidateSessionId) =>
+      canSleepSidebarSession(useSidebarStore.getState().sessionsById[candidateSessionId]),
+    );
+    if (targetSessionIds.length === 0) {
+      return;
+    }
+
+    flushSync(() => {
+      setContextMenuPosition(undefined);
+      useSidebarStore.getState().setSessionsSleepingLocally(targetSessionIds, true);
+    });
     vscode.postMessage({
-      favorite,
+      sessionIds: targetSessionIds,
+      sleeping: true,
+      type: "setSessionsSleeping",
+    });
+  };
+
+  const requestCloseBelow = () => {
+    if (sessionIdsBelow.length === 0) {
+      return;
+    }
+
+    flushSync(() => {
+      setContextMenuPosition(undefined);
+      useSidebarStore.getState().hideSessionsLocally(sessionIdsBelow);
+    });
+    vscode.postMessage({
+      sessionIds: [...sessionIdsBelow],
+      type: "closeSessions",
+    });
+  };
+
+  const requestSetSessionTag = (tag: SidebarSessionTag | undefined) => {
+    setContextMenuPosition(undefined);
+    setTagSubmenuPosition(undefined);
+    vscode.postMessage({
       sessionId: session.sessionId,
-      type: "setSessionFavorite",
+      sessionTag: tag ?? null,
+      type: "setSessionTag",
+    });
+  };
+
+  const openSessionTagSubmenu = (event: ReactMouseEvent<HTMLButtonElement>) => {
+    const bounds = event.currentTarget.getBoundingClientRect();
+    const submenuWidth = 204;
+    const submenuHeight =
+      CONTEXT_MENU_VERTICAL_PADDING_PX +
+      SIDEBAR_SESSION_TAG_OPTIONS.length * CONTEXT_MENU_ITEM_HEIGHT_PX +
+      SIDEBAR_SESSION_TAG_SECTIONS.length * 18 +
+      Math.max(0, SIDEBAR_SESSION_TAG_SECTIONS.length - 1) * 10;
+    setTagSubmenuPosition({
+      x: getCenteredSidebarMenuX(submenuWidth),
+      y: Math.max(
+        CONTEXT_MENU_MARGIN_PX,
+        Math.min(bounds.bottom + 4, window.innerHeight - submenuHeight - CONTEXT_MENU_MARGIN_PX),
+      ),
     });
   };
 
@@ -787,14 +1041,15 @@ export function SortableSessionCard({
     label: session.isPinned ? "Unpin" : "Pin",
     onClick: () => requestSetPinned(!session.isPinned),
   });
-  if (canFavoriteSession) {
+  if (canTagSession) {
     primaryActions.push({
       icon: (
-        <IconStar aria-hidden="true" className="session-context-menu-icon" size={16} stroke={1.8} />
+        <IconTag aria-hidden="true" className="session-context-menu-icon" size={16} stroke={1.8} />
       ),
-      key: "favorite",
-      label: session.isFavorite ? "Unfavorite" : "Favorite",
-      onClick: () => requestSetFavorite(!session.isFavorite),
+      key: "tag-as",
+      label: "Tag as",
+      onClick: openSessionTagSubmenu,
+      submenu: "session-tags",
     });
   }
   if (canSleepSession) {
@@ -812,6 +1067,41 @@ export function SortableSessionCard({
       key: "sleep",
       label: session.isSleeping ? "Wake" : "Sleep",
       onClick: () => requestSetSleeping(!session.isSleeping),
+    });
+  }
+
+  const belowActions: SessionContextMenuAction[] = [];
+  if (sessionIdsBelow.length > 0) {
+    /**
+     * CDXC:SidebarContextMenu 2026-06-04-23:40:
+     * Session row context menus expose below-scoped lifecycle actions only
+     * when the clicked row has visible sessions beneath it. Sleep below targets
+     * sleepable terminal/agent rows, while Close below removes every visible
+     * row beneath the clicked session in the current sidebar order.
+     */
+    if (sleepableSessionIdsBelow.length > 0) {
+      belowActions.push({
+        icon: (
+          <IconMoon
+            aria-hidden="true"
+            className="session-context-menu-icon"
+            size={16}
+            stroke={1.8}
+          />
+        ),
+        key: "sleep-below",
+        label: "Sleep below",
+        onClick: requestSleepBelow,
+      });
+    }
+    belowActions.push({
+      danger: true,
+      icon: (
+        <IconX aria-hidden="true" className="session-context-menu-icon" size={16} stroke={1.8} />
+      ),
+      key: "close-below",
+      label: "Close below",
+      onClick: requestCloseBelow,
     });
   }
 
@@ -1050,7 +1340,7 @@ export function SortableSessionCard({
       onClick: () => requestClose("context-menu"),
     },
   ];
-  const contextMenuSections = [primaryActions, sessionActions, destructiveActions].filter(
+  const contextMenuSections = [primaryActions, sessionActions, belowActions, destructiveActions].filter(
     (section) => section.length > 0,
   );
   const contextMenuItemCount = contextMenuSections.reduce(
@@ -1104,7 +1394,7 @@ export function SortableSessionCard({
       event.preventDefault();
       event.stopPropagation();
       const bounds = event.currentTarget.getBoundingClientRect();
-      openContextMenu(bounds.left + 24, bounds.top + 18);
+      openContextMenu(bounds.top + 18);
       return;
     }
 
@@ -1140,10 +1430,11 @@ export function SortableSessionCard({
           )}
           data-lifecycle-state={lifecycleState}
           data-pinned={String(session.isPinned === true)}
+          data-tagged={String(Boolean(currentSessionTag))}
           data-running={String(lifecycleState === "running")}
           data-sleeping={String(Boolean(session.isSleeping))}
           data-visible={String(session.isVisible)}
-          ref={sortable.ref}
+          ref={setSessionFrameElement}
         >
           <div
             aria-hidden
@@ -1156,9 +1447,8 @@ export function SortableSessionCard({
             ref={afterDropTarget.ref}
           />
           <article
-            aria-expanded={contextMenuPosition ? true : undefined}
-            aria-haspopup="menu"
-            aria-pressed={session.isFocused}
+            aria-current={session.isFocused ? "page" : undefined}
+            aria-label={sessionAccessibleLabel}
             className="session"
             data-activity={session.activity}
             data-completion-flash={
@@ -1182,6 +1472,7 @@ export function SortableSessionCard({
             data-running={String(lifecycleState === "running")}
             data-search-selected={String(isSearchSelected)}
             data-pinned={String(session.isPinned === true)}
+            data-tagged={String(Boolean(currentSessionTag))}
             data-sleeping={String(Boolean(session.isSleeping))}
             data-sidebar-session-id={session.sessionId}
             data-visible={String(session.isVisible)}
@@ -1244,22 +1535,24 @@ export function SortableSessionCard({
             onContextMenu={(event: ReactMouseEvent<HTMLElement>) => {
               event.preventDefault();
               event.stopPropagation();
-              openContextMenu(event.clientX, event.clientY);
+              openContextMenu(event.clientY);
             }}
             onKeyDown={handleKeyDown}
-            ref={sortable.sourceRef}
+            ref={setSessionCardElement}
             role="button"
             style={sessionAnchorStyle}
             tabIndex={0}
           >
             <SessionFloatingAgentIcon
               agentIcon={session.agentIcon}
+              delayedSendDeadlineAt={session.delayedSendDeadlineAt}
               delayedSendRemainingLabel={session.delayedSendRemainingLabel}
               faviconDataUrl={session.faviconDataUrl}
               isFavorite={session.isFavorite}
               isPinned={session.isPinned}
               isReloading={session.isReloading}
               onDelayedSendClick={requestDelayedSend}
+              sessionTag={session.sessionTag}
               sessionPersistenceName={session.sessionPersistenceName}
               sessionPersistenceProvider={session.sessionPersistenceProvider}
               showTerminalIcon={showTerminalSessionIcon}
@@ -1285,6 +1578,7 @@ export function SortableSessionCard({
       </OverflowTooltipText>
       {contextMenuPosition ? (
         <SidebarContextMenuPortal
+          menuClassName="session-context-menu sidebar-session-context-menu"
           menuRef={menuRef}
           menuStyle={{
             left: `${contextMenuPosition.x}px`,
@@ -1292,6 +1586,7 @@ export function SortableSessionCard({
           }}
           onDismiss={() => {
             setContextMenuPosition(undefined);
+            setTagSubmenuPosition(undefined);
           }}
           vscode={vscode}
         >
@@ -1305,12 +1600,26 @@ export function SortableSessionCard({
                   <button
                     key={action.key}
                     className={`session-context-menu-item${action.danger ? " session-context-menu-item-danger" : ""}`}
-                    onClick={action.onClick}
+                    onClick={(event) => action.onClick(event)}
+                    aria-expanded={
+                      action.submenu === "session-tags"
+                        ? Boolean(tagSubmenuPosition)
+                        : undefined
+                    }
+                    aria-haspopup={action.submenu === "session-tags" ? "menu" : undefined}
                     role="menuitem"
                     type="button"
                   >
                     {action.icon}
                     {action.label}
+                    {action.submenu === "session-tags" ? (
+                      <IconChevronRight
+                        aria-hidden="true"
+                        className="session-context-menu-trailing-icon"
+                        size={14}
+                        stroke={1.8}
+                      />
+                    ) : null}
                   </button>
                 ))}
               </div>
@@ -1318,12 +1627,92 @@ export function SortableSessionCard({
           ))}
         </SidebarContextMenuPortal>
       ) : null}
+      {contextMenuPosition && tagSubmenuPosition
+        ? createPortal(
+            <div
+              aria-label="Tag as"
+              className="session-context-menu session-tag-submenu"
+              data-empty-space-blocking="true"
+              onClick={(event) => event.stopPropagation()}
+              role="menu"
+              style={{
+                left: `${tagSubmenuPosition.x}px`,
+                top: `${tagSubmenuPosition.y}px`,
+                zIndex: 21,
+              }}
+            >
+              {/*
+               * CDXC:SessionTags 2026-06-05-12:30:
+               * The session context menu exposes `Tag as` as a submenu with the
+               * canonical session tag list. Choosing the current marker clears
+               * it so the old Favorite/Unfavorite workflow remains one click deep.
+               */}
+              {SIDEBAR_SESSION_TAG_SECTIONS.map((section) => (
+                <div className="session-tag-menu-section" key={section.label}>
+                  <div className="session-tag-menu-section-label">{section.label}</div>
+                  {section.options.map((option) => {
+                    const isSelected = currentSessionTag === option.value;
+                    return (
+                      <button
+                        aria-checked={isSelected}
+                        aria-label={
+                          isSelected
+                            ? `Remove ${getSidebarSessionTagLabel(option.value)} tag`
+                            : `Tag as ${getSidebarSessionTagLabel(option.value)}`
+                        }
+                        className="session-context-menu-item session-tag-menu-item"
+                        data-selected={String(isSelected)}
+                        key={option.value}
+                        onClick={() =>
+                          requestSetSessionTag(isSelected ? undefined : option.value)
+                        }
+                        role="menuitemradio"
+                        type="button"
+                      >
+                        <SessionTagIcon
+                          className="session-context-menu-icon session-tag-colored-icon"
+                          fillFavorite
+                          size={16}
+                          stroke={1.8}
+                          tag={option.value}
+                        />
+                        <span className="session-tag-menu-item-label">{option.label}</span>
+                        <IconCheck
+                          aria-hidden="true"
+                          className="session-tag-menu-item-check"
+                          data-visible={String(isSelected)}
+                          size={14}
+                          stroke={2}
+                        />
+                      </button>
+                    );
+                  })}
+                </div>
+              ))}
+            </div>,
+            document.body,
+          )
+        : null}
     </>
   );
 }
 
 function getSessionRenameInitialTitle(session: SidebarSessionItem): string {
   return session.primaryTitle?.trim() || session.terminalTitle?.trim() || session.alias;
+}
+
+export function canSleepSidebarSession(session: SidebarSessionItem | undefined): boolean {
+  /*
+  CDXC:SidebarContextMenu 2026-06-07-13:34:
+  Sleep below must only target awake non-browser sessions. Some snapshots mark
+  an already parked row through lifecycleState before isSleeping is reconciled,
+  so check both fields to avoid sending duplicate sleep work to native.
+  */
+  return Boolean(session) &&
+    session?.sessionKind !== "browser" &&
+    session?.kind !== "browser" &&
+    session?.isSleeping !== true &&
+    session?.lifecycleState !== "sleeping";
 }
 
 function supportsResumeCommandCopy(session: SidebarSessionItem): boolean {

@@ -1,4 +1,5 @@
 #import <AppKit/AppKit.h>
+#import <Foundation/Foundation.h>
 
 NS_ASSUME_NONNULL_BEGIN
 
@@ -11,6 +12,10 @@ bool GhostexCEFIsRuntimeAvailable(void);
 bool GhostexCEFInitialize(int argc, char* _Nullable argv[_Nonnull]);
 void GhostexCEFRunMessageLoop(void);
 void GhostexCEFFlushBrowserState(void (^_Nullable completion)(void));
+void GhostexCEFImportCookiesForProfile(
+  NSString* profileIdentifier,
+  NSArray<NSHTTPCookie*>* cookies,
+  void (^_Nullable completion)(NSInteger importedCount));
 void GhostexCEFShutdown(void);
 int GhostexCEFRemoteDebuggingPort(void);
 

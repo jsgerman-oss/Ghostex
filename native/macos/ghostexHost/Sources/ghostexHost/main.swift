@@ -2,6 +2,22 @@ import AppKit
 import Darwin
 import GhosttyKit
 
+private let ghostexColorDisablingEnvironmentKeys = [
+  "ANSI_COLORS_DISABLED",
+  "NO_COLOR",
+  "NODE_DISABLE_COLORS",
+]
+
+private func removeGhostexProcessColorDisablingEnvironment() {
+  /**
+   CDXC:ProcessColorEnv 2026-06-07-00:38:
+   Ghostex can be launched from agent terminals that export NO_COLOR, but the GUI app is a color-capable host for Ghostty, gxserver, zmx, and forked agent sessions. Strip inherited color-disabling keys at process start so they cannot leak into app-wide environment snapshots.
+   */
+  for key in ghostexColorDisablingEnvironmentKeys {
+    unsetenv(key)
+  }
+}
+
 private func terminalCliArguments() -> [String] {
   CommandLine.arguments.dropFirst().filter { argument in
     !argument.hasPrefix("-psn_")
@@ -15,7 +31,7 @@ private func isTerminalCliInvocation() -> Bool {
 private func runBundledCli(arguments: [String]) -> Never {
   guard
     let cliScriptPath = Bundle.main.resourceURL?
-      .appendingPathComponent("Web/cli/ghostex-cli.mjs").path,
+      .appendingPathComponent("CLI/ghostex-cli.mjs").path,
     FileManager.default.fileExists(atPath: cliScriptPath)
   else {
     fputs("Ghostex CLI is missing from this app bundle. Rebuild or reinstall Ghostex.\n", stderr)
@@ -33,11 +49,17 @@ private func runBundledCli(arguments: [String]) -> Never {
    Pass the bundle-derived dev home and bridge port into the bundled CLI so
    `ghostex-dev sessions` uses ~/.ghostex-dev and the dev WebSocket bridge instead
    of production state.
+   CDXC:GxserverBootstrap 2026-05-30-15:39:
+   gxserver owns 58744. Dev CLI bridge automation must use 58742 so launching ghostex-dev cannot occupy or hide the daemon API port.
+
+   CDXC:GxserverMacBootstrap 2026-05-30-15:13:
+   gxserver reserves local API port 58744. Keep ghostex-dev CLI bridge traffic
+   on 58742 so launching the dev app cannot block daemon startup.
    */
   environment["GHOSTEX_HOME"] = GhostexAppStorage.sharedRootDirectory.path
-  if Bundle.main.bundleIdentifier == "com.madda.ghostex-dev.host" {
+  if isGhostexDevBundleIdentifier(Bundle.main.bundleIdentifier) {
     environment["GHOSTEX_APP_VARIANT"] = "dev"
-    environment["GHOSTEX_CLI_PORT"] = "58744"
+    environment["GHOSTEX_CLI_PORT"] = "58742"
   }
   process.environment = environment
   process.standardInput = FileHandle.standardInput
@@ -53,6 +75,16 @@ private func runBundledCli(arguments: [String]) -> Never {
   }
 }
 
+private func isGhostexDevBundleIdentifier(_ bundleIdentifier: String?) -> Bool {
+  /**
+   CDXC:GxserverVerification 2026-05-30-16:25:
+   Worktree verification needs a uniquely named dev bundle so LaunchServices does not reuse /Applications/Ghostex-dev.app. Treat every com.madda.ghostex-dev... bundle as the dev flavor so the CLI bridge stays off gxserver port 58744 while preserving the production bundle's existing port.
+   */
+  bundleIdentifier?.hasPrefix("com.madda.ghostex-dev") == true
+}
+
+removeGhostexProcessColorDisablingEnvironment()
+
 let cliArguments = terminalCliArguments()
 if !cliArguments.isEmpty || isTerminalCliInvocation() {
   /**
@@ -66,11 +98,15 @@ if !cliArguments.isEmpty || isTerminalCliInvocation() {
    command when that binary name is available.
    LaunchServices `-psn_*` arguments are ignored above so Dock and Finder
    launches still start the app normally.
-   CDXC:CliEntrypoint 2026-05-30-21:37
-   If an install resolves `ghostex` to the app executable instead of the bundled
-   shell launcher, bare terminal `ghostex` still means CLI/TUI intent. Keep the
-   shell working directory intact so path commands such as `ghostex ./file`
-   resolve exactly as they do through the normal launcher.
+   CDXC:CliEntrypoint 2026-06-03-20:28:
+   Nightly's gxserver cutover keeps `ghostex`/`gx` as terminal CLI entrypoints.
+   If PATH resolves the command to the app executable rather than the bundled
+   shell launcher, a bare terminal invocation still means CLI/TUI intent while
+   Dock/Finder launches remain non-TTY GUI launches.
+   CDXC:CliInstall 2026-06-07-13:53:
+   The app-owned CLI now lives under Contents/Resources/CLI instead of Web/cli,
+   so app-executable terminal invocations proxy to the same runtime that DMG and
+   Homebrew symlinks expose.
    */
   runBundledCli(arguments: cliArguments)
 }

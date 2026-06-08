@@ -437,6 +437,14 @@
   gap: 0.5rem;
 }
 
+/*
+ * CDXC:AgentsHub 2026-06-04-20:08:
+ * Editor toolbar actions are icon-only with hover tooltips, including disabled Save, so the disabled visual state must not block pointer hover from reaching the tooltip trigger.
+ */
+.agents-hub-editor-action-button.is-disabled {
+  opacity: 0.5;
+}
+
 .agents-hub-editor-body {
   flex: 1 1 auto;
   min-height: 0;

@@ -44,13 +44,15 @@ function SettingsModalStory({
     type: "agentHookStatus",
   });
   const [ghostexCliStatus, setGhostexCliStatus] = useState<SidebarGhostexCliStatusMessage>({
+    agentOrchestrationSkillInstalled: false,
     browserSkillInstalled: false,
     computerUseSkillInstalled: false,
     cuaAppInstalled: false,
     cuaDriverAccessibilityPermissionGranted: cuaPermissionsGranted,
     cuaDriverInstalled: cuaPermissionsGranted !== undefined,
     cuaDriverScreenRecordingPermissionGranted: cuaPermissionsGranted,
-    detail: "ghostex is available on PATH. Ghostex Browser Use and Ghostex Computer Use are not installed yet.",
+    detail: "Ghostex CLI is installed automatically with the app. Use ghostex for the full command. Ghostex Browser Use and Ghostex Computer Use are not installed yet.",
+    generateTitleSkillInstalled: false,
     generatedAt: "2026-05-27T04:17:00.000Z",
     ghostexPath: "/opt/homebrew/bin/ghostex",
     gxBlockedByExistingCommand: false,
@@ -89,6 +91,28 @@ function SettingsModalStory({
             ...ghostexCliStatus,
             browserSkillInstalled: true,
             browserSkillPath: "/Users/madda/agents/skills/ghostex-browser-use/SKILL.md",
+          })
+        }
+        onInstallComputerUseSkill={() =>
+          setGhostexCliStatus({
+            ...ghostexCliStatus,
+            computerUseSkillInstalled: true,
+            computerUseSkillPath: "/Users/madda/agents/skills/ghostex-computer-use/SKILL.md",
+          })
+        }
+        onInstallAgentOrchestrationSkill={() =>
+          setGhostexCliStatus({
+            ...ghostexCliStatus,
+            agentOrchestrationSkillInstalled: true,
+            agentOrchestrationSkillPath:
+              "/Users/madda/agents/skills/ghostex-agent-orchestration/SKILL.md",
+          })
+        }
+        onInstallGenerateTitleSkill={() =>
+          setGhostexCliStatus({
+            ...ghostexCliStatus,
+            generateTitleSkillInstalled: true,
+            generateTitleSkillPath: "/Users/madda/agents/skills/ghostex-generate-title/SKILL.md",
           })
         }
         onInstallCuaDriver={() =>

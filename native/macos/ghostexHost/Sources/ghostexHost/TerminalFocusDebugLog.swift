@@ -1,6 +1,8 @@
 import Foundation
 
 enum TerminalFocusDebugLog {
+  private static let maxLogFileBytes: UInt64 = 25 * 1024 * 1024
+  private static let maxRotatedLogFiles = 3
   private static let noisyEvents = Set([
     "nativeSidebar.postNative",
     "nativeHotkeys.appKitKeyEquivalent",
@@ -52,9 +54,30 @@ enum TerminalFocusDebugLog {
      focused repro. Startup pane breadcrumbs use the same forced write path and
      a distinct prefix so they can be found after a restart-time layout restore
      issue without broadening routine focus logging.
+
+     CDXC:Diagnostics 2026-06-06-07:09:
+     Forced native diagnostics are still regular logging unless the event is
+     warning/error/failure-like. Do not write routine forced/startup entries
+     when Debugging Mode is off, so normal app use only persists warnings,
+     errors, exceptions, and crashes.
+
+     CDXC:Hotkeys 2026-06-07-14:24:
+     A user-requested next/previous-session repro needs a narrow normal-mode
+     trace because Debugging Mode was off during the failed 14:14 shortcut
+     attempt. Allow only nativeHotkeys.navigationRepro entries through; their
+     payload is sanitized and limited to key/action/routing metadata.
+
+     CDXC:TerminalImageDrop 2026-06-07-16:15:
+     A terminal image-drop repro may fail before users can enable Debugging
+     Mode. Allow forced nativeWorkspace.terminalDrop events through in normal
+     mode so AppKit drag registration, pasteboard type classification, and
+     target routing can be diagnosed without persisting dropped paths or text.
      */
     let isStartupPaneLayoutEvent = event.hasPrefix("nativePaneLayoutStartup.")
-    guard force || isStartupPaneLayoutEvent || (NativeDebugLogging.isEnabled && !noisyEvents.contains(event)) else {
+    let isHotkeyNavigationReproEvent = event.hasPrefix("nativeHotkeys.navigationRepro")
+    let isTerminalDropReproEvent = isNativePersistentTerminalDropReproEvent(event, force: force)
+    let isImportantDiagnostic = isNativePersistentLogImportantDiagnostic(event)
+    guard isImportantDiagnostic || isHotkeyNavigationReproEvent || isTerminalDropReproEvent || (NativeDebugLogging.isEnabled && (force || isStartupPaneLayoutEvent || !noisyEvents.contains(event))) else {
       return
     }
     let logsDirectory = GhostexAppStorage.logsDirectory
@@ -62,7 +85,7 @@ enum TerminalFocusDebugLog {
 
     var payload = details
     payload["event"] = event
-    let serializedPayload = serialize(payload)
+    let serializedPayload = serialize(NativeLogPrivacy.sanitizePayload(payload))
     let line = "[\(logDateFormatter.string(from: Date()))] \(serializedPayload)\n"
 
     do {
@@ -70,6 +93,7 @@ enum TerminalFocusDebugLog {
         try FileManager.default.createDirectory(at: logsDirectory, withIntermediateDirectories: true)
         didCreateLogsDirectory = true
       }
+      try rotateLogIfNeeded(logURL: logURL, incomingByteCount: UInt64(line.lengthOfBytes(using: .utf8)))
       if FileManager.default.fileExists(atPath: logURL.path) {
         let handle = try FileHandle(forWritingTo: logURL)
         try handle.seekToEnd()
@@ -81,7 +105,7 @@ enum TerminalFocusDebugLog {
         try line.write(to: logURL, atomically: true, encoding: .utf8)
       }
     } catch {
-      NSLog("failed to write terminal focus debug log: \(error.localizedDescription)")
+      NSLog("failed to write terminal focus debug log: \(NativeLogPrivacy.sanitizeLogLine(error.localizedDescription))")
     }
   }
 
@@ -94,8 +118,235 @@ enum TerminalFocusDebugLog {
     }
     return json
   }
+
+  private static func rotateLogIfNeeded(logURL: URL, incomingByteCount: UInt64) throws {
+    /*
+     CDXC:NativeTerminalFocus 2026-06-01-15:08:
+     Terminal focus diagnostics are intentionally low-volume, but forced repro paths can still run for long sessions. Enforce the same 25 MB/three-file rotation at the native writer so focus debugging cannot create GB-scale logs.
+     */
+    let manager = FileManager.default
+    let size = (try? manager.attributesOfItem(atPath: logURL.path)[.size] as? NSNumber)?.uint64Value ?? 0
+    guard size + incomingByteCount > maxLogFileBytes else {
+      return
+    }
+    let oldest = rotatedLogURL(logURL, index: maxRotatedLogFiles)
+    if manager.fileExists(atPath: oldest.path) {
+      try manager.removeItem(at: oldest)
+    }
+    for index in stride(from: maxRotatedLogFiles - 1, through: 1, by: -1) {
+      let source = rotatedLogURL(logURL, index: index)
+      let destination = rotatedLogURL(logURL, index: index + 1)
+      if manager.fileExists(atPath: source.path) {
+        try manager.moveItem(at: source, to: destination)
+      }
+    }
+    let firstRotation = rotatedLogURL(logURL, index: 1)
+    if manager.fileExists(atPath: firstRotation.path) {
+      try manager.removeItem(at: firstRotation)
+    }
+    try manager.moveItem(at: logURL, to: firstRotation)
+  }
+
+  private static func rotatedLogURL(_ logURL: URL, index: Int) -> URL {
+    logURL.deletingLastPathComponent().appendingPathComponent("\(logURL.lastPathComponent).\(index)")
+  }
 }
 
 func nullableLogString(_ value: String?) -> Any {
   value ?? NSNull()
+}
+
+func isNativePersistentLogImportantDiagnostic(_ event: String) -> Bool {
+  /*
+   CDXC:Diagnostics 2026-06-06-07:09:
+   Persistent native logs should stay quiet during normal use but still capture
+   failures that support can inspect without asking users to reproduce with
+   Debugging Mode already enabled. Classify only warning/error/exception-style
+   event names as normal-mode writes; all routine diagnostics remain gated.
+  */
+  let normalized = event.lowercased()
+  return (
+    normalized.contains("warn")
+      || normalized.contains("error")
+      || normalized.contains("exception")
+      || normalized.contains("fail")
+      || normalized.contains("invalid")
+      || normalized.contains("missing")
+      || normalized.contains("timeout")
+      || normalized.contains("exhausted")
+      || normalized.contains("crash")
+      || normalized.contains("unhealthy")
+      || normalized.contains("portbusy")
+  )
+}
+
+func isNativePersistentTerminalDropReproEvent(_ event: String, force: Bool) -> Bool {
+  force && event.hasPrefix("nativeWorkspace.terminalDrop.")
+}
+
+enum NativeLogPrivacy {
+  private static let redactedText = "[redacted]"
+  private static let redactedPath = "[redacted:path]"
+  private static let redactedURL = "[redacted:url]"
+  private static let redactedSecret = "[redacted:secret]"
+
+  /*
+   CDXC:DiagnosticsPrivacy 2026-05-30-23:56:
+   Users must be able to zip and send Ghostex diagnostic log files without exposing project names, session titles, workspace paths, browser URLs with private query strings, command text, terminal text, or credentials. Sanitize all file-backed native log payloads and the remaining native system-log diagnostics at the writer boundary so individual call sites can keep logging useful IDs, counts, phases, and geometry without leaking user content.
+
+   CDXC:DiagnosticsPrivacy 2026-06-08-02:54:
+   Terminal image-drop recovery may hold prepared Markdown text in memory while waiting for the release event. If any future diagnostic payload accidentally includes that content as a string field, treat content-like keys as user text and redact them at the writer boundary.
+   */
+  static func sanitizePayload(_ payload: [String: Any]) -> [String: Any] {
+    var sanitized: [String: Any] = [:]
+    for (key, value) in payload {
+      sanitized[key] = sanitizeValue(value, key: key)
+    }
+    return sanitized
+  }
+
+  static func sanitizeLogLine(_ message: String) -> String {
+    redactSensitiveText(message)
+  }
+
+  private static func sanitizeValue(_ value: Any, key: String) -> Any {
+    if value is NSNull {
+      return value
+    }
+
+    let normalizedKey = key.lowercased()
+    if let string = value as? String {
+      return sanitizeString(string, key: normalizedKey)
+    }
+    if let bool = value as? Bool {
+      return bool
+    }
+    if let number = value as? NSNumber {
+      return number
+    }
+    if let array = value as? [Any] {
+      if isSensitiveCollectionKey(normalizedKey) {
+        return ["count": array.count, "redacted": true] as [String: Any]
+      }
+      return array.map { sanitizeValue($0, key: key) }
+    }
+    if let dictionary = value as? [String: Any] {
+      if isSensitiveCollectionKey(normalizedKey) {
+        return ["redacted": true] as [String: Any]
+      }
+      return sanitizePayload(dictionary)
+    }
+
+    return redactSensitiveText(String(describing: value))
+  }
+
+  private static func sanitizeString(_ value: String, key: String) -> Any {
+    if key == "event" || key == "phase" || key == "reason" || key == "kind" || key == "type" {
+      return redactSensitiveText(value)
+    }
+    if isSecretKey(key) {
+      return redactedSecret
+    }
+    if isIdentifierKey(key), isSafeIdentifier(value) {
+      return value
+    }
+    if isURLKey(key) || looksLikeURL(value) {
+      return summarizeURL(value)
+    }
+    if isPathKey(key) || looksLikePath(value) {
+      return redactedPath
+    }
+    if isSensitiveTextKey(key) {
+      return redactedText
+    }
+    return redactSensitiveText(value)
+  }
+
+  private static func summarizeURL(_ value: String) -> [String: Any] {
+    guard let components = URLComponents(string: value) else {
+      return ["redacted": true, "type": "url"]
+    }
+    var summary: [String: Any] = [
+      "redacted": true,
+      "type": "url",
+    ]
+    if let scheme = components.scheme {
+      summary["protocol"] = scheme
+    }
+    if let host = components.host {
+      summary["host"] = components.port.map { "\(host):\($0)" } ?? host
+    }
+    return summary
+  }
+
+  private static func redactSensitiveText(_ value: String) -> String {
+    var redacted = value
+    redacted = redacted.replacingOccurrences(
+      of:
+        #"(?i)"(title|name|projectName|sessionName|cwd|path|projectPath|workspaceRoot|worktreePath|url|input|comment|description|command|text|message|details|token|authToken|bearer|credential|password|secret)"\s*:\s*"[^"]*""#,
+      with: #""$1":"[redacted]""#,
+      options: .regularExpression)
+    redacted = redacted.replacingOccurrences(
+      of: #"(?i)\b(bearer|token|authorization|password|secret|credential)=?[^\s"']+"#,
+      with: redactedSecret,
+      options: .regularExpression)
+    redacted = redacted.replacingOccurrences(
+      of: #"https?://[^\s"')]+"#,
+      with: redactedURL,
+      options: .regularExpression)
+    redacted = redacted.replacingOccurrences(
+      of: #"(~|/Users/[^\s/"']+|/(private/)?tmp|/var/folders|/Volumes)/[^\s"']+"#,
+      with: redactedPath,
+      options: .regularExpression)
+    return redacted
+  }
+
+  private static func isIdentifierKey(_ key: String) -> Bool {
+    key == "id" || key.hasSuffix("id") || key.hasSuffix("ids") || key.hasSuffix("ref")
+      || key.hasSuffix("refs")
+  }
+
+  private static func isSafeIdentifier(_ value: String) -> Bool {
+    value.range(of: #"^[A-Za-z0-9._:-]{1,128}$"#, options: .regularExpression) != nil
+  }
+
+  private static func isSecretKey(_ key: String) -> Bool {
+    key.contains("token") || key.contains("bearer") || key.contains("secret")
+      || key.contains("credential") || key.contains("password") || key.contains("cookie")
+      || key.contains("authorization") || key.contains("auth")
+  }
+
+  private static func isURLKey(_ key: String) -> Bool {
+    key == "url" || key.hasSuffix("url") || key.contains("uri") || key == "href"
+      || key == "origin"
+  }
+
+  private static func isPathKey(_ key: String) -> Bool {
+    key == "path" || key == "cwd" || key.hasSuffix("path") || key.hasSuffix("dir")
+      || key.hasSuffix("directory") || key.hasSuffix("root") || key.hasSuffix("file")
+      || key.hasSuffix("filename") || key.contains("workspace")
+  }
+
+  private static func isSensitiveTextKey(_ key: String) -> Bool {
+    key == "title" || key.hasSuffix("title") || key == "name" || key.hasSuffix("name")
+      || key == "message" || key == "details" || key.hasSuffix("details") || key == "input"
+      || key == "text" || key.hasSuffix("text") || key == "content" || key.hasSuffix("content")
+      || key == "comment" || key == "description" || key == "label" || key == "command"
+      || key.hasSuffix("command") || key == "stdout" || key == "stderr" || key == "body"
+      || key.hasSuffix("body")
+  }
+
+  private static func isSensitiveCollectionKey(_ key: String) -> Bool {
+    key == "args" || key.hasSuffix("args") || key == "arguments" || key.hasSuffix("arguments")
+  }
+
+  private static func looksLikeURL(_ value: String) -> Bool {
+    value.range(of: #"^https?://"#, options: [.regularExpression, .caseInsensitive]) != nil
+  }
+
+  private static func looksLikePath(_ value: String) -> Bool {
+    value.range(
+      of: #"^(~/|/Users/|/Volumes/|/private/|/tmp/|/var/folders/)"#,
+      options: .regularExpression) != nil
+  }
 }

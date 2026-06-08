@@ -5,10 +5,14 @@ import {
   BROWSER_OPEN_MODE_OPTIONS,
   DEFAULT_ghostex_SETTINGS,
   DEFAULT_EDITOR_COMMAND_OPTIONS,
+  DEFAULT_SIDEBAR_DEFAULT_WIDTH_PX,
   GHOSTTY_THEME_SETTING_OPTIONS,
   KEEP_AWAKE_DURATION_OPTIONS,
+  MAX_SIDEBAR_DEFAULT_WIDTH_PX,
+  MIN_SIDEBAR_DEFAULT_WIDTH_PX,
   applySidebarSettingsPreset,
   getDefaultEditorCommandForSettings,
+  getSessionTitleGenerationCommandPreview,
   getSidebarSettingsPresetId,
   normalizeghostexSettings,
   PROMPT_EDITOR_BACKEND_OPTIONS,
@@ -86,6 +90,64 @@ describe("normalizeghostexSettings", () => {
     });
     expect(normalizeghostexSettings({ defaultPromptAgentId: "" })).toMatchObject({
       defaultPromptAgentId: "codex",
+    });
+  });
+
+  test("normalizes the session title generation agent settings", () => {
+    /*
+    CDXC:GxserverSessionTitle 2026-06-04-08:24:
+    Settings exposes a separate first-prompt title generator choice so users can switch Codex, Cursor, Claude, Grok Build, or a custom command without changing the broader default prompt agent used by Git, board, worktree, or search prompts.
+    */
+    expect(DEFAULT_ghostex_SETTINGS.sessionTitleGenerationAgent).toBe("codex");
+    expect(normalizeghostexSettings({})).toMatchObject({
+      customSessionTitleGenerationCommand: "",
+      sessionTitleGenerationAgent: "codex",
+    });
+    expect(normalizeghostexSettings({
+      customSessionTitleGenerationCommand: "  title-wrapper --json  ",
+      sessionTitleGenerationAgent: "custom",
+    })).toMatchObject({
+      customSessionTitleGenerationCommand: "title-wrapper --json",
+      sessionTitleGenerationAgent: "custom",
+    });
+    expect(normalizeghostexSettings({ sessionTitleGenerationAgent: "grok" })).toMatchObject({
+      sessionTitleGenerationAgent: "grok",
+    });
+    expect(normalizeghostexSettings({ sessionTitleGenerationAgent: "unknown" })).toMatchObject({
+      sessionTitleGenerationAgent: "codex",
+    });
+  });
+
+  test("previews session title generation commands", () => {
+    /*
+    CDXC:GxserverSessionTitle 2026-06-04-22:44:
+    The Settings and first-time modal title-agent dropdowns must show the exact command template Ghostex sends, including Grok Build's Composer 2.5 model id from the local `grok models` contract.
+    */
+    expect(getSessionTitleGenerationCommandPreview("grok")).toBe(
+      "grok -p --model grok-composer-2.5-fast --output-format plain --no-alt-screen --no-plan --no-subagents --disable-web-search --max-turns 1 '<title generation prompt>'",
+    );
+    expect(getSessionTitleGenerationCommandPreview("custom", { command: "title-wrapper" })).toBe(
+      "title-wrapper <<'PROMPT'\n<title generation prompt>\nPROMPT",
+    );
+  });
+
+  test("normalizes the sidebar handle reset default width", () => {
+    /*
+    CDXC:SidebarChrome 2026-06-05-04:40:
+    Settings owns the sidebar handle double-click reset width, while app restart continues restoring the separately persisted last sidebar width.
+    */
+    expect(DEFAULT_ghostex_SETTINGS.sidebarDefaultWidthPx).toBe(DEFAULT_SIDEBAR_DEFAULT_WIDTH_PX);
+    expect(normalizeghostexSettings({})).toMatchObject({
+      sidebarDefaultWidthPx: DEFAULT_SIDEBAR_DEFAULT_WIDTH_PX,
+    });
+    expect(normalizeghostexSettings({ sidebarDefaultWidthPx: 312.6 })).toMatchObject({
+      sidebarDefaultWidthPx: 313,
+    });
+    expect(normalizeghostexSettings({ sidebarDefaultWidthPx: 10 })).toMatchObject({
+      sidebarDefaultWidthPx: MIN_SIDEBAR_DEFAULT_WIDTH_PX,
+    });
+    expect(normalizeghostexSettings({ sidebarDefaultWidthPx: 900 })).toMatchObject({
+      sidebarDefaultWidthPx: MAX_SIDEBAR_DEFAULT_WIDTH_PX,
     });
   });
 
@@ -222,6 +284,13 @@ describe("normalizeghostexSettings", () => {
      * normalize to zero so existing installations lose pane spacing immediately.
      */
     expect(DEFAULT_ghostex_SETTINGS.workspacePaneGap).toBe(0);
+    expect(DEFAULT_ghostex_SETTINGS.commandsPanelDefaultHeightPx).toBe(125);
+    expect(normalizeghostexSettings({ commandsPanelDefaultHeightPx: 9999 })).toMatchObject({
+      commandsPanelDefaultHeightPx: 600,
+    });
+    expect(normalizeghostexSettings({ commandsPanelDefaultHeightPx: 12 })).toMatchObject({
+      commandsPanelDefaultHeightPx: 40,
+    });
     expect(normalizeghostexSettings({ workspacePaneGap: 24 })).toMatchObject({
       workspacePaneGap: 0,
     });
@@ -232,6 +301,14 @@ describe("normalizeghostexSettings", () => {
      * CDXC:AutoSleep 2026-05-28-08:06:
      * Settings must preserve the existing editor/Git sleep defaults while
      * making agent auto-sleep opt-in and bounded to visible idle-duration choices.
+     *
+     * CDXC:AutoSleep 2026-06-07-00:53:
+     * Agent auto-sleep defaults to fifteen idle minutes once enabled, matching
+     * editor auto-sleep while keeping the opt-in gate.
+     *
+     * CDXC:AutoSleep 2026-06-07-00:56:
+     * Focused agent sessions are always excluded from auto-sleep, so the old
+     * focused-agent override is no longer normalized as a setting.
      */
     expect(AUTO_SLEEP_IDLE_MINUTE_OPTIONS).toEqual([
       { label: "5 minutes", value: 5 },
@@ -243,14 +320,13 @@ describe("normalizeghostexSettings", () => {
       { label: "5 hours", value: 300 },
     ]);
     expect(normalizeghostexSettings({})).toMatchObject({
-      autoSleepAgentIdleMinutes: 60,
+      autoSleepAgentIdleMinutes: 15,
       autoSleepAgentSessionsEnabled: false,
       autoSleepBrowserIdleMinutes: 30,
       autoSleepBrowserSessionsEnabled: false,
       autoSleepCodeEditorEnabled: true,
       autoSleepCodeEditorIdleMinutes: 15,
       autoSleepFavoriteAgentSessions: false,
-      autoSleepFocusedAgentSessions: false,
       autoSleepGitEditorEnabled: true,
       autoSleepGitEditorIdleMinutes: 15,
       autoSleepProjectEditorEnabled: true,
@@ -269,7 +345,7 @@ describe("normalizeghostexSettings", () => {
         autoSleepProjectEditorIdleMinutes: 999,
       }),
     ).toMatchObject({
-      autoSleepAgentIdleMinutes: 60,
+      autoSleepAgentIdleMinutes: 15,
       autoSleepAgentSessionsEnabled: true,
       autoSleepBrowserIdleMinutes: 120,
       autoSleepBrowserSessionsEnabled: true,
@@ -441,7 +517,7 @@ describe("normalizeghostexSettings", () => {
   });
 
   test("keeps the workspace background color setting", () => {
-    expect(DEFAULT_ghostex_SETTINGS.workspaceBackgroundColor).toBe("#151515");
+    expect(DEFAULT_ghostex_SETTINGS.workspaceBackgroundColor).toBe("#000000");
     expect(normalizeghostexSettings({ workspaceBackgroundColor: "#202020" })).toMatchObject({
       workspaceBackgroundColor: "#202020",
     });
@@ -488,21 +564,25 @@ describe("normalizeghostexSettings", () => {
      * attach/recreate contract.
      *
      * CDXC:SessionPersistence 2026-05-23-00:50:
-     * The top-right provider/session overlay preference is enabled by default,
-     * but non-persistent terminal panes still have no provider session label to
-     * render.
+     * The top-right provider/session overlay preference is normalized with
+     * settings defaults, but non-persistent terminal panes still have no
+     * provider session label to render.
      *
      * CDXC:SessionPersistence 2026-05-26-13:41:
      * First-run settings should enable zmx by default, label it as recommended
      * in Settings, and hide tmux/zellij from the dropdown while preserving
      * their normalization support for existing settings and sessions.
+     *
+     * CDXC:SessionPersistence 2026-06-06-05:47:
+     * Provider session ids in terminal panes are disabled by default and remain
+     * available only when the user explicitly enables the pane overlay setting.
      */
     expect(DEFAULT_ghostex_SETTINGS.sessionPersistenceProvider).toBe("zmx");
-    expect(DEFAULT_ghostex_SETTINGS.showSessionIdInTerminalPanes).toBe(true);
+    expect(DEFAULT_ghostex_SETTINGS.showSessionIdInTerminalPanes).toBe(false);
     expect(DEFAULT_ghostex_SETTINGS.tmuxMode).toBe(false);
     expect(normalizeghostexSettings({})).toMatchObject({
       sessionPersistenceProvider: "zmx",
-      showSessionIdInTerminalPanes: true,
+      showSessionIdInTerminalPanes: false,
       tmuxMode: false,
     });
     expect(normalizeghostexSettings({ tmuxMode: true })).toMatchObject({
@@ -763,6 +843,46 @@ describe("normalizeghostexSettings", () => {
     expect(normalizeghostexSettings({ terminalGhosttyTheme: "Not A Bundled Theme" })).toMatchObject({
       terminalGhosttyTheme: "",
     });
+  });
+
+  test("normalizes SSH-only remote machine settings for sidebar sections", () => {
+    /**
+     * CDXC:RemoteMachines 2026-06-02-23:47:
+     * Remote machine settings require a display name and SSH host because the
+     * sidebar renders each saved machine as its own named section and v1 remote
+     * connection support is SSH-only.
+     */
+    expect(
+      normalizeghostexSettings({
+        remoteMachines: [
+          {
+            id: "remote-main",
+            name: " Main machine ",
+            sshHost: " 100.77.81.4 ",
+            sshIdentityFile: " ~/.ssh/id_ed25519 ",
+            sshPort: 2222,
+            sshUser: " madda ",
+          },
+          { id: "remote-main", name: "Second", sshHost: "example.local", sshPort: 100000 },
+          { id: "remote-blank-name", name: "", sshHost: "example.local" },
+          { id: "remote-blank-host", name: "Blank host", sshHost: "" },
+        ],
+      }).remoteMachines,
+    ).toEqual([
+      {
+        id: "remote-main",
+        name: "Main machine",
+        sshHost: "100.77.81.4",
+        sshIdentityFile: "~/.ssh/id_ed25519",
+        sshPort: 2222,
+        sshUser: "madda",
+      },
+      {
+        id: "remote-2",
+        name: "Second",
+        sshHost: "example.local",
+      },
+    ]);
   });
 
 });

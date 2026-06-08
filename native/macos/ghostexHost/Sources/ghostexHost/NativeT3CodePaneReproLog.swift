@@ -3,6 +3,8 @@ import OSLog
 import WebKit
 
 enum NativeT3CodePaneReproLog {
+  private static let maxLogFileBytes: UInt64 = 25 * 1024 * 1024
+  private static let maxRotatedLogFiles = 3
   private static let logger = Logger(
     subsystem: "com.madda.ghostex.host", category: "native-t3-code-pane-repro")
   private static let noisyEvents = Set([
@@ -32,9 +34,16 @@ enum NativeT3CodePaneReproLog {
    navigation, HTTP response, and injected page diagnostics when debugging mode
    is enabled, while dropping layout/resize breadcrumbs that can fire every
    frame during normal sidebar resizing.
+
+   CDXC:T3Code 2026-06-06-07:09:
+   T3/code-pane repro diagnostics can run for long sessions and previously had
+   no file rotation. Keep routine entries behind Debugging Mode, allow only
+   important warning/error/failure-like events in normal mode, and rotate this
+   support log at 25 MB with three retained files.
    */
   static func append(_ event: String, _ details: [String: Any] = [:]) {
-    guard NativeDebugLogging.isEnabled, !noisyEvents.contains(event) else {
+    let isImportantDiagnostic = isNativePersistentLogImportantDiagnostic(event)
+    guard isImportantDiagnostic || (NativeDebugLogging.isEnabled && !noisyEvents.contains(event)) else {
       return
     }
     let logsDirectory = GhostexAppStorage.logsDirectory
@@ -42,13 +51,14 @@ enum NativeT3CodePaneReproLog {
 
     var payload = details
     payload["event"] = event
-    let line = "[\(logDateFormatter.string(from: Date()))] \(serialize(payload))\n"
+    let line = "[\(logDateFormatter.string(from: Date()))] \(serialize(NativeLogPrivacy.sanitizePayload(payload)))\n"
 
     do {
       if !didCreateLogsDirectory {
         try FileManager.default.createDirectory(at: logsDirectory, withIntermediateDirectories: true)
         didCreateLogsDirectory = true
       }
+      try rotateLogIfNeeded(logURL: logURL, incomingByteCount: UInt64(line.lengthOfBytes(using: .utf8)))
       if FileManager.default.fileExists(atPath: logURL.path) {
         let handle = try FileHandle(forWritingTo: logURL)
         try handle.seekToEnd()
@@ -60,7 +70,8 @@ enum NativeT3CodePaneReproLog {
         try line.write(to: logURL, atomically: true, encoding: .utf8)
       }
     } catch {
-      logger.warning("failed to write T3 Code pane repro log: \(error.localizedDescription)")
+      let sanitizedError = NativeLogPrivacy.sanitizeLogLine(error.localizedDescription)
+      logger.warning("failed to write T3 Code pane repro log: \(sanitizedError)")
     }
   }
 
@@ -72,6 +83,34 @@ enum NativeT3CodePaneReproLog {
       return "{\"event\":\"serializationFailed\"}"
     }
     return json
+  }
+
+  private static func rotateLogIfNeeded(logURL: URL, incomingByteCount: UInt64) throws {
+    let manager = FileManager.default
+    let size = (try? manager.attributesOfItem(atPath: logURL.path)[.size] as? NSNumber)?.uint64Value ?? 0
+    guard size + incomingByteCount > maxLogFileBytes else {
+      return
+    }
+    let oldest = rotatedLogURL(logURL, index: maxRotatedLogFiles)
+    if manager.fileExists(atPath: oldest.path) {
+      try manager.removeItem(at: oldest)
+    }
+    for index in stride(from: maxRotatedLogFiles - 1, through: 1, by: -1) {
+      let source = rotatedLogURL(logURL, index: index)
+      let destination = rotatedLogURL(logURL, index: index + 1)
+      if manager.fileExists(atPath: source.path) {
+        try manager.moveItem(at: source, to: destination)
+      }
+    }
+    let firstRotation = rotatedLogURL(logURL, index: 1)
+    if manager.fileExists(atPath: firstRotation.path) {
+      try manager.removeItem(at: firstRotation)
+    }
+    try manager.moveItem(at: logURL, to: firstRotation)
+  }
+
+  private static func rotatedLogURL(_ logURL: URL, index: Int) -> URL {
+    logURL.deletingLastPathComponent().appendingPathComponent("\(logURL.lastPathComponent).\(index)")
   }
 }
 
@@ -314,14 +353,32 @@ enum NativeCodeServerRuntimeLauncher {
     let configuredRoot =
       environment["GHOSTEX_CODE_SERVER_ROOT"]?.trimmingCharacters(in: .whitespacesAndNewlines)
       ?? environment["ghostex_CODE_SERVER_ROOT"]?.trimmingCharacters(in: .whitespacesAndNewlines)
-    let home = FileManager.default.homeDirectoryForCurrentUser
-    let candidates =
-      configuredRoot?.isEmpty == false
-      ? [configuredRoot!]
-      : [
-        home.appendingPathComponent("dev/custom/code-server", isDirectory: true).path,
-        home.appendingPathComponent("dev/_custom/code-server", isDirectory: true).path,
-      ]
+    var candidates: [String] = []
+    func appendCandidate(_ path: String) {
+      if !candidates.contains(path) {
+        candidates.append(path)
+      }
+    }
+    if configuredRoot?.isEmpty == false {
+      appendCandidate(configuredRoot!)
+    } else {
+      /**
+       CDXC:CodeServerSubmodule 2026-06-07-11:20:
+       Ghostex owns the embedded legacy code-server checkout as a root submodule, so the native launcher must resolve code-server from ghostex_REPO_ROOT or the current repo directory instead of probing maintainer-specific home paths.
+       GHOSTEX_CODE_SERVER_ROOT remains the explicit development override when a test needs a different checkout.
+       */
+      if let repoRootPath = environment["ghostex_REPO_ROOT"]?.trimmingCharacters(
+        in: .whitespacesAndNewlines),
+        !repoRootPath.isEmpty
+      {
+        appendCandidate(
+          URL(fileURLWithPath: repoRootPath, isDirectory: true)
+            .appendingPathComponent("code-server", isDirectory: true).path)
+      }
+      appendCandidate(
+        URL(fileURLWithPath: FileManager.default.currentDirectoryPath, isDirectory: true)
+          .appendingPathComponent("code-server", isDirectory: true).path)
+    }
     for candidate in candidates {
       let repoRoot = URL(fileURLWithPath: candidate, isDirectory: true)
       if FileManager.default.fileExists(
@@ -335,7 +392,7 @@ enum NativeCodeServerRuntimeLauncher {
       code: 1,
       userInfo: [
         NSLocalizedDescriptionKey:
-          "Unable to resolve the custom code-server checkout. Set GHOSTEX_CODE_SERVER_ROOT or place it at ~/dev/custom/code-server."
+          "Unable to resolve the embedded code-server checkout. Initialize the code-server submodule or set GHOSTEX_CODE_SERVER_ROOT."
       ])
   }
 
@@ -626,19 +683,34 @@ enum NativeT3RuntimeLauncher {
   private static let listenHost = "0.0.0.0"
   static let port = 3774
   static let appHeartbeatInterval: TimeInterval = 30.0
+  private struct T3NodeRuntimeVersion {
+    let major: Int
+    let minor: Int
+    let patch: Int
+    let raw: String
+  }
   private static let bootstrapCredentialLock = NSLock()
   private static var bootstrapCredential: String?
   private static var ownerBearerToken: String?
-  @MainActor private static var runningSessionHeartbeatTimer: Timer?
-  @MainActor private static var runningSessionHeartbeatSessionIds: [String] = []
+  private static let launchAttemptLock = NSLock()
+  private static var launchAttemptStartedAt: Date?
+  @MainActor private static var liveManagedPaneHeartbeatTimer: Timer?
+  @MainActor private static var liveManagedPaneHeartbeatSessionIds: [String] = []
+  /**
+   CDXC:T3CodeStartup 2026-06-07-02:46:
+   The packaged T3 server can bind late while startup migrations and desktop
+   bootstrap complete. Share one native launch grace across the host and sidebar
+   entry points so restore-time duplicate start commands retain the first
+   wrapper instead of spawning a competing server that leaves panes on loading.
+   */
+  static let startupGraceInterval: TimeInterval = 30.0
   private static let startupUnresponsiveRetentionSeconds = 90
   private static let staleRuntimeShutdownTimeout: TimeInterval = 2.0
   /**
    CDXC:T3Code 2026-05-10-22:07
-   Background managed t3code should be killed after three minutes without a
-   running T3 session in the sidebar, because hidden Bun providers can keep
-   burning CPU/GPU-side compositing energy while users are only looking at
-   normal terminals.
+   Background managed t3code should be killed after three minutes without a live
+   native managed T3 pane, because hidden Bun providers can keep burning CPU/GPU-side
+   compositing energy while users are only looking at normal terminals.
    */
   private static let appClosedRuntimeShutdownTimeoutSeconds = 180
 
@@ -754,6 +826,33 @@ enum NativeT3RuntimeLauncher {
 
   static func hasFreshAppHeartbeat() -> Bool {
     isAppHeartbeatFresh(ageSeconds: appHeartbeatAgeSeconds())
+  }
+
+  enum LaunchStartClaim {
+    case claimed(Date)
+    case retained(TimeInterval)
+  }
+
+  static func claimLaunchStart() -> LaunchStartClaim {
+    let now = Date()
+    launchAttemptLock.lock()
+    defer { launchAttemptLock.unlock() }
+    if let startedAt = launchAttemptStartedAt {
+      let ageSeconds = now.timeIntervalSince(startedAt)
+      if ageSeconds <= startupGraceInterval {
+        return .retained(ageSeconds)
+      }
+    }
+    launchAttemptStartedAt = now
+    return .claimed(now)
+  }
+
+  static func clearLaunchAttempt(startedAt: Date) {
+    launchAttemptLock.lock()
+    defer { launchAttemptLock.unlock() }
+    if launchAttemptStartedAt == startedAt {
+      launchAttemptStartedAt = nil
+    }
   }
 
   static func shouldRetainUnresponsiveManagedRuntime(pid: Int) -> Bool {
@@ -899,16 +998,20 @@ enum NativeT3RuntimeLauncher {
 
   /**
    CDXC:T3Code 2026-05-01-07:04
-   Native T3 panes must use the same managed t3code-embed runtime shape as the
+   Native T3 panes must use the same managed T3 Code runtime shape as the
    reference project: bundled assets run through Node from `dist/bin.mjs`, while
-   the sibling/custom checkout runs through Bun from `apps/server/src/bin.ts`.
+   the root `t3code` submodule or an explicit development override runs through Bun from `apps/server/src/bin.ts`.
    ghostex still supplies the desktop bootstrap envelope on fd 3 so the WKWebView
    renders the authenticated provider without opening a browser.
 
    CDXC:T3Code 2026-05-10-22:07
    A newly spawned provider gets one startup keepalive write so stale heartbeat
    files from earlier sessions cannot make the wrapper kill it immediately.
-   After startup, only running T3 sidebar sessions refresh the keepalive.
+
+   CDXC:T3Code 2026-06-06-05:13:
+   After startup, only live native managed T3 panes refresh the keepalive. Sidebar
+   projection can omit local T3 panes after gxserver presentation, so runtime lifetime
+   must follow the native pane registry instead of React hydrate groups.
    */
   static func createLaunch(cwd: String) throws -> NativeT3RuntimeLaunch {
     touchAppHeartbeat(reason: "createLaunch")
@@ -958,49 +1061,49 @@ enum NativeT3RuntimeLauncher {
   }
 
   /**
-   CDXC:T3Code 2026-05-10-22:48
-   The sidebar defines "running T3" from the visible session list and sleep
-   state. Native keeps the provider heartbeat alive while that set is non-empty,
-   then stops refreshing it so the wrapper kills background t3code after three
-   stale minutes.
+   CDXC:T3Code 2026-06-06-05:13:
+   A live native managed T3 pane is the ownership signal for the shared t3code runtime.
+   Keep the provider heartbeat alive while at least one managed pane exists in the
+   native web-pane registry, including inactive tab siblings, then stop refreshing it
+   so the wrapper kills background t3code after three stale minutes.
    */
   @MainActor
-  static func setRunningSessionHeartbeat(runningSessionIds: [String], reason: String) {
-    let normalizedSessionIds = Array(Set(runningSessionIds)).sorted()
+  static func setLiveManagedPaneHeartbeat(paneSessionIds: [String], reason: String) {
+    let normalizedSessionIds = Array(Set(paneSessionIds)).sorted()
     guard !normalizedSessionIds.isEmpty else {
-      if !runningSessionHeartbeatSessionIds.isEmpty || runningSessionHeartbeatTimer != nil {
-        NativeT3CodePaneReproLog.append("nativeT3Runtime.runningSessionHeartbeat.stopped", [
+      if !liveManagedPaneHeartbeatSessionIds.isEmpty || liveManagedPaneHeartbeatTimer != nil {
+        NativeT3CodePaneReproLog.append("nativeT3Runtime.livePaneHeartbeat.stopped", [
           "reason": reason,
         ])
       }
-      runningSessionHeartbeatSessionIds = []
-      runningSessionHeartbeatTimer?.invalidate()
-      runningSessionHeartbeatTimer = nil
+      liveManagedPaneHeartbeatSessionIds = []
+      liveManagedPaneHeartbeatTimer?.invalidate()
+      liveManagedPaneHeartbeatTimer = nil
       return
     }
 
-    let previousSessionIds = runningSessionHeartbeatSessionIds
-    runningSessionHeartbeatSessionIds = normalizedSessionIds
-    touchAppHeartbeat(reason: "runningT3Sessions.\(reason)")
-    if runningSessionHeartbeatTimer == nil {
+    let previousSessionIds = liveManagedPaneHeartbeatSessionIds
+    liveManagedPaneHeartbeatSessionIds = normalizedSessionIds
+    touchAppHeartbeat(reason: "liveT3Panes.\(reason)")
+    if liveManagedPaneHeartbeatTimer == nil {
       let timer = Timer(
         timeInterval: appHeartbeatInterval,
         repeats: true
       ) { _ in
         Task { @MainActor in
-          guard !runningSessionHeartbeatSessionIds.isEmpty else {
+          guard !liveManagedPaneHeartbeatSessionIds.isEmpty else {
             return
           }
-          touchAppHeartbeat(reason: "runningT3Sessions.timer")
+          touchAppHeartbeat(reason: "liveT3Panes.timer")
         }
       }
-      runningSessionHeartbeatTimer = timer
+      liveManagedPaneHeartbeatTimer = timer
       RunLoop.main.add(timer, forMode: .common)
     }
     if previousSessionIds != normalizedSessionIds {
-      NativeT3CodePaneReproLog.append("nativeT3Runtime.runningSessionHeartbeat.updated", [
+      NativeT3CodePaneReproLog.append("nativeT3Runtime.livePaneHeartbeat.updated", [
         "reason": reason,
-        "runningSessionIds": normalizedSessionIds,
+        "paneSessionIds": normalizedSessionIds,
       ])
     }
   }
@@ -1134,7 +1237,7 @@ enum NativeT3RuntimeLauncher {
 
   private static func resolveManagedT3RuntimeCommand() throws -> NativeT3RuntimeCommand {
     if let bundledEntrypoint = bundledRuntimeEntrypointPath() {
-      let nodePath = try resolveCommandPath("node")
+      let nodePath = try resolveBundledT3NodePath()
       NativeT3CodePaneReproLog.append("nativeT3Runtime.executable.resolved", [
         "entrypoint": bundledEntrypoint,
         "kind": "bundled",
@@ -1147,6 +1250,14 @@ enum NativeT3RuntimeLauncher {
         runtime: nodePath)
     }
 
+    /**
+     CDXC:T3CodePackaging 2026-06-06-05:50:
+     Installed Ghostex builds must run T3 Code from the bundled Web/t3code-server package.
+     Only explicit development overrides or a local ghostex_REPO_ROOT start may use a source checkout, so release users get a clear reinstall/build error instead of silently probing maintainer-local folders and surfacing a misleading network failure.
+
+     CDXC:T3CodeSubmodule 2026-06-07-13:00:
+     Local source fallback should resolve the root `t3code` submodule when ghostex_REPO_ROOT is present, keeping native T3 development on the parent-pinned fork branch instead of the old sibling t3code-embed checkout.
+     */
     let repoRoot = try resolveManagedT3RepoRoot()
     let entrypoint = repoRoot.appendingPathComponent("apps/server/src/bin.ts").path
     guard FileManager.default.fileExists(atPath: entrypoint) else {
@@ -1187,13 +1298,27 @@ enum NativeT3RuntimeLauncher {
     let configuredRoot =
       environment["VSMUX_T3CODE_REPO_ROOT"]?.trimmingCharacters(in: .whitespacesAndNewlines)
       ?? environment["ghostex_T3CODE_REPO_ROOT"]?.trimmingCharacters(in: .whitespacesAndNewlines)
-    let candidates =
-      configuredRoot?.isEmpty == false
-      ? [configuredRoot!]
-      : [
-        FileManager.default.homeDirectoryForCurrentUser
-          .appendingPathComponent("dev/_active/t3code-embed", isDirectory: true).path
-      ]
+    var candidates: [String] = []
+    func appendCandidate(_ path: String) {
+      if !candidates.contains(path) {
+        candidates.append(path)
+      }
+    }
+    if configuredRoot?.isEmpty == false {
+      appendCandidate(configuredRoot!)
+    } else {
+      if let repoRootPath = environment["ghostex_REPO_ROOT"]?.trimmingCharacters(
+        in: .whitespacesAndNewlines),
+        !repoRootPath.isEmpty
+      {
+        appendCandidate(
+          URL(fileURLWithPath: repoRootPath, isDirectory: true)
+            .appendingPathComponent("t3code", isDirectory: true).path)
+      }
+      appendCandidate(
+        URL(fileURLWithPath: FileManager.default.currentDirectoryPath, isDirectory: true)
+          .appendingPathComponent("t3code", isDirectory: true).path)
+    }
     for candidate in candidates {
       let repoRoot = URL(fileURLWithPath: candidate, isDirectory: true)
       if FileManager.default.fileExists(
@@ -1207,7 +1332,7 @@ enum NativeT3RuntimeLauncher {
       code: 3,
       userInfo: [
         NSLocalizedDescriptionKey:
-          "Unable to resolve the managed t3code-embed checkout. Set VSMUX_T3CODE_REPO_ROOT or place it at ~/dev/_active/t3code-embed."
+          "The bundled T3 Code runtime is missing from this Ghostex build. Reinstall Ghostex, rebuild the app so Web/t3code-server is packaged, initialize the t3code submodule, or set VSMUX_T3CODE_REPO_ROOT for development."
       ])
   }
 
@@ -1215,10 +1340,22 @@ enum NativeT3RuntimeLauncher {
     let bundledDirectoryName = "t3code-server"
     var candidates: [URL] = []
     if let resourceURL = Bundle.main.resourceURL {
+      /**
+       CDXC:T3CodePackaging 2026-06-07-02:30:
+       The macOS target copies web assets under Contents/Resources/Web. Resolve
+       the bundled T3 server from Web/t3code-server/dist/bin.mjs before legacy
+       root/out probes so installed apps launch the packaged server instead of
+       falling through to the development-checkout error.
+       */
+      candidates.append(
+        resourceURL.appendingPathComponent("Web/\(bundledDirectoryName)/dist/bin.mjs"))
       candidates.append(
         resourceURL.appendingPathComponent("out/\(bundledDirectoryName)/dist/bin.mjs"))
       candidates.append(resourceURL.appendingPathComponent("\(bundledDirectoryName)/dist/bin.mjs"))
     }
+    candidates.append(
+      URL(fileURLWithPath: FileManager.default.currentDirectoryPath, isDirectory: true)
+        .appendingPathComponent("Web/\(bundledDirectoryName)/dist/bin.mjs"))
     candidates.append(
       URL(fileURLWithPath: FileManager.default.currentDirectoryPath, isDirectory: true)
         .appendingPathComponent("out/\(bundledDirectoryName)/dist/bin.mjs"))
@@ -1226,6 +1363,167 @@ enum NativeT3RuntimeLauncher {
       URL(fileURLWithPath: FileManager.default.currentDirectoryPath, isDirectory: true)
         .appendingPathComponent("\(bundledDirectoryName)/dist/bin.mjs"))
     return candidates.first { FileManager.default.fileExists(atPath: $0.path) }?.path
+  }
+
+  private static func expandedPath(_ path: String) -> String {
+    /**
+     CDXC:T3CodePackaging 2026-06-06-06:46:
+     Native T3 runtime launch must expand user-configured and discovered Node
+     paths inside NativeT3RuntimeLauncher itself. The Code Server runtime has
+     its own private helper, but bundled T3 Code startup cannot depend on that
+     sibling type or the macOS app fails to build before launch.
+     */
+    return (path as NSString).expandingTildeInPath
+  }
+
+  private static func resolveBundledT3NodePath() throws -> String {
+    let environment = ProcessInfo.processInfo.environment
+    let configuredPath =
+      environment["GHOSTEX_T3CODE_NODE_PATH"]?.trimmingCharacters(in: .whitespacesAndNewlines)
+      ?? environment["T3CODE_NODE"]?.trimmingCharacters(in: .whitespacesAndNewlines)
+    if let configuredPath, !configuredPath.isEmpty {
+      let nodePath = expandedPath(configuredPath)
+      guard let version = t3NodeRuntimeVersion(at: nodePath), t3NodeVersionIsSupported(version) else {
+        throw NSError(
+          domain: "NativeT3RuntimeLauncher",
+          code: 4,
+          userInfo: [
+            NSLocalizedDescriptionKey:
+              "Configured T3 Code Node runtime must be Node 22.16+, 23.11+, or 24.10+: \(nodePath)."
+          ])
+      }
+      NativeT3CodePaneReproLog.append("nativeT3Runtime.node.resolved", [
+        "node": nodePath,
+        "source": "configured",
+        "version": version.raw,
+      ])
+      return nodePath
+    }
+
+    var attemptedVersions: [[String: Any]] = []
+    for candidate in t3NodeCandidates() {
+      let nodePath = expandedPath(candidate)
+      guard FileManager.default.isExecutableFile(atPath: nodePath),
+        let version = t3NodeRuntimeVersion(at: nodePath)
+      else {
+        continue
+      }
+      if t3NodeVersionIsSupported(version) {
+        NativeT3CodePaneReproLog.append("nativeT3Runtime.node.resolved", [
+          "node": nodePath,
+          "source": "auto",
+          "version": version.raw,
+        ])
+        return nodePath
+      }
+      attemptedVersions.append([
+        "node": nodePath,
+        "version": version.raw,
+      ])
+    }
+
+    throw NSError(
+      domain: "NativeT3RuntimeLauncher",
+      code: 5,
+      userInfo: [
+        NSLocalizedDescriptionKey:
+          "T3 Code requires Node 22.16+, 23.11+, or 24.10+. Install a compatible Node runtime from nodejs.org or set GHOSTEX_T3CODE_NODE_PATH.",
+        "attemptedVersions": attemptedVersions,
+      ])
+  }
+
+  private static func t3NodeCandidates() -> [String] {
+    let home = FileManager.default.homeDirectoryForCurrentUser
+    var candidates: [String] = []
+    for requiredMajor in [24, 23, 22] {
+      candidates.append(contentsOf: t3NodeInstallCandidates(
+        in: home.appendingPathComponent(".local/node", isDirectory: true),
+        requiredMajor: requiredMajor))
+      candidates.append(contentsOf: t3NodeInstallCandidates(
+        in: home.appendingPathComponent(".local/share/mise/installs/node", isDirectory: true),
+        requiredMajor: requiredMajor))
+      candidates.append(contentsOf: t3NodeInstallCandidates(
+        in: home.appendingPathComponent(".asdf/installs/nodejs", isDirectory: true),
+        requiredMajor: requiredMajor))
+      candidates.append(contentsOf: t3NodeInstallCandidates(
+        in: home.appendingPathComponent(".nvm/versions/node", isDirectory: true),
+        requiredMajor: requiredMajor))
+      candidates.append(contentsOf: [
+        "/opt/homebrew/opt/node@\(requiredMajor)/bin/node",
+        "/usr/local/opt/node@\(requiredMajor)/bin/node",
+      ])
+    }
+    candidates.append(contentsOf: [
+      "/opt/homebrew/bin/node",
+      "/usr/local/bin/node",
+      "/usr/bin/node",
+    ])
+    if let pathNode = try? resolveCommandPath("node") {
+      candidates.append(pathNode)
+    }
+    var seen: Set<String> = []
+    return candidates.filter { candidate in
+      let nodePath = expandedPath(candidate)
+      return seen.insert(nodePath).inserted
+    }
+  }
+
+  private static func t3NodeInstallCandidates(in directory: URL, requiredMajor: Int) -> [String] {
+    guard
+      let entries = try? FileManager.default.contentsOfDirectory(
+        at: directory,
+        includingPropertiesForKeys: [.isDirectoryKey],
+        options: [.skipsHiddenFiles])
+    else {
+      return []
+    }
+    return entries
+      .filter { entry in
+        let name = entry.lastPathComponent
+        return name.hasPrefix("node-v\(requiredMajor).")
+          || name.hasPrefix("v\(requiredMajor).")
+          || name.hasPrefix("\(requiredMajor).")
+      }
+      .sorted { lhs, rhs in lhs.lastPathComponent.localizedStandardCompare(rhs.lastPathComponent) == .orderedDescending }
+      .map { entry in entry.appendingPathComponent("bin/node").path }
+  }
+
+  private static func t3NodeRuntimeVersion(at nodePath: String) -> T3NodeRuntimeVersion? {
+    let process = Process()
+    let pipe = Pipe()
+    process.executableURL = URL(fileURLWithPath: nodePath)
+    process.arguments = ["-v"]
+    process.standardOutput = pipe
+    process.standardError = FileHandle.nullDevice
+    do {
+      try process.run()
+    } catch {
+      return nil
+    }
+    process.waitUntilExit()
+    guard process.terminationStatus == 0 else {
+      return nil
+    }
+    let rawVersion = (String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? "")
+      .trimmingCharacters(in: .whitespacesAndNewlines)
+    let components = rawVersion.trimmingCharacters(in: CharacterSet(charactersIn: "v"))
+      .split(separator: ".")
+      .compactMap { Int(String($0)) }
+    guard components.count >= 2 else {
+      return nil
+    }
+    return T3NodeRuntimeVersion(
+      major: components[0],
+      minor: components[1],
+      patch: components.count > 2 ? components[2] : 0,
+      raw: rawVersion)
+  }
+
+  private static func t3NodeVersionIsSupported(_ version: T3NodeRuntimeVersion) -> Bool {
+    (version.major == 22 && version.minor >= 16)
+      || (version.major == 23 && version.minor >= 11)
+      || (version.major == 24 && version.minor >= 10)
+      || version.major > 24
   }
 
   private static func resolveCommandPath(_ command: String) throws -> String {
@@ -1515,7 +1813,7 @@ enum NativeT3RuntimeLauncher {
    extension supervisor. Reuse that supervised provider instead of killing it;
    the native WKWebView authenticates through an owner-issued browser pairing
    credential. For unsupervised listeners, only reuse runtimes from this app's
-   managed home, bundled resources, or the local t3code-embed checkout.
+   managed home, bundled resources, or the root t3code submodule.
    */
   private static func isOwnedT3RuntimeProcess(_ process: NativeT3ListeningProcess) -> Bool {
     guard isAnyT3RuntimeCommand(process.command) else {
@@ -1529,9 +1827,15 @@ enum NativeT3RuntimeLauncher {
     let normalized = process.command.lowercased()
     var ownedMarkers = [
       t3HomeDirectory().path,
-      FileManager.default.homeDirectoryForCurrentUser
-        .appendingPathComponent("dev/_active/t3code-embed/apps/server/src/bin.ts").path,
     ].map { $0.lowercased() }
+    if let repoRootPath = ProcessInfo.processInfo.environment["ghostex_REPO_ROOT"]?.trimmingCharacters(
+      in: .whitespacesAndNewlines),
+      !repoRootPath.isEmpty
+    {
+      ownedMarkers.append(
+        URL(fileURLWithPath: repoRootPath, isDirectory: true)
+          .appendingPathComponent("t3code/apps/server/src/bin.ts").path.lowercased())
+    }
     if let resourcePath = Bundle.main.resourceURL?.path {
       ownedMarkers.append(resourcePath.lowercased())
     }
@@ -1593,7 +1897,7 @@ enum NativeT3RuntimeSessionBootstrap {
    `/{environmentId}/{threadId}` route so WKWebView renders the T3 workspace
    page instead of the blank gray splash surface.
    CDXC:T3Code 2026-05-01-14:31
-   t3code-embed routes threads by execution environment, not projection
+   T3 Code routes threads by execution environment, not projection
    project. A native pane that navigates to `/{projectId}/{threadId}` can
    authenticate and load React but cannot bind the active thread, leaving the
    user on "No active thread"; always resolve the runtime environment

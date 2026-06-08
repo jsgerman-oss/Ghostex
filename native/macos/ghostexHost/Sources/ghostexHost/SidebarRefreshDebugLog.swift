@@ -1,6 +1,8 @@
 import Foundation
 
 enum SidebarRefreshDebugLog {
+  private static let maxLogFileBytes: UInt64 = 25 * 1024 * 1024
+  private static let maxRotatedLogFiles = 3
   private static let logDateFormatter: DateFormatter = {
     let formatter = DateFormatter()
     formatter.dateFormat = "yyyy-MM-dd HH:mm:ss.SSS ZZZZ"
@@ -16,24 +18,31 @@ enum SidebarRefreshDebugLog {
    records native action boundaries and React sidebar lifecycle events. Honor
    Settings Debugging Mode here as the final gate so no persistent sidebar
    refresh diagnostics are written during normal app use.
+
+   CDXC:SidebarRefreshDiagnostics 2026-06-06-07:09:
+   Routine sidebar refresh diagnostics stay Debugging Mode only, but
+   warning/error/failure-like refresh events should persist in normal mode so
+   support can diagnose crashes and failed refreshes without enabling broad
+   disk logging first.
    */
   static func append(event: String, details: String?) {
-    guard NativeDebugLogging.isEnabled else {
+    guard isNativePersistentLogImportantDiagnostic(event) || NativeDebugLogging.isEnabled else {
       return
     }
     let logsDirectory = GhostexAppStorage.logsDirectory
     let logURL = logsDirectory.appendingPathComponent("sidebar-refresh-debug.log")
     let payload: [String: Any] = [
-      "details": details ?? NSNull(),
+      "details": parseDetailsPayload(details),
       "event": event,
     ]
-    let line = "[\(logDateFormatter.string(from: Date()))] \(serialize(payload))\n"
+    let line = "[\(logDateFormatter.string(from: Date()))] \(serialize(NativeLogPrivacy.sanitizePayload(payload)))\n"
 
     do {
       if !didCreateLogsDirectory {
         try FileManager.default.createDirectory(at: logsDirectory, withIntermediateDirectories: true)
         didCreateLogsDirectory = true
       }
+      try rotateLogIfNeeded(logURL: logURL, incomingByteCount: UInt64(line.lengthOfBytes(using: .utf8)))
       if FileManager.default.fileExists(atPath: logURL.path) {
         let handle = try FileHandle(forWritingTo: logURL)
         try handle.seekToEnd()
@@ -45,7 +54,7 @@ enum SidebarRefreshDebugLog {
         try line.write(to: logURL, atomically: true, encoding: .utf8)
       }
     } catch {
-      NSLog("failed to write sidebar refresh debug log: \(error.localizedDescription)")
+      NSLog("failed to write sidebar refresh debug log: \(NativeLogPrivacy.sanitizeLogLine(error.localizedDescription))")
     }
   }
 
@@ -57,5 +66,48 @@ enum SidebarRefreshDebugLog {
       return "{\"event\":\"serializationFailed\"}"
     }
     return json
+  }
+
+  private static func parseDetailsPayload(_ details: String?) -> Any {
+    guard let details, let data = details.data(using: .utf8) else {
+      return NSNull()
+    }
+    /*
+     CDXC:GxserverPresentationDiagnostics 2026-06-04-19:39:
+     React sends sidebar-refresh details as a JSON string, but sanitizer policy redacts raw `details` strings by design. Parse structured details at the writer boundary before privacy sanitization so targeted gxserver/sidebar/native-tab mismatch counts remain inspectable without allowing titles, paths, URLs, command text, or secrets through as free-form log text.
+     */
+    return (try? JSONSerialization.jsonObject(with: data)) ?? details
+  }
+
+  private static func rotateLogIfNeeded(logURL: URL, incomingByteCount: UInt64) throws {
+    /*
+     CDXC:SidebarRefreshDiagnostics 2026-06-01-15:08:
+     Sidebar refresh diagnostics must stay useful without becoming a second memory/lag source. Cap the native writer at 25 MB with three rotations so repeated render/message events cannot grow this debug file to hundreds of MB or GB.
+     */
+    let manager = FileManager.default
+    let size = (try? manager.attributesOfItem(atPath: logURL.path)[.size] as? NSNumber)?.uint64Value ?? 0
+    guard size + incomingByteCount > maxLogFileBytes else {
+      return
+    }
+    let oldest = rotatedLogURL(logURL, index: maxRotatedLogFiles)
+    if manager.fileExists(atPath: oldest.path) {
+      try manager.removeItem(at: oldest)
+    }
+    for index in stride(from: maxRotatedLogFiles - 1, through: 1, by: -1) {
+      let source = rotatedLogURL(logURL, index: index)
+      let destination = rotatedLogURL(logURL, index: index + 1)
+      if manager.fileExists(atPath: source.path) {
+        try manager.moveItem(at: source, to: destination)
+      }
+    }
+    let firstRotation = rotatedLogURL(logURL, index: 1)
+    if manager.fileExists(atPath: firstRotation.path) {
+      try manager.removeItem(at: firstRotation)
+    }
+    try manager.moveItem(at: logURL, to: firstRotation)
+  }
+
+  private static func rotatedLogURL(_ logURL: URL, index: Int) -> URL {
+    logURL.deletingLastPathComponent().appendingPathComponent("\(logURL.lastPathComponent).\(index)")
   }
 }

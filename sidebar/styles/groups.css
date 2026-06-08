@@ -1076,6 +1076,49 @@
   position: relative;
 }
 
+.group-sessions[data-pinned-drop-gaps="true"] {
+  gap: 0;
+  overflow: visible;
+}
+
+/*
+ * CDXC:PinnedSessions 2026-06-02-20:35:
+ * Project pinned-session reorder uses fixed gap slots instead of row
+ * pseudo-elements so the insertion line stays stable while dragging over a
+ * session and can appear above the first pinned row.
+ */
+.pinned-session-drop-gap {
+  height: 1px;
+  pointer-events: none;
+  position: relative;
+  z-index: 4;
+}
+
+.pinned-session-drop-gap[data-edge="start"] {
+  height: 0;
+}
+
+.pinned-session-drop-gap::before {
+  background: color-mix(in srgb, var(--app-button-background) 86%, #ffffff 14%);
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--app-button-background) 22%, transparent),
+    0 0 14px color-mix(in srgb, var(--app-button-background) 28%, transparent);
+  content: "";
+  height: 3px;
+  left: calc(12px * var(--sidebar-density-scale));
+  opacity: 0;
+  pointer-events: none;
+  position: absolute;
+  right: calc(12px * var(--sidebar-density-scale));
+  top: 50%;
+  transform: translateY(-50%);
+  transition: opacity 120ms ease;
+}
+
+.pinned-session-drop-gap[data-active="true"]::before {
+  opacity: 1;
+}
+
 .group-sessions-shell {
   min-height: 0;
   overflow: visible;
@@ -1378,12 +1421,33 @@
    * cannot peek through the header's rounded corners. Keep the actual
    * interactive button radius on the ::before surface while the sticky header
    * element paints the unrounded background behind it.
+   *
+   * CDXC:ProjectHeaders 2026-05-31-15:38:
+   * Project header buttons must start at the sidebar's left edge in the native
+   * reference layout. Use the shared main-row over-bleed and compensate with
+   * equal padding so folder icons, titles, git summaries, and header actions
+   * do not shift while the button surface reaches both edges.
+   *
+   * CDXC:ProjectHeaders 2026-05-31-17:31:
+   * The reference scroll viewport now owns the content-column over-bleed, so
+   * project headers use the smaller scroll-row bleed. This keeps the header
+   * surface flush without shifting folder titles farther left.
+   *
+   * CDXC:ProjectHeaders 2026-05-31-18:16:
+   * Project header rows stay full-width, but every leading header element
+   * should sit 6px farther inward from the left edge.
+   *
+   * CDXC:ProjectHeaders 2026-05-31-18:24:
+   * Project header contents need another 2px left inset without changing the
+   * right inset or the full-width header bounds.
    */
   background: var(--app-background);
   border-radius: 0;
   box-sizing: border-box;
-  padding-left: 10px;
-  padding-right: 10px;
+  margin-left: calc(-1 * var(--reference-sidebar-scroll-row-bleed-left, 7px));
+  margin-right: calc(-1 * var(--reference-sidebar-scroll-row-bleed-right, 0px));
+  padding-left: calc(18px + var(--reference-sidebar-scroll-row-bleed-left, 7px));
+  padding-right: calc(10px + var(--reference-sidebar-scroll-row-bleed-right, 0px));
   position: sticky;
   top: var(--reference-sidebar-project-sticky-top, 0px);
   z-index: 28;
@@ -1742,7 +1806,11 @@
   letter-spacing: 0;
   line-height: 1.15;
   margin-top: 8px;
-  padding-left: 10px;
+  /*
+   * CDXC:SidebarReference 2026-06-05-14:19:
+   * The empty Projects copy must align under the Projects section label in the reference sidebar. Keep the placeholder 8px farther right than the previous inset so "No projects" starts in the same text column as the header.
+   */
+  padding-left: 18px;
 }
 
 .sidebar-reference-layout[data-reference-sidebar="true"] .group[data-project-group="true"] .group-head:hover .section-titlebar-toggle-idle-icon,
@@ -1769,6 +1837,10 @@
  * reference sidebar sample: the Show more/Show less control sits below the
  * sessions, aligns with session titles, and uses muted text instead of a
  * framed button.
+ *
+ * CDXC:ProjectSessionLists 2026-05-31-18:31:
+ * The Show more/Show less label should move 10px to the right while the toggle
+ * remains a full-width row.
  */
 .sidebar-reference-layout[data-reference-sidebar="true"] .project-session-list-toggle {
   color: #8b8b8b;
@@ -1778,7 +1850,7 @@
   line-height: 20px;
   min-height: 34px;
   padding: 7px var(--reference-session-trailing-inset, 10px) 7px
-    var(--reference-session-title-inset, 36px);
+    calc(var(--reference-session-title-inset, 36px) + 10px);
 }
 
 .sidebar-reference-layout[data-reference-sidebar="true"] .project-session-list-toggle:hover,
@@ -1787,6 +1859,16 @@
 }
 
 .sidebar-reference-layout[data-reference-sidebar="true"] .group[data-session-connector="true"] .session-frame {
-  margin-left: 0;
-  width: 100%;
+  /*
+   * CDXC:SidebarSessions 2026-05-31-15:43:
+   * Connector groups use the same visible session buttons as project groups,
+   * so their rows must keep the shared full-width sidebar bleed instead of
+   * resetting back to the padded content column.
+   */
+  margin-left: calc(-1 * var(--reference-sidebar-scroll-row-bleed-left, 7px));
+  margin-right: calc(-1 * var(--reference-sidebar-scroll-row-bleed-right, 0px));
+  width: calc(
+    100% + var(--reference-sidebar-scroll-row-bleed-left, 7px) +
+      var(--reference-sidebar-scroll-row-bleed-right, 0px)
+  );
 }

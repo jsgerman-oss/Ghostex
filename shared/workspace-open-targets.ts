@@ -69,7 +69,10 @@ export const DEFAULT_WORKSPACE_OPEN_TARGET_AVAILABILITY: WorkspaceOpenTargetAvai
  * CDXC:TitlebarOpenIn 2026-05-16-23:02
  * Embedded Editor is a first-party Code surface reached from the titlebar Code
  * mode, not an external Open In selection. Keep the Open In catalog focused on
- * installed editors and Finder so the dropdown does not duplicate Code mode.
+ * installed editors and the first-party folder opener so the dropdown does not duplicate Code mode.
+ *
+ * CDXC:TitlebarOpenIn 2026-06-04-13:39:
+ * The built-in filesystem target remains internally keyed as finder for protocol compatibility, but user-facing labels must say Open Folder so the macOS app copy is OS-agnostic.
  */
 export const BUILT_IN_WORKSPACE_OPEN_TARGETS: readonly WorkspaceOpenTargetDefinition[] = [
   {
@@ -192,7 +195,7 @@ export const BUILT_IN_WORKSPACE_OPEN_TARGETS: readonly WorkspaceOpenTargetDefini
     launchStyle: "line-column",
     macOSAppNames: ["WebStorm"],
   },
-  { commands: null, id: "finder", label: "Finder", launchStyle: "direct-path" },
+  { commands: null, id: "finder", label: "Open Folder", launchStyle: "direct-path" },
 ];
 
 const BUILT_IN_WORKSPACE_OPEN_TARGET_IDS = new Set<string>(

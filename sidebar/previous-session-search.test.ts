@@ -3,6 +3,7 @@ import type { SidebarPreviousSessionItem } from "../shared/session-grid-contract
 import {
   filterPreviousSessions,
   filterPreviousSessionsModalItems,
+  removePreviousSessionByHistoryId,
 } from "./previous-session-search";
 
 describe("filterPreviousSessions", () => {
@@ -56,7 +57,7 @@ describe("filterPreviousSessions", () => {
     ]);
   });
 
-  test("should optionally restrict results to favorite sessions before searching", () => {
+  test("should optionally restrict results to selected session tags before searching", () => {
     const previousSessions = [
       createPreviousSession({
         alias: "Favorite release prep",
@@ -64,16 +65,25 @@ describe("filterPreviousSessions", () => {
         isFavorite: true,
       }),
       createPreviousSession({
-        alias: "Normal release prep",
+        alias: "Todo release prep",
         historyId: "history-2",
+        sessionTag: "todo",
+      }),
+      createPreviousSession({
+        alias: "Normal release prep",
+        historyId: "history-3",
         isFavorite: false,
       }),
     ];
 
-    expect(filterPreviousSessions(previousSessions, "", { favoritesOnly: true })).toMatchObject([
+    expect(filterPreviousSessions(previousSessions, "", { sessionTags: ["favorite"] })).toMatchObject([
       { historyId: "history-1" },
     ]);
-    expect(filterPreviousSessions(previousSessions, "normal", { favoritesOnly: true })).toEqual([]);
+    expect(filterPreviousSessions(previousSessions, "", { sessionTags: ["favorite", "todo"] })).toMatchObject([
+      { historyId: "history-1" },
+      { historyId: "history-2" },
+    ]);
+    expect(filterPreviousSessions(previousSessions, "normal", { sessionTags: ["favorite"] })).toEqual([]);
   });
 
   test("should keep only the latest session for the same project and title", () => {
@@ -147,6 +157,21 @@ describe("filterPreviousSessionsModalItems", () => {
 
     expect(filterPreviousSessionsModalItems(previousSessions)).toMatchObject([
       { historyId: "history-agent" },
+    ]);
+  });
+});
+
+describe("removePreviousSessionByHistoryId", () => {
+  test("should remove the clicked row from the modal result page", () => {
+    const previousSessions = [
+      createPreviousSession({ historyId: "history-1" }),
+      createPreviousSession({ historyId: "history-2" }),
+      createPreviousSession({ historyId: "history-3" }),
+    ];
+
+    expect(removePreviousSessionByHistoryId(previousSessions, "history-2")).toMatchObject([
+      { historyId: "history-1" },
+      { historyId: "history-3" },
     ]);
   });
 });

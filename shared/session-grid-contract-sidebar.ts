@@ -2,7 +2,7 @@ import type { CompletionSoundSetting } from "./completion-sound";
 import type { AgentAcceptAllMode } from "./sidebar-agent-accept-all";
 import type { SidebarAgentButton, SidebarAgentIcon } from "./sidebar-agents";
 import type { SidebarCommandIcon } from "./sidebar-command-icons";
-import type { WorkspaceDockIcon } from "./workspace-dock-icons";
+import type { WorkspaceProjectIcon } from "./workspace-project-appearance";
 import type {
   SidebarActionType,
   SidebarCommandButton,
@@ -14,6 +14,7 @@ import type { ghostexSettings } from "./ghostex-settings";
 import type { ghostexHotkeyActionId } from "./ghostex-hotkeys";
 import type { WorkspaceIdeTargetApp } from "./workspace-open-targets";
 import type { SidebarPinnedPrompt } from "./sidebar-pinned-prompts";
+import type { SidebarSessionTag } from "./session-tags";
 import type {
   SessionLifecycleState,
   SessionGridSnapshot,
@@ -25,6 +26,15 @@ import type {
 } from "./session-grid-contract-core";
 
 export type SidebarActiveSessionsSortMode = "manual" | "lastActivity";
+
+export type SidebarTitleObservationState = {
+  failureCount?: number;
+  lastFailedAt?: string;
+  lastObservedAt?: string;
+  lastStartedAt?: string;
+  nextRetryAt?: string;
+  status: "active" | "failed" | "retrying" | "starting";
+};
 
 export type AgentsHubTab = "mds" | "skills" | "hooks" | "configs";
 
@@ -59,7 +69,7 @@ export type AgentsHubCatalogMessage = {
   type: "agentsHubCatalog";
 };
 
-export type SidebarAgentHookStatus = "installed" | "missing" | "cliMissing" | "notRequired";
+export type SidebarAgentHookStatus = "installed" | "missing" | "cliMissing" | "notRequired" | "updateRequired";
 
 export type SidebarAgentHookStatusItem = {
   agentId: string;
@@ -101,15 +111,31 @@ export type SidebarGhostexCliStatusMessage = {
    * skill, because Cua Driver alone does not teach agents the Ghostex-named
    * computer-use workflow.
    *
+   * CDXC:AgentSkills 2026-05-31-09:18:
+   * First launch and Settings must show each bundled Ghostex skill as an
+   * explicit install item. Carry per-skill status for Browser Use, Computer Use,
+   * Agent Orchestration, and Generate Title instead of only exposing the skills
+   * that also have standalone guide pages.
+   *
    * CDXC:CuaPermissions 2026-05-29-06:00:
    * The Cua Permissions row must report Cua Driver's own macOS privacy grants,
    * not Ghostex's Accessibility grant. Carry both Accessibility and Screen
    * Recording from `cua-driver check_permissions` in the setup status payload.
+   *
+   * CDXC:T3CodePackaging 2026-06-06-05:50:
+   * Settings -> Integrations must expose whether T3 Code is actually bundled in
+   * this app build, because T3 panes are a core visible feature and missing
+   * packaged runtime state should be repairable before users hit a web-pane
+   * network-style startup error.
    */
   browserSkillInstalled: boolean;
   browserSkillPath?: string;
   computerUseSkillInstalled: boolean;
   computerUseSkillPath?: string;
+  agentOrchestrationSkillInstalled: boolean;
+  agentOrchestrationSkillPath?: string;
+  generateTitleSkillInstalled: boolean;
+  generateTitleSkillPath?: string;
   cuaDriverAccessibilityPermissionGranted?: boolean;
   cuaAppInstalled: boolean;
   cuaDriverInstalled: boolean;
@@ -123,6 +149,9 @@ export type SidebarGhostexCliStatusMessage = {
   gxPath?: string;
   gxUsable: boolean;
   installed: boolean;
+  t3RuntimeDetail?: string;
+  t3RuntimeInstalled?: boolean;
+  t3RuntimeSource?: "bundled" | "development" | "missing" | "unavailable";
   type: "ghostexCliStatus";
 };
 
@@ -162,6 +191,13 @@ export type SidebarSessionItem = {
   lifecycleState?: SessionLifecycleState;
   isFavorite?: boolean;
   /**
+   * CDXC:SessionTags 2026-06-05-12:30:
+   * Sidebar rows carry the expanded tag marker separately from legacy
+   * `isFavorite`. Renderers use this for the leading icon, tag filters, and
+   * tooltip prefix while older Favorite-only rows still project as Favorite.
+   */
+  sessionTag?: SidebarSessionTag;
+  /**
    * CDXC:PinnedSessions 2026-05-28-12:04:
    * Sidebar rows carry project-local pin state so the React display sorter can
    * keep pinned sessions at the top of their project and render pin chrome
@@ -170,12 +206,30 @@ export type SidebarSessionItem = {
   isPinned?: boolean;
   lastInteractionAt?: string;
   sessionId: string;
+  /**
+   * CDXC:SessionTooltips 2026-05-31-06:25:
+   * macOS gxserver sessions need their full routed identity in hover tooltips
+   * instead of the legacy two-digit display number, because the short display
+   * number does not identify the server/project/session being restored.
+   */
+  sessionRoutingId?: string;
   sessionNumber?: string;
   sessionPersistenceName?: string;
   sessionPersistenceProvider?: TerminalSessionPersistenceProvider;
+  /**
+   * CDXC:GxserverSessionTitles 2026-06-07-09:33:
+   * gxserver-owned rows carry the final visible title string. Sidebar clients render this directly so platform adapters do not duplicate terminal-title trust, placeholder, or unsynced-marker rules.
+   */
+  displayTitle?: string;
+  displayTitleTooltip?: string;
   primaryTitle?: string;
   isPrimaryTitleTerminalTitle?: boolean;
   terminalTitle?: string;
+  /**
+   * CDXC:SessionStatus 2026-06-07-00:30:
+   * Sidebar Auto Sleep must not interpret an idle activity value as reliable while gxserver's zmx title observer is starting or retrying. Carry only coarse observer health so the UI can defer sleep decisions without exposing terminal titles or user-owned terminal content.
+   */
+  titleObservation?: SidebarTitleObservationState;
   alias: string;
   shortcutLabel: string;
   row: number;
@@ -268,6 +322,7 @@ export type SidebarPreviousSessionItem = SidebarSessionItem & {
   projectName?: string;
   projectPath?: string;
   sessionRecord?: SessionRecord;
+  sidebarOrder?: number;
 };
 
 export type SidebarSessionGroup = {
@@ -318,6 +373,10 @@ export type SidebarSessionGroup = {
     themeColor?: string;
     worktree?: SidebarProjectWorktreeMetadata;
   };
+  remoteMachineContext?: {
+    machineId: string;
+    machineName: string;
+  };
   sessions: SidebarSessionItem[];
   title: string;
   viewMode: TerminalViewMode;
@@ -348,7 +407,7 @@ export type SidebarProjectSettingsItem = {
 };
 
 export type SidebarRecentProject = {
-  icon?: WorkspaceDockIcon;
+  icon?: WorkspaceProjectIcon;
   iconDataUrl?: string;
   path: string;
   projectId: string;
@@ -369,6 +428,11 @@ export type SidebarCommandSessionIndicator = {
 
 export type SidebarHudState = {
   activeSessionsSortMode: SidebarActiveSessionsSortMode;
+  /**
+   * CDXC:AgentHooks 2026-06-07-08:51:
+   * Tips & Tricks and Settings consume gxserver-owned hook status from shared HUD state so every client can warn about unreliable agent statuses without probing local hook files or owning installer logic.
+   */
+  agentHookStatus?: SidebarAgentHookStatusMessage;
   agentManagerZoomPercent: number;
   agents: SidebarAgentButton[];
   buildStamp?: string;
@@ -496,6 +560,12 @@ export type SidebarDaemonSessionItem = {
   errorMessage?: string;
   exitCode?: number;
   isCurrentWorkspace: boolean;
+  isLocalOnly?: boolean;
+  /**
+   * CDXC:SessionInventoryOwnership 2026-06-02-17:19:
+   * Running Sessions may show gxserver-backed terminal rows and macOS-local panes in one modal. Carry ownership on the contract so the UI and external consumers can label local-only rows instead of treating every row as shared daemon state.
+   */
+  ownership?: "gxserver" | "local";
   restoreState: "live" | "replayed";
   rows: number;
   sessionId: string;
@@ -526,9 +596,11 @@ export type SidebarT3SessionItem = {
   detail?: string;
   isCurrentWorkspace: boolean;
   isFocused: boolean;
+  isLocalOnly?: boolean;
   isRunning: boolean;
   isSleeping: boolean;
   lastInteractionAt?: string;
+  ownership?: "local";
   sessionId: string;
   threadId?: string;
   title?: string;
@@ -619,9 +691,38 @@ export type SidebarShowT3ThreadIdModalMessage = {
   type: "showT3ThreadIdModal";
 };
 
+export type SidebarPreviousSessionsResultMessage = {
+  previousSessions: SidebarPreviousSessionItem[];
+  query?: string;
+  requestId: string;
+  type: "previousSessionsResult";
+};
+
+export type SidebarRemoteMachineStatusMessage = {
+  machineId: string;
+  state:
+    | "connecting"
+    | "connected"
+    | "disconnected"
+    | "installApprovalRequired"
+    | "installing"
+    | "failed";
+  type: "remoteMachineStatus";
+};
+
+export type SidebarNativeHotkeyMessage = {
+  /**
+   * CDXC:Hotkeys 2026-06-05-20:53:
+   * AppKit owns Cmd+number while terminal panes have focus, then forwards the shared hotkey action id into the sidebar so React can resolve session slots from the currently rendered row order, including collapsed-project filtering.
+   */
+  actionId: ghostexHotkeyActionId;
+  type: "nativeHotkey";
+};
+
 export type ExtensionToSidebarMessage =
   | SidebarHydrateMessage
   | SidebarSessionStateMessage
+  | SidebarNativeHotkeyMessage
   | AgentsHubCatalogMessage
   | SidebarSessionPresentationChangedMessage
   | SidebarPlayCompletionSoundMessage
@@ -637,9 +738,19 @@ export type ExtensionToSidebarMessage =
   | SidebarOSIntegrationStatusMessage
   | SidebarShowSessionRenameModalMessage
   | SidebarShowFindPreviousSessionModalMessage
-  | SidebarShowT3ThreadIdModalMessage;
+  | SidebarShowT3ThreadIdModalMessage
+  | SidebarPreviousSessionsResultMessage
+  | SidebarRemoteMachineStatusMessage;
 
 export type SidebarToExtensionMessage =
+  | {
+      /**
+       * CDXC:GxserverBootstrap 2026-05-31-03:56:
+       * The gxserver failure toast needs a Retry action that returns to the
+       * trusted sidebar command router, then native performs the daemon restart.
+       */
+      type: "retryGxserverStart";
+    }
   | {
       type: "openSettings";
     }
@@ -680,7 +791,13 @@ export type SidebarToExtensionMessage =
        * actions for optional integrations. Native runs the actual commands and
        * refreshes the shared integration status afterward.
        */
-      type: "installGhostexCli" | "installBrowserControl" | "installCuaDriver";
+      type:
+        | "installGhostexCli"
+        | "installBrowserControl"
+        | "installComputerUseSkill"
+        | "installAgentOrchestrationSkill"
+        | "installGenerateTitleSkill"
+        | "installCuaDriver";
     }
   | {
       /**
@@ -903,21 +1020,112 @@ export type SidebarToExtensionMessage =
       /**
        * CDXC:NativeWorkspacePicker 2026-05-08-18:45
        * The reference Projects header add button should open the trusted native
-       * folder picker, matching the workspace dock plus button.
+       * folder picker.
        */
       type: "pickWorkspaceFolder";
     }
   | {
       /**
-       * CDXC:AddRepository 2026-05-29-11:45:
-       * The full-window Clone Repository modal sends clone requests through the
-       * native sidebar so Git runs in the trusted native process bridge, errors
-       * return to the modal, and the project is added only after clone success.
+       * CDXC:RemoteMachines 2026-06-02-23:47:
+       * Disconnected Remote sidebar sections stay visible and expose only Reload. Native owns the SSH reconnect/start/install gxserver flow, so React sends the saved machine id instead of handling SSH details in the sidebar.
+       *
+       * CDXC:RemoteMachines 2026-06-02-23:38:
+       * Missing gxserver installation requires explicit React modal approval.
+       * The approval flag is carried back through the same reconnect command
+       * so native can upload/install only after the user accepts.
        */
+      installApproved?: boolean;
+      remoteMachineId: string;
+      type: "reconnectRemoteMachine";
+    }
+  | {
+      /**
+       * CDXC:RemoteProjectPicker 2026-06-02-23:22:
+       * Remote Add Project uses a T3 Code-style directory picker, but every
+       * browse request is machine-scoped. Native must route it to that
+       * machine's gxserver after SSH reconnect/token setup instead of exposing
+       * local filesystem browsing for remote machines.
+       */
+      partialPath: string;
+      remoteMachineId: string;
+      requestId: string;
+      type: "browseRemoteProjectDirectories";
+    }
+  | {
+      /**
+       * CDXC:RemoteProjects 2026-06-03-00:18:
+       * Adding a remote project is not the local Add Project command. Carry the
+       * remote machine id with the selected path so native can add the project
+       * through that machine's gxserver and later render it under that machine's
+       * sidebar section.
+       */
+      path: string;
+      remoteMachineId: string;
+      requestId: string;
+      type: "addRemoteProjectPath";
+    }
+  | {
+      /**
+       * CDXC:RemoteClone 2026-06-02-23:38:
+       * Connected Remote machine headers expose Clone Repository beside Add
+       * Project, but the command must stay machine-scoped. Do not route this
+       * through the local clone modal without a remote gxserver target.
+       */
+      remoteMachineId: string;
+      type: "openRemoteCloneRepository";
+    }
+  | {
+      /**
+       * CDXC:AddRepository 2026-06-01-10:28:
+       * Reference-only repository clones can request main-only and shallow Git
+       * options from the modal. Keep both flags explicit in the native bridge
+       * contract so the UI state determines the exact clone command.
+       *
+       * CDXC:AddRepository 2026-06-02-13:41:
+       * The full-window Clone Repository modal sends clone requests through the
+       * native sidebar UI bridge, but gxserver owns preview, git clone execution,
+       * cancellation, and the canonical project returned after clone success.
+       *
+       * CDXC:AddRepository 2026-06-07-16:06:
+       * Clone Repository carries an optional branch name through the same bridge.
+       * Empty means gxserver lets Git use the repository default branch; typed
+       * names are validated server-side before Git starts.
+       */
+      branchName?: string;
+      cloneMainOnly?: boolean;
       folderPath: string;
+      newFolderName?: string;
+      remoteMachineId?: string;
       repositoryInput: string;
       requestId: string;
+      shallowClone?: boolean;
       type: "cloneRepository";
+    }
+  | {
+      /**
+       * CDXC:AddRepository 2026-06-01-11:18:
+       * Repository clone destination preview is routed through gxserver so the
+       * modal can warn about an existing default folder without reimplementing
+       * filesystem and repository parsing logic in the macOS UI layer.
+       */
+      folderPath: string;
+      newFolderName?: string;
+      remoteMachineId?: string;
+      repositoryInput: string;
+      requestId: string;
+      type: "previewRepositoryClone";
+    }
+  | {
+      /**
+       * CDXC:AddRepository 2026-06-02-13:41:
+       * Repository clone progress moved from the modal to a persistent toast.
+       * The toast Cancel action must target the active clone request instead of
+       * only dismissing UI, so the native sidebar can ask gxserver to cancel the
+       * corresponding clone job.
+      */
+      remoteMachineId?: string;
+      requestId: string;
+      type: "cancelRepositoryClone";
     }
   | {
       type: "createSessionInGroup";
@@ -1071,16 +1279,18 @@ export type SidebarToExtensionMessage =
       /**
        * CDXC:RecentProjects 2026-05-04-14:25
        * Combined project context menus close projects into the Recent Projects
-       * drawer instead of deleting their stored sessions. Native keeps the
-       * legacy remove message for the workspace dock path.
+       * drawer instead of deleting their stored sessions. Remove remains the
+       * explicit project-delete path.
        */
       type: "closeWorkspaceProjectForGroup" | "removeWorkspaceProjectForGroup";
       groupId: string;
     }
   | {
       /**
-       * CDXC:WorktreeDelete 2026-05-28-07:46:
-       * Delete Worktree first asks native for a fresh git status summary, then opens the full-window confirmation modal before any checkout directory is removed.
+       * CDXC:WorktreeDelete 2026-06-02-13:41:
+       * Delete Worktree first asks gxserver for a fresh Git status summary,
+       * then the native sidebar opens the full-window confirmation modal before
+       * any checkout directory is removed.
        */
       type: "promptDeleteWorktreeForGroup";
       groupId: string;
@@ -1094,14 +1304,28 @@ export type SidebarToExtensionMessage =
       sessionId: string;
     }
   | {
+      type: "closeSessions";
+      sessionIds: string[];
+    }
+  | {
       type: "setSessionSleeping";
       sessionId: string;
+      sleeping: boolean;
+    }
+  | {
+      type: "setSessionsSleeping";
+      sessionIds: string[];
       sleeping: boolean;
     }
   | {
       favorite: boolean;
       type: "setSessionFavorite";
       sessionId: string;
+    }
+  | {
+      sessionId: string;
+      sessionTag?: SidebarSessionTag | null;
+      type: "setSessionTag";
     }
   | {
       pinned: boolean;
@@ -1122,6 +1346,16 @@ export type SidebarToExtensionMessage =
        * awake.
        */
       type: "sleepInactiveProjectSessions";
+      groupId: string;
+    }
+  | {
+      /**
+       * CDXC:ProjectClose 2026-06-04-23:40:
+       * Combined project-row Close inactive is project-scoped, not group-scoped.
+       * It closes idle terminal sessions while preserving working and attention
+       * sessions, and it must not park the whole project in Recent Projects.
+       */
+      type: "closeInactiveProjectSessions";
       groupId: string;
     }
   | {
@@ -1216,6 +1450,17 @@ export type SidebarToExtensionMessage =
       type: "runBrowserPaneAction";
     }
   | {
+      /**
+       * CDXC:GxserverPresentationSearch 2026-06-01-15:08:
+       * Previous Sessions is loaded on demand from gxserver after the presentation hard cutover. React sends debounced metadata queries through native so startup no longer hydrates all previous-session history into the sidebar store.
+       */
+      limit?: number;
+      query?: string;
+      requestId: string;
+      sessionTags?: SidebarSessionTag[];
+      type: "requestPreviousSessions";
+    }
+  | {
       historyId: string;
       type: "restorePreviousSession";
     }
@@ -1246,9 +1491,6 @@ export type SidebarToExtensionMessage =
        * project, not in the Quick/projectless terminal area.
        */
       type: "searchPreviousSessionsByText";
-    }
-  | {
-      type: "clearGeneratedPreviousSessions";
     }
   | {
       content: string;
@@ -1289,6 +1531,11 @@ export type SidebarToExtensionMessage =
     }
   | {
       type: "toggleActiveSessionsSortMode";
+    }
+  | {
+      manualSessionIdsByGroup?: Record<string, string[]>;
+      sortMode: SidebarActiveSessionsSortMode;
+      type: "setActiveSessionsSortMode";
     }
   | {
       type: "syncSessionOrder";
@@ -1357,6 +1604,7 @@ export type SidebarToExtensionMessage =
     }
   | {
       filePath: string;
+      requestId?: string;
       type: "openSidebarGitChangedFileDiff";
     }
   | {
@@ -1399,9 +1647,20 @@ export type SidebarToExtensionMessage =
     }
   | {
       type: "createProjectWorktree";
-      agentId: string;
-      prompt: string;
+      agentId?: string;
+      existingWorktreePath?: string;
+      mode?: "create" | "openExisting";
+      prompt?: string;
       projectId?: string;
+      projectPath?: string;
+      remoteMachineId?: string;
+    }
+  | {
+      type: "requestProjectWorktrees";
+      projectId?: string;
+      projectPath?: string;
+      requestId: string;
+      remoteMachineId?: string;
     }
   | {
       type: "setProjectWorktreeCommand";
