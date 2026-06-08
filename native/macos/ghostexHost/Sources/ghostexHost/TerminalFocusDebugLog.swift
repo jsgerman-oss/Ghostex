@@ -193,6 +193,9 @@ enum NativeLogPrivacy {
   /*
    CDXC:DiagnosticsPrivacy 2026-05-30-23:56:
    Users must be able to zip and send Ghostex diagnostic log files without exposing project names, session titles, workspace paths, browser URLs with private query strings, command text, terminal text, or credentials. Sanitize all file-backed native log payloads and the remaining native system-log diagnostics at the writer boundary so individual call sites can keep logging useful IDs, counts, phases, and geometry without leaking user content.
+
+   CDXC:DiagnosticsPrivacy 2026-06-08-02:54:
+   Terminal image-drop recovery may hold prepared Markdown text in memory while waiting for the release event. If any future diagnostic payload accidentally includes that content as a string field, treat content-like keys as user text and redact them at the writer boundary.
    */
   static func sanitizePayload(_ payload: [String: Any]) -> [String: Any] {
     var sanitized: [String: Any] = [:]
@@ -327,9 +330,10 @@ enum NativeLogPrivacy {
   private static func isSensitiveTextKey(_ key: String) -> Bool {
     key == "title" || key.hasSuffix("title") || key == "name" || key.hasSuffix("name")
       || key == "message" || key == "details" || key.hasSuffix("details") || key == "input"
-      || key == "text" || key.hasSuffix("text") || key == "comment" || key == "description"
-      || key == "label" || key == "command" || key.hasSuffix("command") || key == "stdout"
-      || key == "stderr" || key == "body" || key.hasSuffix("body")
+      || key == "text" || key.hasSuffix("text") || key == "content" || key.hasSuffix("content")
+      || key == "comment" || key == "description" || key == "label" || key == "command"
+      || key.hasSuffix("command") || key == "stdout" || key == "stderr" || key == "body"
+      || key.hasSuffix("body")
   }
 
   private static func isSensitiveCollectionKey(_ key: String) -> Bool {

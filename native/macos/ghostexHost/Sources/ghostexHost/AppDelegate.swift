@@ -700,17 +700,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
       handleOSIntegrationURL(url)
     }
     if !filePaths.isEmpty {
-      dispatchOSIntegrationFileOpenPaths(filePaths)
+      dispatchApplicationFileOpenPaths(filePaths, operationSource: "applicationOpenURLs")
     }
   }
 
   @MainActor func application(_ sender: NSApplication, openFiles filenames: [String]) {
-    dispatchOSIntegrationFileOpenPaths(filenames)
+    dispatchApplicationFileOpenPaths(filenames, operationSource: "applicationOpenFiles")
     sender.reply(toOpenOrPrint: .success)
   }
 
   @MainActor func application(_ sender: NSApplication, openFile filename: String) -> Bool {
-    dispatchOSIntegrationFileOpenPaths([filename])
+    dispatchApplicationFileOpenPaths([filename], operationSource: "applicationOpenFile")
     return true
   }
 
@@ -989,6 +989,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
     return "\(type) phase=\(phase) eventNumber=\(eventNumber) ageMs=\(recordedAgeMs) hitView=\(hitView)"
   }
 
+  @MainActor
+  private func terminalPaneDropRecentLocalInputAgeMs() -> Int? {
+    lastNativeInputEventRecordedAt.map { Int(Date().timeIntervalSince($0) * 1000) }
+  }
+
+  @MainActor
+  private func shouldSuppressTerminalPaneDropActivationForRecentLocalInput(
+    recentLocalInputAgeMs: Int?
+  ) -> Bool {
+    if let event = NSApp.currentEvent,
+      Self.isNativeMouseActivationBoundaryEvent(event.type)
+    {
+      return true
+    }
+    guard let recentLocalInputAgeMs else {
+      return false
+    }
+    return recentLocalInputAgeMs >= 0 && recentLocalInputAgeMs <= 750
+  }
+
   private static func hitViewDescription(for event: NSEvent, in window: NSWindow?) -> String {
     guard let contentView = window?.contentView else {
       return "<none>"
@@ -1003,13 +1023,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
   private static func nativeEventTypeName(_ eventType: NSEvent.EventType) -> String {
     switch eventType {
     case .leftMouseDown: return "leftMouseDown"
+    case .leftMouseDragged: return "leftMouseDragged"
     case .leftMouseUp: return "leftMouseUp"
     case .rightMouseDown: return "rightMouseDown"
+    case .rightMouseDragged: return "rightMouseDragged"
     case .rightMouseUp: return "rightMouseUp"
     case .otherMouseDown: return "otherMouseDown"
+    case .otherMouseDragged: return "otherMouseDragged"
     case .otherMouseUp: return "otherMouseUp"
     case .keyDown: return "keyDown"
     default: return "\(eventType.rawValue)"
+    }
+  }
+
+  private static func isNativeMouseActivationBoundaryEvent(_ eventType: NSEvent.EventType) -> Bool {
+    switch eventType {
+    case .leftMouseDown, .leftMouseUp, .rightMouseDown, .rightMouseUp, .otherMouseDown,
+      .otherMouseUp:
+      return true
+    default:
+      return false
     }
   }
 
@@ -1435,6 +1468,64 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
       "windowDidResignKey windowVisible=\(window?.isVisible ?? false) keyWindow=\(window?.isKeyWindow ?? false) mainWindow=\(window?.isMainWindow ?? false) frontmost=\(NSWorkspace.shared.frontmostApplication?.localizedName ?? "<missing>") lastActivationRequest=\(describeLastNativeActivationRequest()) recentInput=\(describeRecentNativeInputEvent()) workspace=\(describeWorkspaceActivationSnapshot())"
     )
     logNativeActivationLifecycleEvent("nativeHost.window.didResignKey")
+  }
+
+  /*
+   CDXC:TerminalImageDrop 2026-06-08-03:57:
+   The 03:53 Dock-stack repro showed `NSWindow.registerForDraggedTypes` was active but no `window.entered` or `window.perform` events fired. AppKit's NSWindow drag registration forwards NSDraggingDestination messages to the window delegate, so route those delegate callbacks here instead of relying only on subclass methods on the custom window.
+
+   CDXC:TerminalImageDrop 2026-06-08-03:59:
+   The 03:59 repro still showed no `window.entered` event after delegate routing was added. NSWindow discovers these drag methods by Objective-C selector lookup rather than the NSWindowDelegate protocol, so expose them explicitly with `@objc` to make `responds(to:)` succeed.
+
+   CDXC:TerminalImageDrop 2026-06-08-04:49:
+   Window drag registration is now disabled after the 04:45 Dock-stack repro, but these delegate methods stay wired for diagnostics if AppKit ever routes an already-selected window drag destination through the historical callbacks.
+   */
+  @objc(draggingEntered:)
+  func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+    routeTerminalPaneDropWindowDelegateDragOperation(sender, phase: "entered")
+  }
+
+  @objc(draggingUpdated:)
+  func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
+    routeTerminalPaneDropWindowDelegateDragOperation(sender, phase: "updated")
+  }
+
+  @objc(draggingExited:)
+  func draggingExited(_ sender: NSDraggingInfo?) {
+    guard isMainTerminalPaneDropDestination(sender) else {
+      return
+    }
+    (window as? ghostexFocusReportingWindow)?.onTerminalPaneDropDraggingExited?(sender)
+  }
+
+  @objc(prepareForDragOperation:)
+  func prepareForDragOperation(_ sender: NSDraggingInfo) -> Bool {
+    routeTerminalPaneDropWindowDelegateDragOperation(sender, phase: "prepare") == .copy
+  }
+
+  @objc(performDragOperation:)
+  func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+    guard isMainTerminalPaneDropDestination(sender) else {
+      return false
+    }
+    return (window as? ghostexFocusReportingWindow)?.onTerminalPaneDropPerform?(sender) ?? false
+  }
+
+  private func routeTerminalPaneDropWindowDelegateDragOperation(
+    _ sender: NSDraggingInfo,
+    phase: String
+  ) -> NSDragOperation {
+    guard isMainTerminalPaneDropDestination(sender) else {
+      return []
+    }
+    return (window as? ghostexFocusReportingWindow)?.onTerminalPaneDropDragOperation?(sender, phase) ?? []
+  }
+
+  private func isMainTerminalPaneDropDestination(_ sender: NSDraggingInfo?) -> Bool {
+    guard let destinationWindow = sender?.draggingDestinationWindow else {
+      return true
+    }
+    return destinationWindow === window
   }
 
   func windowDidBecomeMain(_ notification: Notification) {
@@ -1898,15 +1989,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
       }
       self?.logNativeActivationBoundaryInputEvent(event, phase: phase)
     }
-    window.onTerminalPaneDropMouseEvent = { [weak root] event in
-      root?.handleTerminalPaneDropWindowEvent(event) ?? false
-    }
     /*
      CDXC:TerminalImageDrop 2026-06-07-16:58:
-     The 16:56 image-drop repro still produced no root, workspace, or surface drag callbacks. Register the NSWindow itself as the high-water drag destination and forward only workspace-frame drops into the terminal router, because child AppKit/CEF surfaces can prevent content/root views from becoming the selected drag receiver.
+     The 16:56 image-drop repro tried registering the NSWindow itself as a high-water drag destination because child AppKit/CEF surfaces could prevent content/root views from becoming the selected drag receiver.
+
+     CDXC:TerminalImageDrop 2026-06-08-04:49:
+     The 04:45 Dock-stack repro showed the window/root registrations still did not receive `NSDraggingInfo`, while the release mouse hit test reached the terminal surface. Disable window-level file-drop registration so AppKit can select the concrete terminal NSView directly.
      */
-    window.registerForDraggedTypes(root.workspaceView.terminalPaneDropRegisteredTypes)
-    root.workspaceView.logTerminalPaneDropRegistration(operationSource: "window")
+    window.unregisterDraggedTypes()
+    root.workspaceView.logTerminalPaneDropRegistrationDisabled(operationSource: "window")
     window.onTerminalPaneDropDragOperation = { [weak root] sender, phase in
       guard let root else { return [] }
       return root.workspaceView.terminalPaneRootDragOperation(
@@ -3462,6 +3553,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
     }
   }
 
+  @discardableResult
+  @MainActor private func dispatchApplicationFileOpenPaths(
+    _ paths: [String],
+    operationSource: String
+  ) -> Bool {
+    /*
+     CDXC:TerminalImageDrop 2026-06-08-04:09:
+     The 04:06 Dock-stack repro tested Launch Services file-open callbacks as a terminal-drop fallback when no AppKit drag callback arrived.
+
+     CDXC:TerminalImageDrop 2026-06-08-06:27:
+     Drag/drop must not depend on global mouse monitors or armed file-open fallbacks, because those paths inspect cross-app drag state outside AppKit's scoped `NSDraggingInfo` callback and can trigger repeated macOS app-data permission prompts. Keep application file-open routing separate from terminal drop insertion.
+     */
+    TerminalFocusDebugLog.append(
+      event: "nativeWorkspace.terminalDrop.\(operationSource).inspect",
+      details: [
+        "didRouteTerminalDrop": false,
+        "operationSource": operationSource,
+        "pathCount": paths.count,
+      ],
+      force: true)
+    dispatchOSIntegrationFileOpenPaths(paths)
+    return false
+  }
+
   @MainActor private func presentScriptOpenDialogIfNeeded(path: String) -> Bool {
     let url = URL(fileURLWithPath: path)
     guard ["command", "tool", "sh"].contains(url.pathExtension.lowercased()) else {
@@ -4840,15 +4955,7 @@ final class WorkspaceInteractionShieldView: NSView {
 final class TerminalPaneDropOverlayView: NSView {
   private weak var workspaceView: TerminalWorkspaceView?
   private var lastHitTestSignature: String?
-  private var isCapturingPotentialFileDrop = false
   private var isForwardingMouseEvent = false
-  private var activeDropEventNumber: Int?
-  private var releaseOnlyDropEventNumber: Int?
-  private var lastHandledDropEventNumber: Int?
-  private var lastHandledDragPasteboardChangeCount: Int?
-  private var ignoredDragPasteboardChangeCount: Int?
-  private var recentReleaseOnlyDragSignalTimestamp: TimeInterval?
-  private var recentReleaseOnlyDragSignalPasteboardChangeCount: Int?
 
   override var acceptsFirstResponder: Bool { false }
 
@@ -4857,7 +4964,15 @@ final class TerminalPaneDropOverlayView: NSView {
     super.init(frame: .zero)
     wantsLayer = true
     layer?.backgroundColor = NSColor.clear.cgColor
-    registerForDraggedTypes(workspaceView.terminalPaneDropRegisteredTypes)
+    /*
+     CDXC:TerminalImageDrop 2026-06-08-04:50:
+     The 04:37 Dock-stack repro still never reached AppKit `NSDraggingInfo`
+     callbacks after geometry-only hit testing was passed through. Keep this
+     transparent view out of drag-destination registration entirely so the real
+     terminal surface/root/window destinations are the only candidates AppKit can
+     choose for file URL drops.
+     */
+    unregisterDraggedTypes()
   }
 
   required init?(coder: NSCoder) {
@@ -4865,70 +4980,76 @@ final class TerminalPaneDropOverlayView: NSView {
   }
 
   func logRegistration() {
-    workspaceView?.logTerminalPaneDropRegistration(operationSource: "overlay")
+    workspaceView?.logTerminalPaneDropOverlayVisualOnly()
   }
 
   override func hitTest(_ point: NSPoint) -> NSView? {
     guard !isHidden, bounds.contains(point), let workspaceView else {
       return nil
     }
-    let dragPasteboard = NSPasteboard(name: .drag)
-    let dragPasteboardTypes = dragPasteboard.types
-    let currentEvent = NSApp.currentEvent
-    let eventType = currentEvent?.type
+    let eventType = NSApp.currentEvent?.type
     let eventTypeName = Self.eventTypeName(eventType)
-    let hasRelevantPayload = Self.hasRelevantDragPayload(
-      dragPasteboardTypes,
-      registeredTypes: workspaceView.terminalPaneDropRegisteredTypes)
-    if hasRelevantPayload, let currentEvent, Self.isReleaseOnlyDragSignalEvent(eventType) {
-      recentReleaseOnlyDragSignalTimestamp = currentEvent.timestamp
-      recentReleaseOnlyDragSignalPasteboardChangeCount = dragPasteboard.changeCount
-    }
-    let hasRecentReleaseOnlyDragSignal = Self.hasRecentReleaseOnlyDragSignal(
-      currentEvent: currentEvent,
-      pasteboardChangeCount: dragPasteboard.changeCount,
-      signalTimestamp: recentReleaseOnlyDragSignalTimestamp,
-      signalPasteboardChangeCount: recentReleaseOnlyDragSignalPasteboardChangeCount)
-    if Self.isMouseDownEvent(eventType) {
-      resetPotentialFileDropCapture()
-      if hasRelevantPayload, hasRecentReleaseOnlyDragSignal, Self.shouldArmReleaseOnlyDrop(
-        pasteboardChangeCount: dragPasteboard.changeCount,
-        ignoredChangeCount: ignoredDragPasteboardChangeCount,
-        lastHandledChangeCount: lastHandledDragPasteboardChangeCount)
-      {
-        releaseOnlyDropEventNumber = currentEvent?.eventNumber
-      }
-    }
-    let beginsCapture = hasRelevantPayload && Self.isDragMouseEvent(eventType)
-    if beginsCapture {
-      isCapturingPotentialFileDrop = true
-      activeDropEventNumber = currentEvent?.eventNumber
-    }
-    let eventMatchesCapture = activeDropEventNumber == nil
-      || currentEvent?.eventNumber == activeDropEventNumber
-    let shouldCapture =
-      beginsCapture
-      || (
-        isCapturingPotentialFileDrop && eventMatchesCapture && hasRelevantPayload
-          && Self.isCaptureContinuationEvent(eventType))
+    /*
+     CDXC:TerminalImageDrop 2026-06-08-03:51:
+     The 03:48 Dock-stack repro showed pane hover feedback but no paste because the geometry-only inactive monitor drew the target while the drag pasteboard stayed empty and AppKit never chose a terminal drop destination. That led to testing whether the transparent overlay should participate in drag hit testing, but later repros showed that approach still hid the real terminal destination.
 
-    if (dragPasteboardTypes?.isEmpty == false) || lastHitTestSignature != nil {
-      let signature = "\(eventTypeName)|\(shouldCapture)|\((dragPasteboardTypes ?? []).map(\.rawValue).sorted().joined(separator: ","))"
-      if signature != lastHitTestSignature {
-        workspaceView.logTerminalPaneDropOverlayHitTest(
-          eventTypeName: eventTypeName,
-          dragPasteboardTypes: dragPasteboardTypes,
-          shouldCapture: shouldCapture)
-        lastHitTestSignature = signature
-      }
+     CDXC:TerminalImageDrop 2026-06-08-04:42:
+     The 04:22 and 04:30 Dock-stack repros showed the overlay becoming the hit-test target from inactive-window drag geometry while the drag pasteboard advertised zero types. That drew the hover indicator but could prevent the registered terminal/root destination from receiving the real AppKit drop. Keep geometry hover diagnostics, but pass through geometry-only hit tests unless the pasteboard already has a relevant file/string URL payload.
+
+     CDXC:TerminalImageDrop 2026-06-08-04:50:
+     The 04:37 Dock-stack repro still never delivered AppKit drag callbacks after
+     geometry-only pass-through, so this overlay must never become the selected
+     hit-test view during a file drag. It remains only a diagnostic observer; the
+     terminal surface/root/window own the actual drag destination behavior.
+
+     CDXC:TerminalImageDrop 2026-06-08-06:27:
+     The repeated macOS app-data prompt is caused by reading global drag pasteboard
+     content outside AppKit's scoped `NSDraggingInfo` callbacks. The overlay now
+     logs geometry only and never asks `NSPasteboard.drag` for types or payloads.
+     */
+    let shouldCaptureInactiveGeometryDrag =
+      window?.isKeyWindow == false
+      && Self.isDragMouseEvent(eventType)
+      && bounds.contains(point)
+    let shouldLogHitTest =
+      shouldCaptureInactiveGeometryDrag || lastHitTestSignature != nil
+
+    guard shouldLogHitTest else {
+      return nil
     }
 
-    return shouldCapture ? self : nil
+    let signature = [
+      eventTypeName,
+      "capture=false",
+      "inactiveGeometry=\(shouldCaptureInactiveGeometryDrag)",
+    ].joined(separator: "|")
+    if signature != lastHitTestSignature {
+      workspaceView.logTerminalPaneDropOverlayHitTest(
+        eventTypeName: eventTypeName,
+        dragPasteboardTypes: nil,
+        shouldCapture: false,
+        details: [
+          "geometryDragPassedThrough": true,
+          "hasRelevantPayload": false,
+          "overlayDragDestinationRegistered": false,
+          "readsGlobalDragPasteboard": false,
+          "shouldCaptureInactiveGeometryDestination": false,
+          "shouldCaptureInactiveGeometryDrag": shouldCaptureInactiveGeometryDrag,
+          "windowIsKey": window?.isKeyWindow ?? false,
+          "windowIsVisible": window?.isVisible ?? false,
+        ])
+      lastHitTestSignature = signature
+    }
+
+    return nil
   }
 
   /*
    CDXC:TerminalImageDrop 2026-06-07-17:08:
-   Logs from the 17:07 repro showed the transparent overlay captured Finder file payloads during leftMouseDragged but released hit testing on leftMouseUp before AppKit delivered a drag-destination perform callback. Keep the overlay active through the release and insert from the drag pasteboard at the mouse-up location; if the drag pasteboard is stale, forward the mouse event to the terminal below.
+   Logs from the 17:07 repro tested whether the transparent overlay should complete a synthetic file drop after AppKit skipped a drag-destination callback.
+
+   CDXC:TerminalImageDrop 2026-06-08-06:27:
+   The overlay must not read global drag pasteboard data or synthesize terminal drops. It only forwards mouse events, while actual file/image insertion is owned by AppKit `NSDraggingInfo` callbacks on terminal/native chrome views.
    */
   override func mouseDragged(with event: NSEvent) {
     forwardMouseEvent(event)
@@ -4943,74 +5064,15 @@ final class TerminalPaneDropOverlayView: NSView {
   }
 
   override func mouseUp(with event: NSEvent) {
-    finishPotentialFileDrop(with: event)
+    forwardMouseEvent(event)
   }
 
   override func rightMouseUp(with event: NSEvent) {
-    finishPotentialFileDrop(with: event)
+    forwardMouseEvent(event)
   }
 
   override func otherMouseUp(with event: NSEvent) {
-    finishPotentialFileDrop(with: event)
-  }
-
-  func handleWindowMouseEvent(_ event: NSEvent) -> Bool {
-    guard Self.isMouseUpEvent(event.type), let workspaceView else {
-      return false
-    }
-    let pasteboard = NSPasteboard(name: .drag)
-    let hasRelevantPayload = Self.hasRelevantDragPayload(
-      pasteboard.types,
-      registeredTypes: workspaceView.terminalPaneDropRegisteredTypes)
-    let overlayPoint = convert(event.locationInWindow, from: nil)
-    let inBounds = !isHidden && bounds.contains(overlayPoint)
-    let eventMatchesCapture = isCapturingPotentialFileDrop && activeDropEventNumber == event.eventNumber
-    let eventMatchesReleaseOnlyDrop = releaseOnlyDropEventNumber == event.eventNumber
-    let shouldAttemptSyntheticDrop =
-      inBounds && hasRelevantPayload && (eventMatchesCapture || eventMatchesReleaseOnlyDrop)
-
-    if hasRelevantPayload || isCapturingPotentialFileDrop {
-      let releaseOnlyDragSignalAgeMs = Self.releaseOnlyDragSignalAgeMs(
-        currentEvent: event,
-        signalTimestamp: recentReleaseOnlyDragSignalTimestamp)
-      workspaceView.logTerminalPaneDropOverlayWindowEvent(
-        eventTypeName: Self.eventTypeName(event.type),
-        dragPasteboardTypes: pasteboard.types,
-        details: [
-          "activeDropEventNumber": activeDropEventNumber ?? -1,
-          "dragPasteboardChangeCount": pasteboard.changeCount,
-          "eventMatchesCapture": eventMatchesCapture,
-          "eventMatchesReleaseOnlyDrop": eventMatchesReleaseOnlyDrop,
-          "eventNumber": event.eventNumber,
-          "hasActiveDropEventNumber": activeDropEventNumber != nil,
-          "hasRelevantPayload": hasRelevantPayload,
-          "hasRecentReleaseOnlyDragSignal": Self.hasRecentReleaseOnlyDragSignal(
-            currentEvent: event,
-            pasteboardChangeCount: pasteboard.changeCount,
-            signalTimestamp: recentReleaseOnlyDragSignalTimestamp,
-            signalPasteboardChangeCount: recentReleaseOnlyDragSignalPasteboardChangeCount),
-          "hasReleaseOnlyDropEventNumber": releaseOnlyDropEventNumber != nil,
-          "ignoredDragPasteboardChangeCount": ignoredDragPasteboardChangeCount ?? -1,
-          "inBounds": inBounds,
-          "isCapturingPotentialFileDrop": isCapturingPotentialFileDrop,
-          "lastHandledDragPasteboardChangeCount": lastHandledDragPasteboardChangeCount ?? -1,
-          "releaseOnlyDragSignalAgeMs": releaseOnlyDragSignalAgeMs ?? -1,
-          "releaseOnlyDragSignalPasteboardChangeCount": recentReleaseOnlyDragSignalPasteboardChangeCount ?? -1,
-          "releaseOnlyDropEventNumber": releaseOnlyDropEventNumber ?? -1,
-          "willAttemptSyntheticDrop": shouldAttemptSyntheticDrop,
-        ])
-    }
-
-    guard shouldAttemptSyntheticDrop else {
-      if isCapturingPotentialFileDrop {
-        resetPotentialFileDropCapture()
-      }
-      return false
-    }
-    return finishPotentialFileDrop(
-      with: event,
-      operationSource: "overlayWindow",
-      shouldForwardOnFailure: false)
+    forwardMouseEvent(event)
   }
 
   override func draggingEntered(_ sender: any NSDraggingInfo) -> NSDragOperation {
@@ -5043,73 +5105,6 @@ final class TerminalPaneDropOverlayView: NSView {
       for: sender,
       rootView: rootView,
       operationSource: "overlay")
-  }
-
-  /*
-   CDXC:TerminalImageDrop 2026-06-07-17:16:
-   The 17:12 repro showed leftMouseUp hit-testing to TerminalPaneDropOverlayView while AppKit still skipped the overlay mouseUp override and never sent drag-destination perform callbacks. Complete the already-detected image drop once from NSWindow.sendEvent using the matching mouse event number, then reset capture state so stale drag pasteboard contents cannot trigger later terminal mouse drags.
-
-   CDXC:TerminalImageDrop 2026-06-07-17:25:
-   The 17:22 repro showed external file releases can arrive as leftMouseDown/leftMouseUp without a leftMouseDragged event, while stale drag pasteboard contents remain visible after previous drops. Arm one release-only drop when the drag pasteboard has changed since the ignored or handled payload, then clear that drag pasteboard after a successful synthetic drop so ordinary later terminal clicks cannot paste the old image.
-
-   CDXC:TerminalImageDrop 2026-06-07-17:29:
-   The 17:28 repro showed the release-only path was suppressed because the overlay initialized ignoredDragPasteboardChangeCount from the current drag pasteboard before Ghostex had handled anything. Treat the ignored count as empty until Ghostex clears a handled drop, otherwise the first real drop after launch can be mistaken for stale drag data.
-
-   CDXC:TerminalImageDrop 2026-06-07-17:43:
-   The 17:34 trace showed a normal terminal click can still see stale file types on the drag pasteboard. A release-only synthetic drop must require a very recent system drag signal before mouse-down, not only a file payload, so stale pasteboard contents cannot paste images during ordinary clicks.
-   */
-  @discardableResult
-  private func finishPotentialFileDrop(
-    with event: NSEvent,
-    operationSource: String = "overlay",
-    shouldForwardOnFailure: Bool = true
-  ) -> Bool {
-    defer {
-      resetPotentialFileDropCapture()
-    }
-    guard lastHandledDropEventNumber != event.eventNumber else {
-      if shouldForwardOnFailure {
-        forwardMouseEvent(event)
-      }
-      return false
-    }
-    let pasteboard = NSPasteboard(name: .drag)
-    let eventMatchesDrop =
-      (isCapturingPotentialFileDrop && activeDropEventNumber == event.eventNumber)
-      || releaseOnlyDropEventNumber == event.eventNumber
-    guard eventMatchesDrop,
-      let workspaceView,
-      let rootView = superview,
-      workspaceView.performTerminalPaneRootDrop(
-        pasteboard: pasteboard,
-        windowPoint: event.locationInWindow,
-        rootView: rootView,
-        operationSource: operationSource)
-    else {
-      if shouldForwardOnFailure {
-        forwardMouseEvent(event)
-      }
-      return false
-    }
-    lastHandledDropEventNumber = event.eventNumber
-    markDragPasteboardHandled(pasteboard)
-    return true
-  }
-
-  private func resetPotentialFileDropCapture() {
-    isCapturingPotentialFileDrop = false
-    activeDropEventNumber = nil
-    releaseOnlyDropEventNumber = nil
-    recentReleaseOnlyDragSignalTimestamp = nil
-    recentReleaseOnlyDragSignalPasteboardChangeCount = nil
-    lastHitTestSignature = nil
-  }
-
-  private func markDragPasteboardHandled(_ pasteboard: NSPasteboard) {
-    lastHandledDragPasteboardChangeCount = pasteboard.changeCount
-    let clearedChangeCount = pasteboard.clearContents()
-    ignoredDragPasteboardChangeCount = clearedChangeCount
-    lastHandledDragPasteboardChangeCount = clearedChangeCount
   }
 
   private func forwardMouseEvent(_ event: NSEvent) {
@@ -5156,32 +5151,6 @@ final class TerminalPaneDropOverlayView: NSView {
       operationSource: "overlay")
   }
 
-  private static func hasRelevantDragPayload(
-    _ dragPasteboardTypes: [NSPasteboard.PasteboardType]?,
-    registeredTypes: [NSPasteboard.PasteboardType]
-  ) -> Bool {
-    guard let dragPasteboardTypes,
-      !Set(dragPasteboardTypes).isDisjoint(with: Set(registeredTypes))
-    else {
-      return false
-    }
-    return true
-  }
-
-  private static func shouldArmReleaseOnlyDrop(
-    pasteboardChangeCount: Int,
-    ignoredChangeCount: Int?,
-    lastHandledChangeCount: Int?
-  ) -> Bool {
-    if pasteboardChangeCount == ignoredChangeCount {
-      return false
-    }
-    if pasteboardChangeCount == lastHandledChangeCount {
-      return false
-    }
-    return true
-  }
-
   private static func isDragMouseEvent(_ eventType: NSEvent.EventType?) -> Bool {
     switch eventType {
     case .leftMouseDragged, .rightMouseDragged, .otherMouseDragged:
@@ -5189,73 +5158,6 @@ final class TerminalPaneDropOverlayView: NSView {
     default:
       return false
     }
-  }
-
-  private static func isMouseDownEvent(_ eventType: NSEvent.EventType?) -> Bool {
-    switch eventType {
-    case .leftMouseDown, .rightMouseDown, .otherMouseDown:
-      return true
-    default:
-      return false
-    }
-  }
-
-  private static func isMouseUpEvent(_ eventType: NSEvent.EventType?) -> Bool {
-    switch eventType {
-    case .leftMouseUp, .rightMouseUp, .otherMouseUp:
-      return true
-    default:
-      return false
-    }
-  }
-
-  private static func isCaptureContinuationEvent(_ eventType: NSEvent.EventType?) -> Bool {
-    switch eventType {
-    case .leftMouseDragged, .rightMouseDragged, .otherMouseDragged,
-      .leftMouseUp, .rightMouseUp, .otherMouseUp,
-      .appKitDefined, .systemDefined:
-      return true
-    default:
-      return false
-    }
-  }
-
-  private static func isReleaseOnlyDragSignalEvent(_ eventType: NSEvent.EventType?) -> Bool {
-    guard let eventType else { return false }
-    if eventType == .systemDefined {
-      return true
-    }
-    return eventType.rawValue == 34
-  }
-
-  private static func hasRecentReleaseOnlyDragSignal(
-    currentEvent: NSEvent?,
-    pasteboardChangeCount: Int,
-    signalTimestamp: TimeInterval?,
-    signalPasteboardChangeCount: Int?
-  ) -> Bool {
-    guard let currentEvent,
-      let signalTimestamp,
-      signalPasteboardChangeCount == pasteboardChangeCount
-    else {
-      return false
-    }
-    return currentEvent.timestamp - signalTimestamp >= 0
-      && currentEvent.timestamp - signalTimestamp <= 0.5
-  }
-
-  private static func releaseOnlyDragSignalAgeMs(
-    currentEvent: NSEvent,
-    signalTimestamp: TimeInterval?
-  ) -> Int? {
-    guard let signalTimestamp else {
-      return nil
-    }
-    let ageSeconds = currentEvent.timestamp - signalTimestamp
-    guard ageSeconds >= 0 else {
-      return nil
-    }
-    return Int((ageSeconds * 1000).rounded())
   }
 
   private static func eventTypeName(_ eventType: NSEvent.EventType?) -> String {
@@ -5571,6 +5473,7 @@ final class ghostexRootView: NSView {
     self.divider = PaneResizeHandleView()
     super.init(frame: .zero)
     workspaceView.setSidebarSide(sidebarSide)
+    configureTitlebarTerminalPaneDropForwarding()
     workspaceView.onManagedT3PaneRuntimeStateChanged = { [weak self] state in
       self?.setT3CodeRuntimePaneState(state)
     }
@@ -5599,10 +5502,13 @@ final class ghostexRootView: NSView {
     layer?.backgroundColor = ghostexReferenceSidebarChromeBackgroundColor.cgColor
     /*
      CDXC:TerminalImageDrop 2026-06-07-16:55:
-     Some macOS image drags do not select the nested Ghostty surface as the AppKit drag destination even though terminal clicks hit that surface. Register the root content view for the same terminal drop types and route only workspace-frame drops into TerminalWorkspaceView so file/image drops reach the active terminal pane without changing normal mouse hit testing.
+     Some macOS image drags did not select the nested Ghostty surface as the AppKit drag destination even though terminal clicks hit that surface, so the root content view was temporarily registered for the same terminal drop types.
+
+     CDXC:TerminalImageDrop 2026-06-08-04:49:
+     The 04:45 Dock-stack repro still bypassed root/window drag callbacks, and keeping the root as a registered destination adds another candidate above the terminal surface. Disable root-level file-drop registration and let the terminal surface own the direct AppKit drop path.
      */
-    registerForDraggedTypes(workspaceView.terminalPaneDropRegisteredTypes)
-    workspaceView.logTerminalPaneDropRegistration(operationSource: "root")
+    unregisterDraggedTypes()
+    workspaceView.logTerminalPaneDropRegistrationDisabled(operationSource: "root")
     terminalPaneDropOverlayView.logRegistration()
     sidebarView.setValue(false, forKey: "drawsBackground")
     modalHostView.setValue(false, forKey: "drawsBackground")
@@ -5665,6 +5571,44 @@ final class ghostexRootView: NSView {
     if let titlebarOutsideClickMonitor {
       NSEvent.removeMonitor(titlebarOutsideClickMonitor)
     }
+  }
+
+  private func configureTitlebarTerminalPaneDropForwarding() {
+    /*
+     CDXC:TerminalImageDrop 2026-06-08-05:26:
+     Dock-stack image drags still reached the terminal as activation clicks at 05:22 with no `NSDraggingInfo` on the terminal surface or terminal wrappers.
+     The React titlebar uses a full-window transparent wrapper above the workspace for portals, so register that native chrome layer as a forwarding destination and route accepted file/string drags into the existing terminal root drop parser.
+
+     CDXC:TerminalImageDrop 2026-06-08-05:34:
+     The 05:31 Dock-stack repro crashed when the embedded titlebar WKWebView became the drag destination and terminal diagnostics tried to inspect the AppKit drag mask.
+     Keep drag registration on native AppKit views only; WebKit must not own terminal file-drop routing.
+     */
+    let operationSource = "titlebarChrome"
+    titlebarChromeView.configureTerminalPaneDropForwarding(
+      registeredTypes: workspaceView.terminalPaneDropRegisteredTypes,
+      operationSource: operationSource,
+      dragOperation: { [weak self] sender, phase in
+        guard let self else { return [] }
+        return self.workspaceView.terminalPaneRootDragOperation(
+          for: sender,
+          rootView: self,
+          phase: phase,
+          operationSource: operationSource)
+      },
+      draggingExited: { [weak self] sender in
+        guard let self else { return }
+        self.workspaceView.terminalPaneRootDraggingExited(
+          sender,
+          rootView: self,
+          operationSource: operationSource)
+      },
+      perform: { [weak self] sender in
+        guard let self else { return false }
+        return self.workspaceView.performTerminalPaneRootDrop(
+          for: sender,
+          rootView: self,
+          operationSource: operationSource)
+      })
   }
 
   private func installTitlebarOutsideClickMonitor() {
@@ -8555,10 +8499,6 @@ final class ghostexRootView: NSView {
     presentAppToast(command)
   }
 
-  func handleTerminalPaneDropWindowEvent(_ event: NSEvent) -> Bool {
-    terminalPaneDropOverlayView.handleWindowMouseEvent(event)
-  }
-
   func setSidebarSide(_ side: SidebarSide) {
     sidebarSide = side
     workspaceView.setSidebarSide(side)
@@ -10215,7 +10155,6 @@ final class ghostexFocusReportingWindow: NSWindow {
   var onKeyDownDispatch: ((NSEvent) -> Void)?
   var onKeyEquivalent: ((NSEvent) -> Bool)?
   var onActivationBoundaryEvent: ((NSEvent, String) -> Void)?
-  var onTerminalPaneDropMouseEvent: ((NSEvent) -> Bool)?
   var onTerminalPaneDropDragOperation: (((any NSDraggingInfo), String) -> NSDragOperation)?
   var onTerminalPaneDropDraggingExited: (((any NSDraggingInfo)?) -> Void)?
   var onTerminalPaneDropPerform: (((any NSDraggingInfo)) -> Bool)?
@@ -10256,9 +10195,6 @@ final class ghostexFocusReportingWindow: NSWindow {
       if onKeyEquivalent?(event) == true {
         return
       }
-    }
-    if onTerminalPaneDropMouseEvent?(event) == true {
-      return
     }
     super.sendEvent(event)
     if shouldReportActivationBoundaryEvent && Self.isMouseActivationBoundaryEvent(event) {
@@ -10436,12 +10372,50 @@ extension ghostexRootView: WKNavigationDelegate {
   }
 }
 
+private func terminalPaneChromeDropRegistrationDetails(
+  registeredTypes: [NSPasteboard.PasteboardType],
+  operationSource: String
+) -> [String: Any] {
+  [
+    "operationSource": operationSource,
+    "registeredTypeCount": registeredTypes.count,
+    "registeredTypes": registeredTypes.map(\.rawValue).sorted(),
+  ]
+}
+
+private func terminalPaneChromeDropPasteboardDetails(
+  pasteboard: NSPasteboard,
+  registeredTypes: [NSPasteboard.PasteboardType],
+  operationSource: String,
+  phase: String
+) -> [String: Any] {
+  let types = (pasteboard.types ?? []).map(\.rawValue).sorted()
+  return [
+    "operationSource": operationSource,
+    "pasteboardChangeCount": pasteboard.changeCount,
+    "phase": phase,
+    "registeredTypeMatchCount": Set(pasteboard.types ?? []).intersection(Set(registeredTypes)).count,
+    "typeCount": types.count,
+    "types": types,
+  ]
+}
+
 final class ReactTitlebarChromeView: NSView {
   var titlebarHeight: CGFloat = 30
   private let webView: WKWebView
   private var hitRegions: [CGRect] = []
   private var overlayOpen = false
   private var frameBeforeTitlebarMaximize: NSRect?
+  private var terminalPaneDropRegisteredTypes: [NSPasteboard.PasteboardType] = []
+  private var operationSource = "titlebarChrome"
+  private var onTerminalPaneDropDragOperation: (((any NSDraggingInfo), String) -> NSDragOperation)?
+  private var onTerminalPaneDropDraggingExited: (((any NSDraggingInfo)?) -> Void)?
+  private var onTerminalPaneDropPerform: (((any NSDraggingInfo)) -> Bool)?
+  private var lastHitTestRouteLogSignature = ""
+  private var lastTerminalPaneDropHitTestLogSignature = ""
+  private var lastWebViewFootprintLogSignature = ""
+  private var windowStateObserverTokens: [NSObjectProtocol] = []
+  private var terminalPaneDropForwardingActive = false
 
   var hitRegionCount: Int {
     hitRegions.count
@@ -10459,15 +10433,48 @@ final class ReactTitlebarChromeView: NSView {
     webView.autoresizingMask = [.width, .height]
     webView.frame = bounds
     addSubview(webView)
+    disableTitlebarWebViewDropDestination()
+    DispatchQueue.main.async { [weak self] in
+      self?.disableTitlebarWebViewDropDestination()
+    }
+  }
+
+  deinit {
+    removeWindowStateObservers()
   }
 
   required init?(coder: NSCoder) {
     fatalError("init(coder:) is not supported")
   }
 
+  override func viewDidMoveToWindow() {
+    super.viewDidMoveToWindow()
+    installWindowStateObservers()
+    updateTitlebarWebViewFrame(reason: "viewDidMoveToWindow")
+  }
+
   override func layout() {
     super.layout()
-    webView.frame = bounds
+    updateTitlebarWebViewFrame(reason: "layout")
+  }
+
+  func configureTerminalPaneDropForwarding(
+    registeredTypes: [NSPasteboard.PasteboardType],
+    operationSource: String,
+    dragOperation: @escaping ((any NSDraggingInfo), String) -> NSDragOperation,
+    draggingExited: @escaping ((any NSDraggingInfo)?) -> Void,
+    perform: @escaping (any NSDraggingInfo) -> Bool
+  ) {
+    self.terminalPaneDropRegisteredTypes = registeredTypes
+    self.operationSource = operationSource
+    self.onTerminalPaneDropDragOperation = dragOperation
+    self.onTerminalPaneDropDraggingExited = draggingExited
+    self.onTerminalPaneDropPerform = perform
+    registerForDraggedTypes(registeredTypes)
+    disableTitlebarWebViewDropDestination()
+    updateTitlebarWebViewFrame(reason: "dropForwardingConfigured")
+    logTerminalPaneDropRegistration(registeredTypes: registeredTypes, operationSource: operationSource)
+    logTerminalPaneWebViewDropDisabled(operationSource: operationSource)
   }
 
   func setHitRegions(_ regions: [ReactTitlebarHitRegion], overlayOpen: Bool) {
@@ -10491,7 +10498,22 @@ final class ReactTitlebarChromeView: NSView {
      Below-titlebar regions are valid only while React says a titlebar dropdown
      is open. Stale dropdown measurements must not keep routing workspace clicks
      into the titlebar WKWebView after the dropdown closes.
+
+     CDXC:TerminalImageDrop 2026-06-08-05:34:
+     Dock-stack drags need the terminal surface to remain the AppKit drag owner.
+
+     CDXC:ReactTitlebar 2026-06-08-06:33:
+     Titlebar controls and their portaled tooltips need the titlebar WKWebView to keep the full-window viewport. Keep drop registration on the native wrapper only, and let native hit-testing restrict normal pointer events to measured React hit regions plus the blank titlebar drag strip.
+
+     CDXC:TerminalImageDrop 2026-06-08-07:16:
+     Finder and Dock drags start while another app owns focus, so there may be no
+     Ghostex drag-motion hit test before AppKit chooses a destination. Keep the
+     titlebar WebView's AppKit footprint clipped to the titlebar strip while the
+     app/window is inactive, exposing the registered native wrapper as the
+     full-window terminal drop destination before the external drag enters.
      */
+    needsLayout = true
+    updateTitlebarWebViewFrame(reason: "hitRegionsUpdated")
   }
 
   func containsInteractiveHitRegion(_ point: NSPoint) -> Bool {
@@ -10516,13 +10538,65 @@ final class ReactTitlebarChromeView: NSView {
     guard bounds.contains(point) else {
       return nil
     }
-    if containsInteractiveHitRegion(point) {
-      return webView.hitTest(point)
-    }
-    if isPointInFixedTitlebarStrip(point) {
+    if shouldForwardTerminalPaneDropHitTest(point) {
+      setTerminalPaneDropForwardingActive(true, reason: "hitTest")
+      logTerminalPaneDropHitTestForwarder(point: point)
       return self
     }
+    setTerminalPaneDropForwardingActive(false, reason: "normalHitTest")
+    if containsInteractiveHitRegion(point) {
+      let hitView = webView.hitTest(convert(point, to: webView))
+      logTitlebarHitTestRoute(point: point, route: "webView", hitViewFound: hitView != nil)
+      return hitView
+    }
+    if isPointInFixedTitlebarStrip(point) {
+      logTitlebarHitTestRoute(point: point, route: "blankTitlebarStrip", hitViewFound: true)
+      return self
+    }
+    logTitlebarHitTestRoute(point: point, route: "passThrough", hitViewFound: false)
     return nil
+  }
+
+  override func draggingEntered(_ sender: any NSDraggingInfo) -> NSDragOperation {
+    setTerminalPaneDropForwardingActive(true, reason: "draggingEntered")
+    return terminalPaneDropDragOperation(sender, phase: "entered")
+  }
+
+  override func draggingUpdated(_ sender: any NSDraggingInfo) -> NSDragOperation {
+    setTerminalPaneDropForwardingActive(true, reason: "draggingUpdated")
+    return terminalPaneDropDragOperation(sender, phase: "updated")
+  }
+
+  override func draggingExited(_ sender: (any NSDraggingInfo)?) {
+    TerminalFocusDebugLog.append(
+      event: "nativeWorkspace.terminalDrop.\(operationSource).exited",
+      details: [
+        "hasSender": sender != nil,
+        "operationSource": operationSource,
+      ],
+      force: true)
+    onTerminalPaneDropDraggingExited?(sender)
+    setTerminalPaneDropForwardingActive(false, reason: "draggingExited")
+  }
+
+  override func prepareForDragOperation(_ sender: any NSDraggingInfo) -> Bool {
+    setTerminalPaneDropForwardingActive(true, reason: "prepare")
+    return terminalPaneDropDragOperation(sender, phase: "prepare") == .copy
+  }
+
+  override func performDragOperation(_ sender: any NSDraggingInfo) -> Bool {
+    defer {
+      setTerminalPaneDropForwardingActive(false, reason: "perform")
+    }
+    TerminalFocusDebugLog.append(
+      event: "nativeWorkspace.terminalDrop.\(operationSource).perform.routeToRoot",
+      details: terminalPaneChromeDropPasteboardDetails(
+        pasteboard: sender.draggingPasteboard,
+        registeredTypes: terminalPaneDropRegisteredTypes,
+        operationSource: operationSource,
+        phase: "perform"),
+      force: true)
+    return onTerminalPaneDropPerform?(sender) ?? false
   }
 
   override func mouseDown(with event: NSEvent) {
@@ -10568,6 +10642,348 @@ final class ReactTitlebarChromeView: NSView {
     }
     let stripMinY = max(bounds.height - titlebarHeight, 0)
     return point.y >= stripMinY
+  }
+
+  private func updateTitlebarWebViewFrame(reason: String) {
+    /*
+     CDXC:ReactTitlebar 2026-06-08-06:33:
+     The React titlebar webview is a full-window transparent portal host even when no dropdown is open. Shrinking it to the titlebar strip makes tooltip placement use the wrong viewport and can make visible controls miss native hit routing.
+
+     CDXC:TerminalImageDrop 2026-06-08-07:04:
+     The 06:25 working Dock/Finder drop path selected the registered native
+     titlebar wrapper while the embedded WebView did not cover the terminal
+     workspace as an AppKit drag candidate. Keep the WebView full-window for
+     normal titlebar controls and tooltips, but temporarily shrink only its
+     AppKit footprint during external terminal-file drag forwarding so the
+     `titlebarChrome.updated -> perform` route is restored.
+
+     CDXC:TerminalImageDrop 2026-06-08-07:16:
+     The 07:13 repro showed the drag never reached a drag-motion hit test, so
+     shrinking only after `leftMouseDragged` is too late. Treat inactive app/window
+     focus as the external-drag precondition and expose the native drop wrapper
+     before AppKit performs destination selection.
+     */
+    let target = titlebarWebViewFootprint()
+    let didChange = !NSEqualRects(webView.frame, target.frame)
+    if didChange {
+      webView.frame = target.frame
+    }
+    logTitlebarWebViewFootprint(reason: reason, mode: target.mode, didChange: didChange)
+  }
+
+  private func setTerminalPaneDropForwardingActive(_ isActive: Bool, reason: String) {
+    guard terminalPaneDropForwardingActive != isActive else {
+      return
+    }
+    terminalPaneDropForwardingActive = isActive
+    updateTitlebarWebViewFrame(reason: reason)
+  }
+
+  private func titlebarWebViewFootprint() -> (frame: NSRect, mode: String) {
+    if shouldClipTitlebarWebViewForTerminalDrop() {
+      let height = min(max(titlebarHeight, 1), max(bounds.height, 1))
+      return (
+        NSRect(
+          x: bounds.minX,
+          y: max(bounds.maxY - height, bounds.minY),
+          width: bounds.width,
+          height: height),
+        "titlebarStrip")
+    }
+    return (bounds, "fullWindow")
+  }
+
+  private func shouldClipTitlebarWebViewForTerminalDrop() -> Bool {
+    guard !overlayOpen, titlebarHeight > 0, !terminalPaneDropRegisteredTypes.isEmpty else {
+      return false
+    }
+    if terminalPaneDropForwardingActive {
+      return true
+    }
+    if !NSApp.isActive {
+      return true
+    }
+    if let window, !window.isKeyWindow {
+      return true
+    }
+    return false
+  }
+
+  private func logTitlebarWebViewFootprint(
+    reason: String,
+    mode: String,
+    didChange: Bool
+  ) {
+    guard !terminalPaneDropRegisteredTypes.isEmpty else {
+      return
+    }
+    let signature = [
+      mode,
+      "appActive=\(NSApp.isActive)",
+      "didChange=\(didChange)",
+      "forwarding=\(terminalPaneDropForwardingActive)",
+      "overlay=\(overlayOpen)",
+      "windowKey=\(window?.isKeyWindow ?? false)",
+      formatRect(webView.frame),
+    ].joined(separator: "|")
+    guard signature != lastWebViewFootprintLogSignature else {
+      return
+    }
+    lastWebViewFootprintLogSignature = signature
+    TerminalFocusDebugLog.append(
+      event: "nativeWorkspace.terminalDrop.\(operationSource).webViewFootprint",
+      details: [
+        "appIsActive": NSApp.isActive,
+        "didChange": didChange,
+        "mode": mode,
+        "operationSource": operationSource,
+        "reason": reason,
+        "terminalPaneDropForwardingActive": terminalPaneDropForwardingActive,
+        "titlebarHeight": Double(titlebarHeight),
+        "webViewFrame": rectDetails(webView.frame),
+        "windowIsKey": window?.isKeyWindow ?? false,
+        "wrapperBounds": rectDetails(bounds),
+      ],
+      force: true)
+  }
+
+  private func installWindowStateObservers() {
+    removeWindowStateObservers()
+    let center = NotificationCenter.default
+    if let window {
+      windowStateObserverTokens.append(center.addObserver(
+        forName: NSWindow.didBecomeKeyNotification,
+        object: window,
+        queue: .main
+      ) { [weak self] _ in
+        self?.updateTitlebarWebViewFrame(reason: "windowDidBecomeKey")
+      })
+      windowStateObserverTokens.append(center.addObserver(
+        forName: NSWindow.didResignKeyNotification,
+        object: window,
+        queue: .main
+      ) { [weak self] _ in
+        self?.updateTitlebarWebViewFrame(reason: "windowDidResignKey")
+      })
+    }
+    windowStateObserverTokens.append(center.addObserver(
+      forName: NSApplication.didBecomeActiveNotification,
+      object: NSApp,
+      queue: .main
+    ) { [weak self] _ in
+      self?.updateTitlebarWebViewFrame(reason: "appDidBecomeActive")
+    })
+    windowStateObserverTokens.append(center.addObserver(
+      forName: NSApplication.didResignActiveNotification,
+      object: NSApp,
+      queue: .main
+    ) { [weak self] _ in
+      self?.updateTitlebarWebViewFrame(reason: "appDidResignActive")
+    })
+  }
+
+  private func removeWindowStateObservers() {
+    let center = NotificationCenter.default
+    for token in windowStateObserverTokens {
+      center.removeObserver(token)
+    }
+    windowStateObserverTokens.removeAll()
+  }
+
+  private func shouldForwardTerminalPaneDropHitTest(_ point: NSPoint) -> Bool {
+    guard bounds.contains(point), !terminalPaneDropRegisteredTypes.isEmpty else {
+      return false
+    }
+    /*
+     CDXC:TerminalImageDrop 2026-06-08-06:53:
+     The titlebar wrapper must keep a full-window WKWebView for controls and
+     tooltips, but AppKit still chooses drag destinations through hit testing.
+     During external drag-motion events, return the native registered wrapper so
+     the scoped `NSDraggingInfo` callback reaches the terminal drop router; keep
+     ordinary mouse events on the existing titlebar-region/pass-through path.
+     */
+    return Self.isTerminalPaneDropHitTestEvent(NSApp.currentEvent?.type)
+  }
+
+  private func logTerminalPaneDropHitTestForwarder(point: NSPoint) {
+    let currentEvent = NSApp.currentEvent
+    let eventTypeName = Self.eventTypeName(currentEvent?.type)
+    let signature = [
+      eventTypeName,
+      "interactive=\(containsInteractiveHitRegion(point))",
+      "strip=\(isPointInFixedTitlebarStrip(point))",
+      "registered=\(terminalPaneDropRegisteredTypes.count)",
+    ].joined(separator: "|")
+    guard signature != lastTerminalPaneDropHitTestLogSignature else {
+      return
+    }
+    lastTerminalPaneDropHitTestLogSignature = signature
+    TerminalFocusDebugLog.append(
+      event: "nativeWorkspace.terminalDrop.\(operationSource).hitTest.forwarder",
+      details: [
+        "eventNumber": currentEvent?.eventNumber ?? NSNull(),
+        "eventType": eventTypeName,
+        "hitRegionCount": hitRegions.count,
+        "interactiveHitRegion": containsInteractiveHitRegion(point),
+        "operationSource": operationSource,
+        "point": rectPointDetails(point),
+        "registeredTypeCount": terminalPaneDropRegisteredTypes.count,
+        "registeredTypes": terminalPaneDropRegisteredTypes.map(\.rawValue).sorted(),
+        "route": "nativeWrapper",
+        "titlebarHeight": Double(titlebarHeight),
+        "titlebarStrip": isPointInFixedTitlebarStrip(point),
+        "webViewFrame": rectDetails(webView.frame),
+        "webViewDropDestination": false,
+      ],
+      force: true)
+  }
+
+  private static func isTerminalPaneDropHitTestEvent(_ eventType: NSEvent.EventType?) -> Bool {
+    switch eventType {
+    case .leftMouseDragged, .rightMouseDragged, .otherMouseDragged:
+      return true
+    default:
+      return false
+    }
+  }
+
+  private static func eventTypeName(_ eventType: NSEvent.EventType?) -> String {
+    guard let eventType else { return "none" }
+    switch eventType {
+    case .leftMouseDragged:
+      return "leftMouseDragged"
+    case .rightMouseDragged:
+      return "rightMouseDragged"
+    case .otherMouseDragged:
+      return "otherMouseDragged"
+    case .leftMouseUp:
+      return "leftMouseUp"
+    case .rightMouseUp:
+      return "rightMouseUp"
+    case .otherMouseUp:
+      return "otherMouseUp"
+    case .leftMouseDown:
+      return "leftMouseDown"
+    case .rightMouseDown:
+      return "rightMouseDown"
+    case .otherMouseDown:
+      return "otherMouseDown"
+    default:
+      return String(describing: eventType)
+    }
+  }
+
+  private func logTitlebarHitTestRoute(
+    point: NSPoint,
+    route: String,
+    hitViewFound: Bool
+  ) {
+    guard NativeDebugLogging.isEnabled, let event = NSApp.currentEvent else {
+      return
+    }
+    switch event.type {
+    case .leftMouseDown, .leftMouseUp, .rightMouseDown, .rightMouseUp, .otherMouseDown, .otherMouseUp:
+      break
+    default:
+      return
+    }
+    let signature = [
+      String(event.eventNumber),
+      String(describing: event.type),
+      route,
+      String(Int(point.x.rounded())),
+      String(Int(point.y.rounded())),
+      hitViewFound ? "hit" : "miss",
+    ].joined(separator: "|")
+    guard signature != lastHitTestRouteLogSignature else {
+      return
+    }
+    lastHitTestRouteLogSignature = signature
+    TerminalFocusDebugLog.append(
+      event: "nativeWorkspace.reactTitlebar.hitTest.route",
+      details: [
+        "eventNumber": event.eventNumber,
+        "eventType": String(describing: event.type),
+        "hitRegionCount": hitRegions.count,
+        "hitViewFound": hitViewFound,
+        "overlayOpen": overlayOpen,
+        "point": rectPointDetails(point),
+        "route": route,
+        "titlebarHeight": Double(titlebarHeight),
+        "webViewFrame": rectDetails(webView.frame),
+        "wrapperBounds": rectDetails(bounds),
+      ])
+  }
+
+  private func rectPointDetails(_ point: NSPoint) -> [String: Double] {
+    [
+      "x": Double(point.x),
+      "y": Double(point.y),
+    ]
+  }
+
+  private func rectDetails(_ rect: CGRect) -> [String: Double] {
+    [
+      "height": Double(rect.height),
+      "maxX": Double(rect.maxX),
+      "maxY": Double(rect.maxY),
+      "minX": Double(rect.minX),
+      "minY": Double(rect.minY),
+      "width": Double(rect.width),
+    ]
+  }
+
+  private func logTerminalPaneDropRegistration(
+    registeredTypes: [NSPasteboard.PasteboardType],
+    operationSource: String
+  ) {
+    TerminalFocusDebugLog.append(
+      event: "nativeWorkspace.terminalDrop.\(operationSource).registeredTypes",
+      details: terminalPaneChromeDropRegistrationDetails(
+        registeredTypes: registeredTypes,
+        operationSource: operationSource),
+      force: true)
+  }
+
+  private func logTerminalPaneWebViewDropDisabled(operationSource: String) {
+    disableTitlebarWebViewDropDestination()
+    TerminalFocusDebugLog.append(
+      event: "nativeWorkspace.terminalDrop.\(operationSource)WebView.registrationDisabled",
+      details: [
+        "operationSource": "\(operationSource)WebView",
+        "registeredTypeCount": 0,
+        "registeredTypes": [],
+        "unregisterApplied": true,
+        "usesNativeChromeDropForwarder": true,
+        "webViewDropDestination": false,
+      ],
+      force: true)
+  }
+
+  private func disableTitlebarWebViewDropDestination() {
+    unregisterDraggedTypes(in: webView)
+  }
+
+  private func unregisterDraggedTypes(in view: NSView) {
+    view.unregisterDraggedTypes()
+    for subview in view.subviews {
+      unregisterDraggedTypes(in: subview)
+    }
+  }
+
+  private func terminalPaneDropDragOperation(
+    _ sender: any NSDraggingInfo,
+    phase: String
+  ) -> NSDragOperation {
+    TerminalFocusDebugLog.append(
+      event: "nativeWorkspace.terminalDrop.\(operationSource).\(phase).routeToRoot",
+      details: terminalPaneChromeDropPasteboardDetails(
+        pasteboard: sender.draggingPasteboard,
+        registeredTypes: terminalPaneDropRegisteredTypes,
+        operationSource: operationSource,
+        phase: phase),
+      force: phase != "updated" || NativeDebugLogging.isEnabled)
+    return onTerminalPaneDropDragOperation?(sender, phase) ?? []
   }
 
   private func formatPoint(_ point: CGPoint) -> String {

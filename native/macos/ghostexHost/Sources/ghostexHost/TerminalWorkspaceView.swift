@@ -214,30 +214,27 @@ private enum ProjectBoardImageBridgeError: Error, LocalizedError {
 }
 
 private let terminalPaneDropFileURLPasteboardType = NSPasteboard.PasteboardType("public.file-url")
+private let terminalPaneDropAppleURLPasteboardType = NSPasteboard.PasteboardType("Apple URL pasteboard type")
+private let terminalPaneDropCoreFileURLPasteboardType =
+  NSPasteboard.PasteboardType("CorePasteboardFlavorType 0x6675726C")
 private let terminalPaneDropLegacyFilenamesPasteboardType = NSPasteboard.PasteboardType("NSFilenamesPboardType")
+private let terminalPaneDropFilesPromisePasteboardType = NSPasteboard.PasteboardType("NSFilesPromisePboardType")
 private let terminalPaneDropFinderNodePasteboardType = NSPasteboard.PasteboardType("com.apple.finder.node")
 private let terminalPaneDropPromisedFileURLPasteboardType =
   NSPasteboard.PasteboardType("com.apple.pasteboard.promised-file-url")
-private let terminalPaneDropGenericPasteboardTypes: [NSPasteboard.PasteboardType] = [
-  NSPasteboard.PasteboardType("public.data"),
-  NSPasteboard.PasteboardType("public.item"),
-  NSPasteboard.PasteboardType("public.url-name"),
-]
+private let terminalPaneDropPromisedFileContentType =
+  NSPasteboard.PasteboardType("com.apple.pasteboard.promised-file-content-type")
+private let terminalPaneDropAliasFilePasteboardType = NSPasteboard.PasteboardType("com.apple.alias-file")
 private let terminalPaneDropImagePasteboardTypes: [NSPasteboard.PasteboardType] = [
   NSPasteboard.PasteboardType("public.image"),
   NSPasteboard.PasteboardType("public.png"),
   NSPasteboard.PasteboardType("public.tiff"),
   NSPasteboard.PasteboardType("public.jpeg"),
 ]
-private let terminalPaneDropTypes: Set<NSPasteboard.PasteboardType> =
-  Set([
-    .string,
-    .fileURL,
-    .URL,
-    terminalPaneDropLegacyFilenamesPasteboardType,
-    terminalPaneDropFinderNodePasteboardType,
-    terminalPaneDropPromisedFileURLPasteboardType,
-  ] + terminalPaneDropGenericPasteboardTypes + terminalPaneDropImagePasteboardTypes)
+private let terminalPaneDropTypes: Set<NSPasteboard.PasteboardType> = [
+  .string,
+  .fileURL,
+]
 
 /*
  CDXC:TerminalImageDrop 2026-06-07-16:40:
@@ -245,7 +242,33 @@ private let terminalPaneDropTypes: Set<NSPasteboard.PasteboardType> =
 
  CDXC:TerminalImageDrop 2026-06-07-17:03:
  The 17:01 repro still produced no drag destination callbacks, which means the pasteboard negotiation and view hierarchy can fail before content parsing. Keep registration broad enough for Finder, promised-file, and pathless image drags while the parser still inserts only real paths, URLs, strings, or durable saved image files.
-*/
+
+ CDXC:TerminalImageDrop 2026-06-08-03:24:
+ Dock-stack drops reached the terminal surface as ordinary mouse events with an empty global drag pasteboard and no AppKit drag-destination callbacks. The first diagnostic pass tried broader legacy Apple URL, core file URL, file-promise, file-contents, and alias registrations to test whether AppKit needed those flavors for negotiation.
+
+ CDXC:TerminalImageDrop 2026-06-08-04:28:
+ The 04:22 Dock-stack repro showed the pane hover overlay but an empty drag
+ pasteboard and no application file-open callback after the broad registration
+ pass. Restore the terminal destination contract to the working AppKit shape:
+ advertise only string and file URL types, while the parser still consumes
+ legacy filename, Finder-node, URL-string, and image flavors when AppKit includes
+ them in the negotiated pasteboard. The registration logs now prove that exact
+ advertised type set after each rebuild.
+
+ CDXC:TerminalImageDrop 2026-06-08-04:50:
+ The 04:37 Dock-stack repro still produced only mouse geometry after the overlay
+ stopped hit-test capture, which means the transparent registered overlay could
+ still be blocking AppKit from selecting the real terminal surface. Keep terminal
+ drop registration on concrete terminal/window/root destinations only, matching
+ the working direct terminal NSView contract.
+
+ CDXC:TerminalImageDrop 2026-06-08-04:49:
+ The 04:45 Dock-stack repro still never delivered `NSDraggingInfo` to any root,
+ window, wrapper, or terminal destination, while mouse hit testing after release
+ reached `GhostexGhosttySurfaceView`. Remove file-drop registration from every
+ non-terminal wrapper and leave the concrete terminal surface as the only AppKit
+ drop destination, matching the direct native terminal view behavior.
+ */
 
 private func terminalPaneDropLog(
   event: String,
@@ -264,51 +287,34 @@ private func terminalPaneDropLog(
   TerminalFocusDebugLog.append(event: event, details: payload, force: force)
 }
 
+private func terminalPaneDropOperationMaskRawValue(_ sender: any NSDraggingInfo) -> String {
+  /*
+   CDXC:TerminalImageDropDiagnostics 2026-06-08-05:34:
+   Dock-stack file drags can report an AppKit drag operation mask with high unsigned bits set. Logging that mask through `Int(...)` traps Swift before the drop reaches the terminal, so persist the raw mask as text while keeping paths and dropped content out of logs.
+   */
+  String(describing: sender.draggingSourceOperationMask.rawValue)
+}
+
 private func terminalPaneDropPasteboardSummary(_ pasteboard: NSPasteboard) -> [String: Any] {
   let types = (pasteboard.types ?? []).map(\.rawValue).sorted()
   let typeSet = Set(pasteboard.types ?? [])
-  let paths = terminalPaneDroppedPaths(in: pasteboard)
-  let imagePathCount = paths.filter {
-    terminalPaneDropIsImageFilePath($0)
-  }.count
-  let stringValue = pasteboard.string(forType: .string)
-  let plainStringLines = stringValue?
-    .split(whereSeparator: \.isNewline)
-    .map { $0.trimmingCharacters(in: .whitespaces) }
-    .filter { !$0.isEmpty } ?? []
-  let readURLs = (pasteboard.readObjects(forClasses: [NSURL.self]) as? [URL]) ?? []
-  let fileURLItemCount = (pasteboard.pasteboardItems ?? []).filter {
-    $0.string(forType: terminalPaneDropFileURLPasteboardType) != nil
-  }.count
-  let legacyFilenameCount =
-    (pasteboard.propertyList(forType: terminalPaneDropLegacyFilenamesPasteboardType) as? [String])?.count ?? 0
   let imageTypeMatchCount = terminalPaneDropImagePasteboardTypes.filter { typeSet.contains($0) }.count
-  let urlString = pasteboard.string(forType: .URL)
 
+  /*
+   CDXC:TerminalImageDropDiagnostics 2026-06-08-06:24:
+   Drag-hover diagnostics must not read the drag pasteboard's URL, filename, string, or image payloads. macOS treats those reads as cross-app drag data access for Dock/Finder sources, so logs stay type-only until AppKit delivers the actual drop callback.
+   */
   return [
-    "canReadFileURLs": pasteboard.canReadObject(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]),
-    "fileURLItemCount": fileURLItemCount,
-    "fileURLObjectCount": readURLs.filter(\.isFileURL).count,
-    "hasImageObject": NSImage(pasteboard: pasteboard) != nil,
+    "hasFileURLType": typeSet.contains(.fileURL) || typeSet.contains(terminalPaneDropCoreFileURLPasteboardType),
     "hasLegacyFilenamesType": typeSet.contains(terminalPaneDropLegacyFilenamesPasteboardType),
-    "hasString": stringValue?.isEmpty == false,
+    "hasStringType": typeSet.contains(.string),
     "hasURLType": typeSet.contains(.URL),
-    "hasURLString": urlString?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false,
     "imagePasteboardTypeMatchCount": imageTypeMatchCount,
-    "imagePathCount": imagePathCount,
-    "itemCount": pasteboard.pasteboardItems?.count ?? 0,
-    "legacyFilenameCount": legacyFilenameCount,
-    "nonFileURLObjectCount": readURLs.filter { !$0.isFileURL }.count,
-    "pathCount": paths.count,
-    "plainStringFileURLLineCount": plainStringLines.filter { $0.hasPrefix("file://") }.count,
-    "plainStringLineCount": plainStringLines.count,
-    "plainStringPathLikeLineCount": plainStringLines.filter { $0.hasPrefix("/") }.count,
+    "pasteboardChangeCount": pasteboard.changeCount,
     "registeredTypeMatchCount": Set(pasteboard.types ?? []).intersection(terminalPaneDropTypes).count,
     "registeredTypes": terminalPaneDropRegisteredTypeNames(),
-    "stringLength": stringValue?.count ?? 0,
     "typeCount": types.count,
     "types": types,
-    "urlStringLength": urlString?.count ?? 0,
   ]
 }
 
@@ -322,6 +328,17 @@ private func terminalPaneDropRegistrationDetails(operationSource: String, surfac
     "registeredTypeCount": terminalPaneDropTypes.count,
     "registeredTypes": terminalPaneDropRegisteredTypeNames(),
     "surfaceSessionId": surfaceSessionId ?? NSNull(),
+  ]
+}
+
+private func terminalPaneDropRegistrationDisabledDetails(
+  operationSource: String
+) -> [String: Any] {
+  [
+    "operationSource": operationSource,
+    "registeredTypeCount": 0,
+    "registeredTypes": [],
+    "surfaceOnlyDropDestination": true,
   ]
 }
 
@@ -388,16 +405,33 @@ private func terminalPaneDropContent(in pasteboard: NSPasteboard) throws -> Stri
 }
 
 private func terminalPaneDropCanProduceContent(in pasteboard: NSPasteboard) -> Bool {
-  if !terminalPaneDroppedPaths(in: pasteboard).isEmpty {
+  if terminalPaneDropLooksLikePotentialFileOrImageDrop(in: pasteboard) {
     return true
   }
-  if terminalPaneDropHasRawImageData(in: pasteboard) {
+  let typeSet = Set(pasteboard.types ?? [])
+  if typeSet.contains(.URL) {
     return true
   }
-  if terminalPaneDropURLString(in: pasteboard) != nil {
+  if typeSet.contains(.string) {
     return true
   }
-  return pasteboard.string(forType: .string)?.isEmpty == false
+  return false
+}
+
+private func terminalPaneDropLooksLikePotentialFileOrImageDrop(in pasteboard: NSPasteboard) -> Bool {
+  let typeSet = Set(pasteboard.types ?? [])
+  let potentialTypes: Set<NSPasteboard.PasteboardType> = Set([
+    .fileURL,
+    terminalPaneDropAppleURLPasteboardType,
+    terminalPaneDropCoreFileURLPasteboardType,
+    terminalPaneDropLegacyFilenamesPasteboardType,
+    terminalPaneDropFilesPromisePasteboardType,
+    terminalPaneDropFinderNodePasteboardType,
+    terminalPaneDropPromisedFileURLPasteboardType,
+    terminalPaneDropPromisedFileContentType,
+    terminalPaneDropAliasFilePasteboardType,
+  ] + terminalPaneDropImagePasteboardTypes)
+  return !typeSet.isDisjoint(with: potentialTypes)
 }
 
 private func terminalPaneDropContent(for paths: [String]) -> String {
@@ -410,6 +444,9 @@ private func terminalPaneDropContent(for paths: [String]) -> String {
       /*
        CDXC:TerminalImageDrop 2026-06-07-15:35:
        Terminal image file drops should paste direct Markdown references to the dropped file path, not saved copies. Use angle-bracket destinations so paths containing spaces remain valid Markdown while preserving the direct drop-to-insert flow.
+
+       CDXC:TerminalImageDrop 2026-06-08-02:57:
+       Image drops should paste the path directly inside the Markdown destination without angle brackets, matching the requested terminal prompt text shape even when the original path contains spaces.
        */
       parts.append(terminalPaneDropMarkdownImageReference(path: path, imageNumber: nextImageNumber))
       nextImageNumber += 1
@@ -521,7 +558,7 @@ private enum ShellEscaper {
 }
 
 private func terminalPaneDropMarkdownImageReference(path: String, imageNumber: Int) -> String {
-  "[Image #\(imageNumber)](<\(path)>)"
+  "[Image #\(imageNumber)](\(path))"
 }
 
 private func terminalPaneDropSavedImagePath(in pasteboard: NSPasteboard) throws -> String? {
@@ -530,7 +567,7 @@ private func terminalPaneDropSavedImagePath(in pasteboard: NSPasteboard) throws 
   }
   /*
    CDXC:TerminalImageDrop 2026-06-07-16:40:
-   Pathless image pasteboard data still needs a durable local file before terminal insertion. Save it under shared image storage and paste the same `[Image #N](<path>)` Markdown shape used for file-backed image drops, with an absolute path the receiving agent can read.
+   Pathless image pasteboard data still needs a durable local file before terminal insertion. Save it under shared image storage and paste the same `[Image #N](path)` Markdown shape used for file-backed image drops, with an absolute path the receiving agent can read.
    */
   let fileURL = try terminalPaneDropUniqueImageURL(pathExtension: "png")
   try pngData.write(to: fileURL, options: .atomic)
@@ -1632,6 +1669,9 @@ final class GhostexGhosttyApp {
 
      CDXC:TerminalImageDrop 2026-06-07-15:35:
      Terminal image drops now insert `[Image #N](</path/to/image.png>)` so spaces in dropped image paths stay Markdown-safe. Strip the wrapping angle brackets when resolving the terminal link target.
+
+     CDXC:TerminalImageDrop 2026-06-08-02:57:
+     New image drops paste `[Image #N](/path/to/image.png)` without angle brackets. Keep accepting the old wrapped form too so previously pasted terminal image links still resolve.
      */
     let openValue = markdownImageReferencePath(in: trimmed) ?? trimmed
     if let candidate = URL(string: openValue), candidate.scheme?.isEmpty == false {
@@ -1863,7 +1903,12 @@ private final class TerminalPaneScroller: NSScroller {
   private static let slotColor = NSColor(calibratedWhite: 0.08, alpha: 0.18)
   private static let knobColor = NSColor(calibratedWhite: 0.92, alpha: 0.48)
   private static let activeKnobColor = NSColor(calibratedWhite: 0.98, alpha: 0.68)
-  private static let knobInset = CGFloat(2)
+  /*
+   CDXC:NativeTerminalScroll 2026-06-08-06:18:
+   Embedded Ghostty scrollbars should render as a 2px square strip instead of the earlier 7px visual thumb. Keep AppKit's wider scroller frame as the drag target, but constrain the painted slot and knob to the requested visual thickness.
+   */
+  private static let visualThickness = CGFloat(2)
+  private static let knobAxisInset = CGFloat(2)
 
   override var isOpaque: Bool {
     false
@@ -1875,25 +1920,65 @@ private final class TerminalPaneScroller: NSScroller {
   }
 
   override func drawKnobSlot(in slotRect: NSRect, highlight flag: Bool) {
-    guard !slotRect.isEmpty else {
+    let visualSlotRect = visualRect(for: slotRect)
+    guard !visualSlotRect.isEmpty else {
       return
     }
     Self.slotColor.setFill()
-    NSBezierPath(rect: slotRect).fill()
+    NSBezierPath(rect: visualSlotRect).fill()
   }
 
   override func drawKnob() {
-    let knobRect = rect(for: .knob).insetBy(dx: Self.knobInset, dy: Self.knobInset)
+    let knobRect = visualRect(for: rect(for: .knob), axisInset: Self.knobAxisInset)
     guard !knobRect.isEmpty else {
       return
     }
     (isHighlighted ? Self.activeKnobColor : Self.knobColor).setFill()
     NSBezierPath(rect: knobRect).fill()
   }
+
+  private func visualRect(for rect: NSRect, axisInset: CGFloat = 0) -> NSRect {
+    guard !rect.isEmpty else {
+      return .zero
+    }
+
+    if bounds.height >= bounds.width {
+      let width = min(Self.visualThickness, rect.width)
+      let inset = min(axisInset, rect.height / 2)
+      return NSRect(
+        x: rect.midX - width / 2,
+        y: rect.minY + inset,
+        width: width,
+        height: max(rect.height - inset * 2, 0))
+    }
+
+    let height = min(Self.visualThickness, rect.height)
+    let inset = min(axisInset, rect.width / 2)
+    return NSRect(
+      x: rect.minX + inset,
+      y: rect.midY - height / 2,
+      width: max(rect.width - inset * 2, 0),
+      height: height)
+  }
 }
 
 private final class TerminalPaneAttentionFocusScrollView: NSScrollView {
   var onMouseDownBeforeHandling: ((NSEvent) -> Void)?
+  weak var terminalPaneDropSurfaceView: GhostexGhosttySurfaceView? {
+    didSet {
+      /*
+       CDXC:TerminalImageDrop 2026-06-08-05:19:
+       Dock-stack drags can make AppKit pick the NSScrollView around the terminal surface as the destination before the inner surface receives `draggingEntered`.
+       Register this terminal-owned scroll wrapper for the same drag types and forward callbacks to the surface so image drops still paste through one insertion path.
+       */
+      registerForDraggedTypes(Array(terminalPaneDropTypes))
+      terminalPaneDropLog(
+        event: "nativeWorkspace.terminalDrop.terminalScrollHost.registeredTypes",
+        details: terminalPaneDropRegistrationDetails(
+          operationSource: "terminalScrollHost",
+          surfaceSessionId: terminalPaneDropSurfaceView?.ghostexSessionId))
+    }
+  }
 
   override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
     true
@@ -1903,6 +1988,179 @@ private final class TerminalPaneAttentionFocusScrollView: NSScrollView {
     onMouseDownBeforeHandling?(event)
     super.mouseDown(with: event)
   }
+
+  override func draggingEntered(_ sender: any NSDraggingInfo) -> NSDragOperation {
+    terminalPaneForwardedDragOperation(
+      surfaceView: terminalPaneDropSurfaceView,
+      sender: sender,
+      phase: "entered",
+      operationSource: "terminalScrollHost")
+  }
+
+  override func draggingUpdated(_ sender: any NSDraggingInfo) -> NSDragOperation {
+    terminalPaneForwardedDragOperation(
+      surfaceView: terminalPaneDropSurfaceView,
+      sender: sender,
+      phase: "updated",
+      operationSource: "terminalScrollHost")
+  }
+
+  override func draggingExited(_ sender: (any NSDraggingInfo)?) {
+    terminalPaneForwardedDraggingExited(
+      surfaceView: terminalPaneDropSurfaceView,
+      sender: sender,
+      operationSource: "terminalScrollHost")
+  }
+
+  override func prepareForDragOperation(_ sender: any NSDraggingInfo) -> Bool {
+    terminalPaneForwardedDragOperation(
+      surfaceView: terminalPaneDropSurfaceView,
+      sender: sender,
+      phase: "prepare",
+      operationSource: "terminalScrollHost") == .copy
+  }
+
+  override func performDragOperation(_ sender: any NSDraggingInfo) -> Bool {
+    terminalPaneForwardedPerformDragOperation(
+      surfaceView: terminalPaneDropSurfaceView,
+      sender: sender,
+      operationSource: "terminalScrollHost")
+  }
+}
+
+private final class TerminalPaneDropDocumentView: NSView {
+  weak var terminalPaneDropSurfaceView: GhostexGhosttySurfaceView? {
+    didSet {
+      /*
+       CDXC:TerminalImageDrop 2026-06-08-05:19:
+       The terminal document view sits between the scroll host and the concrete terminal surface, so it can be AppKit's chosen drop destination for Dock-origin file drags.
+       Register only this terminal-owned wrapper and forward to the surface to preserve the required `[Image #N](path)` paste format without a separate paste implementation.
+       */
+      registerForDraggedTypes(Array(terminalPaneDropTypes))
+      terminalPaneDropLog(
+        event: "nativeWorkspace.terminalDrop.terminalDocumentHost.registeredTypes",
+        details: terminalPaneDropRegistrationDetails(
+          operationSource: "terminalDocumentHost",
+          surfaceSessionId: terminalPaneDropSurfaceView?.ghostexSessionId))
+    }
+  }
+
+  override func draggingEntered(_ sender: any NSDraggingInfo) -> NSDragOperation {
+    terminalPaneForwardedDragOperation(
+      surfaceView: terminalPaneDropSurfaceView,
+      sender: sender,
+      phase: "entered",
+      operationSource: "terminalDocumentHost")
+  }
+
+  override func draggingUpdated(_ sender: any NSDraggingInfo) -> NSDragOperation {
+    terminalPaneForwardedDragOperation(
+      surfaceView: terminalPaneDropSurfaceView,
+      sender: sender,
+      phase: "updated",
+      operationSource: "terminalDocumentHost")
+  }
+
+  override func draggingExited(_ sender: (any NSDraggingInfo)?) {
+    terminalPaneForwardedDraggingExited(
+      surfaceView: terminalPaneDropSurfaceView,
+      sender: sender,
+      operationSource: "terminalDocumentHost")
+  }
+
+  override func prepareForDragOperation(_ sender: any NSDraggingInfo) -> Bool {
+    terminalPaneForwardedDragOperation(
+      surfaceView: terminalPaneDropSurfaceView,
+      sender: sender,
+      phase: "prepare",
+      operationSource: "terminalDocumentHost") == .copy
+  }
+
+  override func performDragOperation(_ sender: any NSDraggingInfo) -> Bool {
+    terminalPaneForwardedPerformDragOperation(
+      surfaceView: terminalPaneDropSurfaceView,
+      sender: sender,
+      operationSource: "terminalDocumentHost")
+  }
+}
+
+private func terminalPaneForwardedDragOperation(
+  surfaceView: GhostexGhosttySurfaceView?,
+  sender: any NSDraggingInfo,
+  phase: String,
+  operationSource: String
+) -> NSDragOperation {
+  guard let surfaceView else {
+    terminalPaneDropLog(
+      event: "nativeWorkspace.terminalDrop.\(operationSource).\(phase).noSurface",
+      pasteboard: sender.draggingPasteboard,
+      details: [
+        "draggingSourceOperationMaskRaw": terminalPaneDropOperationMaskRawValue(sender),
+        "operation": "none",
+        "operationSource": operationSource,
+        "phase": phase,
+      ],
+      force: phase != "updated" || NativeDebugLogging.isEnabled)
+    return []
+  }
+  return surfaceView.terminalPaneDragOperation(
+    for: sender,
+    phase: phase,
+    source: operationSource)
+}
+
+private func terminalPaneForwardedDraggingExited(
+  surfaceView: GhostexGhosttySurfaceView?,
+  sender: (any NSDraggingInfo)?,
+  operationSource: String
+) {
+  guard let sender else {
+    terminalPaneDropLog(
+      event: "nativeWorkspace.terminalDrop.\(operationSource).exited",
+      details: [
+        "hasSender": false,
+        "operationSource": operationSource,
+        "surfaceSessionId": surfaceView?.ghostexSessionId ?? NSNull(),
+      ])
+    return
+  }
+  terminalPaneDropLog(
+    event: "nativeWorkspace.terminalDrop.\(operationSource).exited",
+    pasteboard: sender.draggingPasteboard,
+    details: [
+      "hasSender": true,
+      "operationSource": operationSource,
+      "surfaceSessionId": surfaceView?.ghostexSessionId ?? NSNull(),
+    ])
+}
+
+private func terminalPaneForwardedPerformDragOperation(
+  surfaceView: GhostexGhosttySurfaceView?,
+  sender: any NSDraggingInfo,
+  operationSource: String
+) -> Bool {
+  guard let surfaceView else {
+    terminalPaneDropLog(
+      event: "nativeWorkspace.terminalDrop.\(operationSource).perform.noSurface",
+      pasteboard: sender.draggingPasteboard,
+      details: [
+        "draggingSourceOperationMaskRaw": terminalPaneDropOperationMaskRawValue(sender),
+        "operationSource": operationSource,
+      ])
+    return false
+  }
+  terminalPaneDropLog(
+    event: "nativeWorkspace.terminalDrop.\(operationSource).perform.routeToSurface",
+    pasteboard: sender.draggingPasteboard,
+    details: [
+      "draggingSourceOperationMaskRaw": terminalPaneDropOperationMaskRawValue(sender),
+      "operationSource": operationSource,
+      "surfaceCanPerformDrop": surfaceView.canPerformTerminalPaneDrop(pasteboard: sender.draggingPasteboard),
+      "surfaceSessionId": surfaceView.ghostexSessionId ?? NSNull(),
+    ])
+  return surfaceView.performTerminalPaneDrop(
+    pasteboard: sender.draggingPasteboard,
+    source: operationSource)
 }
 
 private final class GhostexGhosttySurfaceHostView: NSView {
@@ -1916,7 +2174,7 @@ private final class GhostexGhosttySurfaceHostView: NSView {
   private static let scrollButtonGap: CGFloat = 8.5
   private static let scrollButtonVisibilityThresholdPoints: CGFloat = 200
   private let scrollView = TerminalPaneAttentionFocusScrollView()
-  private let documentView = NSView()
+  private let documentView = TerminalPaneDropDocumentView()
   private let scrollToBottomButton = TerminalPaneScrollButton(direction: .bottom)
   private let scrollToTopButton = TerminalPaneScrollButton(direction: .top)
   let surfaceView: GhostexGhosttySurfaceView
@@ -1946,7 +2204,25 @@ private final class GhostexGhosttySurfaceHostView: NSView {
      or track corners. Use a host-owned NSScroller subclass so only embedded
      Ghostty panes change shape while AppKit still owns scrollback geometry and
      drag-to-row behavior.
+
+     CDXC:TerminalImageDrop 2026-06-08-03:12:
+     Dock-stack image drags can expose their file payload only through the `NSDraggingInfo` pasteboard AppKit sends to the chosen destination view. The wrapper registration experiment tried to forward that payload around scroll-view hit testing.
+
+     CDXC:TerminalImageDrop 2026-06-08-04:49:
+     The wrapper registration experiment did not receive Dock-stack `NSDraggingInfo` by 04:45 and kept adding AppKit destination candidates above the real terminal. Disable wrapper drag registration and keep the concrete terminal surface as the only file-drop destination.
+
+     CDXC:TerminalImageDrop 2026-06-08-05:19:
+     Later 05:16 logs showed the pointer hit the terminal surface but no AppKit drag callback reached it for Dock-origin image drops.
+     Register only the terminal-owned host/scroll/document wrappers, not root/window/overlay destinations, so AppKit can select the visible terminal hierarchy and all drops still route into the surface parser.
      */
+    registerForDraggedTypes(Array(terminalPaneDropTypes))
+    terminalPaneDropLog(
+      event: "nativeWorkspace.terminalDrop.terminalHost.registeredTypes",
+      details: terminalPaneDropRegistrationDetails(
+        operationSource: "terminalHost",
+        surfaceSessionId: surfaceView.ghostexSessionId))
+    scrollView.terminalPaneDropSurfaceView = surfaceView
+    documentView.terminalPaneDropSurfaceView = surfaceView
     scrollView.verticalScroller = TerminalPaneScroller()
     scrollView.hasVerticalScroller = surfaceView.scrollbarConfiguration != .never
     scrollView.hasHorizontalScroller = false
@@ -2039,6 +2315,44 @@ private final class GhostexGhosttySurfaceHostView: NSView {
   }
 
   override var safeAreaInsets: NSEdgeInsets { NSEdgeInsetsZero }
+
+  override func draggingEntered(_ sender: any NSDraggingInfo) -> NSDragOperation {
+    terminalPaneForwardedDragOperation(
+      surfaceView: surfaceView,
+      sender: sender,
+      phase: "entered",
+      operationSource: "terminalHost")
+  }
+
+  override func draggingUpdated(_ sender: any NSDraggingInfo) -> NSDragOperation {
+    terminalPaneForwardedDragOperation(
+      surfaceView: surfaceView,
+      sender: sender,
+      phase: "updated",
+      operationSource: "terminalHost")
+  }
+
+  override func draggingExited(_ sender: (any NSDraggingInfo)?) {
+    terminalPaneForwardedDraggingExited(
+      surfaceView: surfaceView,
+      sender: sender,
+      operationSource: "terminalHost")
+  }
+
+  override func prepareForDragOperation(_ sender: any NSDraggingInfo) -> Bool {
+    terminalPaneForwardedDragOperation(
+      surfaceView: surfaceView,
+      sender: sender,
+      phase: "prepare",
+      operationSource: "terminalHost") == .copy
+  }
+
+  override func performDragOperation(_ sender: any NSDraggingInfo) -> Bool {
+    terminalPaneForwardedPerformDragOperation(
+      surfaceView: surfaceView,
+      sender: sender,
+      operationSource: "terminalHost")
+  }
 
   override func layout() {
     super.layout()
@@ -2525,6 +2839,8 @@ final class TerminalWorkspaceView: NSView {
   private var paneHeaderDragGhostView: TerminalPaneHeaderDragGhostView?
   private var paneHeaderDragTargetView: TerminalPaneHeaderDragTargetView?
   private var paneTabReorderTargetView: TerminalPaneTabReorderTargetView?
+  private var terminalPaneExternalDropTargetView: TerminalPaneExternalDropTargetView?
+  private var terminalPaneExternalDropFeedbackLogSignature: String?
   private var cefNativeDragSourceRelease: CEFNativeDragSourceRelease?
   private var cefNativeDragSourceReleaseEventMonitor: Any?
   private var cefNativeDragHoverTimer: Timer?
@@ -2600,10 +2916,18 @@ final class TerminalWorkspaceView: NSView {
     super.init(frame: .zero)
     wantsLayer = true
     layer?.backgroundColor = self.defaultWorkspaceBackgroundColor.cgColor
-    registerForDraggedTypes(Array(terminalPaneDropTypes))
+    /*
+     CDXC:TerminalImageDrop 2026-06-08-04:49:
+     The workspace/root/window drag-registration layers did not receive the
+     Dock-stack image payload and can sit above the concrete terminal in AppKit's
+     destination search. Leave terminal file-drop registration on
+     `GhostexGhosttySurfaceView` only; workspace drag methods remain only for
+     already-routed AppKit callbacks and diagnostics.
+     */
+    unregisterDraggedTypes()
     terminalPaneDropLog(
-      event: "nativeWorkspace.terminalDrop.workspace.registeredTypes",
-      details: terminalPaneDropRegistrationDetails(operationSource: "workspace"))
+      event: "nativeWorkspace.terminalDrop.workspace.registrationDisabled",
+      details: terminalPaneDropRegistrationDisabledDetails(operationSource: "workspace"))
     commandsPanelChromeView.isHidden = true
     commandsPanelReservedBottomBarView.isHidden = true
     commandsPanelCollapsedRightMarginView.wantsLayer = true
@@ -9402,43 +9726,39 @@ final class TerminalWorkspaceView: NSView {
     Array(terminalPaneDropTypes)
   }
 
-  func logTerminalPaneDropRegistration(operationSource: String) {
-    terminalPaneDropLog(
-      event: "nativeWorkspace.terminalDrop.\(operationSource).registeredTypes",
-      details: terminalPaneDropRegistrationDetails(operationSource: operationSource))
-  }
-
   func logTerminalPaneDropOverlayHitTest(
     eventTypeName: String,
     dragPasteboardTypes: [NSPasteboard.PasteboardType]?,
-    shouldCapture: Bool
+    shouldCapture: Bool,
+    details: [String: Any] = [:]
   ) {
     let types = (dragPasteboardTypes ?? []).map(\.rawValue).sorted()
     terminalPaneDropLog(
       event: "nativeWorkspace.terminalDrop.overlay.hitTest",
-      details: [
+      details: details.merging([
         "eventType": eventTypeName,
         "registeredTypeMatchCount": Set(dragPasteboardTypes ?? []).intersection(terminalPaneDropTypes).count,
         "shouldCapture": shouldCapture,
         "typeCount": types.count,
         "types": types,
+      ]) { _, next in next })
+  }
+
+  func logTerminalPaneDropOverlayVisualOnly() {
+    terminalPaneDropLog(
+      event: "nativeWorkspace.terminalDrop.overlay.visualOnly",
+      details: [
+        "operationSource": "overlay",
+        "registeredTypeCount": 0,
+        "registeredTypes": [],
+        "usesGeometryHoverOnly": true,
       ])
   }
 
-  func logTerminalPaneDropOverlayWindowEvent(
-    eventTypeName: String,
-    dragPasteboardTypes: [NSPasteboard.PasteboardType]?,
-    details: [String: Any]
-  ) {
-    let types = (dragPasteboardTypes ?? []).map(\.rawValue).sorted()
+  func logTerminalPaneDropRegistrationDisabled(operationSource: String) {
     terminalPaneDropLog(
-      event: "nativeWorkspace.terminalDrop.overlay.windowEvent",
-      details: details.merging([
-        "eventType": eventTypeName,
-        "registeredTypeMatchCount": Set(dragPasteboardTypes ?? []).intersection(terminalPaneDropTypes).count,
-        "typeCount": types.count,
-        "types": types,
-      ]) { _, next in next })
+      event: "nativeWorkspace.terminalDrop.\(operationSource).registrationDisabled",
+      details: terminalPaneDropRegistrationDisabledDetails(operationSource: operationSource))
   }
 
   /**
@@ -9546,6 +9866,10 @@ final class TerminalWorkspaceView: NSView {
   }
 
   override func draggingExited(_ sender: (any NSDraggingInfo)?) {
+    clearTerminalPaneExternalDropHoverFeedback(
+      operationSource: "workspace",
+      eventTypeName: "exited",
+      eventNumber: nil)
     guard let sender else {
       terminalPaneDropLog(
         event: "nativeWorkspace.terminalDrop.workspace.exited",
@@ -9559,6 +9883,12 @@ final class TerminalWorkspaceView: NSView {
   }
 
   override func performDragOperation(_ sender: any NSDraggingInfo) -> Bool {
+    defer {
+      clearTerminalPaneExternalDropHoverFeedback(
+        operationSource: "workspace",
+        eventTypeName: "perform",
+        eventNumber: nil)
+    }
     let details = terminalPaneWorkspaceDropDetails(for: sender, phase: "perform")
     guard let surfaceView = terminalPaneWorkspaceDropSurface(for: sender) else {
       terminalPaneDropLog(
@@ -9579,11 +9909,18 @@ final class TerminalWorkspaceView: NSView {
   }
 
   private func terminalPaneWorkspaceDragOperation(for sender: any NSDraggingInfo, phase: String) -> NSDragOperation {
+    let point = terminalPaneWorkspaceDropPoint(for: sender)
     let details = terminalPaneWorkspaceDropDetails(for: sender, phase: phase)
     let surfaceView = terminalPaneWorkspaceDropSurface(for: sender)
     let surfaceCanPerformDrop = surfaceView?.canPerformTerminalPaneDrop(pasteboard: sender.draggingPasteboard) == true
     let operation: NSDragOperation =
       surfaceCanPerformDrop ? .copy : []
+    updateTerminalPaneExternalDropHoverFeedback(
+      workspacePoint: point,
+      operationSource: "workspace",
+      eventTypeName: phase,
+      eventNumber: nil,
+      shouldShow: surfaceCanPerformDrop)
     terminalPaneDropLog(
       event: "nativeWorkspace.terminalDrop.workspace.\(phase)",
       pasteboard: sender.draggingPasteboard,
@@ -9601,10 +9938,18 @@ final class TerminalWorkspaceView: NSView {
     phase: String,
     operationSource: String = "root"
   ) -> NSDragOperation {
+    let rootPoint = terminalPaneRootDropRootPoint(for: sender, rootView: rootView)
     let details = terminalPaneRootDropDetails(for: sender, rootView: rootView, phase: phase)
     let surfaceView = terminalPaneRootDropSurface(for: sender, rootView: rootView)
     let surfaceCanPerformDrop = surfaceView?.canPerformTerminalPaneDrop(pasteboard: sender.draggingPasteboard) == true
     let operation: NSDragOperation = surfaceCanPerformDrop ? .copy : []
+    updateTerminalPaneExternalDropHoverFeedback(
+      rootPoint: rootPoint,
+      rootView: rootView,
+      operationSource: operationSource,
+      eventTypeName: phase,
+      eventNumber: nil,
+      shouldShow: surfaceCanPerformDrop)
     terminalPaneDropLog(
       event: "nativeWorkspace.terminalDrop.\(operationSource).\(phase)",
       pasteboard: sender.draggingPasteboard,
@@ -9622,6 +9967,12 @@ final class TerminalWorkspaceView: NSView {
     rootView: NSView,
     operationSource: String = "root"
   ) -> Bool {
+    defer {
+      clearTerminalPaneExternalDropHoverFeedback(
+        operationSource: operationSource,
+        eventTypeName: "perform",
+        eventNumber: nil)
+    }
     let details = terminalPaneRootDropDetails(for: sender, rootView: rootView, phase: "perform")
     guard let surfaceView = terminalPaneRootDropSurface(for: sender, rootView: rootView) else {
       terminalPaneDropLog(
@@ -9642,41 +9993,15 @@ final class TerminalWorkspaceView: NSView {
       source: operationSource)
   }
 
-  func performTerminalPaneRootDrop(
-    pasteboard: NSPasteboard,
-    windowPoint: NSPoint,
-    rootView: NSView,
-    operationSource: String
-  ) -> Bool {
-    let rootPoint = rootView.convert(windowPoint, from: nil)
-    let details = terminalPaneRootDropDetails(
-      rootPoint: rootPoint,
-      rootView: rootView,
-      phase: "perform.synthetic",
-      operationSource: operationSource)
-    guard let surfaceView = terminalPaneRootDropSurface(rootPoint: rootPoint, rootView: rootView) else {
-      terminalPaneDropLog(
-        event: "nativeWorkspace.terminalDrop.\(operationSource).perform.synthetic.noSurface",
-        pasteboard: pasteboard,
-        details: details)
-      return false
-    }
-    terminalPaneDropLog(
-      event: "nativeWorkspace.terminalDrop.\(operationSource).perform.synthetic.routeToSurface",
-      pasteboard: pasteboard,
-      details: details.merging([
-        "surfaceCanPerformDrop": surfaceView.canPerformTerminalPaneDrop(pasteboard: pasteboard),
-      ]) { _, next in next })
-    return surfaceView.performTerminalPaneDrop(
-      pasteboard: pasteboard,
-      source: operationSource)
-  }
-
   func terminalPaneRootDraggingExited(
     _ sender: (any NSDraggingInfo)?,
     rootView: NSView,
     operationSource: String = "root"
   ) {
+    clearTerminalPaneExternalDropHoverFeedback(
+      operationSource: operationSource,
+      eventTypeName: "exited",
+      eventNumber: nil)
     guard let sender else {
       terminalPaneDropLog(
         event: "nativeWorkspace.terminalDrop.\(operationSource).exited",
@@ -9693,6 +10018,99 @@ final class TerminalWorkspaceView: NSView {
         .merging(["operationSource": operationSource]) { _, next in next })
   }
 
+  func updateTerminalPaneExternalDropHoverFeedback(
+    rootPoint: NSPoint,
+    rootView: NSView,
+    operationSource: String,
+    eventTypeName: String,
+    eventNumber: Int?,
+    shouldShow: Bool
+  ) {
+    let workspacePoint = convert(rootPoint, from: rootView)
+    updateTerminalPaneExternalDropHoverFeedback(
+      workspacePoint: workspacePoint,
+      operationSource: operationSource,
+      eventTypeName: eventTypeName,
+      eventNumber: eventNumber,
+      shouldShow: shouldShow)
+  }
+
+  func clearTerminalPaneExternalDropHoverFeedback(
+    operationSource: String,
+    eventTypeName: String,
+    eventNumber: Int?
+  ) {
+    guard terminalPaneExternalDropTargetView != nil || terminalPaneExternalDropFeedbackLogSignature != nil else {
+      return
+    }
+    terminalPaneExternalDropTargetView?.removeFromSuperview()
+    terminalPaneExternalDropTargetView = nil
+    terminalPaneExternalDropFeedbackLogSignature = nil
+    terminalPaneDropLog(
+      event: "nativeWorkspace.terminalDrop.hoverFeedback.hidden",
+      details: [
+        "eventNumber": eventNumber ?? -1,
+        "eventType": eventTypeName,
+        "operationSource": operationSource,
+      ])
+  }
+
+  private func updateTerminalPaneExternalDropHoverFeedback(
+    workspacePoint: NSPoint,
+    operationSource: String,
+    eventTypeName: String,
+    eventNumber: Int?,
+    shouldShow: Bool
+  ) {
+    guard shouldShow,
+      bounds.contains(workspacePoint),
+      let surfaceView = terminalPaneWorkspaceDropSurface(at: workspacePoint),
+      let surfaceSessionId = surfaceView.ghostexSessionId,
+      let targetFrame = paneFrame(for: surfaceSessionId)
+    else {
+      clearTerminalPaneExternalDropHoverFeedback(
+        operationSource: operationSource,
+        eventTypeName: eventTypeName,
+        eventNumber: eventNumber)
+      return
+    }
+
+    /*
+     CDXC:TerminalImageDrop 2026-06-08-03:41:
+     Dock-stack drags originally required extra hover diagnostics while AppKit destination routing was being fixed.
+
+     CDXC:TerminalImageDrop 2026-06-08-06:27:
+     Hover feedback is now driven only by scoped AppKit drag callbacks. Do not consult global drag pasteboard state from mouse monitors; macOS can treat that as cross-app data access and repeatedly prompt.
+     */
+    let targetView = terminalPaneExternalDropTargetView ?? TerminalPaneExternalDropTargetView()
+    terminalPaneExternalDropTargetView = targetView
+    if targetView.superview !== self {
+      addSubview(targetView)
+    }
+    targetView.layer?.zPosition = Self.paneHeaderDragFeedbackZPosition + 20
+    setPaneDragFeedbackFrame(targetFrame.insetBy(dx: 2, dy: 2), for: targetView)
+    targetView.isHidden = false
+
+    let signature = "\(operationSource)|\(surfaceSessionId)|\(Int(targetFrame.minX))|\(Int(targetFrame.minY))|\(Int(targetFrame.width))|\(Int(targetFrame.height))"
+    guard signature != terminalPaneExternalDropFeedbackLogSignature else {
+      return
+    }
+    terminalPaneExternalDropFeedbackLogSignature = signature
+    terminalPaneDropLog(
+      event: "nativeWorkspace.terminalDrop.hoverFeedback.visible",
+      details: [
+        "eventNumber": eventNumber ?? -1,
+        "eventType": eventTypeName,
+        "operationSource": operationSource,
+        "surfaceSessionId": surfaceSessionId,
+        "surfaceViewFound": true,
+        "targetFrame": describeFrame(targetFrame),
+        "visualAlpha": Double(targetView.alphaValue),
+        "workspaceBoundsContainsPoint": true,
+        "workspacePoint": describePoint(workspacePoint),
+      ])
+  }
+
   private func terminalPaneWorkspaceDropDetails(for sender: any NSDraggingInfo, phase: String) -> [String: Any] {
     let point = terminalPaneWorkspaceDropPoint(for: sender)
     let hitView = hitTest(point)
@@ -9705,7 +10123,7 @@ final class TerminalWorkspaceView: NSView {
       "contentHitView": contentHitView.map { String(describing: type(of: $0)) } ?? "nil",
       "contentHitViewChain": terminalPaneViewClassChain(from: contentHitView),
       "contentSurfaceSessionId": contentSurfaceView?.ghostexSessionId ?? NSNull(),
-      "draggingSourceOperationMask": Int(sender.draggingSourceOperationMask.rawValue),
+      "draggingSourceOperationMaskRaw": terminalPaneDropOperationMaskRawValue(sender),
       "hitSurfaceSessionId": hitSurfaceView?.ghostexSessionId ?? NSNull(),
       "hitView": hitView.map { String(describing: type(of: $0)) } ?? "nil",
       "hitViewChain": terminalPaneViewClassChain(from: hitView),
@@ -9748,7 +10166,7 @@ final class TerminalWorkspaceView: NSView {
       rootPoint: rootPoint,
       rootView: rootView,
       phase: phase,
-      draggingSourceOperationMask: Int(sender.draggingSourceOperationMask.rawValue),
+      draggingSourceOperationMaskRaw: terminalPaneDropOperationMaskRawValue(sender),
       operationSource: "root")
   }
 
@@ -9756,7 +10174,7 @@ final class TerminalWorkspaceView: NSView {
     rootPoint: NSPoint,
     rootView: NSView,
     phase: String,
-    draggingSourceOperationMask: Int? = nil,
+    draggingSourceOperationMaskRaw: String? = nil,
     operationSource: String
   ) -> [String: Any] {
     let workspacePoint = convert(rootPoint, from: rootView)
@@ -9766,7 +10184,7 @@ final class TerminalWorkspaceView: NSView {
     let hitSurfaceView = terminalPaneSurfaceView(containing: hitView)
     let surfaceView = contentSurfaceView ?? hitSurfaceView
     return [
-      "draggingSourceOperationMask": draggingSourceOperationMask ?? NSNull(),
+      "draggingSourceOperationMaskRaw": draggingSourceOperationMaskRaw ?? NSNull(),
       "operationSource": operationSource,
       "phase": phase,
       "rootBoundsContainsPoint": rootView.bounds.contains(rootPoint),
@@ -16562,11 +16980,11 @@ final class GhostexGhosttySurfaceView: NSView {
   }
 
   override func draggingEntered(_ sender: any NSDraggingInfo) -> NSDragOperation {
-    terminalPaneDragOperation(for: sender, phase: "entered")
+    terminalPaneDragOperation(for: sender, phase: "entered", source: "surface")
   }
 
   override func draggingUpdated(_ sender: any NSDraggingInfo) -> NSDragOperation {
-    terminalPaneDragOperation(for: sender, phase: "updated")
+    terminalPaneDragOperation(for: sender, phase: "updated", source: "surface")
   }
 
   override func draggingExited(_ sender: (any NSDraggingInfo)?) {
@@ -16689,16 +17107,21 @@ final class GhostexGhosttySurfaceView: NSView {
     return true
   }
 
-  private func terminalPaneDragOperation(for sender: any NSDraggingInfo, phase: String) -> NSDragOperation {
+  func terminalPaneDragOperation(
+    for sender: any NSDraggingInfo,
+    phase: String,
+    source: String
+  ) -> NSDragOperation {
     let canPerformDrop = canPerformTerminalPaneDrop(pasteboard: sender.draggingPasteboard)
     guard canPerformDrop else {
       terminalPaneDropLog(
-        event: "nativeWorkspace.terminalDrop.surface.\(phase)",
+        event: "nativeWorkspace.terminalDrop.\(source).\(phase)",
         pasteboard: sender.draggingPasteboard,
         details: [
           "canPerformDrop": canPerformDrop,
-          "draggingSourceOperationMask": Int(sender.draggingSourceOperationMask.rawValue),
+          "draggingSourceOperationMaskRaw": terminalPaneDropOperationMaskRawValue(sender),
           "operation": "none",
+          "operationSource": source,
           "phase": phase,
           "surfaceSessionId": ghostexSessionId ?? NSNull(),
         ],
@@ -16706,12 +17129,13 @@ final class GhostexGhosttySurfaceView: NSView {
       return []
     }
     terminalPaneDropLog(
-      event: "nativeWorkspace.terminalDrop.surface.\(phase)",
+      event: "nativeWorkspace.terminalDrop.\(source).\(phase)",
       pasteboard: sender.draggingPasteboard,
       details: [
         "canPerformDrop": canPerformDrop,
-        "draggingSourceOperationMask": Int(sender.draggingSourceOperationMask.rawValue),
+        "draggingSourceOperationMaskRaw": terminalPaneDropOperationMaskRawValue(sender),
         "operation": "copy",
+        "operationSource": source,
         "phase": phase,
         "surfaceSessionId": ghostexSessionId ?? NSNull(),
       ],
@@ -18316,6 +18740,36 @@ private final class TerminalPaneTabReorderTargetView: NSView {
      CDXC:PaneDragFeedback 2026-05-11-20:24
      Tab reorder indicators are visual-only. They must never own the next click
      after a drag release, even if AppKit has not removed the layer yet.
+     */
+    nil
+  }
+}
+
+private final class TerminalPaneExternalDropTargetView: NSView {
+  private static let temporaryVisualAlpha: CGFloat = 0
+
+  override init(frame frameRect: NSRect) {
+    super.init(frame: frameRect)
+    wantsLayer = true
+    layer?.borderWidth = 2
+    layer?.cornerRadius = 6
+    layer?.borderColor = NSColor(calibratedRed: 0.36, green: 0.72, blue: 1, alpha: 0.98).cgColor
+    layer?.backgroundColor = NSColor(calibratedRed: 0.08, green: 0.42, blue: 0.78, alpha: 0.14).cgColor
+    /*
+     CDXC:TerminalImageDrop 2026-06-08-05:45:
+     File-drop hover feedback should stay mounted for drag/drop state while the current Dock-stack test hides the visual overlay. Use alpha 0 instead of hiding the view so terminal drop routing and the AppKit copy cursor behavior remain unchanged.
+     */
+    alphaValue = Self.temporaryVisualAlpha
+  }
+
+  required init?(coder: NSCoder) {
+    fatalError("init(coder:) is not supported")
+  }
+
+  override func hitTest(_ point: NSPoint) -> NSView? {
+    /**
+     CDXC:TerminalImageDrop 2026-06-08-03:41:
+     Terminal file-drop hover feedback is visual-only. It must appear above terminal content while AppKit or the inactive-drag monitor is evaluating a drop, but it must never take mouse ownership from the terminal pane below.
      */
     nil
   }
