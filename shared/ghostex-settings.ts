@@ -237,6 +237,14 @@ export type ghostexSettings = {
   terminalConfirmCloseSurface: GhosttyConfirmCloseSurface;
   terminalClipboardTrimTrailingSpaces: boolean;
   terminalClipboardPasteProtection: boolean;
+  /**
+   * CDXC:TerminalImagePaste 2026-06-08-13:32:
+   * Terminal image paste is app-owned behavior, not a Ghostty config key. Keep a
+   * default-on setting so users can opt out of Cmd+V/Ctrl+V converting clipboard
+   * images into previewable Markdown links that also render in Cmd-hover terminal
+   * previews and the Ctrl+G Rich Prompt Editor.
+   */
+  terminalPastePreviewableImages: boolean;
   terminalMouseHideWhileTyping: boolean;
   terminalScrollbar: GhosttyScrollbar;
   promptEditorBackend: PromptEditorBackend;
@@ -607,6 +615,7 @@ export const DEFAULT_ghostex_SETTINGS: ghostexSettings = {
   terminalConfirmCloseSurface: "true",
   terminalClipboardTrimTrailingSpaces: true,
   terminalClipboardPasteProtection: true,
+  terminalPastePreviewableImages: true,
   terminalMouseHideWhileTyping: false,
   terminalScrollbar: "system",
   /**
@@ -1346,6 +1355,11 @@ export function normalizeghostexSettings(candidate: unknown): ghostexSettings {
       source,
       "terminalClipboardPasteProtection",
       DEFAULT_ghostex_SETTINGS.terminalClipboardPasteProtection,
+    ),
+    terminalPastePreviewableImages: readBoolean(
+      source,
+      "terminalPastePreviewableImages",
+      DEFAULT_ghostex_SETTINGS.terminalPastePreviewableImages,
     ),
     terminalMouseHideWhileTyping: readBoolean(
       source,

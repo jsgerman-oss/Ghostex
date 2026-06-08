@@ -3884,7 +3884,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
      same Ghostty config file selected for embedded terminals. Keep the
      merge narrow so themes, keybinds, and unrelated Ghostty settings stay
      user-owned.
+
+     CDXC:TerminalImagePaste 2026-06-08-13:32:
+     Paste previewable images is a native runtime preference. Apply it during
+     the same settings sync so the macOS clipboard handler changes immediately,
+     but do not merge it into Ghostty config output for runtime-only syncs.
      */
+    setTerminalPanePastePreviewableImagesEnabled(command.pastePreviewableImages ?? true)
+    if command.runtimeOnly == true {
+      return
+    }
     do {
       let configURL =
         ghosttyConfigSelection.path.map { URL(fileURLWithPath: $0) }
@@ -5335,6 +5344,8 @@ final class ghostexRootView: NSView {
   private var t3CodeRuntimeStartedAt: Date?
   private var t3RuntimeVisibleSessionCwd: String?
   private var t3RuntimeLivenessTimer: Timer?
+  private var pendingT3RuntimeStartWorkItem: DispatchWorkItem?
+  private var t3RuntimePaneStateGeneration: UInt64 = 0
   private var codeServerRuntimeProcess: Process?
   private var codeServerRuntimeStartedAt: Date?
   private var titlebarOutsideClickMonitor: Any?
@@ -7218,7 +7229,10 @@ final class ghostexRootView: NSView {
     case .reloadWebPane(let command):
       workspaceView.reloadWebPane(sessionId: command.sessionId)
     case .startT3CodeRuntime(let command):
-      startT3CodeRuntime(command)
+      scheduleT3CodeRuntimeStart(
+        command,
+        reason: "sidebarCommand",
+        requiredPaneStateGeneration: nil)
     case .setT3CodeRuntimeSessionState(let command):
       setT3CodeRuntimeSessionState(command, reason: "nativeSidebar")
     case .stopT3CodeRuntime:
@@ -7657,23 +7671,90 @@ final class ghostexRootView: NSView {
     NativeT3RuntimeLauncher.setLiveManagedPaneHeartbeat(
       paneSessionIds: state.paneSessionIds,
       reason: "nativePane.\(state.reason)")
+    t3RuntimePaneStateGeneration &+= 1
     let runtimeCwd = state.runtimeCwd?.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !state.paneSessionIds.isEmpty, let runtimeCwd, !runtimeCwd.isEmpty else {
       t3RuntimeVisibleSessionCwd = nil
+      pendingT3RuntimeStartWorkItem?.cancel()
+      pendingT3RuntimeStartWorkItem = nil
       t3RuntimeLivenessTimer?.invalidate()
       t3RuntimeLivenessTimer = nil
       return
     }
 
     t3RuntimeVisibleSessionCwd = runtimeCwd
-    ensureT3CodeRuntimeForLivePanes(reason: "nativePane.\(state.reason)")
+    scheduleT3CodeRuntimeStartForLivePanes(reason: "nativePane.\(state.reason)")
     if t3RuntimeLivenessTimer == nil {
       let timer = Timer(timeInterval: 10.0, repeats: true) { [weak self] _ in
-        self?.ensureT3CodeRuntimeForLivePanes(reason: "livenessTimer")
+        self?.scheduleT3CodeRuntimeStartForLivePanes(reason: "livenessTimer", debounceMilliseconds: 0)
       }
       t3RuntimeLivenessTimer = timer
       RunLoop.main.add(timer, forMode: .common)
     }
+  }
+
+  private func scheduleT3CodeRuntimeStartForLivePanes(
+    reason: String,
+    debounceMilliseconds: Int = 180
+  ) {
+    guard let runtimeCwd = t3RuntimeVisibleSessionCwd else {
+      return
+    }
+    scheduleT3CodeRuntimeStart(
+      StartT3CodeRuntime(cwd: runtimeCwd),
+      reason: reason,
+      requiredPaneStateGeneration: t3RuntimePaneStateGeneration,
+      debounceMilliseconds: debounceMilliseconds)
+  }
+
+  private func scheduleT3CodeRuntimeStart(
+    _ command: StartT3CodeRuntime,
+    reason: String,
+    requiredPaneStateGeneration: UInt64?,
+    debounceMilliseconds: Int = 180
+  ) {
+    /*
+     CDXC:T3Code 2026-06-08-13:04:
+     T3 pane close/open transitions can emit managed-pane state and explicit runtime-start commands while AppKit is retargeting the Project Editor companion pane. Coalesce those requests and run the first localhost responsiveness probe off the immediate sidebar command stack so lsof/ps and HTTP waits cannot participate in the same layout/update-constraints recursion.
+     */
+    pendingT3RuntimeStartWorkItem?.cancel()
+    let workItem = DispatchWorkItem { [weak self] in
+      guard let self else {
+        return
+      }
+      self.pendingT3RuntimeStartWorkItem = nil
+      let expectedGeneration = requiredPaneStateGeneration
+      let expectedCwd = command.cwd.trimmingCharacters(in: .whitespacesAndNewlines)
+      DispatchQueue.global(qos: .utility).async { [weak self] in
+        let hasResponsiveRuntime = NativeT3RuntimeLauncher.hasResponsiveManagedRuntimeListener()
+        DispatchQueue.main.async { [weak self] in
+          guard let self else {
+            return
+          }
+          if let expectedGeneration {
+            guard self.t3RuntimePaneStateGeneration == expectedGeneration else {
+              return
+            }
+            guard self.t3RuntimeVisibleSessionCwd?.trimmingCharacters(in: .whitespacesAndNewlines) == expectedCwd
+            else {
+              return
+            }
+          }
+          guard !hasResponsiveRuntime else {
+            return
+          }
+          if expectedGeneration == nil {
+            self.startT3CodeRuntime(command)
+          } else {
+            self.ensureT3CodeRuntimeForLivePanes(reason: reason)
+          }
+        }
+      }
+    }
+    pendingT3RuntimeStartWorkItem = workItem
+    DispatchQueue.main.asyncAfter(
+      deadline: .now() + .milliseconds(max(debounceMilliseconds, 0)),
+      execute: workItem)
   }
 
   /**
@@ -7872,6 +7953,8 @@ final class ghostexRootView: NSView {
    listener on the shared localhost port.
    */
   private func stopT3CodeRuntime(logPrefix: String) {
+    pendingT3RuntimeStartWorkItem?.cancel()
+    pendingT3RuntimeStartWorkItem = nil
     if let process = t3CodeRuntimeProcess {
       NativeT3CodePaneReproLog.append("\(logPrefix).t3Runtime.stop.tracked", [
         "isRunning": process.isRunning,

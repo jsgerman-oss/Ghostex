@@ -648,6 +648,7 @@ describe("normalizeghostexSettings", () => {
     expect(normalizeghostexSettings({})).toMatchObject({
       terminalClipboardPasteProtection: true,
       terminalClipboardTrimTrailingSpaces: true,
+      terminalPastePreviewableImages: true,
       terminalConfirmCloseSurface: "true",
       terminalCopyOnSelect: "false",
       terminalCursorStyleBlink: true,
@@ -659,6 +660,7 @@ describe("normalizeghostexSettings", () => {
       normalizeghostexSettings({
         terminalClipboardPasteProtection: false,
         terminalClipboardTrimTrailingSpaces: false,
+        terminalPastePreviewableImages: false,
         terminalConfirmCloseSurface: "always",
         terminalCopyOnSelect: "clipboard",
         terminalCursorStyleBlink: false,
@@ -669,6 +671,7 @@ describe("normalizeghostexSettings", () => {
     ).toMatchObject({
       terminalClipboardPasteProtection: false,
       terminalClipboardTrimTrailingSpaces: false,
+      terminalPastePreviewableImages: false,
       terminalConfirmCloseSurface: "always",
       terminalCopyOnSelect: "clipboard",
       terminalCursorStyleBlink: false,

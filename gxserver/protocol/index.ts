@@ -958,6 +958,7 @@ export interface GxserverTitleObservationState {
 export interface GxserverPresentationAttentionState {
   acknowledged: boolean;
   enteredAt?: string;
+  eventId?: string;
 }
 
 export interface GxserverPresentationSessionActions {

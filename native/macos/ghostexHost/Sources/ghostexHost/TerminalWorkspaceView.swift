@@ -561,6 +561,75 @@ private func terminalPaneDropMarkdownImageReference(path: String, imageNumber: I
   "[Image #\(imageNumber)](\(path))"
 }
 
+private final class TerminalPanePreviewableImagePasteSetting {
+  static let shared = TerminalPanePreviewableImagePasteSetting()
+
+  private let lock = NSLock()
+  private var enabled = true
+
+  func setEnabled(_ nextEnabled: Bool) {
+    /*
+     CDXC:TerminalImagePaste 2026-06-08-13:32:
+     Paste previewable images defaults on, but Settings must be able to disable
+     only the clipboard-image-to-Markdown conversion. Existing dropped or typed
+     image links should still preview because those links already exist in the
+     terminal text.
+     */
+    lock.lock()
+    enabled = nextEnabled
+    lock.unlock()
+  }
+
+  func isEnabled() -> Bool {
+    lock.lock()
+    defer { lock.unlock() }
+    return enabled
+  }
+}
+
+func setTerminalPanePastePreviewableImagesEnabled(_ enabled: Bool) {
+  TerminalPanePreviewableImagePasteSetting.shared.setEnabled(enabled)
+}
+
+private func terminalPanePastePreviewableImagesEnabled() -> Bool {
+  TerminalPanePreviewableImagePasteSetting.shared.isEnabled()
+}
+
+private func terminalPaneClipboardMarkdownImageContent(in pasteboard: NSPasteboard) throws -> String? {
+  if let fileContent = terminalPaneClipboardImageFileMarkdownContent(in: pasteboard) {
+    return fileContent
+  }
+  guard let imagePath = try terminalPaneDropSavedImagePath(in: pasteboard) else {
+    return nil
+  }
+  /*
+   CDXC:TerminalImagePaste 2026-06-08-13:18:
+   Focused macOS terminal paste should match terminal image drop output: file-backed images keep their original readable path, while pathless clipboard bitmaps are written to Ghostex-owned image storage before inserting visible `[Image #N](path)` prompt text.
+
+   CDXC:TerminalImagePaste 2026-06-08-13:32:
+   This conversion runs only when Paste previewable images is enabled; disabled
+   paste should fall through to Ghostty's ordinary clipboard text path.
+   */
+  return terminalPaneDropMarkdownImageReference(path: imagePath, imageNumber: 1)
+}
+
+private func terminalPaneClipboardCanProduceImageMarkdownContent(in pasteboard: NSPasteboard) -> Bool {
+  let hasFileBackedImage = terminalPaneClipboardImageFileMarkdownContent(in: pasteboard) != nil
+  return hasFileBackedImage || terminalPaneDropHasRawImageData(in: pasteboard)
+}
+
+private func terminalPaneClipboardImageFileMarkdownContent(in pasteboard: NSPasteboard) -> String? {
+  let imagePaths = terminalPaneDroppedPaths(in: pasteboard).filter { terminalPaneDropIsImageFilePath($0) }
+  guard !imagePaths.isEmpty else {
+    return nil
+  }
+  return imagePaths.enumerated()
+    .map { entry in
+      terminalPaneDropMarkdownImageReference(path: entry.element, imageNumber: entry.offset + 1)
+    }
+    .joined(separator: "\n")
+}
+
 private func terminalPaneDropSavedImagePath(in pasteboard: NSPasteboard) throws -> String? {
   guard let pngData = terminalPaneDropPNGData(in: pasteboard) else {
     return nil
@@ -568,6 +637,9 @@ private func terminalPaneDropSavedImagePath(in pasteboard: NSPasteboard) throws 
   /*
    CDXC:TerminalImageDrop 2026-06-07-16:40:
    Pathless image pasteboard data still needs a durable local file before terminal insertion. Save it under shared image storage and paste the same `[Image #N](path)` Markdown shape used for file-backed image drops, with an absolute path the receiving agent can read.
+
+   CDXC:TerminalImagePaste 2026-06-08-13:18:
+   Cmd+V, menu Paste, right-click Paste, and Ctrl+V image paste all share the same pathless bitmap persistence path so terminal input never receives base64 image payloads or transient clipboard-only data.
    */
   let fileURL = try terminalPaneDropUniqueImageURL(pathExtension: "png")
   try pngData.write(to: fileURL, options: .atomic)
@@ -1715,7 +1787,29 @@ final class GhostexGhosttyApp {
     location: ghostty_clipboard_e,
     state: UnsafeMutableRawPointer?
   ) -> Bool {
-    let text = NSPasteboard.general.string(forType: .string) ?? ""
+    let pasteboard = NSPasteboard.general
+    if location == GHOSTTY_CLIPBOARD_STANDARD && terminalPanePastePreviewableImagesEnabled() {
+      do {
+        if let imageMarkdown = try terminalPaneClipboardMarkdownImageContent(in: pasteboard) {
+          /*
+           CDXC:TerminalImagePaste 2026-06-08-13:18:
+           Cmd+V and normal Paste actions still enter through Ghostty's clipboard request. Resolve image clipboards here before the plain-string path so image-only clipboards insert readable Markdown instead of pasting nothing.
+
+           CDXC:TerminalImagePaste 2026-06-08-13:32:
+           The Paste previewable images toggle gates this image-only branch so
+           opting out preserves the terminal's normal paste behavior.
+           */
+          imageMarkdown.withCString { ptr in
+            ghostty_surface_complete_clipboard_request(callbackSurface(from: userdata), ptr, state, false)
+          }
+          return true
+        }
+      } catch {
+        return false
+      }
+    }
+
+    let text = pasteboard.string(forType: .string) ?? ""
     text.withCString { ptr in
       ghostty_surface_complete_clipboard_request(callbackSurface(from: userdata), ptr, state, false)
     }
@@ -2620,6 +2714,11 @@ final class TerminalWorkspaceView: NSView {
     let editorFrame: CGRect
     let resizeHandleFrame: CGRect
     let sessionId: String
+  }
+
+  private enum WebPaneFrameMode: Equatable {
+    case normal
+    case projectEditorCompanion
   }
 
   private struct PaneHeaderDrag {
@@ -7921,7 +8020,7 @@ final class TerminalWorkspaceView: NSView {
     }
     syncProjectEditorCompanionTitleBarControls(activeSessionId: layout.sessionId)
     setPaneTabs([], activeSessionId: layout.sessionId, on: layout.sessionId)
-    setFrame(layout.contentFrame, for: layout.sessionId)
+    setFrame(layout.contentFrame, for: layout.sessionId, webPaneMode: .projectEditorCompanion)
 
     projectEditorCompanionResizeHandleView.frame = layout.resizeHandleFrame
     projectEditorCompanionResizeHandleView.configure(direction: .horizontal, cursor: .resizeLeftRight)
@@ -12825,14 +12924,18 @@ final class TerminalWorkspaceView: NSView {
     placeholderView.removeFromSuperview()
   }
 
-  private func setFrame(_ rect: CGRect, for sessionId: String) {
+  private func setFrame(
+    _ rect: CGRect,
+    for sessionId: String,
+    webPaneMode: WebPaneFrameMode = .normal
+  ) {
     if poppedOutSessionIds.contains(sessionId) {
       setPoppedOutPlaceholderFrame(rect, for: sessionId)
       return
     }
     removePoppedOutPlaceholder(sessionId: sessionId)
     if let webPane = webPaneSessions[sessionId] {
-      setWebPaneFrame(rect, for: webPane)
+      setWebPaneFrame(rect, for: webPane, mode: webPaneMode)
       return
     }
 
@@ -13112,7 +13215,11 @@ final class TerminalWorkspaceView: NSView {
     }
   }
 
-  private func setWebPaneFrame(_ rect: CGRect, for session: WebPaneSession) {
+  private func setWebPaneFrame(
+    _ rect: CGRect,
+    for session: WebPaneSession,
+    mode: WebPaneFrameMode = .normal
+  ) {
     let resolvedRect: CGRect
     if rect.width <= 1 || rect.height <= Self.terminalTitleBarHeight + 1 {
       resolvedRect = layoutBounds(forVisibleCount: max(orderedVisibleSessionIds().count, 1))
@@ -13157,9 +13264,15 @@ final class TerminalWorkspaceView: NSView {
     session.titleBarView.layoutSubtreeIfNeeded()
     session.hostView.translatesAutoresizingMaskIntoConstraints = true
     session.hostView.frame = contentRect
-    session.hostView.refreshHostedWebView(reason: "setWebPaneFrame")
+    /*
+     CDXC:ProjectEditorCompanion 2026-06-08-13:04:
+     Retargeting the Code/Git/Project companion pane to a newly opened T3 web pane must be frame-only while AppKit is already laying out the active editor surface. Refreshing the hosted WKWebView from this parent layout pass marks the host dirty again and can create the repeated Update Constraints loop seen when closing then opening a T3 Code agent.
+     */
+    if mode == .normal {
+      session.hostView.refreshHostedWebView(reason: "setWebPaneFrame")
+    }
     session.borderView.frame = session.containerView.bounds
-    if focusedSessionId == session.sessionId {
+    if mode == .normal, focusedSessionId == session.sessionId {
       orderWebPaneViewsToFront(session)
     }
     updateTerminalBorder(for: session.sessionId)
@@ -16905,6 +17018,10 @@ final class GhostexGhosttySurfaceView: NSView {
       searchState = nil
       return
     }
+    if handleControlImagePasteKeyDown(event) {
+      onKeyDownProbe?(self, event, "controlImagePasteConsumed")
+      return
+    }
     sendKeyEvent(event, action: event.isARepeat ? GHOSTTY_ACTION_REPEAT : GHOSTTY_ACTION_PRESS)
     onKeyDownProbe?(self, event, "forwarded")
   }
@@ -17346,6 +17463,31 @@ final class GhostexGhosttySurfaceView: NSView {
     }
 
     return false
+  }
+
+  private func handleControlImagePasteKeyDown(_ event: NSEvent) -> Bool {
+    guard event.type == .keyDown, focused, terminalPanePastePreviewableImagesEnabled() else {
+      return false
+    }
+    let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+    guard flags.contains(.control),
+      flags.isDisjoint(with: [.command, .option, .shift]),
+      event.charactersIgnoringModifiers?.lowercased() == "v"
+    else {
+      return false
+    }
+    /*
+     CDXC:TerminalImagePaste 2026-06-08-13:18:
+     Ctrl+V is terminal input on macOS unless Ghostex proves the system clipboard currently contains an image. Intercept only image-producing clipboards, then reuse Ghostty's normal paste action so text Ctrl+V still reaches terminal programs unchanged.
+
+     CDXC:TerminalImagePaste 2026-06-08-13:32:
+     When Paste previewable images is disabled, Ctrl+V is never intercepted for
+     image clipboards and continues to reach terminal programs as control input.
+     */
+    guard terminalPaneClipboardCanProduceImageMarkdownContent(in: NSPasteboard.general) else {
+      return false
+    }
+    return performBindingAction("paste_from_clipboard")
   }
 
   private func sendTerminalInput(_ sequence: String, label: String) -> Bool {

@@ -699,6 +699,7 @@ type NativeHostCommand =
       fontVariationWeight: number | null;
       clipboardPasteProtection: boolean;
       clipboardTrimTrailingSpaces: boolean;
+      pastePreviewableImages: boolean;
       confirmCloseSurface: string;
       copyOnSelect: string;
       cursorStyleBlink: boolean;
@@ -707,6 +708,7 @@ type NativeHostCommand =
       mouseScrollMultiplierDiscrete: number;
       mouseScrollMultiplierPrecision: number;
       reloadImmediately?: boolean;
+      runtimeOnly?: boolean;
       scrollbackLimitBytes: number;
       scrollbar: string;
       type: "syncGhosttyTerminalSettings";
@@ -2800,10 +2802,29 @@ function applyGxserverPresentationSessionToNativePaneChrome(
   let didChange = false;
   const wasGeneratingFirstPromptTitle = terminalState?.firstPromptAutoRenameInProgress === true;
   if (terminalState) {
+    const previousActivity = terminalState.activity;
+    const attentionEventId = getNativeGxserverPresentationAttentionEventId(presentation);
+    /*
+    CDXC:SessionAttention 2026-06-08-13:19:
+    gxserver presentation is now the path that turns macOS session chrome green for hook-owned attention events. Run sound and notification side effects only for fresh presentation deltas, not startup snapshots or stream recovery snapshots, and reuse the existing attention handler so event-id dedupe remains centralized.
+    */
+    const shouldRunAttentionSideEffects =
+      shouldRunNativeGxserverPresentationAttentionSideEffects(reason) &&
+      previousActivity !== "attention" &&
+      presentation.activity === "attention" &&
+      presentation.attention?.acknowledged !== true &&
+      !isNativeAttentionEventLocallyAcknowledged(presentation.sessionId, attentionEventId);
     const nextLifecycle = presentationLifecycleStateForSidebar(presentation.lifecycleState);
     if (terminalState.activity !== presentation.activity) {
       terminalState.activity = presentation.activity;
       didChange = true;
+    }
+    if (shouldRunAttentionSideEffects) {
+      handleNativeSessionEnteredAttention(
+        presentation.sessionId,
+        "gxserver-presentation",
+        attentionEventId,
+      );
     }
     if (terminalState.lifecycleState !== nextLifecycle) {
       terminalState.lifecycleState = nextLifecycle;
@@ -6189,6 +6210,7 @@ function resolveTerminalAttachProvider(
 function syncGhosttyTerminalSettings(
   nextSettings: ghostexSettings,
   previousSettings?: ghostexSettings,
+  options: { runtimeOnly?: boolean } = {},
 ): void {
   /**
    * CDXC:TerminalSettings 2026-04-26-19:02
@@ -6204,10 +6226,22 @@ function syncGhosttyTerminalSettings(
    * CDXC:TerminalBehaviorSettings 2026-04-29-09:32
    * Theme and interaction controls should also reload immediately because they
    * do not require the delayed font metric rebuild path.
+   *
+   * CDXC:TerminalImagePaste 2026-06-08-13:32:
+   * Paste previewable images is runtime-only native behavior. Send it in this
+   * sync payload so macOS updates immediately, but keep it out of reload checks
+   * because no Ghostty config key changes.
    */
+  const syncRuntimeOnly =
+    options.runtimeOnly === true ||
+    (previousSettings !== undefined &&
+      previousSettings.terminalPastePreviewableImages !==
+        nextSettings.terminalPastePreviewableImages &&
+      !ghosttyTerminalConfigSettingsChanged(previousSettings, nextSettings));
   postNative({
     ...getGhosttyTerminalConfigValues(nextSettings),
     reloadImmediately:
+      !syncRuntimeOnly &&
       previousSettings !== undefined &&
       (previousSettings.terminalMouseScrollMultiplierDiscrete !==
         nextSettings.terminalMouseScrollMultiplierDiscrete ||
@@ -6224,8 +6258,38 @@ function syncGhosttyTerminalSettings(
         previousSettings.terminalMouseHideWhileTyping !==
           nextSettings.terminalMouseHideWhileTyping ||
         previousSettings.terminalScrollbar !== nextSettings.terminalScrollbar),
+    runtimeOnly: syncRuntimeOnly || undefined,
     type: "syncGhosttyTerminalSettings",
   });
+}
+
+function ghosttyTerminalConfigSettingsChanged(
+  previousSettings: ghostexSettings,
+  nextSettings: ghostexSettings,
+): boolean {
+  return (
+    previousSettings.terminalLineHeight !== nextSettings.terminalLineHeight ||
+    previousSettings.terminalLetterSpacing !== nextSettings.terminalLetterSpacing ||
+    previousSettings.terminalCursorStyle !== nextSettings.terminalCursorStyle ||
+    previousSettings.terminalFontFamily !== nextSettings.terminalFontFamily ||
+    previousSettings.terminalFontSize !== nextSettings.terminalFontSize ||
+    previousSettings.terminalFontWeight !== nextSettings.terminalFontWeight ||
+    previousSettings.terminalClipboardPasteProtection !==
+      nextSettings.terminalClipboardPasteProtection ||
+    previousSettings.terminalClipboardTrimTrailingSpaces !==
+      nextSettings.terminalClipboardTrimTrailingSpaces ||
+    previousSettings.terminalConfirmCloseSurface !== nextSettings.terminalConfirmCloseSurface ||
+    previousSettings.terminalCopyOnSelect !== nextSettings.terminalCopyOnSelect ||
+    previousSettings.terminalCursorStyleBlink !== nextSettings.terminalCursorStyleBlink ||
+    previousSettings.terminalGhosttyTheme !== nextSettings.terminalGhosttyTheme ||
+    previousSettings.terminalMouseHideWhileTyping !== nextSettings.terminalMouseHideWhileTyping ||
+    previousSettings.terminalMouseScrollMultiplierDiscrete !==
+      nextSettings.terminalMouseScrollMultiplierDiscrete ||
+    previousSettings.terminalMouseScrollMultiplierPrecision !==
+      nextSettings.terminalMouseScrollMultiplierPrecision ||
+    previousSettings.terminalScrollbackLimitMb !== nextSettings.terminalScrollbackLimitMb ||
+    previousSettings.terminalScrollbar !== nextSettings.terminalScrollbar
+  );
 }
 
 function saveSettingsFromNative(nextSettings: ghostexSettings): void {
@@ -10004,11 +10068,15 @@ async function runSidebarGitAction(
   options: SidebarGitActionRunOptions = {},
 ): Promise<void> {
   if (action === "multiRelease") {
-    await runSidebarGitPromptAction("Multicommit & Release", GIT_MULTICOMMIT_RELEASE_PROMPT);
+    await runSidebarGitPromptAction("Multicommit & Release", GIT_MULTICOMMIT_RELEASE_PROMPT, undefined, {
+      suppressRunningToast: true,
+    });
     return;
   }
   if (action === "release") {
-    await runSidebarGitPromptAction("Release", GIT_RELEASE_ONLY_PROMPT);
+    await runSidebarGitPromptAction("Release", GIT_RELEASE_ONLY_PROMPT, undefined, {
+      suppressRunningToast: true,
+    });
     return;
   }
 
@@ -10037,6 +10105,8 @@ async function runSidebarGitAction(
     await runSidebarGitPromptAction(
       "Sync with Main",
       buildGitSyncWithMainPrompt({ branch: gitState.branch, project }),
+      undefined,
+      { suppressRunningToast: true },
     );
     return;
   }
@@ -10646,13 +10716,27 @@ async function runSidebarGitMultipleCommits(requestId: string, agentId?: string)
   gitState = { ...gitState, isBusy: false };
   publish();
 
-  await runSidebarGitPromptAction("Multiple Commits", GIT_MULTIPLE_COMMITS_PROMPT, agentId);
+  await runSidebarGitPromptAction("Multiple Commits", GIT_MULTIPLE_COMMITS_PROMPT, agentId, {
+    suppressRunningToast: true,
+  });
 }
+
+type SidebarGitPromptActionOptions = {
+  /**
+   * CDXC:GitActionToasts 2026-06-08-13:02:
+   * Git agent workflows open a visible agent terminal, so they must not also pin an ongoing toast such as "Multiple Commits running in Cursor CLI"; progress belongs to the session row and terminal itself, and closing the thread should not create a stopped toast.
+   *
+   * CDXC:GitActionToasts 2026-06-08-13:07:
+   * Apply the same no-ongoing-toast rule to Multicommit & Release, Release, Sync with Main, and PR workflow because their visible agent sessions already communicate that work is active.
+   */
+  suppressRunningToast?: boolean;
+};
 
 async function runSidebarGitPromptAction(
   title: string,
   prompt: string,
   agentId?: string,
+  options: SidebarGitPromptActionOptions = {},
 ): Promise<void> {
   await refreshGitState();
   if (!gitState.isRepo) {
@@ -10671,13 +10755,17 @@ async function runSidebarGitPromptAction(
   }
 
   const projectId = activeProjectId;
-  const toastId = showRunningAppToast(`${title} running`, `Opening ${agent.name}`);
+  const toastId = options.suppressRunningToast
+    ? undefined
+    : showRunningAppToast(`${title} running`, `Opening ${agent.name}`);
   const session = await launchAgentTerminal(agent);
   if (!session) {
     finishRunningAppToast(toastId, "error", `Could not open ${agent.name}`, `${title} did not start.`);
     return;
   }
-  rememberGitWorkflowToast(session.sessionId, toastId, title);
+  if (toastId) {
+    rememberGitWorkflowToast(session.sessionId, toastId, title);
+  }
 
   await stageNativeAgentPrompt({
     agent,
@@ -10687,10 +10775,12 @@ async function runSidebarGitPromptAction(
     session,
     submitPrompt: true,
   });
-  showAppToast("info", `${title} running in ${agent.name}`, activeProject().name, {
-    persistent: true,
-    toastId,
-  });
+  if (toastId) {
+    showAppToast("info", `${title} running in ${agent.name}`, activeProject().name, {
+      persistent: true,
+      toastId,
+    });
+  }
 }
 
 function formatGitAgentWorkflowTitle(title: string): string {
@@ -11255,13 +11345,17 @@ async function runSidebarGitPullRequestAgentWorkflow(input: {
    */
   gitState = { ...gitState, isBusy: false };
   publish();
-  const toastId = showRunningAppToast("PR workflow running", `Opening ${agent.name}`);
+  /*
+   * CDXC:GitActionToasts 2026-06-08-13:07:
+   * PR workflow runs in a visible prompt-agent terminal. Do not create or
+   * remember a persistent running toast, because closing that terminal should
+   * not produce a separate "PR workflow stopped" toast.
+   */
   const session = await launchAgentTerminal(agent);
   if (!session) {
-    finishRunningAppToast(toastId, "error", `Could not open ${agent.name}`, "Pull request workflow did not start.");
+    showAppToast("error", `Could not open ${agent.name}`, "Pull request workflow did not start.");
     return;
   }
-  rememberGitWorkflowToast(session.sessionId, toastId, "PR workflow");
 
   const prompt = buildSidebarGitPullRequestAgentPrompt({
     branch: gitState.branch,
@@ -11282,10 +11376,6 @@ async function runSidebarGitPullRequestAgentWorkflow(input: {
     renameTitle: formatGitAgentWorkflowTitle("Commit, Push & PR"),
     session,
     submitPrompt: true,
-  });
-  showAppToast("info", `PR workflow running in ${agent.name}`, input.project.name, {
-    persistent: true,
-    toastId,
   });
 }
 
@@ -20655,6 +20745,28 @@ function getNativePersistedAttentionEventId(
     normalizeNativeAttentionEventId(persistedState.lastActivityAt);
 }
 
+function getNativeGxserverPresentationAttentionEventId(
+  presentation: Pick<GxserverPresentationSession, "activity" | "attention">,
+): string | undefined {
+  /*
+  CDXC:SessionAttention 2026-06-08-13:19:
+  Presentation attention rows carry eventId for sound/notification dedupe. Keep enteredAt as a compatibility key for older daemon payloads so macOS can still avoid replaying the same attention transition within one process.
+  */
+  if (presentation.activity !== "attention") {
+    return undefined;
+  }
+  return normalizeNativeAttentionEventId(presentation.attention?.eventId) ??
+    normalizeNativeAttentionEventId(presentation.attention?.enteredAt);
+}
+
+function shouldRunNativeGxserverPresentationAttentionSideEffects(reason: string): boolean {
+  /*
+  CDXC:SessionAttention 2026-06-08-13:19:
+  Startup and stream-recovery snapshots can contain sessions that were already green before this client observed them. Only presentation change deltas represent the live edge where macOS should play completion sound and optionally show the attention banner.
+  */
+  return reason === "delta:sessionPresentationChanged";
+}
+
 function readGxserverFirstPromptTitleGenerationRunning(
   runtimeSettings: Record<string, unknown> | undefined,
 ): boolean | undefined {
@@ -26248,6 +26360,7 @@ function getNativeSidebarCommandStatusStampText(
     'if [ -n "$__ghostex_session_state_file" ]; then',
     `  /usr/bin/python3 - "$__ghostex_session_state_file" ${quoteNativeShellArg(status)} ${quoteNativeShellArg(runId)} ${exitCode} <<'GHOSTEX_COMMAND_PANE_STATUS'`,
     "import datetime",
+    "import os",
     "import pathlib",
     "import sys",
     "",
@@ -26276,7 +26389,9 @@ function getNativeSidebarCommandStatusStampText(
     "    if key not in order:",
     "        order.append(key)",
     "state_path.parent.mkdir(parents=True, exist_ok=True)",
-    "temp_path = state_path.with_suffix(state_path.suffix + '.tmp')",
+    "# CDXC:CommandsPanel 2026-06-08-13:19:",
+    "# Command-pane completion sound depends on the idle status stamp being read by macOS. Use a per-process temp file so concurrent hook/status writers cannot clobber the replace source before the final state reaches disk.",
+    "temp_path = state_path.with_name(f'{state_path.name}.{os.getpid()}.command.tmp')",
     "temp_path.write_text(''.join(f'{key}={state.get(key, \"\")}\\n' for key in order), encoding='utf-8')",
     "temp_path.replace(state_path)",
     "GHOSTEX_COMMAND_PANE_STATUS",
@@ -38969,6 +39084,14 @@ if (
   createRoot(rootElement).render(<NativeSidebarRoot />);
   queueMicrotask(() => {
     postNative({ side: sidebarSide, type: "setSidebarSide" });
+    /*
+    CDXC:TerminalImagePaste 2026-06-08-13:32:
+    Persisted terminal runtime settings must reach Swift during sidebar startup,
+    not only after the next Settings save. This preserves a disabled Paste
+    previewable images toggle across app relaunch while keeping the default-on
+    path unchanged for fresh installs.
+    */
+    syncGhosttyTerminalSettings(settings, undefined, { runtimeOnly: true });
     startFirstPromptAutoRenameMonitor();
     startQuickFileMissingMonitor();
     startNativeAutoSleepMonitor();

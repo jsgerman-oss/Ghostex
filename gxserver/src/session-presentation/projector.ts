@@ -241,11 +241,17 @@ function normalizePresentationActivityState(value: unknown, generatedAt: string 
   if (activity !== "attention") {
     return { activity };
   }
+  /*
+  CDXC:SessionAttention 2026-06-08-13:19:
+  macOS receives fresh attention transitions through gxserver presentation deltas. Publish the same stable attention event id used by the activity state machine so clients can play completion side effects once for a new event while ignoring startup snapshots, stream recovery snapshots, and stale replays.
+  */
+  const eventId = readText(state.attentionEventId) ?? readText(state.lastChangedAt);
   return {
     activity,
     attention: {
       acknowledged: state.isAcknowledged === true,
       ...(typeof state.lastChangedAt === "string" ? { enteredAt: state.lastChangedAt } : {}),
+      ...(eventId ? { eventId } : {}),
     },
   };
 }

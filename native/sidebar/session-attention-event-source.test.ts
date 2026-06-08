@@ -46,21 +46,40 @@ describe("native sidebar attention event side effects", () => {
     expect(gxserverActivity).toContain("isNativeAttentionEventLocallyAcknowledged(sessionId, attentionEventId)");
     expect(gxserverActivity).toContain("handleNativeSessionEnteredAttention(sessionId, source, attentionEventId)");
 
+    const presentationChrome = sourceBetween(
+      "function applyGxserverPresentationSessionToNativePaneChrome",
+      "function setGxserverPresentationSessionLifecycleLocally",
+    );
+    expect(presentationChrome).toContain("const previousActivity = terminalState.activity");
+    expect(presentationChrome).toContain("getNativeGxserverPresentationAttentionEventId(presentation)");
+    expect(presentationChrome).toContain("shouldRunNativeGxserverPresentationAttentionSideEffects(reason)");
+    expect(presentationChrome).toContain('previousActivity !== "attention"');
+    expect(presentationChrome).toContain('presentation.activity === "attention"');
+    expect(presentationChrome).toContain("presentation.attention?.acknowledged !== true");
+    expect(presentationChrome).toContain("!isNativeAttentionEventLocallyAcknowledged(presentation.sessionId, attentionEventId)");
+    expect(presentationChrome).toContain("handleNativeSessionEnteredAttention(");
+    expect(presentationChrome).toContain('"gxserver-presentation"');
+
     const eventIdHelpers = sourceBetween(
       "function getNativeGxserverAttentionEventId",
       "function readGxserverFirstPromptTitleGenerationRunning",
     );
     expect(eventIdHelpers).toContain("activity.lastChangedAt");
     expect(eventIdHelpers).toContain("persistedState.statusUpdatedAt");
+    expect(eventIdHelpers).toContain("function getNativeGxserverPresentationAttentionEventId");
+    expect(eventIdHelpers).toContain("presentation.attention?.eventId");
+    expect(eventIdHelpers).toContain("presentation.attention?.enteredAt");
+    expect(eventIdHelpers).toContain("function shouldRunNativeGxserverPresentationAttentionSideEffects");
+    expect(eventIdHelpers).toContain('return reason === "delta:sessionPresentationChanged";');
 
     const persistedActivity = sourceBetween(
       "function syncNativePersistedAgentActivity",
       "function isNativePersistedWorkingFresh",
     );
-    expect(persistedActivity).toContain("const attentionEventId = getNativePersistedAttentionEventId(persistedState)");
-    expect(persistedActivity).toContain("isNativePersistedAttentionAcknowledgedForSession(");
-    expect(persistedActivity).toContain("markNativeAttentionEventLocallyAcknowledged(sessionId, attentionEventId)");
-    expect(persistedActivity).toContain("attentionEventId");
+    expect(persistedActivity).toContain("nativePersistedAgentHookEventSyncKeyBySessionId");
+    expect(persistedActivity).toContain("void syncGxserverAgentHookEvent(sessionId, {");
+    expect(persistedActivity).toContain("status: persistedState.status");
+    expect(persistedActivity).toContain("statusUpdatedAt: persistedState.statusUpdatedAt ?? persistedState.lastActivityAt");
 
     const acknowledgePath = sourceBetween(
       "function completeNativeTerminalAttentionAcknowledgement",
@@ -68,6 +87,45 @@ describe("native sidebar attention event side effects", () => {
     );
     expect(acknowledgePath).toContain("markNativeAttentionEventLocallyAcknowledged");
     expect(acknowledgePath).toContain("nativeAttentionEventIdBySessionId.get(sessionId)");
+  });
+
+  test("keeps command-pane action completion sounds on the command path", () => {
+    /*
+    CDXC:CommandsPanel 2026-06-08-13:19:
+    Command-pane completions use the action completion sound, not the session
+    attention bell, and their status writer must use unique temp files so the
+    idle stamp that triggers sound is not lost to concurrent hook writes.
+    */
+    const persistedCommandPane = sourceBetween(
+      "function syncNativePersistedCommandPaneActivity",
+      "function syncNativePersistedAgentActivity",
+    );
+    expect(persistedCommandPane).toContain('session.surface !== "commands"');
+    expect(persistedCommandPane).toContain("const didFail = (persistedState.commandExitCode ?? 0) !== 0");
+    expect(persistedCommandPane).toContain("didFail || storedSession.playCompletionSound");
+    expect(persistedCommandPane).toContain("playNativeSidebarActionCompletionSound(sessionId)");
+
+    const terminalExitCommandPane = sourceBetween(
+      "function handleNativeSidebarCommandSessionExit",
+      "/**\n * CDXC:Actions",
+    );
+    expect(terminalExitCommandPane).toContain("const didFail = (exitCode ?? 0) !== 0");
+    expect(terminalExitCommandPane).toContain("didFail || storedSession.playCompletionSound");
+    expect(terminalExitCommandPane).toContain("playNativeSidebarActionCompletionSound(sessionId)");
+
+    const actionSound = sourceBetween(
+      "function playNativeSidebarActionCompletionSound",
+      "function setNativeSidebarCommandSession",
+    );
+    expect(actionSound).toContain("settings.actionCompletionSound");
+    expect(actionSound).not.toContain("completionBellEnabled");
+
+    const commandStatusScript = sourceBetween(
+      "function getNativeSidebarCommandStatusStampText",
+      "function createNativeSidebarCommandRunId",
+    );
+    expect(commandStatusScript).toContain("import os");
+    expect(commandStatusScript).toContain("state_path.with_name(f'{state_path.name}.{os.getpid()}.command.tmp')");
   });
 
   test("uses per-process temp files for session-state writes", () => {

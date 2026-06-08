@@ -187,6 +187,8 @@ import type { WebviewApi } from "./webview-api";
 const NUMERIC_SETTINGS_DEBOUNCE_MS = 180;
 const GHOSTTY_THEME_UNMANAGED_VALUE = "__ghostex_ghostty_theme_unmanaged__";
 const MODIFIED_SETTING_TOOLTIP = "Modified Setting.\n \nClick to Reset to Default";
+const PASTE_PREVIEWABLE_IMAGES_DESCRIPTION =
+  "Paste clipboard images as previewable Markdown links with Cmd+V or Ctrl+V. Hold Cmd over the linked path to preview it in the terminal, and see the same image preview in the Ctrl+G Rich Prompt Editor.";
 const HOTKEY_SETTINGS_SECTIONS: readonly HotkeySettingsSectionDefinition[] = [
   {
     id: "general",
@@ -1229,6 +1231,11 @@ export function SettingsModal({
         key: "terminalClipboardPasteProtection",
         subtitle: "Ask before pasting text Ghostty considers unsafe.",
         title: "Paste protection",
+      },
+      {
+        key: "terminalPastePreviewableImages",
+        subtitle: PASTE_PREVIEWABLE_IMAGES_DESCRIPTION,
+        title: "Paste previewable images",
       },
       {
         key: "terminalMouseHideWhileTyping",
@@ -2831,6 +2838,20 @@ export function SettingsModal({
                         {...getSettingModificationProps("terminalClipboardPasteProtection")}
                         onChange={(checked) =>
                           updateDraft("terminalClipboardPasteProtection", checked)
+                        }
+                      />
+                    ) : null}
+                    {shouldShowSetting(
+                      settingsSearch.terminalBehavior,
+                      "terminalPastePreviewableImages",
+                    ) ? (
+                      <ToggleField
+                        checked={draft.terminalPastePreviewableImages}
+                        description={PASTE_PREVIEWABLE_IMAGES_DESCRIPTION}
+                        label="Paste previewable images"
+                        {...getSettingModificationProps("terminalPastePreviewableImages")}
+                        onChange={(checked) =>
+                          updateDraft("terminalPastePreviewableImages", checked)
                         }
                       />
                     ) : null}

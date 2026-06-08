@@ -570,6 +570,43 @@ test("presentation snapshot applies stale spinner activity semantics", () => {
   assert.equal(staleSnapshot.sessions[0]?.actions.acknowledgeAttention, true);
 });
 
+test("presentation attention includes a stable event id", () => {
+  /*
+  CDXC:SessionAttention 2026-06-08-13:19:
+  macOS presentation deltas are a first-class attention source. Publish the
+  stable event id with the attention projection so clients can play completion
+  sound once for a fresh attention event without replaying audio for snapshots.
+  */
+  const project = projectFixture({});
+  const session = sessionFixture({
+    agentId: "codex",
+    runtimeSettings: {
+      agentActivity: {
+        activity: "attention",
+        agentName: "codex",
+        attentionEventId: "attn_mq4zf2ae",
+        hasSeenWorking: true,
+        isAcknowledged: false,
+        lastChangedAt: "2026-06-08T09:01:44.918Z",
+      },
+      agentName: "codex",
+    },
+  });
+
+  const snapshot = projectGxserverPresentationSnapshot({
+    projects: [project],
+    revision: 4 as GxserverPresentationRevision,
+    sessions: [session],
+  });
+
+  assert.equal(snapshot.sessions[0]?.activity, "attention");
+  assert.deepEqual(snapshot.sessions[0]?.attention, {
+    acknowledged: false,
+    enteredAt: "2026-06-08T09:01:44.918Z",
+    eventId: "attn_mq4zf2ae",
+  });
+});
+
 test("metadata search can page previous sessions without hydrating them into the active snapshot", () => {
   const project = projectFixture({ name: "Ghostex" });
   const active = sessionFixture({

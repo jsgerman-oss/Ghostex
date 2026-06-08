@@ -9,6 +9,7 @@ export type GhosttyTerminalConfigValues = {
   fontVariationWeight: number | null;
   clipboardPasteProtection: boolean;
   clipboardTrimTrailingSpaces: boolean;
+  pastePreviewableImages: boolean;
   confirmCloseSurface: string;
   copyOnSelect: string;
   cursorStyleBlink: boolean;
@@ -47,6 +48,11 @@ export type GhosttyTerminalConfigValues = {
  * black/white colors, a bar cursor, JetBrains Mono 13pt at wght=300, 20% cell
  * height expansion, 15 MB scrollback, protected clipboard behavior, no
  * copy-on-select, and one-to-one precision/discrete mouse scroll multipliers.
+ *
+ * CDXC:TerminalImagePaste 2026-06-08-13:32:
+ * The native terminal settings sync also carries app runtime flags. Paste
+ * previewable images must reach macOS immediately, but it must not be emitted as
+ * a Ghostty config key.
  */
 export function getGhosttyTerminalConfigValues(
   settings: ghostexSettings,
@@ -60,6 +66,7 @@ export function getGhosttyTerminalConfigValues(
     fontVariationWeight: settings.terminalFontWeight === 400 ? null : settings.terminalFontWeight,
     clipboardPasteProtection: settings.terminalClipboardPasteProtection,
     clipboardTrimTrailingSpaces: settings.terminalClipboardTrimTrailingSpaces,
+    pastePreviewableImages: settings.terminalPastePreviewableImages,
     confirmCloseSurface: settings.terminalConfirmCloseSurface,
     copyOnSelect: settings.terminalCopyOnSelect,
     cursorStyleBlink: settings.terminalCursorStyleBlink,

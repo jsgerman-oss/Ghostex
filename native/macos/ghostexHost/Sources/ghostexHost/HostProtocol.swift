@@ -1033,6 +1033,7 @@ struct SyncGhosttyTerminalSettings: Decodable {
   let fontVariationWeight: Int?
   let clipboardPasteProtection: Bool
   let clipboardTrimTrailingSpaces: Bool
+  let pastePreviewableImages: Bool?
   let confirmCloseSurface: String
   let copyOnSelect: String
   let cursorStyleBlink: Bool
@@ -1041,6 +1042,7 @@ struct SyncGhosttyTerminalSettings: Decodable {
   let mouseScrollMultiplierDiscrete: Double
   let mouseScrollMultiplierPrecision: Double
   let reloadImmediately: Bool?
+  let runtimeOnly: Bool?
   let scrollbackLimitBytes: Int
   let scrollbar: String
 }
