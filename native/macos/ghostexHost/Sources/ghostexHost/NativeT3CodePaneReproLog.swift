@@ -238,10 +238,17 @@ enum NativeCodeServerRuntimeLauncher {
     let entrypoint = repoRoot.appendingPathComponent("out/node/entry.js").path
     let nodePath = try resolveCodeServerNodePath(repoRoot: repoRoot)
     let storage = try runtimeStorage()
-    let userDataDir = storage.appendingPathComponent("user-data", isDirectory: true).path
-    let extensionsDir = storage.appendingPathComponent("extensions", isDirectory: true).path
+    let userDataDirURL = storage.appendingPathComponent("user-data", isDirectory: true)
+    let extensionsDirURL = storage.appendingPathComponent("extensions", isDirectory: true)
     let linkedVscodeUserConfigDir: String? =
       linkVscodeUserConfig ? normalizedVscodeUserConfigDirectory(vscodeUserConfigDir) : nil
+    if NativeCodeServerUserSettings.shouldSeedDefaultTheme(
+      linkedVscodeUserConfigDir: linkedVscodeUserConfigDir)
+    {
+      try NativeCodeServerUserSettings.ensureDefaultTheme(in: userDataDirURL)
+    }
+    let userDataDir = userDataDirURL.path
+    let extensionsDir = extensionsDirURL.path
     var launchArguments = [
       "exec",
       shellQuote(nodePath),

@@ -2074,14 +2074,15 @@ export function SettingsModal({
                 value={draft.customDefaultEditorCommand}
               />
               ) : null}
-              {/* CDXC:EditorPanes 2026-05-06-15:00: Embedded code-server
-                  panes pass --link-vscode-user-config by default so editor
-                  sessions inherit local VS Code user settings. The Insiders
+              {/* CDXC:EditorPanes 2026-06-08-20:12: Embedded code-server panes
+                  use Ghostex-owned bundled editor settings by default so the
+                  macOS VS Code surface starts on Dark 2026. This toggle opts
+                  into linking local VS Code settings, while the Insiders
                   checkbox only changes the linked config directory. */}
               {mainSettingVisible(settingsSearch.editor, "codeServerLinkVscodeUserConfig") ? (
               <ToggleField
                 checked={draft.codeServerLinkVscodeUserConfig}
-                description="Use the VS Code settings from the local VS Code install."
+                description="Use local VS Code settings instead of the bundled editor defaults."
                 label="Use VS Code settings"
                 onChange={(checked) => updateDraft("codeServerLinkVscodeUserConfig", checked)}
               />

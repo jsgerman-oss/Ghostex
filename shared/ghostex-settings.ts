@@ -371,11 +371,16 @@ export const DEFAULT_ghostex_SETTINGS: ghostexSettings = {
   browserOpenMode: "browser-pane",
   /**
    * CDXC:EditorPanes 2026-05-06-15:00
-   * Embedded code-server editor panes should reuse the user's local VS Code
-   * user settings by default. A separate Insiders toggle switches the linked
-   * source directory without disabling the shared project editor runtime.
+   * Embedded code-server editor panes can reuse the user's local VS Code
+   * user settings. A separate Insiders toggle switches the linked source
+   * directory without disabling the shared project editor runtime.
+   *
+   * CDXC:EditorPanes 2026-06-08-20:12:
+   * New installs should use Ghostex-owned bundled editor settings by default
+   * so the embedded VS Code surface starts on Dark 2026. Users can still opt
+   * into local VS Code settings explicitly from Settings.
    */
-  codeServerLinkVscodeUserConfig: true,
+  codeServerLinkVscodeUserConfig: false,
   codeServerUseVscodeInsidersUserConfig: false,
   /**
    * CDXC:AgentsHub 2026-05-12-09:22
@@ -898,9 +903,10 @@ export function normalizeghostexSettings(candidate: unknown): ghostexSettings {
       readString(source, "browserOpenMode", DEFAULT_ghostex_SETTINGS.browserOpenMode),
     ),
     /**
-     * CDXC:EditorPanes 2026-05-06-15:00
+     * CDXC:EditorPanes 2026-06-08-20:12:
      * Normalize the code-server VS Code settings-link toggles on every read so
-     * older settings files gain the default local VS Code settings behavior.
+     * missing values use the bundled editor defaults while explicit local VS
+     * Code settings choices remain persisted.
      */
     codeServerLinkVscodeUserConfig: readBoolean(
       source,

@@ -3411,7 +3411,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
     do {
       let launch = try NativeCodeServerRuntimeLauncher.createLaunch(
         cwd: command.cwd,
-        linkVscodeUserConfig: command.linkVscodeUserConfig ?? true,
+        /*
+         CDXC:EditorPanes 2026-06-08-20:12:
+         Missing sidebar link flags should follow the bundled editor default so new macOS code-server launches start from Ghostex-owned Dark 2026 settings instead of resurrecting local VS Code settings.
+         */
+        linkVscodeUserConfig: command.linkVscodeUserConfig ?? false,
         vscodeUserConfigDir: command.vscodeUserConfigDir)
       let process = launch.process
       try process.run()
@@ -8129,7 +8133,11 @@ final class ghostexRootView: NSView {
     do {
       let launch = try NativeCodeServerRuntimeLauncher.createLaunch(
         cwd: command.cwd,
-        linkVscodeUserConfig: command.linkVscodeUserConfig ?? true,
+        /*
+         CDXC:EditorPanes 2026-06-08-20:12:
+         Missing sidebar link flags should follow the bundled editor default so new macOS code-server launches start from Ghostex-owned Dark 2026 settings instead of resurrecting local VS Code settings.
+         */
+        linkVscodeUserConfig: command.linkVscodeUserConfig ?? false,
         vscodeUserConfigDir: command.vscodeUserConfigDir)
       let process = launch.process
       try process.run()

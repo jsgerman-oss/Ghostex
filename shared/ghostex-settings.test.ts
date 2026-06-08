@@ -400,6 +400,30 @@ describe("normalizeghostexSettings", () => {
     });
   });
 
+  test("defaults bundled code-server panes to Ghostex-owned settings", () => {
+    /**
+     * CDXC:EditorPanes 2026-06-08-20:12:
+     * The bundled macOS code-server runtime should start with Ghostex-owned
+     * editor settings so new installs use Dark 2026 unless users explicitly
+     * opt into local VS Code settings.
+     */
+    expect(DEFAULT_ghostex_SETTINGS.codeServerLinkVscodeUserConfig).toBe(false);
+    expect(DEFAULT_ghostex_SETTINGS.codeServerUseVscodeInsidersUserConfig).toBe(false);
+    expect(normalizeghostexSettings({})).toMatchObject({
+      codeServerLinkVscodeUserConfig: false,
+      codeServerUseVscodeInsidersUserConfig: false,
+    });
+    expect(
+      normalizeghostexSettings({
+        codeServerLinkVscodeUserConfig: true,
+        codeServerUseVscodeInsidersUserConfig: true,
+      }),
+    ).toMatchObject({
+      codeServerLinkVscodeUserConfig: true,
+      codeServerUseVscodeInsidersUserConfig: true,
+    });
+  });
+
   test("keeps sidebar side as a selectable left or right setting", () => {
     /**
      * CDXC:SidebarPlacement 2026-05-06-17:32
