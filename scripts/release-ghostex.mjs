@@ -1009,6 +1009,7 @@ async function validateBuiltApp(version, buildVersion, entry) {
   await run(`codesign --verify --deep --strict --verbose=2 ${shellQuote(entry.appPath)}`);
   await run(`lipo -archs ${shellQuote(path.join(entry.appPath, "Contents/MacOS", config.appName))} | grep -Fx ${shellQuote(entry.arch)}`);
   await run(`lipo -archs ${shellQuote(path.join(entry.appPath, "Contents/Frameworks/Chromium Embedded Framework.framework/Chromium Embedded Framework"))} | grep -Fx ${shellQuote(entry.arch)}`);
+  await validateBundledCodeServerRuntime(entry);
 
   const info = await capture(`plutil -extract CFBundleShortVersionString raw ${shellQuote(path.join(entry.appPath, "Contents/Info.plist"))}`);
   const bundleVersion = await capture(`plutil -extract CFBundleVersion raw ${shellQuote(path.join(entry.appPath, "Contents/Info.plist"))}`);
@@ -1026,6 +1027,39 @@ async function validateBuiltApp(version, buildVersion, entry) {
   }
 
   await validateLidSleepHelperSigning(entry);
+}
+
+async function validateBundledCodeServerRuntime(entry) {
+  /*
+   CDXC:ReleaseAutomation 2026-06-08-12:17:
+   Release builds must ship code-server itself and the single shared Node 22 runtime under Contents/Resources/Web/code-server/lib/node. Validate that gxserver native-runtime metadata targets the same major and that the obsolete Web/bin/node duplicate is absent before DMG packaging.
+   */
+  const resourcesRoot = path.join(entry.appPath, "Contents", "Resources", "Web");
+  const codeServerRoot = path.join(resourcesRoot, "code-server");
+  const codeServerNode = path.join(codeServerRoot, "lib", "node");
+  const codeServerEntrypoint = path.join(codeServerRoot, "out", "node", "entry.js");
+  const codeServerVscodeEntrypoint = path.join(codeServerRoot, "lib", "vscode", "out", "server-main.js");
+  const obsoleteWebNode = path.join(resourcesRoot, "bin", "node");
+  const gxserverRuntimePath = path.join(resourcesRoot, "gxserver", "native-runtime.json");
+
+  for (const requiredPath of [codeServerRoot, codeServerNode, codeServerEntrypoint, codeServerVscodeEntrypoint, gxserverRuntimePath]) {
+    if (!existsSync(requiredPath)) {
+      throw new ReleaseError(`${entry.arch} app is missing bundled code-server runtime resource: ${requiredPath}`);
+    }
+  }
+  if (existsSync(obsoleteWebNode)) {
+    throw new ReleaseError(`${entry.arch} app still bundles duplicate Node at ${obsoleteWebNode}; gxserver must reuse Web/code-server/lib/node.`);
+  }
+  await run(`test -x ${shellQuote(codeServerNode)}`);
+  await run(`lipo -archs ${shellQuote(codeServerNode)} | grep -Fx ${shellQuote(entry.arch)}`);
+  const nodeMajor = await capture(`${shellQuote(codeServerNode)} -p 'process.versions.node.split(".")[0]'`);
+  if (nodeMajor !== "22") {
+    throw new ReleaseError(`${entry.arch} bundled code-server Node must be major 22, got ${nodeMajor}.`);
+  }
+  const nativeRuntime = JSON.parse(await readFile(gxserverRuntimePath, "utf8"));
+  if (nativeRuntime.nodeMajor !== 22 || !nativeRuntime.nativeModules?.includes?.("better-sqlite3")) {
+    throw new ReleaseError(`${entry.arch} gxserver native-runtime.json must target bundled Node 22 and include better-sqlite3.`);
+  }
 }
 
 async function validateLidSleepHelperSigning(entry) {

@@ -173,6 +173,8 @@ sign_nested_resource_code() {
 
 sign_nested_resource_code "$APP_PATH/Contents/Resources/Web/gxserver"
 sign_nested_resource_code "$APP_PATH/Contents/Resources/Web/t3code-server"
+# CDXC:CodeServerRuntime 2026-06-08-12:17: code-server now carries the app-bundled Node runtime and VS Code native modules under Web/code-server. Sign that resource tree before the outer app so release notarization and local native-module preflights validate the same executable payload gxserver reuses.
+sign_nested_resource_code "$APP_PATH/Contents/Resources/Web/code-server"
 
 sign_lid_sleep_helper() {
 	local helper_executable="$1"

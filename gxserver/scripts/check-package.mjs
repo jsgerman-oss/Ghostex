@@ -13,7 +13,10 @@ const appNativeNodeMajor = 22;
 
 /*
 CDXC:GxserverPackagingChecks 2026-05-30-15:49:
-Packaging checks must prove the server-only artifact is headless, uses system Node, contains the expected compiled daemon plus pinned zmx/zehn artifacts, and does not accidentally depend on macOS UI bundle resources.
+Packaging checks must prove the server-only artifact is headless, uses system Node, contains the expected compiled daemon plus pinned zmx/zehn/bd artifacts, and does not accidentally depend on macOS UI bundle resources.
+
+CDXC:GxserverPackagingChecks 2026-06-08-10:46:
+Project board first-open behavior depends on a bundled upstream Beads CLI. Treat `bin/bd` as a required package executable beside zmx and zehn so release artifacts cannot silently fall back to a missing PATH dependency.
 */
 await assertInsideDist(packageDir, "server package");
 await assertFile(path.join(packageDir, "dist", "src", "cli.js"));
@@ -24,6 +27,7 @@ await assertFile(path.join(packageDir, "package-lock.json"));
 await assertExecutable(path.join(packageDir, "bin", "gxserver"));
 await assertExecutable(path.join(packageDir, "bin", "zmx"));
 await assertExecutable(path.join(packageDir, "bin", "zehn"));
+await assertExecutable(path.join(packageDir, "bin", "bd"));
 await assertNoBundledNodeRuntime(packageDir);
 await assertNoMacosUiDependency(packageDir);
 const packageVersion = await assertPackageManifest(path.join(packageDir, "package.json"));
@@ -91,7 +95,10 @@ async function assertNativeRuntimeContract(root) {
   }
   /*
   CDXC:GxserverPackagingChecks 2026-06-06-22:00:
-  App packages include prebuilt better-sqlite3, so package checks must fail when the staged artifact lacks the Node ABI metadata macOS uses to choose a matching user-installed Node runtime.
+  App packages include prebuilt better-sqlite3, so package checks must fail when the staged artifact lacks the Node ABI metadata macOS uses to verify the bundled app Node runtime.
+
+  CDXC:GxserverPackagingChecks 2026-06-08-12:17:
+  Ghostex macOS reuses code-server's bundled Node 22 runtime for gxserver. Native runtime metadata must target that shared app-owned runtime so users are never asked to install Node before the sidebar can start gxserver.
   */
   const runtimePath = path.join(root, "native-runtime.json");
   await assertFile(runtimePath);

@@ -10,8 +10,16 @@ CLI_DIR="$SCRIPT_DIR/CLI"
 GHOSTTY_ROOT="${GHOSTTY_ROOT:-}"
 ZMX_ROOT="${ZMX_ROOT:-$REPO_ROOT/zmx}"
 ZEHN_ROOT="${ZEHN_ROOT:-$REPO_ROOT/zehn}"
+BEADS_ROOT="${BEADS_ROOT:-${GHOSTEX_BEADS_ROOT:-}}"
 TUI_ROOT="${TUI_ROOT:-$REPO_ROOT/tui}"
-GXSERVER_REQUIRED_NODE_MAJOR="22"
+CODE_SERVER_ROOT="${CODE_SERVER_ROOT:-${GHOSTEX_CODE_SERVER_ROOT:-$REPO_ROOT/code-server}}"
+CODE_SERVER_APP_NODE_VERSION="${CODE_SERVER_APP_NODE_VERSION:-}"
+if [[ -z "$CODE_SERVER_APP_NODE_VERSION" && -f "$CODE_SERVER_ROOT/.node-version" ]]; then
+	CODE_SERVER_APP_NODE_VERSION="$(tr -d '[:space:]' <"$CODE_SERVER_ROOT/.node-version")"
+fi
+CODE_SERVER_APP_NODE_VERSION="${CODE_SERVER_APP_NODE_VERSION:-22.22.1}"
+CODE_SERVER_APP_NODE_MAJOR="${CODE_SERVER_APP_NODE_VERSION%%.*}"
+CODE_SERVER_NODE_DOWNLOAD_BASE_URL="https://nodejs.org/dist/v$CODE_SERVER_APP_NODE_VERSION"
 
 # CDXC:LocalStartArchitecture 2026-06-08-08:42: Apple Silicon local builds must produce Apple-native app resources even when the caller's shell is translated by Rosetta and `uname -m` reports x86_64. Use the physical arm64 capability as the default and keep GHOSTEX_MACOS_ARCH=x86_64 as the explicit Intel build path.
 default_macos_arch() {
@@ -87,58 +95,92 @@ binary_supports_macos_arch() {
 	return 1
 }
 
-resolve_gxserver_node() {
-	local home
-	home="$HOME"
-	# CDXC:GxserverPackaging 2026-06-06-22:56: Node 22 can come from nodejs.org, nvm, mise, fnm, asdf, nodenv, Volta, or Homebrew. Release packaging should scan common direct install locations before failing so Homebrew is an example, not a requirement.
-	local candidates=(
-		"/opt/homebrew/opt/node@${GXSERVER_REQUIRED_NODE_MAJOR}/bin/node"
-		"/usr/local/opt/node@${GXSERVER_REQUIRED_NODE_MAJOR}/bin/node"
-		"/opt/homebrew/bin/node"
-		"/usr/local/bin/node"
-		"$home/.volta/bin/node"
-		"$home/.local/share/mise/shims/node"
-		"$home/.asdf/shims/node"
-		"$home/.nodenv/shims/node"
-		"$home/.local/bin/node"
-	)
-	local candidate version major
-	for candidate in \
-		"$home"/.nvm/versions/node/v"${GXSERVER_REQUIRED_NODE_MAJOR}".*/bin/node \
-		"$home"/.nvm/current/bin/node \
-		"$home"/.local/share/mise/installs/node/"${GXSERVER_REQUIRED_NODE_MAJOR}".*/bin/node \
-		"$home"/.local/share/mise/installs/node/v"${GXSERVER_REQUIRED_NODE_MAJOR}".*/bin/node \
-		"$home"/.asdf/installs/nodejs/"${GXSERVER_REQUIRED_NODE_MAJOR}".*/bin/node \
-		"$home"/.nodenv/versions/"${GXSERVER_REQUIRED_NODE_MAJOR}".*/bin/node \
-		"$home"/.fnm/node-versions/"${GXSERVER_REQUIRED_NODE_MAJOR}".*/installation/bin/node \
-		"$home"/.fnm/node-versions/v"${GXSERVER_REQUIRED_NODE_MAJOR}".*/installation/bin/node \
-		"$home"/.local/share/fnm/node-versions/"${GXSERVER_REQUIRED_NODE_MAJOR}".*/installation/bin/node \
-		"$home"/.local/share/fnm/node-versions/v"${GXSERVER_REQUIRED_NODE_MAJOR}".*/installation/bin/node \
-		"$home"/Library/Application\ Support/fnm/node-versions/"${GXSERVER_REQUIRED_NODE_MAJOR}".*/installation/bin/node \
-		"$home"/Library/Application\ Support/fnm/node-versions/v"${GXSERVER_REQUIRED_NODE_MAJOR}".*/installation/bin/node \
-		"$home"/.volta/tools/image/node/"${GXSERVER_REQUIRED_NODE_MAJOR}".*/bin/node; do
-		candidates+=("$candidate")
-	done
-	for candidate in "${candidates[@]}"; do
-		if [[ -x "$candidate" ]]; then
-			version="$("$candidate" -p 'process.versions.node' 2>/dev/null || true)"
-			major="${version%%.*}"
-			if [[ "$major" =~ ^[0-9]+$ && "$major" -eq "$GXSERVER_REQUIRED_NODE_MAJOR" ]]; then
-				printf '%s\n' "$candidate"
-				return 0
-			fi
-		fi
-	done
-	candidate="$(command -v node || true)"
-	if [[ -n "$candidate" ]]; then
-		version="$("$candidate" -p 'process.versions.node' 2>/dev/null || true)"
-		major="${version%%.*}"
-		if [[ "$major" =~ ^[0-9]+$ && "$major" -eq "$GXSERVER_REQUIRED_NODE_MAJOR" ]]; then
-			printf '%s\n' "$candidate"
-			return 0
-		fi
+path_identity() {
+	local candidate="$1"
+	if [[ -e "$candidate" ]]; then
+		stat -f '%m:%z:%N' "$candidate"
+	else
+		printf 'missing:%s\n' "$candidate"
 	fi
+}
+
+code_server_node_distribution_arch() {
+	case "$GHOSTEX_MACOS_ARCH" in
+		arm64)
+			printf 'arm64\n'
+			;;
+		x86_64)
+			printf 'x64\n'
+			;;
+	esac
+}
+
+code_server_node_distribution_sha256() {
+	local distribution_arch="$1"
+	if [[ "$CODE_SERVER_APP_NODE_VERSION" == "22.22.1" ]]; then
+		case "$distribution_arch" in
+			arm64)
+				printf '261da057fb25ff2912dd6abb7842fc915ddf7947a2cb3c8cce90875d2b9bb667\n'
+				return 0
+				;;
+			x64)
+				printf '91227fa5a3bfd988be1953c0384ceb98bd69a6a377a7416c40eb39779d6ab17f\n'
+				return 0
+				;;
+		esac
+	fi
+	echo "Unsupported code-server Node distribution: v$CODE_SERVER_APP_NODE_VERSION darwin-$distribution_arch" >&2
+	echo "Update code_server_node_distribution_sha256 before changing code-server/.node-version." >&2
 	return 1
+}
+
+verify_sha256_file() {
+	local file_path="$1"
+	local expected_sha256="$2"
+	local actual_sha256
+	actual_sha256="$(shasum -a 256 "$file_path" | awk '{print $1}')"
+	[[ "$actual_sha256" == "$expected_sha256" ]]
+}
+
+prepare_code_server_app_node_runtime() {
+	local distribution_arch package_name cache_root extract_root tarball_path expected_sha256 node_bin
+	distribution_arch="$(code_server_node_distribution_arch)"
+	package_name="node-v$CODE_SERVER_APP_NODE_VERSION-darwin-$distribution_arch"
+	cache_root="$BUILD_CACHE_DIR/code-server-node-runtime"
+	extract_root="$cache_root/$package_name"
+	tarball_path="$cache_root/$package_name.tar.xz"
+	expected_sha256="$(code_server_node_distribution_sha256 "$distribution_arch")"
+	node_bin="$extract_root/bin/node"
+
+	# CDXC:CodeServerRuntime 2026-06-08-12:17: code-server owns Ghostex's app-bundled Node runtime. Cache the official per-architecture Node 22 distribution for build-time npm/node-gyp work, then stage the executable inside Web/code-server/lib/node so gxserver and code-server share one bundled Node instead of shipping duplicate runtimes.
+	if [[ -x "$node_bin" ]] &&
+		"$node_bin" -e "process.exit(process.versions.node === '$CODE_SERVER_APP_NODE_VERSION' ? 0 : 1)" >/dev/null 2>&1 &&
+		binary_supports_macos_arch "$node_bin" "$GHOSTEX_MACOS_ARCH"; then
+		printf '%s\n' "$node_bin"
+		return 0
+	fi
+
+	mkdir -p "$cache_root"
+	if [[ ! -f "$tarball_path" ]] || ! verify_sha256_file "$tarball_path" "$expected_sha256"; then
+		echo "Downloading Node $CODE_SERVER_APP_NODE_VERSION for $GHOSTEX_MACOS_ARCH code-server runtime..." >&2
+		curl -fsSL "$CODE_SERVER_NODE_DOWNLOAD_BASE_URL/$package_name.tar.xz" -o "$tarball_path"
+	fi
+	if ! verify_sha256_file "$tarball_path" "$expected_sha256"; then
+		echo "Downloaded Node runtime checksum mismatch: $tarball_path" >&2
+		exit 1
+	fi
+
+	rm -rf "$extract_root"
+	tar -xJf "$tarball_path" -C "$cache_root"
+	if [[ ! -x "$node_bin" ]]; then
+		echo "Extracted Node runtime is missing executable: $node_bin" >&2
+		exit 1
+	fi
+	if ! binary_supports_macos_arch "$node_bin" "$GHOSTEX_MACOS_ARCH"; then
+		echo "Extracted Node runtime does not contain $GHOSTEX_MACOS_ARCH: $node_bin" >&2
+		exit 1
+	fi
+	printf '%s\n' "$node_bin"
 }
 
 node_supports_t3code() {
@@ -187,6 +229,188 @@ resolve_t3code_root() {
 		(cd "$REPO_ROOT/t3code" && pwd)
 		return 0
 	fi
+	return 1
+}
+
+resolve_code_server_root() {
+	local configured="${CODE_SERVER_ROOT:-${GHOSTEX_CODE_SERVER_ROOT:-}}"
+	if [[ -n "$configured" ]]; then
+		if [[ -f "$configured/package.json" ]]; then
+			(cd "$configured" && pwd)
+			return 0
+		fi
+		return 1
+	fi
+	if [[ -f "$REPO_ROOT/code-server/package.json" ]]; then
+		(cd "$REPO_ROOT/code-server" && pwd)
+		return 0
+	fi
+	return 1
+}
+
+code_server_ci_arch() {
+	case "$GHOSTEX_MACOS_ARCH" in
+		arm64)
+			printf 'arm64\n'
+			;;
+		x86_64)
+			printf 'amd64\n'
+			;;
+	esac
+}
+
+code_server_vscode_target() {
+	case "$GHOSTEX_MACOS_ARCH" in
+		arm64)
+			printf 'darwin-arm64\n'
+			;;
+		x86_64)
+			printf 'darwin-x64\n'
+			;;
+	esac
+}
+
+code_server_release_version() {
+	"$CODE_SERVER_NODE_BIN" -e "const fs=require('fs'); const pkg=JSON.parse(fs.readFileSync(process.argv[1], 'utf8')); process.stdout.write(String(pkg.version || '0.0.0'));" "$CODE_SERVER_ROOT/package.json"
+}
+
+ensure_code_server_payload() {
+	local vscode_target="$1"
+	local vscode_release_root="$CODE_SERVER_ROOT/lib/vscode-reh-web-$vscode_target"
+	if [[ ! -f "$CODE_SERVER_ROOT/package.json" ]]; then
+		echo "code-server source is missing: $CODE_SERVER_ROOT" >&2
+		echo "Initialize the code-server submodule before building Ghostex." >&2
+		exit 1
+	fi
+	if [[ ! -d "$CODE_SERVER_ROOT/node_modules" ]]; then
+		echo "code-server node_modules are missing. Run: npm --prefix code-server install" >&2
+		exit 1
+	fi
+	if [[ ! -f "$CODE_SERVER_ROOT/out/node/entry.js" ]]; then
+		(
+			cd "$CODE_SERVER_ROOT"
+			env PATH="$CODE_SERVER_NODE_DIR:$PATH" "$CODE_SERVER_NPM_BIN" run build
+		)
+	fi
+	if [[ ! -f "$CODE_SERVER_ROOT/lib/vscode/package.json" ]]; then
+		echo "code-server VS Code submodule is missing. Run: git -C code-server submodule update --init lib/vscode" >&2
+		exit 1
+	fi
+	if [[ ! -d "$CODE_SERVER_ROOT/lib/vscode/node_modules" ]]; then
+		echo "code-server VS Code node_modules are missing. Run: npm --prefix code-server/lib/vscode install" >&2
+		exit 1
+	fi
+	if [[ ! -f "$vscode_release_root/out/server-main.js" ]]; then
+		# CDXC:CodeServerRuntime 2026-06-08-12:17: Release and installed app builds must bundle code-server itself, not depend on a source checkout published through LaunchServices. Build code-server's upstream darwin VS Code web-server payload per architecture when it is absent, then stage it under Web/code-server.
+		(
+			cd "$CODE_SERVER_ROOT"
+			env \
+				PATH="$CODE_SERVER_NODE_DIR:$PATH" \
+				OS=macos \
+				ARCH="$(code_server_ci_arch)" \
+				VSCODE_TARGET="$vscode_target" \
+				VERSION="$(code_server_release_version)" \
+				"$CODE_SERVER_NPM_BIN" run build:vscode
+		)
+	fi
+	if [[ ! -f "$vscode_release_root/out/server-main.js" ]]; then
+		echo "code-server VS Code release payload is missing: $vscode_release_root/out/server-main.js" >&2
+		exit 1
+	fi
+}
+
+package_code_server_if_needed() {
+	local target_dir="$WEB_DIR/code-server"
+	local vscode_target package_digest node_identity npm_version vscode_release_root commit package_version
+	vscode_target="$(code_server_vscode_target)"
+	ensure_code_server_payload "$vscode_target"
+	vscode_release_root="$CODE_SERVER_ROOT/lib/vscode-reh-web-$vscode_target"
+	node_identity="$("$CODE_SERVER_NODE_BIN" -p 'process.version + ":" + process.versions.modules')"
+	npm_version="$("$CODE_SERVER_NPM_BIN" --version 2>/dev/null || true)"
+	package_version="$(code_server_release_version)"
+	commit="$(git -C "$CODE_SERVER_ROOT" rev-parse HEAD 2>/dev/null || printf 'development')"
+	package_digest="$(fingerprint_inputs \
+		--value "code-server-package-v1" \
+		--value "arch=$GHOSTEX_MACOS_ARCH" \
+		--value "target=$vscode_target" \
+		--value "node=$node_identity" \
+		--value "npm=$npm_version" \
+		--value "commit=$commit" \
+		--value "entry=$(path_identity "$CODE_SERVER_ROOT/out/node/entry.js")" \
+		--value "vscode=$(path_identity "$vscode_release_root/out/server-main.js")" \
+		--path "$CODE_SERVER_ROOT/package.json" \
+		--path "$CODE_SERVER_ROOT/package-lock.json" \
+		--path "$CODE_SERVER_ROOT/.node-version" \
+		--path "$CODE_SERVER_ROOT/src/browser")"
+	# CDXC:CodeServerRuntime 2026-06-08-12:17: The app bundle must contain a self-contained code-server runtime at Web/code-server and the single shared Node executable at Web/code-server/lib/node. gxserver rebuilds better-sqlite3 against this same Node, so missing code-server resources are build failures instead of installed-user Node prompts.
+	if cache_matches "code-server-package-$GHOSTEX_MACOS_ARCH" "$package_digest" "$target_dir/out/node/entry.js" "$target_dir/lib/vscode/out/server-main.js" "$target_dir/lib/node" "$target_dir/node_modules"; then
+		echo "code-server package is current; skipping package rebuild."
+		return 0
+	fi
+
+	rm -rf "$target_dir"
+	mkdir -p "$target_dir"
+	rsync -a --delete "$CODE_SERVER_ROOT/out/" "$target_dir/out/"
+	mkdir -p "$target_dir/src/browser"
+	if [[ -d "$CODE_SERVER_ROOT/src/browser/media" ]]; then
+		rsync -a --delete "$CODE_SERVER_ROOT/src/browser/media/" "$target_dir/src/browser/media/"
+	fi
+	if [[ -d "$CODE_SERVER_ROOT/src/browser/pages" ]]; then
+		rsync -a --delete "$CODE_SERVER_ROOT/src/browser/pages/" "$target_dir/src/browser/pages/"
+	fi
+	for browser_asset in robots.txt security.txt; do
+		if [[ -f "$CODE_SERVER_ROOT/src/browser/$browser_asset" ]]; then
+			cp "$CODE_SERVER_ROOT/src/browser/$browser_asset" "$target_dir/src/browser/$browser_asset"
+		fi
+	done
+	"$CODE_SERVER_NODE_BIN" -e "const fs=require('fs'); const src=JSON.parse(fs.readFileSync(process.argv[1], 'utf8')); delete src.scripts; delete src.jest; delete src.devDependencies; src.version=process.argv[3]; src.commit=process.argv[4]; fs.writeFileSync(process.argv[2], JSON.stringify(src, null, 2) + '\n');" "$CODE_SERVER_ROOT/package.json" "$target_dir/package.json" "$package_version" "$commit"
+	cp "$CODE_SERVER_ROOT/package-lock.json" "$target_dir/package-lock.json"
+	if [[ -f "$CODE_SERVER_ROOT/.node-version" ]]; then
+		cp "$CODE_SERVER_ROOT/.node-version" "$target_dir/.node-version"
+	fi
+	for root_asset in LICENSE README.md ThirdPartyNotices.txt; do
+		if [[ -f "$CODE_SERVER_ROOT/$root_asset" ]]; then
+			cp "$CODE_SERVER_ROOT/$root_asset" "$target_dir/$root_asset"
+		fi
+	done
+	mkdir -p "$target_dir/bin"
+	cp "$CODE_SERVER_ROOT/ci/build/code-server.sh" "$target_dir/bin/code-server"
+	chmod 755 "$target_dir/bin/code-server"
+	rsync -a --delete \
+		--exclude '.cache/' \
+		--exclude '.bin/' \
+		"$CODE_SERVER_ROOT/node_modules/" "$target_dir/node_modules/"
+	(
+		cd "$target_dir"
+		env PATH="$CODE_SERVER_NODE_DIR:$PATH" "$CODE_SERVER_NPM_BIN" prune --omit=dev --ignore-scripts --no-audit --no-fund
+	)
+	mkdir -p "$target_dir/lib"
+	rsync -a --delete --exclude '/node' "$vscode_release_root/" "$target_dir/lib/vscode/"
+	cp "$CODE_SERVER_NODE_BIN" "$target_dir/lib/node"
+	chmod 755 "$target_dir/lib/node"
+	"$target_dir/lib/node" "$target_dir/out/node/entry.js" --version >/dev/null
+	write_cache_stamp "code-server-package-$GHOSTEX_MACOS_ARCH" "$package_digest"
+}
+
+resolve_beads_root() {
+	local configured="${BEADS_ROOT:-${GHOSTEX_BEADS_ROOT:-}}"
+	local candidate
+	if [[ -n "$configured" ]]; then
+		if [[ -f "$configured/go.mod" && -d "$configured/cmd/bd" ]]; then
+			(cd "$configured" && pwd)
+			return 0
+		fi
+		return 1
+	fi
+	# CDXC:ProjectBoardBeads 2026-06-08-10:46: Ghostex bundles upstream Beads without forking it. Prefer an explicit BEADS_ROOT for release automation, and keep the owner's local reference checkout as the default developer source for periodic pinned Beads updates.
+	for candidate in \
+		"$REPO_ROOT/beads" \
+		"$HOME/dev/_references/beads"; do
+		if [[ -f "$candidate/go.mod" && -d "$candidate/cmd/bd" ]]; then
+			(cd "$candidate" && pwd)
+			return 0
+		fi
+	done
 	return 1
 }
 
@@ -311,15 +535,98 @@ build_zehn_if_needed() {
 	write_cache_stamp "zehn-$GHOSTEX_MACOS_ARCH" "$build_digest"
 }
 
+build_beads_if_needed() {
+	local output_path="$REPO_ROOT/build/$GHOSTEX_MACOS_ARCH/beads/bd"
+	local go_bin go_version go_mod_version goarch macos_target build_digest commit short_commit branch
+	local -a build_env
+	go_bin="${BEADS_GO:-$(command -v go || true)}"
+	if [[ -z "$go_bin" ]]; then
+		cat >&2 <<EOF
+Go is required to build bundled Beads for the Project board.
+
+Install Go, or set BEADS_GO to the Go executable that should build:
+  BEADS_GO=/path/to/go bun run start
+EOF
+		exit 1
+	fi
+	go_version="$("$go_bin" version 2>/dev/null || true)"
+	go_mod_version="$(sed -n 's/^go //p' "$BEADS_ROOT/go.mod" | head -1)"
+	case "$GHOSTEX_MACOS_ARCH" in
+		arm64)
+			goarch="arm64"
+			macos_target="15.0"
+			;;
+		x86_64)
+			goarch="amd64"
+			macos_target="13.0"
+			;;
+	esac
+	build_digest="$(fingerprint_inputs \
+		--value "beads-build-v1" \
+		--value "target=darwin/$goarch" \
+		--value "macos_target=$macos_target" \
+		--value "go=$go_bin:$go_version" \
+		--path "$BEADS_ROOT/cmd" \
+		--path "$BEADS_ROOT/internal" \
+		--path "$BEADS_ROOT/format" \
+		--path "$BEADS_ROOT/plugins" \
+		--path "$BEADS_ROOT/beads.go" \
+		--path "$BEADS_ROOT/beads_nocgo.go" \
+		--path "$BEADS_ROOT/go.mod" \
+		--path "$BEADS_ROOT/go.sum")"
+	if cache_matches "beads-$GHOSTEX_MACOS_ARCH" "$build_digest" "$output_path"; then
+		if binary_supports_macos_arch "$output_path" "$GHOSTEX_MACOS_ARCH"; then
+			echo "bd is current; skipping Beads build."
+			return 0
+		fi
+		echo "bd cache is stale for $GHOSTEX_MACOS_ARCH; rebuilding Beads artifact."
+	fi
+
+	commit="$(git -C "$BEADS_ROOT" rev-parse HEAD 2>/dev/null || true)"
+	short_commit="$(git -C "$BEADS_ROOT" rev-parse --short HEAD 2>/dev/null || true)"
+	branch="$(git -C "$BEADS_ROOT" rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
+	if [[ "$branch" == "HEAD" ]]; then
+		branch=""
+	fi
+	mkdir -p "$(dirname "$output_path")"
+	build_env=(
+		env
+		CGO_ENABLED=1
+		GOOS=darwin
+		GOARCH="$goarch"
+		CC=clang
+		CGO_CFLAGS="-arch $GHOSTEX_MACOS_ARCH -mmacosx-version-min=$macos_target"
+		CGO_LDFLAGS="-arch $GHOSTEX_MACOS_ARCH -mmacosx-version-min=$macos_target"
+	)
+	if [[ -n "$go_mod_version" ]]; then
+		build_env+=(GOTOOLCHAIN="go$go_mod_version")
+	fi
+	(
+		cd "$BEADS_ROOT"
+		"${build_env[@]}" "$go_bin" build \
+			-tags gms_pure_go \
+			-trimpath \
+			-ldflags "-s -w -X main.Build=${short_commit:-dev} -X main.Commit=$commit -X main.Branch=$branch" \
+			-o "$output_path" \
+			./cmd/bd
+	)
+	/usr/bin/codesign -s - -f "$output_path" 2>/dev/null || true
+	write_cache_stamp "beads-$GHOSTEX_MACOS_ARCH" "$build_digest"
+}
+
 package_gxserver_if_needed() {
 	local package_dir="$REPO_ROOT/gxserver/dist/server-package"
 	local target_dir="$WEB_DIR/gxserver"
 	local package_digest
-	# CDXC:GxserverPackaging 2026-05-30-15:49: The macOS app bundles the same gxserver server package used by standalone installs. The app only starts/reuses gxserver through system Node and does not own shutdown, so app resources must include compiled gxserver JS plus pinned zmx/zehn artifacts without bundling Node or Beads.
+	# CDXC:GxserverPackaging 2026-05-30-15:49: The macOS app bundles the same gxserver server package used by standalone installs. The app only starts/reuses gxserver through its app-owned Node runtime and does not own shutdown, so app resources must include compiled gxserver JS plus pinned zmx/zehn/bd artifacts.
 	#
-	# CDXC:LocalStartFast 2026-06-07-16:23: gxserver packaging copies production node_modules and rebuilds native better-sqlite3 for the selected Node ABI. Skip that work when gxserver runtime sources, package metadata, packager code, bundled zmx/zehn binaries, and the selected Node ABI are unchanged.
+	# CDXC:LocalStartFast 2026-06-07-16:23: gxserver packaging copies production node_modules and rebuilds native better-sqlite3 for the selected Node ABI. Skip that work when gxserver runtime sources, package metadata, packager code, bundled zmx/zehn/bd binaries, and the selected Node ABI are unchanged.
+	#
+	# CDXC:GxserverPackaging 2026-06-08-12:17: gxserver native modules are ABI-coupled to the Node runtime bundled inside Web/code-server. Include Web/code-server/lib/node in the package fingerprint so a code-server Node patch update rebuilds better-sqlite3 and refreshes native-runtime.json before the app launches.
+	#
+	# CDXC:ProjectBoardBeads 2026-06-08-10:46: Package the full upstream Beads CLI with gxserver so Project/Kanban opens without PATH setup. The app build stages exactly one `bd` binary for GHOSTEX_MACOS_ARCH, keeping arm and Intel app artifacts arch-specific instead of shipping a universal Beads binary.
 	package_digest="$(fingerprint_inputs \
-		--value "gxserver-package-v1" \
+		--value "gxserver-package-v3" \
 		--value "arch=$GHOSTEX_MACOS_ARCH" \
 		--value "node=$GXSERVER_NODE_BIN:$GXSERVER_NODE_VERSION:$GXSERVER_NODE_MODULE_VERSION" \
 		--path "$REPO_ROOT/gxserver/src" \
@@ -328,8 +635,10 @@ package_gxserver_if_needed() {
 		--path "$REPO_ROOT/gxserver/package-lock.json" \
 		--path "$REPO_ROOT/gxserver/tsconfig.json" \
 		--path "$REPO_ROOT/gxserver/scripts/package-gxserver.mjs" \
+		--path "$WEB_DIR/code-server/lib/node" \
 		--path "$WEB_DIR/bin/zmx" \
-		--path "$WEB_DIR/bin/zehn")"
+		--path "$WEB_DIR/bin/zehn" \
+		--path "$WEB_DIR/bin/bd")"
 	if cache_matches "gxserver-package-$GHOSTEX_MACOS_ARCH" "$package_digest" "$package_dir/build-identity.json" "$target_dir/build-identity.json" "$target_dir/native-runtime.json"; then
 		echo "gxserver package is current; skipping package rebuild."
 		return 0
@@ -339,57 +648,45 @@ package_gxserver_if_needed() {
 		cd "$REPO_ROOT/gxserver"
 		echo "Packaging gxserver with $GXSERVER_NODE_BIN ($GXSERVER_NODE_VERSION, NODE_MODULE_VERSION $GXSERVER_NODE_MODULE_VERSION)"
 		env PATH="$GXSERVER_NODE_DIR:$PATH" "$GXSERVER_NPM_BIN" run build
-		env PATH="$GXSERVER_NODE_DIR:$PATH" "$GXSERVER_NPM_BIN" run package:app -- --zmx-bin "$WEB_DIR/bin/zmx" --zehn-bin "$WEB_DIR/bin/zehn" --native-node "$GXSERVER_NODE_BIN" --native-npm "$GXSERVER_NPM_BIN"
+		env PATH="$GXSERVER_NODE_DIR:$PATH" "$GXSERVER_NPM_BIN" run package:app -- --zmx-bin "$WEB_DIR/bin/zmx" --zehn-bin "$WEB_DIR/bin/zehn" --bd-bin "$WEB_DIR/bin/bd" --native-node "$GXSERVER_NODE_BIN" --native-npm "$GXSERVER_NPM_BIN"
 	)
 	rm -rf "$target_dir"
 	cp -R "$package_dir" "$target_dir"
 	write_cache_stamp "gxserver-package-$GHOSTEX_MACOS_ARCH" "$package_digest"
 }
 
-# CDXC:GxserverPackaging 2026-06-01-16:11: The packaged gxserver native modules must be built with the same system Node that GxserverClient will use at runtime. Rebuild better-sqlite3 through that Node/npm before staging app resources so local starts do not ship a Node-ABI mismatch into /Applications/Ghostex.app.
-#
-# CDXC:GxserverPackaging 2026-06-06-22:00: Ghostex should not bundle Node for gxserver, so app releases pin the prebuilt better-sqlite3 ABI to Node 22 LTS and require users to install a matching system Node instead of accepting whichever newer Node happens to be first on PATH.
-GXSERVER_NODE_BIN="${GXSERVER_NODE:-$(resolve_gxserver_node || true)}"
-if [[ -z "$GXSERVER_NODE_BIN" ]]; then
+# CDXC:CodeServerRuntime 2026-06-08-12:17: code-server is the only bundled Node owner in the macOS app. Build code-server with Node 22, stage that runtime inside Web/code-server/lib/node, and make gxserver rebuild better-sqlite3 against the same executable so users never see a missing system Node prompt.
+CODE_SERVER_NODE_BIN="$(prepare_code_server_app_node_runtime)"
+CODE_SERVER_NODE_DIR="$(cd "$(dirname "$CODE_SERVER_NODE_BIN")" && pwd)"
+CODE_SERVER_NPM_BIN="$CODE_SERVER_NODE_DIR/npm"
+if [[ ! -x "$CODE_SERVER_NPM_BIN" ]]; then
+	echo "npm is required in the cached code-server Node distribution: $CODE_SERVER_NPM_BIN" >&2
+	exit 1
+fi
+CODE_SERVER_ROOT="$(resolve_code_server_root || true)"
+if [[ -z "$CODE_SERVER_ROOT" ]]; then
 	cat >&2 <<EOF
-Node.js ${GXSERVER_REQUIRED_NODE_MAJOR} LTS is required to package gxserver for the macOS app.
+code-server source is required to package the embedded Source-tab runtime.
 
-Install Node ${GXSERVER_REQUIRED_NODE_MAJOR} LTS from https://nodejs.org/en/download or with nvm, mise, fnm, asdf, nodenv, Volta, or Homebrew.
-
-Examples:
-  nvm install ${GXSERVER_REQUIRED_NODE_MAJOR}
-  mise install node@${GXSERVER_REQUIRED_NODE_MAJOR}
-  brew install node@${GXSERVER_REQUIRED_NODE_MAJOR}
-
-If your Node manager stores runtimes somewhere custom, set GXSERVER_NODE to the Node ${GXSERVER_REQUIRED_NODE_MAJOR} executable.
+Set CODE_SERVER_ROOT or GHOSTEX_CODE_SERVER_ROOT to a code-server checkout, or place it at:
+  $REPO_ROOT/code-server
 EOF
 	exit 1
 fi
-GXSERVER_NODE_DIR="$(cd "$(dirname "$GXSERVER_NODE_BIN")" && pwd)"
-GXSERVER_NPM_BIN="${GXSERVER_NPM:-$GXSERVER_NODE_DIR/npm}"
-if [[ ! -x "$GXSERVER_NPM_BIN" ]]; then
-	GXSERVER_NPM_BIN="$(PATH="$GXSERVER_NODE_DIR:$PATH" command -v npm || true)"
-fi
-if [[ -z "$GXSERVER_NPM_BIN" || ! -x "$GXSERVER_NPM_BIN" ]]; then
-	echo "npm is required beside the selected gxserver Node runtime: $GXSERVER_NODE_BIN" >&2
+CODE_SERVER_NODE_VERSION="$("$CODE_SERVER_NODE_BIN" -p 'process.version')"
+CODE_SERVER_NODE_MAJOR="$("$CODE_SERVER_NODE_BIN" -p 'process.versions.node.split(".")[0]')"
+if [[ "$CODE_SERVER_NODE_MAJOR" != "$CODE_SERVER_APP_NODE_MAJOR" ]]; then
+	echo "Ghostex app code-server packaging must use bundled Node.js $CODE_SERVER_APP_NODE_MAJOR, got $CODE_SERVER_NODE_VERSION at $CODE_SERVER_NODE_BIN." >&2
 	exit 1
 fi
+
+GXSERVER_NODE_BIN="$CODE_SERVER_NODE_BIN"
+GXSERVER_NODE_DIR="$CODE_SERVER_NODE_DIR"
+GXSERVER_NPM_BIN="$CODE_SERVER_NPM_BIN"
 GXSERVER_NODE_VERSION="$("$GXSERVER_NODE_BIN" -p 'process.version')"
 GXSERVER_NODE_MAJOR="$("$GXSERVER_NODE_BIN" -p 'process.versions.node.split(".")[0]')"
-if [[ "$GXSERVER_NODE_MAJOR" != "$GXSERVER_REQUIRED_NODE_MAJOR" ]]; then
-	cat >&2 <<EOF
-Ghostex app gxserver packaging must use Node.js ${GXSERVER_REQUIRED_NODE_MAJOR} LTS so bundled native modules match the runtime users are asked to install.
-
-Selected Node:
-  $GXSERVER_NODE_BIN
-  $GXSERVER_NODE_VERSION
-
-Install a matching runtime or set GXSERVER_NODE explicitly:
-  nvm install ${GXSERVER_REQUIRED_NODE_MAJOR}
-  mise install node@${GXSERVER_REQUIRED_NODE_MAJOR}
-  brew install node@${GXSERVER_REQUIRED_NODE_MAJOR}
-  GXSERVER_NODE=/path/to/node-${GXSERVER_REQUIRED_NODE_MAJOR}/bin/node bun run start
-EOF
+if [[ "$GXSERVER_NODE_MAJOR" != "$CODE_SERVER_APP_NODE_MAJOR" ]]; then
+	echo "Ghostex app gxserver packaging must use code-server's bundled Node.js $CODE_SERVER_APP_NODE_MAJOR, got $GXSERVER_NODE_VERSION at $GXSERVER_NODE_BIN." >&2
 	exit 1
 fi
 GXSERVER_NODE_MODULE_VERSION="$("$GXSERVER_NODE_BIN" -p 'process.versions.modules')"
@@ -419,6 +716,16 @@ T3 Code source is required to package the embedded runtime.
 
 Set T3CODE_ROOT or VSMUX_T3CODE_REPO_ROOT to a t3code checkout, or place it at:
   $REPO_ROOT/t3code
+EOF
+	exit 1
+fi
+BEADS_ROOT="$(resolve_beads_root || true)"
+if [[ -z "$BEADS_ROOT" ]]; then
+	cat >&2 <<EOF
+Beads source is required to package the embedded Project board CLI.
+
+Set BEADS_ROOT or GHOSTEX_BEADS_ROOT to a Beads checkout, or place it at:
+  $HOME/dev/_references/beads
 EOF
 	exit 1
 fi
@@ -635,7 +942,7 @@ rm -rf "$WEB_DIR/bin"
 mkdir -p "$WEB_DIR/bin"
 cp "$ZMX_ROOT/zig-out/bin/zmx" "$WEB_DIR/bin/zmx"
 chmod 755 "$WEB_DIR/bin/zmx"
-# CDXC:GhostexTui 2026-06-07-12:13: The public installed `gx` command must open the TUI from any working directory, so the macOS app bundle ships the arch-specific Ghostex TUI beside pinned zmx/zehn tools under Web/bin instead of relying on a source checkout or PATH fallback.
+# CDXC:GhostexTui 2026-06-07-12:13: The public installed `gx` command must open the TUI from any working directory, so the macOS app bundle ships the arch-specific Ghostex TUI beside pinned zmx/zehn/bd tools under Web/bin instead of relying on a source checkout or PATH fallback.
 if [[ ! -f "$TUI_ROOT/Cargo.toml" ]]; then
 	cat >&2 <<EOF
 Ghostex TUI source is missing:
@@ -721,6 +1028,10 @@ esac
 build_zehn_if_needed
 cp "$ZEHN_ROOT/zig-out/bin/zehn" "$WEB_DIR/bin/zehn"
 chmod 755 "$WEB_DIR/bin/zehn"
+build_beads_if_needed
+cp "$REPO_ROOT/build/$GHOSTEX_MACOS_ARCH/beads/bd" "$WEB_DIR/bin/bd"
+chmod 755 "$WEB_DIR/bin/bd"
+package_code_server_if_needed
 package_gxserver_if_needed
 package_t3code_server "$T3CODE_ROOT" "$T3CODE_NODE_BIN" "$T3CODE_NPM_BIN"
 mkdir -p "$CLI_DIR/node_modules"
@@ -770,7 +1081,7 @@ bun "$REPO_ROOT/scripts/build-native-web-bundles.mjs" \
 	"$REPO_ROOT/native/sidebar/tasks-placeholder.tsx" \
 	"$REPO_ROOT/native/sidebar/pet-host.tsx"
 
-WEB_DIR="$WEB_DIR" node <<'JS'
+WEB_DIR="$WEB_DIR" "$GXSERVER_NODE_BIN" <<'JS'
 const { existsSync, readFileSync, writeFileSync } = require("node:fs");
 const { join } = require("node:path");
 
@@ -1031,15 +1342,6 @@ copy_cef_runtime() {
 </plist>
 EOF_HELPER
 		done
-}
-
-path_identity() {
-	local candidate="$1"
-	if [[ -e "$candidate" ]]; then
-		stat -f '%m:%z:%N' "$candidate"
-	else
-		printf 'missing:%s\n' "$candidate"
-	fi
 }
 
 local_adhoc_build_signing() {

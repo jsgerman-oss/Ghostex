@@ -23,7 +23,13 @@ const homebrewDir = path.resolve(args.homebrewDir ?? defaultHomebrewDir);
 
 /*
 CDXC:GxserverPackaging 2026-05-30-15:49:
-App-bundled gxserver and standalone/server-only gxserver must be the same compiled daemon package. The package stage lives under gxserver/dist, uses system Node through a launcher, bundles pinned zmx/zehn artifacts, and never includes Beads or a private Node runtime.
+App-bundled gxserver and standalone/server-only gxserver must be the same compiled daemon package. The package stage lives under gxserver/dist, keeps the server tarball on system Node through a launcher, and bundles pinned zmx/zehn/bd artifacts.
+
+CDXC:GxserverPackaging 2026-06-08-12:17:
+The macOS app bundles one Node 22 runtime inside Web/code-server/lib/node. gxserver records that shared code-server runtime ABI for native modules while the reusable server tarball keeps using system Node.
+
+CDXC:GxserverPackaging 2026-06-08-10:46:
+Project board must work in packaged Ghostex without requiring a separate Beads install. Package the full pinned upstream `bd` binary beside zmx and zehn so arm and Intel app builds can ship the matching Beads CLI without a Ghostex fork.
 */
 await assertInsideDist(packageDir, "server package");
 if (args.generateHomebrew) {
@@ -33,6 +39,7 @@ if (args.generateHomebrew) {
 await assertBuilt();
 const zmxBin = await resolveToolBin("zmx", args.zmxBin);
 const zehnBin = await resolveToolBin("zehn", args.zehnBin);
+const bdBin = await resolveToolBin("bd", args.bdBin);
 
 await rm(packageDir, { force: true, recursive: true });
 await mkdir(packageDir, { recursive: true });
@@ -45,19 +52,21 @@ await mkdir(path.join(packageDir, "bin"), { recursive: true });
 await writeLauncher(path.join(packageDir, "bin", "gxserver"));
 await cp(zmxBin, path.join(packageDir, "bin", "zmx"));
 await cp(zehnBin, path.join(packageDir, "bin", "zehn"));
+await cp(bdBin, path.join(packageDir, "bin", "bd"));
 await chmod(path.join(packageDir, "bin", "gxserver"), executableMode);
 await chmod(path.join(packageDir, "bin", "zmx"), executableMode);
 await chmod(path.join(packageDir, "bin", "zehn"), executableMode);
+await chmod(path.join(packageDir, "bin", "bd"), executableMode);
 
 await writeFile(path.join(packageDir, "README.md"), serverReadme(), "utf8");
 
 if (args.includeNodeModules) {
   if (!args.nativeNode) {
     throw new Error(
-      "--include-node-modules requires --native-node so app-bundled native modules can record the exact system Node ABI they were rebuilt for.",
+      "--include-node-modules requires --native-node so app-bundled native modules can record the exact app Node ABI they were rebuilt for.",
     );
   }
-  await copyProductionNodeModules(packageDir);
+  await copyProductionNodeModules(packageDir, args);
   const nativeRuntime = await rebuildPackagedNativeModules(packageDir, args);
   await writeNativeRuntime(packageDir, nativeRuntime);
 }
@@ -101,6 +110,8 @@ function parseArgs(argv) {
       parsed.zmxBin = requiredValue(argv, ++index, arg);
     } else if (arg === "--zehn-bin") {
       parsed.zehnBin = requiredValue(argv, ++index, arg);
+    } else if (arg === "--bd-bin") {
+      parsed.bdBin = requiredValue(argv, ++index, arg);
     } else if (arg === "--native-node") {
       parsed.nativeNode = requiredValue(argv, ++index, arg);
     } else if (arg === "--native-npm") {
@@ -135,7 +146,7 @@ async function assertBuilt() {
 async function resolveToolBin(toolName, explicitPath) {
   const candidates = [
     explicitPath,
-    path.join(repoRoot, toolName, "zig-out", "bin", toolName),
+    ...(toolName === "bd" ? [] : [path.join(repoRoot, toolName, "zig-out", "bin", toolName)]),
     path.join(distRoot, "bin", toolName),
   ].filter(Boolean);
   for (const candidate of candidates) {
@@ -146,7 +157,9 @@ async function resolveToolBin(toolName, explicitPath) {
   const guidance =
     toolName === "zmx"
       ? "Build the pinned zmx submodule first: `git submodule update --init --recursive zmx && cd zmx && zig build -Doptimize=ReleaseSafe`."
-      : "Build the pinned zehn submodule first: `git submodule update --init zehn && cd zehn && zig build -Doptimize=ReleaseFast`.";
+      : toolName === "zehn"
+        ? "Build the pinned zehn submodule first: `git submodule update --init zehn && cd zehn && zig build -Doptimize=ReleaseFast`."
+        : "Build the pinned upstream Beads CLI first and pass it with `--bd-bin /path/to/bd`.";
   throw new Error(`Missing bundled ${toolName} artifact. ${guidance} PATH ${toolName} is intentionally ignored.`);
 }
 
@@ -176,11 +189,19 @@ async function assertFile(filePath, guidance) {
 }
 
 async function writeLauncher(launcherPath) {
+  /*
+  CDXC:GxserverPackaging 2026-06-08-12:17:
+  The packaged launcher must use Web/code-server/lib/node when gxserver is inside the macOS app, so direct resource launches share code-server's bundled Node and avoid system-Node missing errors. Standalone server tarballs keep their system Node behavior because that app resource is absent there.
+  */
   await writeFile(
     launcherPath,
     `#!/usr/bin/env bash
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
+APP_NODE="$HERE/../../code-server/lib/node"
+if [[ -x "$APP_NODE" ]]; then
+  exec "$APP_NODE" "$HERE/../dist/src/cli.js" "$@"
+fi
 NODE_BIN="\${NODE:-node}"
 exec "$NODE_BIN" "$HERE/../dist/src/cli.js" "$@"
 `,
@@ -188,7 +209,7 @@ exec "$NODE_BIN" "$HERE/../dist/src/cli.js" "$@"
   );
 }
 
-async function copyProductionNodeModules(targetDir) {
+async function copyProductionNodeModules(targetDir, options) {
   const source = path.join(gxserverRoot, "node_modules");
   await assertDirectory(source, "Run `npm install` in gxserver/ before packaging app resources.");
   await cp(source, path.join(targetDir, "node_modules"), {
@@ -202,9 +223,12 @@ async function copyProductionNodeModules(targetDir) {
       path.basename(entry) !== ".bin" &&
       !entry.includes(`${path.sep}.bin${path.sep}`),
   });
-  const prune = spawnSync("npm", ["prune", "--omit=dev", "--ignore-scripts", "--no-audit", "--no-fund"], {
+  const nodePath = path.resolve(options.nativeNode);
+  const npmPath = await resolveNativeNpm(options.nativeNpm, nodePath);
+  const prune = spawnSync(npmPath, ["prune", "--omit=dev", "--ignore-scripts", "--no-audit", "--no-fund"], {
     cwd: targetDir,
     encoding: "utf8",
+    env: nativeModuleBuildEnv(nodePath),
     stdio: "pipe",
   });
   if (prune.status !== 0) {
@@ -215,17 +239,20 @@ async function copyProductionNodeModules(targetDir) {
 async function rebuildPackagedNativeModules(targetDir, options) {
   /*
   CDXC:GxserverPackaging 2026-06-01-16:22:
-  The macOS app launches gxserver with a selected system Node, but the repository may be installed with a different Node ABI. Rebuild native production modules inside the staged app package and smoke-test SQLite there so app packaging does not mutate the repository's node_modules or ship an ABI mismatch.
+  The macOS app launches gxserver with its app-bundled Node, but the repository may be installed with a different Node ABI. Rebuild native production modules inside the staged app package and smoke-test SQLite there so app packaging does not mutate the repository's node_modules or ship an ABI mismatch.
 
   CDXC:GxserverPackaging 2026-06-06-22:00:
-  Ghostex must not bundle Node for gxserver. App-bundled native modules therefore publish the Node major and NODE_MODULE_VERSION they were rebuilt against, and macOS startup must require a matching system Node instead of trying a different installed Node first.
+  App-bundled native modules publish the Node major and NODE_MODULE_VERSION they were rebuilt against, and macOS startup must verify the bundled app Node instead of trying whichever installed Node appears first.
+
+  CDXC:GxserverPackaging 2026-06-08-12:17:
+  Ghostex macOS reuses code-server's bundled Node 22 runtime for gxserver, so package-time ABI checks must reject other Node majors and point build authors at Web/code-server/lib/node instead of user install guidance.
   */
   const nodePath = path.resolve(options.nativeNode);
   await assertExecutableFile(nodePath, "Selected --native-node is not executable.");
   const nativeRuntime = await readNativeRuntime(nodePath);
   if (nativeRuntime.nodeMajor !== appNativeNodeMajor) {
     throw new Error(
-      `App-bundled gxserver native modules must target Node.js ${appNativeNodeMajor} LTS, but --native-node is ${nativeRuntime.nodeVersion}. Install Node ${appNativeNodeMajor} with nodejs.org, nvm, mise, fnm, asdf, nodenv, Volta, or Homebrew, then pass --native-node to that Node ${appNativeNodeMajor} executable.`,
+      `App-bundled gxserver native modules must target code-server's bundled Node.js ${appNativeNodeMajor} runtime, but --native-node is ${nativeRuntime.nodeVersion}. Pass the app-packaged Web/code-server/lib/node executable from the macOS build.`,
     );
   }
   const npmPath = await resolveNativeNpm(options.nativeNpm, nodePath);
@@ -261,7 +288,7 @@ async function rebuildPackagedNativeModules(targetDir, options) {
   return {
     ...nativeRuntime,
     nativeModules: ["better-sqlite3"],
-    nodeRequirement: `Node.js ${nativeRuntime.nodeMajor}.x with NODE_MODULE_VERSION ${nativeRuntime.nodeModuleVersion}`,
+    nodeRequirement: `Bundled Node.js ${nativeRuntime.nodeMajor}.x with NODE_MODULE_VERSION ${nativeRuntime.nodeModuleVersion}`,
   };
 }
 
@@ -477,6 +504,6 @@ npm ci --omit=dev --no-audit --no-fund
 - \`bin/gxserver stop\`: stop only the gxserver control plane; zmx sessions are not killed.
 - \`bin/gxserver stop-all\`: kill gxserver-tracked zmx sessions, then stop the control plane.
 
-The package includes Ghostex's pinned zmx and zehn artifacts in \`bin/\`. Beads is not bundled; install \`bd\` separately when Project board operations are needed.
+The package includes Ghostex's pinned zmx, zehn, and upstream Beads \`bd\` artifacts in \`bin/\`. Project board operations use the bundled \`bd\` by default and only need PATH \`bd\` in source-checkout fallback scenarios.
 `;
 }
