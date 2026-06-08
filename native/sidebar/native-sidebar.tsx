@@ -779,6 +779,16 @@ type NativePaneTabSleepScope = "sleep" | "sleepLeft" | "sleepOthers" | "sleepRig
 
 type NativeHostEvent =
   | {
+      appName?: string;
+      bundleIdentifier?: string;
+      imagePath: string;
+      text?: string;
+      title?: string;
+      trigger: string;
+      type: "appShotCaptured";
+    }
+  | { message: string; type: "appShotCaptureFailed" }
+  | {
       foregroundPid?: number;
       persistenceSessionCreated?: boolean;
       sessionId: string;
@@ -1057,6 +1067,8 @@ const PLUGINS_BROWSER_CHAT_URL = "https://skills.sh/";
 const NATIVE_T3_REMOTE_ACCESS_ORIGIN = "http://127.0.0.1:3774";
 const NATIVE_T3_REMOTE_ACCESS_AUTH_ATTEMPTS = 30;
 const NATIVE_T3_REMOTE_ACCESS_AUTH_RETRY_MS = 500;
+const APP_SHOT_RECENT_TARGET_MS = 60_000;
+const APP_SHOT_TEXT_MAX_LENGTH = 16_000;
 /**
  * CDXC:T3Code 2026-05-04-04:41
  * T3 can emit a thread-change event before the sidebar summary title has caught
@@ -1280,6 +1292,8 @@ let lastNativePaneOwnerSelectionKey: string | undefined;
 let lastNativeSetActiveTerminalSetCommandKey: string | undefined;
 let lastNativeFocusTraceLayoutFocusedSessionId: string | undefined;
 let lastNativeFocusedSidebarSessionId: string | undefined;
+let lastAppShotTargetSessionId: string | undefined;
+let lastAppShotTargetAt = 0;
 let didLogStartupPaneLayoutFirstSync = false;
 const lastPostedWorkspaceNativeLayoutShapeByProjectId = new Map<string, PaneLayoutShapeSummary>();
 const nativeLayoutCollapseAllowedUntilByProjectId = new Map<string, number>();
@@ -38083,9 +38097,111 @@ function createNativeLayoutItems(
   return items;
 }
 
+function handleNativeAppShotCaptured(
+  appShot: Extract<NativeHostEvent, { type: "appShotCaptured" }>,
+): void {
+  void stageNativeAppShotInCodexSession(appShot).catch((error) => {
+    const message = error instanceof Error ? error.message : String(error);
+    appendAgentDetectionDebugLog("nativeSidebar.appShots.failed", {
+      appName: appShot.appName ?? "",
+      imagePath: appShot.imagePath,
+      message,
+    });
+    showAppToast("error", "App Shot Failed", message);
+  });
+}
+
+async function stageNativeAppShotInCodexSession(
+  appShot: Extract<NativeHostEvent, { type: "appShotCaptured" }>,
+): Promise<void> {
+  const prompt = formatNativeAppShotPrompt(appShot);
+  let targetSession = resolveNativeAppShotTargetSession();
+  let createdNewSession = false;
+  if (!targetSession) {
+    const codexAgent = resolveSidebarAgentButtonById(DEFAULT_PROMPT_AGENT_ID);
+    if (!codexAgent?.command?.trim()) {
+      throw new Error("No configured Codex agent is available for App Shots.");
+    }
+    const createdSession = await launchAgentTerminal(codexAgent, activeWorkspaceGroup().groupId, {
+      focusAfterCreate: true,
+      initialPromptText: prompt,
+    });
+    targetSession = createdSession?.kind === "terminal" ? createdSession : undefined;
+    if (!targetSession) {
+      throw new Error("Could not create a Codex session for the App Shot.");
+    }
+    createdNewSession = true;
+  }
+  lastAppShotTargetSessionId = targetSession.sessionId;
+  lastAppShotTargetAt = Date.now();
+  if (!targetSession || targetSession.sessionId === undefined) {
+    return;
+  }
+  if (!createdNewSession && isNativeAppShotCodexSession(targetSession)) {
+    const nativeSessionId = nativeSessionIdForSidebarSession(targetSession.sessionId);
+    postNative({ sessionId: nativeSessionId, text: prompt, type: "writeTerminalText" });
+  }
+  focusSidebarSession(targetSession.sessionId);
+  showAppToast("success", "App Shot Added", appShot.appName || "Frontmost app");
+}
+
+function resolveNativeAppShotTargetSession(): TerminalSessionRecord | undefined {
+  const now = Date.now();
+  const recentTarget =
+    lastAppShotTargetSessionId && now - lastAppShotTargetAt <= APP_SHOT_RECENT_TARGET_MS
+      ? findTerminalSession(lastAppShotTargetSessionId)
+      : undefined;
+  if (isNativeAppShotCodexSession(recentTarget)) {
+    return recentTarget;
+  }
+  const focusedSessionId = activeSnapshot().focusedSessionId;
+  const focusedSession = focusedSessionId ? findTerminalSession(focusedSessionId) : undefined;
+  if (isNativeAppShotCodexSession(focusedSession)) {
+    return focusedSession;
+  }
+  return undefined;
+}
+
+function isNativeAppShotCodexSession(
+  session: TerminalSessionRecord | undefined,
+): session is TerminalSessionRecord {
+  if (!session || session.isSleeping === true || session.surface === "commands") {
+    return false;
+  }
+  const terminalState = terminalStateById.get(session.sessionId);
+  const agentName = (terminalState?.agentName ?? session.agentName ?? "").trim().toLowerCase();
+  return agentName === DEFAULT_PROMPT_AGENT_ID;
+}
+
+function formatNativeAppShotPrompt(
+  appShot: Extract<NativeHostEvent, { type: "appShotCaptured" }>,
+): string {
+  const appName = appShot.appName?.trim() || "the frontmost app";
+  const title = appShot.title?.trim();
+  const text = appShot.text?.trim();
+  const lines = [
+    `App shot from ${title ? `${appName} - ${title}` : appName}.`,
+    "",
+    `[Image #1](${appShot.imagePath})`,
+  ];
+  if (text) {
+    lines.push("", "Available app text:", "", "```text", text.slice(0, APP_SHOT_TEXT_MAX_LENGTH), "```");
+  }
+  lines.push("", "Use this app shot as context for my next request.");
+  return `${lines.join("\n")}\n`;
+}
+
 window.addEventListener("ghostex-native-host-event", (event) => {
   const hostEvent = (event as CustomEvent<NativeHostEvent>).detail;
   if (!hostEvent || hostEvent.type === "hostReady") {
+    return;
+  }
+  if (hostEvent.type === "appShotCaptured") {
+    handleNativeAppShotCaptured(hostEvent);
+    return;
+  }
+  if (hostEvent.type === "appShotCaptureFailed") {
+    showAppToast("error", "App Shot Failed", hostEvent.message);
     return;
   }
   let afterPublish: (() => void) | undefined;

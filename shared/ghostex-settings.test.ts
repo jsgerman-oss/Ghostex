@@ -1,6 +1,7 @@
 import { describe, expect, test } from "vitest";
 import {
   AUTO_SLEEP_IDLE_MINUTE_OPTIONS,
+  APP_SHOTS_HOTKEY_OPTIONS,
   BROWSER_FEEDBACK_TOOL_OPTIONS,
   BROWSER_OPEN_MODE_OPTIONS,
   DEFAULT_ghostex_SETTINGS,
@@ -71,6 +72,32 @@ describe("normalizeghostexSettings", () => {
     expect(BROWSER_FEEDBACK_TOOL_OPTIONS).toEqual([
       { label: "React Grab", value: "react-grab" },
       { label: "Agentation", value: "agentation" },
+    ]);
+  });
+
+  test("normalizes App Shots settings", () => {
+    expect(DEFAULT_ghostex_SETTINGS.appShotsEnabled).toBe(true);
+    expect(DEFAULT_ghostex_SETTINGS.appShotsHotkey).toBe("both-command");
+    expect(normalizeghostexSettings({})).toMatchObject({
+      appShotsEnabled: true,
+      appShotsHotkey: "both-command",
+    });
+    expect(
+      normalizeghostexSettings({
+        appShotsEnabled: true,
+        appShotsHotkey: "double-left-shift",
+      }),
+    ).toMatchObject({
+      appShotsEnabled: true,
+      appShotsHotkey: "double-left-shift",
+    });
+    expect(normalizeghostexSettings({ appShotsHotkey: "cmd+r" })).toMatchObject({
+      appShotsHotkey: "both-command",
+    });
+    expect(APP_SHOTS_HOTKEY_OPTIONS.map((option) => option.value)).toEqual([
+      "both-command",
+      "double-left-shift",
+      "double-left-option",
     ]);
   });
 

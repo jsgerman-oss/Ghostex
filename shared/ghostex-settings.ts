@@ -57,6 +57,7 @@ export type SidebarSide = "left" | "right";
 export type SidebarSettingsPresetId = "codex" | "minimal" | "detailed";
 export type PromptEditorBackend = "inherit" | "monaco" | "gte" | "custom";
 export type SessionTitleGenerationAgent = "codex" | "cursor" | "claude" | "grok" | "custom";
+export type AppShotsHotkey = "both-command" | "double-left-shift" | "double-left-option";
 export type KeepAwakeDurationMinutes = 0 | 120 | 300;
 export type AutoSleepIdleMinutes = 5 | 10 | 15 | 30 | 60 | 120 | 300;
 export type RemoteMachineSettings = {
@@ -125,6 +126,8 @@ export function clampSidebarDefaultWidthPx(value: number): number {
  */
 export type ghostexSettings = {
   actionCompletionSound: CompletionSoundSetting;
+  appShotsEnabled: boolean;
+  appShotsHotkey: AppShotsHotkey;
   /**
    * CDXC:GxserverAgentSettings 2026-06-02-22:23:
    * This field is the sidebar render cache for gxserver-owned global Accept All
@@ -341,6 +344,8 @@ export const DEFAULT_ghostex_SETTINGS: ghostexSettings = {
    * shamisen reverb remains available from Settings for users who prefer it.
    */
   actionCompletionSound: "shamisen",
+  appShotsEnabled: true,
+  appShotsHotkey: "both-command",
   /**
    * CDXC:GxserverAgentSettings 2026-06-02-22:23:
    * New installs should start with gxserver-owned Accept All enabled so built-in
@@ -716,6 +721,15 @@ export const BROWSER_FEEDBACK_TOOL_OPTIONS: ReadonlyArray<{
   { label: "Agentation", value: "agentation" },
 ];
 
+export const APP_SHOTS_HOTKEY_OPTIONS: ReadonlyArray<{
+  label: string;
+  value: AppShotsHotkey;
+}> = [
+  { label: "Both Command keys", value: "both-command" },
+  { label: "Double-tap Left Shift", value: "double-left-shift" },
+  { label: "Double-tap Left Option", value: "double-left-option" },
+];
+
 export const DEFAULT_EDITOR_COMMAND_OPTIONS: ReadonlyArray<{
   label: string;
   value: DefaultEditorCommand;
@@ -853,6 +867,14 @@ export function normalizeghostexSettings(candidate: unknown): ghostexSettings {
   return {
     actionCompletionSound: clampCompletionSoundSetting(
       readString(source, "actionCompletionSound", DEFAULT_ghostex_SETTINGS.actionCompletionSound),
+    ),
+    appShotsEnabled: readBoolean(
+      source,
+      "appShotsEnabled",
+      DEFAULT_ghostex_SETTINGS.appShotsEnabled,
+    ),
+    appShotsHotkey: normalizeAppShotsHotkey(
+      readString(source, "appShotsHotkey", DEFAULT_ghostex_SETTINGS.appShotsHotkey),
     ),
     agentAcceptAllEnabled: readBoolean(
       source,
@@ -1519,6 +1541,12 @@ function normalizeBrowserOpenMode(value: string | undefined): BrowserOpenMode {
 
 function normalizeBrowserFeedbackTool(value: string | undefined): BrowserFeedbackTool {
   return value === "react-grab" ? "react-grab" : DEFAULT_ghostex_SETTINGS.browserFeedbackTool;
+}
+
+function normalizeAppShotsHotkey(value: string | undefined): AppShotsHotkey {
+  return value === "double-left-shift" || value === "double-left-option"
+    ? value
+    : DEFAULT_ghostex_SETTINGS.appShotsHotkey;
 }
 
 function normalizeDefaultEditorCommand(value: string | undefined): DefaultEditorCommand {

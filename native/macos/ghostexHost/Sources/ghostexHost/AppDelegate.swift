@@ -616,6 +616,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
   private weak var trafficLightLayoutObservedTitlebarView: NSView?
   private var isPositioningMainWindowTrafficLightButtons = false
   private var appHotkeyEventMonitor: Any?
+  private var appShotsLocalEventMonitor: Any?
+  private var appShotsGlobalEventMonitor: Any?
+  private var appShotsPressedModifierKeyCodes = Set<UInt16>()
+  private var lastAppShotsDoubleTap: (keyCode: UInt16, timestamp: TimeInterval)?
+  private var lastAppShotsCaptureAt: Date?
   private var lastNativeActivationRequest: NativeActivationRequest?
   private var lastNativeInputEventPayload: [String: Any]?
   private var lastNativeInputEventRecordedAt: Date?
@@ -739,6 +744,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
     if let appHotkeyEventMonitor {
       NSEvent.removeMonitor(appHotkeyEventMonitor)
       self.appHotkeyEventMonitor = nil
+    }
+    if let appShotsLocalEventMonitor {
+      NSEvent.removeMonitor(appShotsLocalEventMonitor)
+      self.appShotsLocalEventMonitor = nil
+    }
+    if let appShotsGlobalEventMonitor {
+      NSEvent.removeMonitor(appShotsGlobalEventMonitor)
+      self.appShotsGlobalEventMonitor = nil
     }
     sparkleAvailabilityProbeTimer?.invalidate()
     sparkleAvailabilityProbeTimer = nil
@@ -1595,6 +1608,114 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
         return event
       }
       return root.handleHotkeyEquivalent(event) ? nil : event
+    }
+  }
+
+  @MainActor
+  private func installAppShotsEventMonitors() {
+    if let appShotsLocalEventMonitor {
+      NSEvent.removeMonitor(appShotsLocalEventMonitor)
+    }
+    if let appShotsGlobalEventMonitor {
+      NSEvent.removeMonitor(appShotsGlobalEventMonitor)
+    }
+    let handler: (NSEvent) -> Void = { [weak self] event in
+      Task { @MainActor in
+        self?.handleAppShotsModifierEvent(event)
+      }
+    }
+    appShotsLocalEventMonitor = NSEvent.addLocalMonitorForEvents(matching: .flagsChanged) {
+      event in
+      handler(event)
+      return event
+    }
+    appShotsGlobalEventMonitor = NSEvent.addGlobalMonitorForEvents(matching: .flagsChanged) {
+      event in
+      handler(event)
+    }
+  }
+
+  @MainActor
+  private func handleAppShotsModifierEvent(_ event: NSEvent) {
+    let settings = nativeSettingsStore.readAppShotsSettings()
+    guard settings.enabled else {
+      appShotsPressedModifierKeyCodes.removeAll()
+      lastAppShotsDoubleTap = nil
+      return
+    }
+    guard shouldTriggerAppShot(for: event, hotkey: settings.hotkey) else {
+      return
+    }
+    captureAppShot(trigger: settings.hotkey)
+  }
+
+  @MainActor
+  private func shouldTriggerAppShot(for event: NSEvent, hotkey: String) -> Bool {
+    let now = event.timestamp
+    switch hotkey {
+    case "double-left-shift":
+      return shouldTriggerAppShotDoubleTap(event: event, keyCode: 56, modifier: .shift, now: now)
+    case "double-left-option":
+      return shouldTriggerAppShotDoubleTap(event: event, keyCode: 58, modifier: .option, now: now)
+    default:
+      let commandKeyCodes: Set<UInt16> = [54, 55]
+      guard commandKeyCodes.contains(event.keyCode) else {
+        return false
+      }
+      if event.modifierFlags.intersection(.deviceIndependentFlagsMask).contains(.command) {
+        appShotsPressedModifierKeyCodes.insert(event.keyCode)
+      } else {
+        appShotsPressedModifierKeyCodes.remove(event.keyCode)
+      }
+      let shouldTrigger = commandKeyCodes.isSubset(of: appShotsPressedModifierKeyCodes)
+      if shouldTrigger {
+        appShotsPressedModifierKeyCodes.removeAll()
+      }
+      return shouldTrigger
+    }
+  }
+
+  @MainActor
+  private func shouldTriggerAppShotDoubleTap(
+    event: NSEvent,
+    keyCode: UInt16,
+    modifier: NSEvent.ModifierFlags,
+    now: TimeInterval
+  ) -> Bool {
+    guard event.keyCode == keyCode else {
+      return false
+    }
+    let isPress = event.modifierFlags.intersection(.deviceIndependentFlagsMask).contains(modifier)
+    guard isPress else {
+      return false
+    }
+    defer {
+      lastAppShotsDoubleTap = (keyCode: keyCode, timestamp: now)
+    }
+    guard let previous = lastAppShotsDoubleTap,
+      previous.keyCode == keyCode,
+      now - previous.timestamp <= 0.45
+    else {
+      return false
+    }
+    lastAppShotsDoubleTap = nil
+    return true
+  }
+
+  @MainActor
+  private func captureAppShot(trigger: String) {
+    let now = Date()
+    if let lastAppShotsCaptureAt, now.timeIntervalSince(lastAppShotsCaptureAt) < 0.9 {
+      return
+    }
+    lastAppShotsCaptureAt = now
+    guard let root = window?.contentView as? ghostexRootView else {
+      return
+    }
+    do {
+      try ghostexRootView.postFrontmostAppShot(trigger: trigger, to: root)
+    } catch {
+      root.postHostEvent(.appShotCaptureFailed(message: error.localizedDescription))
     }
   }
 
@@ -2635,9 +2756,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
         /*
          CDXC:GxserverBootstrap 2026-06-07-12:02:
          The sidebar may miss the first native gxserverStatus host event while the WebKit document is still installing listeners. Seed the startup status into the injected bootstrap object so React sees a running daemon before it decides whether startup API work is allowed.
-         */
+        */
         self.makeWindow(gxserverStatus: status)
         self.installAppHotkeyEventMonitor()
+        self.installAppShotsEventMonitors()
         self.startBridge()
         self.publishGxserverBootstrapStatus(status)
       }
@@ -4469,6 +4591,11 @@ private struct NativeSidebarChromeSettings {
   let projectEditorCompanionWidthRatio: CGFloat?
 }
 
+private struct NativeAppShotsSettings {
+  let enabled: Bool
+  let hotkey: String
+}
+
 private struct NativeMainWindowChromeSettings {
   let frame: NSRect?
   let screenID: UInt32?
@@ -4651,6 +4778,19 @@ private final class NativeSettingsStore {
       return nil
     }
     return Self.readCGFloat(settings["sidebarDefaultWidthPx"])
+  }
+
+  func readAppShotsSettings() -> NativeAppShotsSettings {
+    guard let settings = readSharedSidebarSettingsDictionary() else {
+      return NativeAppShotsSettings(enabled: true, hotkey: "both-command")
+    }
+    let enabled = settings["appShotsEnabled"] as? Bool ?? true
+    let rawHotkey = settings["appShotsHotkey"] as? String
+    let hotkey =
+      rawHotkey == "double-left-shift" || rawHotkey == "double-left-option"
+      ? rawHotkey!
+      : "both-command"
+    return NativeAppShotsSettings(enabled: enabled, hotkey: hotkey)
   }
 
   func readHotkeys() -> [String: String] {
@@ -8735,6 +8875,216 @@ final class ghostexRootView: NSView {
     "{": "[",
     "}": "]",
   ]
+
+  private struct AppShotCapture {
+    let appName: String?
+    let bundleIdentifier: String?
+    let imagePath: String
+    let text: String?
+    let title: String?
+  }
+
+  fileprivate static func postFrontmostAppShot(trigger: String, to root: ghostexRootView) throws {
+    let capture = try captureFrontmostAppShot()
+    root.postHostEvent(.appShotCaptured(
+      appName: capture.appName,
+      bundleIdentifier: capture.bundleIdentifier,
+      imagePath: capture.imagePath,
+      text: capture.text,
+      title: capture.title,
+      trigger: trigger
+    ))
+  }
+
+  private static func captureFrontmostAppShot() throws -> AppShotCapture {
+    guard let frontmostApplication = NSWorkspace.shared.frontmostApplication else {
+      throw NSError(domain: "GhostexAppShots", code: 1, userInfo: [
+        NSLocalizedDescriptionKey: "No frontmost application was available."
+      ])
+    }
+    let pid = frontmostApplication.processIdentifier
+    guard let windowInfo = frontmostWindowInfo(for: pid) else {
+      throw NSError(domain: "GhostexAppShots", code: 2, userInfo: [
+        NSLocalizedDescriptionKey: "No frontmost window was available to capture."
+      ])
+    }
+    let windowId = windowInfo[kCGWindowNumber as String] as? NSNumber
+    guard let windowId else {
+      throw NSError(domain: "GhostexAppShots", code: 3, userInfo: [
+        NSLocalizedDescriptionKey: "The frontmost window could not be identified."
+      ])
+    }
+    guard let cgImage = CGWindowListCreateImage(
+      .null,
+      [.optionIncludingWindow],
+      CGWindowID(windowId.uint32Value),
+      [.boundsIgnoreFraming, .bestResolution]
+    ) else {
+      throw NSError(domain: "GhostexAppShots", code: 4, userInfo: [
+        NSLocalizedDescriptionKey: "Screen Recording permission is required to capture app shots."
+      ])
+    }
+    let fileURL = try writeAppShotImage(cgImage)
+    let displayPath = displayAppShotPath(for: fileURL)
+    let title = (windowInfo[kCGWindowName as String] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+    let text = accessibilityTextForFrontmostWindow(pid: pid)
+    return AppShotCapture(
+      appName: frontmostApplication.localizedName,
+      bundleIdentifier: frontmostApplication.bundleIdentifier,
+      imagePath: displayPath,
+      text: text,
+      title: title?.isEmpty == true ? nil : title
+    )
+  }
+
+  private static func frontmostWindowInfo(for pid: pid_t) -> [String: Any]? {
+    guard let windowInfoList = CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID)
+      as? [[String: Any]]
+    else {
+      return nil
+    }
+    return windowInfoList.first { info in
+      guard
+        (info[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value == pid,
+        (info[kCGWindowLayer as String] as? NSNumber)?.intValue == 0,
+        ((info[kCGWindowAlpha as String] as? NSNumber)?.doubleValue ?? 1) > 0
+      else {
+        return false
+      }
+      let bounds = info[kCGWindowBounds as String] as? [String: Any]
+      let width = (bounds?["Width"] as? NSNumber)?.doubleValue ?? 0
+      let height = (bounds?["Height"] as? NSNumber)?.doubleValue ?? 0
+      return width >= 20 && height >= 20
+    }
+  }
+
+  private static func writeAppShotImage(_ image: CGImage) throws -> URL {
+    let directory = URL(fileURLWithPath: NSHomeDirectory())
+      .appendingPathComponent(".ghostex/i", isDirectory: true)
+    try FileManager.default.createDirectory(
+      at: directory,
+      withIntermediateDirectories: true,
+      attributes: [.posixPermissions: 0o700]
+    )
+    let formatter = DateFormatter()
+    formatter.dateFormat = "yyMMddHHmmss"
+    formatter.locale = Locale(identifier: "en_US_POSIX")
+    let fileURL = directory.appendingPathComponent("appshot-\(formatter.string(from: Date())).png")
+    let bitmap = NSBitmapImageRep(cgImage: image)
+    guard let data = bitmap.representation(using: .png, properties: [:]) else {
+      throw NSError(domain: "GhostexAppShots", code: 5, userInfo: [
+        NSLocalizedDescriptionKey: "The app shot image could not be encoded."
+      ])
+    }
+    try data.write(to: fileURL, options: [.atomic])
+    return fileURL
+  }
+
+  private static func displayAppShotPath(for fileURL: URL) -> String {
+    let home = URL(fileURLWithPath: NSHomeDirectory()).path
+    let path = fileURL.path
+    if path == home {
+      return "~"
+    }
+    if path.hasPrefix("\(home)/") {
+      return "~\(path.dropFirst(home.count))"
+    }
+    return path
+  }
+
+  private static func accessibilityTextForFrontmostWindow(pid: pid_t) -> String? {
+    let appElement = AXUIElementCreateApplication(pid)
+    let rootElement = focusedAccessibilityWindow(in: appElement) ?? appElement
+    var visited = Set<String>()
+    var collected: [String] = []
+    collectAccessibilityText(
+      from: rootElement,
+      depth: 0,
+      visited: &visited,
+      collected: &collected
+    )
+    let normalized = collected
+      .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+      .filter { !$0.isEmpty }
+      .joined(separator: "\n")
+      .trimmingCharacters(in: .whitespacesAndNewlines)
+    return normalized.isEmpty ? nil : String(normalized.prefix(20_000))
+  }
+
+  private static func focusedAccessibilityWindow(in appElement: AXUIElement) -> AXUIElement? {
+    var focusedWindow: CFTypeRef?
+    if AXUIElementCopyAttributeValue(
+      appElement,
+      kAXFocusedWindowAttribute as CFString,
+      &focusedWindow
+    ) == .success,
+      let window = focusedWindow
+    {
+      return unsafeBitCast(window, to: AXUIElement.self)
+    }
+    var windowsValue: CFTypeRef?
+    if AXUIElementCopyAttributeValue(
+      appElement,
+      kAXWindowsAttribute as CFString,
+      &windowsValue
+    ) == .success,
+      let windows = windowsValue as? [AXUIElement]
+    {
+      return windows.first
+    }
+    return nil
+  }
+
+  private static func collectAccessibilityText(
+    from element: AXUIElement,
+    depth: Int,
+    visited: inout Set<String>,
+    collected: inout [String]
+  ) {
+    guard depth < 10, collected.count < 600 else {
+      return
+    }
+    let identity = "\(CFHash(element))"
+    guard !visited.contains(identity) else {
+      return
+    }
+    visited.insert(identity)
+
+    for attribute in [kAXTitleAttribute, kAXValueAttribute, kAXDescriptionAttribute, kAXHelpAttribute] {
+      var value: CFTypeRef?
+      guard AXUIElementCopyAttributeValue(element, attribute as CFString, &value) == .success,
+        let value
+      else {
+        continue
+      }
+      if let text = value as? String {
+        collected.append(text)
+      } else if let attributedText = value as? NSAttributedString {
+        collected.append(attributedText.string)
+      } else if let number = value as? NSNumber {
+        collected.append(number.stringValue)
+      }
+    }
+
+    var childrenValue: CFTypeRef?
+    guard AXUIElementCopyAttributeValue(
+      element,
+      kAXChildrenAttribute as CFString,
+      &childrenValue
+    ) == .success,
+      let children = childrenValue as? [AXUIElement]
+    else {
+      return
+    }
+    for child in children.prefix(250) {
+      collectAccessibilityText(
+        from: child,
+        depth: depth + 1,
+        visited: &visited,
+        collected: &collected
+      )
+    }
+  }
 
   func presentAppToast(_ command: ShowMessage) {
     presentAppToast(level: Self.appToastLevel(for: command.level), title: command.message)

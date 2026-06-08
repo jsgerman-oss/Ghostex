@@ -97,6 +97,7 @@ import {
 } from "../shared/session-grid-contract";
 import {
   AUTO_SLEEP_IDLE_MINUTE_OPTIONS,
+  APP_SHOTS_HOTKEY_OPTIONS,
   BROWSER_FEEDBACK_TOOL_OPTIONS,
   DEFAULT_ghostex_SETTINGS,
   DEFAULT_EDITOR_COMMAND_OPTIONS,
@@ -123,6 +124,7 @@ import {
   normalizeghostexSettings,
   normalizeRemoteMachineSettings,
   type BrowserFeedbackTool,
+  type AppShotsHotkey,
   type AutoSleepIdleMinutes,
   type DefaultEditorCommand,
   type GhosttyConfirmCloseSurface,
@@ -2985,6 +2987,10 @@ export function SettingsModal({
               agentHookStatusLoading={agentHookStatusLoading}
               ghostexCliStatus={ghostexCliStatus}
               ghostexCliStatusLoading={ghostexCliStatusLoading}
+              appShotsEnabled={draft.appShotsEnabled}
+              appShotsHotkey={draft.appShotsHotkey}
+              onAppShotsEnabledChange={(checked) => updateDraft("appShotsEnabled", checked)}
+              onAppShotsHotkeyChange={(hotkey) => updateDraft("appShotsHotkey", hotkey)}
               onInstallAgentOrchestrationSkill={onInstallAgentOrchestrationSkill}
               onInstallAgentHooks={onInstallAgentHooks}
               onInstallBrowserControl={onInstallBrowserControl}
@@ -3983,8 +3989,12 @@ function getCuaPermissionStatus(
 function IntegrationsSettingsTab({
   agentHookStatus,
   agentHookStatusLoading,
+  appShotsEnabled,
+  appShotsHotkey,
   ghostexCliStatus,
   ghostexCliStatusLoading,
+  onAppShotsEnabledChange,
+  onAppShotsHotkeyChange,
   onInstallAgentOrchestrationSkill,
   onInstallAgentHooks,
   onInstallBrowserControl,
@@ -4000,8 +4010,12 @@ function IntegrationsSettingsTab({
 }: {
   agentHookStatus?: SidebarAgentHookStatusMessage;
   agentHookStatusLoading: boolean;
+  appShotsEnabled: boolean;
+  appShotsHotkey: AppShotsHotkey;
   ghostexCliStatus?: SidebarGhostexCliStatusMessage;
   ghostexCliStatusLoading: boolean;
+  onAppShotsEnabledChange: (checked: boolean) => void;
+  onAppShotsHotkeyChange: (hotkey: AppShotsHotkey) => void;
   onInstallAgentOrchestrationSkill?: () => void;
   onInstallAgentHooks?: () => void;
   onInstallBrowserControl?: () => void;
@@ -4164,6 +4178,43 @@ function IntegrationsSettingsTab({
               <IconRefresh aria-hidden="true" data-icon="inline-start" />
               Refresh
             </Button>
+          </IntegrationSettingsRow>
+
+          <IntegrationSettingsRow
+            description="Capture the frontmost app window and available Accessibility text, then stage it in the recent Codex session as local image context."
+            icon={IconDeviceDesktop}
+            status={appShotsEnabled ? "Enabled" : "Disabled"}
+            tone={appShotsEnabled ? "success" : "neutral"}
+            title="App Shots"
+          >
+            <div className="flex min-w-[190px] flex-col gap-2 sm:items-end">
+              <div className="flex items-center gap-2">
+                <span className="text-xs text-muted-foreground">Enabled</span>
+                <Switch
+                  aria-label="Enable App Shots"
+                  checked={appShotsEnabled}
+                  onCheckedChange={onAppShotsEnabledChange}
+                />
+              </div>
+              <Select
+                disabled={!appShotsEnabled}
+                onValueChange={(value) => onAppShotsHotkeyChange(value as AppShotsHotkey)}
+                value={appShotsHotkey}
+              >
+                <SelectTrigger aria-label="App Shots hotkey" className="w-[190px]">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectGroup>
+                    {APP_SHOTS_HOTKEY_OPTIONS.map((option) => (
+                      <SelectItem key={option.value} value={option.value}>
+                        {option.label}
+                      </SelectItem>
+                    ))}
+                  </SelectGroup>
+                </SelectContent>
+              </Select>
+            </div>
           </IntegrationSettingsRow>
 
           <IntegrationSettingsRow
