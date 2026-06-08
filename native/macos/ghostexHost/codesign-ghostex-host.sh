@@ -66,21 +66,48 @@ has_linker_signed_signature() {
 	[[ "$signature_details" == *linker-signed* ]]
 }
 
+requires_v8_runtime_entitlements() {
+	local code_path="$1"
+	[[ "$code_path" == "$APP_PATH/Contents/Resources/Web/code-server/lib/node" ]]
+}
+
+has_v8_runtime_entitlements() {
+	local code_path="$1"
+	local entitlements
+	entitlements="$(codesign -d --entitlements :- "$code_path" 2>/dev/null || true)"
+	[[ "$entitlements" == *"<key>com.apple.security.cs.allow-jit</key>"* ]] &&
+		[[ "$entitlements" == *"<key>com.apple.security.cs.allow-unsigned-executable-memory</key>"* ]]
+}
+
 sign_plain_macho_if_needed() {
 	local code_path="$1"
+	# CDXC:CodeServerRuntime 2026-06-08-16:14: Release validation executes the app-bundled code-server Node runtime before DMG packaging. Sign Web/code-server/lib/node with the same V8 hardened-runtime entitlements as Chromium helpers so Node can allocate executable memory instead of trapping under Developer ID runtime enforcement.
 	# CDXC:LocalStartFast 2026-06-07-16:23: Local ad-hoc starts should not force-sign plain Mach-O payloads that are already valid after incremental copies. Keep Developer ID and entitlement-bearing app/helper signing strict, but skip repeated local signatures for CEF dylibs and bundled tools that already have explicit reusable signatures.
 	# CDXC:LocalStartFast 2026-06-07-17:32: Linker-signed Mach-O payloads can pass `codesign --verify` while still being denied when Node loads a bundled native module from the app bundle. Treat linker-signed payloads as unsigned for local starts so the preflight validates the same explicit signature the launched app will use.
 	# CDXC:LocalStartFast 2026-06-07-17:40: Keep the linker-signed test in a helper instead of an inline negated pipeline so Bash evaluates the runtime-load blocker as a single boolean before deciding to skip signing.
 	# CDXC:LocalStartFast 2026-06-07-17:45: Do not pipe `codesign -dv` into `grep -q` under pipefail; grep can exit before codesign finishes writing and make a real linker-signed payload look reusable. Capture the signature text first so local starts always re-sign runtime-loaded native modules.
-	if can_reuse_local_adhoc_signature && codesign --verify --strict "$code_path" >/dev/null 2>&1 && ! has_linker_signed_signature "$code_path"; then
+	if can_reuse_local_adhoc_signature &&
+		codesign --verify --strict "$code_path" >/dev/null 2>&1 &&
+		! has_linker_signed_signature "$code_path" &&
+		(! requires_v8_runtime_entitlements "$code_path" || has_v8_runtime_entitlements "$code_path"); then
 		return 0
 	fi
-	codesign \
-		--force \
-		--options runtime \
-		"$CODE_SIGN_TIMESTAMP_FLAG" \
-		--sign "$CODE_SIGN_IDENTITY" \
-		"$code_path"
+	if requires_v8_runtime_entitlements "$code_path"; then
+		codesign \
+			--force \
+			--options runtime \
+			--entitlements "$CEF_ENTITLEMENTS" \
+			"$CODE_SIGN_TIMESTAMP_FLAG" \
+			--sign "$CODE_SIGN_IDENTITY" \
+			"$code_path"
+	else
+		codesign \
+			--force \
+			--options runtime \
+			"$CODE_SIGN_TIMESTAMP_FLAG" \
+			--sign "$CODE_SIGN_IDENTITY" \
+			"$code_path"
+	fi
 }
 
 if [[ -d "$FRAMEWORKS_PATH/Chromium Embedded Framework.framework" ]]; then
