@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { spawn } from "node:child_process";
 import { lookup } from "node:dns/promises";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { lstat, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -1019,6 +1019,7 @@ async function validateBuiltApp(version, buildVersion, entry) {
   await run(`lipo -archs ${shellQuote(path.join(entry.appPath, "Contents/MacOS", config.appName))} | grep -Fx ${shellQuote(entry.arch)}`);
   await run(`lipo -archs ${shellQuote(path.join(entry.appPath, "Contents/Frameworks/Chromium Embedded Framework.framework/Chromium Embedded Framework"))} | grep -Fx ${shellQuote(entry.arch)}`);
   await validateBundledCodeServerRuntime(entry);
+  await validateBundledResourceSizePruning(entry);
 
   const info = await capture(`plutil -extract CFBundleShortVersionString raw ${shellQuote(path.join(entry.appPath, "Contents/Info.plist"))}`);
   const bundleVersion = await capture(`plutil -extract CFBundleVersion raw ${shellQuote(path.join(entry.appPath, "Contents/Info.plist"))}`);
@@ -1069,6 +1070,81 @@ async function validateBundledCodeServerRuntime(entry) {
   if (nativeRuntime.nodeMajor !== 22 || !nativeRuntime.nativeModules?.includes?.("better-sqlite3")) {
     throw new ReleaseError(`${entry.arch} gxserver native-runtime.json must target bundled Node 22 and include better-sqlite3.`);
   }
+}
+
+async function validateBundledResourceSizePruning(entry) {
+  /*
+   CDXC:ReleaseAutomation 2026-06-08-19:49:
+   Release DMGs must keep the bundled runtime self-contained without carrying avoidable duplicate payloads. Validate the three current size cuts before notarization: one real shared Web/bin/bd binary, node-pty prebuilds pruned to the release architecture, and no T3 Code source maps.
+   */
+  const resourcesRoot = path.join(entry.appPath, "Contents", "Resources", "Web");
+  const sharedBd = path.join(resourcesRoot, "bin", "bd");
+  const gxserverBd = path.join(resourcesRoot, "gxserver", "bin", "bd");
+  const expectedNodePtyPrebuild = entry.arch === "arm64" ? "darwin-arm64" : "darwin-x64";
+
+  if (!existsSync(sharedBd)) {
+    throw new ReleaseError(`${entry.arch} app is missing shared Beads binary at Web/bin/bd.`);
+  }
+  await run(`test -x ${shellQuote(sharedBd)}`);
+  await run(`lipo -archs ${shellQuote(sharedBd)} | grep -Fx ${shellQuote(entry.arch)}`);
+  if (existsSync(gxserverBd)) {
+    const gxserverBdStat = await lstat(gxserverBd);
+    if (gxserverBdStat.size > 1024 * 1024) {
+      throw new ReleaseError(`${entry.arch} app duplicates the large Beads binary at Web/gxserver/bin/bd; gxserver should use the shared Web/bin/bd launcher/resource.`);
+    }
+  }
+
+  await assertOnlyExpectedNodePtyPrebuilds(
+    entry,
+    path.join(resourcesRoot, "code-server", "lib", "vscode", "node_modules", "node-pty", "prebuilds"),
+    expectedNodePtyPrebuild,
+  );
+  await assertOnlyExpectedNodePtyPrebuilds(
+    entry,
+    path.join(resourcesRoot, "t3code-server", "node_modules", "node-pty", "prebuilds"),
+    expectedNodePtyPrebuild,
+  );
+
+  const t3SourceMap = await findFirstFileWithExtension(path.join(resourcesRoot, "t3code-server"), ".map");
+  if (t3SourceMap) {
+    throw new ReleaseError(`${entry.arch} app still bundles T3 Code source map: ${t3SourceMap}`);
+  }
+}
+
+async function assertOnlyExpectedNodePtyPrebuilds(entry, prebuildsRoot, expectedNodePtyPrebuild) {
+  if (!existsSync(prebuildsRoot)) {
+    return;
+  }
+  const entries = await readdir(prebuildsRoot, { withFileTypes: true });
+  const platformDirs = entries.filter((candidate) => candidate.isDirectory()).map((candidate) => candidate.name);
+  const unexpected = platformDirs.filter((platformDir) => platformDir !== expectedNodePtyPrebuild);
+  if (unexpected.length > 0) {
+    throw new ReleaseError(
+      `${entry.arch} app bundles wrong-arch node-pty prebuilds under ${prebuildsRoot}: ${unexpected.join(", ")}. Expected only ${expectedNodePtyPrebuild}.`,
+    );
+  }
+  if (!platformDirs.includes(expectedNodePtyPrebuild)) {
+    throw new ReleaseError(`${entry.arch} app is missing expected node-pty prebuild ${expectedNodePtyPrebuild} under ${prebuildsRoot}.`);
+  }
+}
+
+async function findFirstFileWithExtension(root, extension) {
+  if (!existsSync(root)) {
+    return undefined;
+  }
+  const entries = await readdir(root, { withFileTypes: true });
+  for (const entry of entries) {
+    const entryPath = path.join(root, entry.name);
+    if (entry.isDirectory()) {
+      const match = await findFirstFileWithExtension(entryPath, extension);
+      if (match) {
+        return match;
+      }
+    } else if (entry.isFile() && entry.name.endsWith(extension)) {
+      return entryPath;
+    }
+  }
+  return undefined;
 }
 
 async function validateLidSleepHelperSigning(entry) {

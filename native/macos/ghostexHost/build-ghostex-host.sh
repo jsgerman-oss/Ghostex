@@ -95,6 +95,57 @@ binary_supports_macos_arch() {
 	return 1
 }
 
+node_pty_prebuild_platform_dir() {
+	case "$GHOSTEX_MACOS_ARCH" in
+		arm64)
+			printf 'darwin-arm64\n'
+			;;
+		x86_64)
+			printf 'darwin-x64\n'
+			;;
+	esac
+}
+
+prune_node_pty_prebuilds() {
+	local root="$1"
+	local keep_platform prebuilds_dir platform_dir
+	keep_platform="$(node_pty_prebuild_platform_dir)"
+	if [[ ! -d "$root" ]]; then
+		return 0
+	fi
+	# CDXC:ReleaseBundleSize 2026-06-08-19:49: macOS DMGs are built per architecture, so bundled app resources must keep only the matching node-pty darwin prebuild. Prune Windows/Linux and opposite-arch prebuild directories from generated code-server and T3 Code payloads to reduce download size without changing runtime behavior.
+	while IFS= read -r -d '' prebuilds_dir; do
+		while IFS= read -r -d '' platform_dir; do
+			if [[ "$(basename "$platform_dir")" != "$keep_platform" ]]; then
+				rm -rf "$platform_dir"
+			fi
+		done < <(find "$prebuilds_dir" -mindepth 1 -maxdepth 1 -type d -print0)
+	done < <(find "$root" -path '*/node_modules/node-pty/prebuilds' -type d -print0)
+}
+
+remove_t3code_source_maps() {
+	local target_dir="$1"
+	if [[ ! -d "$target_dir" ]]; then
+		return 0
+	fi
+	# CDXC:T3CodePackaging 2026-06-08-19:49: Release app bundles should not carry T3 Code source maps. They add installed size and download weight while the shipped server only needs compiled JS and production dependencies.
+	find "$target_dir" -type f -name '*.map' -exec rm -f {} +
+}
+
+write_gxserver_shared_bd_launcher() {
+	local launcher_path="$1"
+	mkdir -p "$(dirname "$launcher_path")"
+	# CDXC:ReleaseBundleSize 2026-06-08-19:49: Ghostex already ships the arch-specific Beads CLI once at Web/bin/bd. Keep gxserver's historical bin/bd entry as a tiny launcher to that shared app resource so Project board commands keep working without bundling the 127 MB bd binary twice.
+	cat >"$launcher_path" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+HERE="$(cd "$(dirname "$0")" && pwd)"
+APP_BD="$HERE/../../bin/bd"
+exec "$APP_BD" "$@"
+EOF
+	chmod 755 "$launcher_path"
+}
+
 path_identity() {
 	local candidate="$1"
 	if [[ -e "$candidate" ]]; then
@@ -330,7 +381,7 @@ package_code_server_if_needed() {
 	package_version="$(code_server_release_version)"
 	commit="$(git -C "$CODE_SERVER_ROOT" rev-parse HEAD 2>/dev/null || printf 'development')"
 	package_digest="$(fingerprint_inputs \
-		--value "code-server-package-v1" \
+		--value "code-server-package-v2" \
 		--value "arch=$GHOSTEX_MACOS_ARCH" \
 		--value "target=$vscode_target" \
 		--value "node=$node_identity" \
@@ -388,6 +439,7 @@ package_code_server_if_needed() {
 	)
 	mkdir -p "$target_dir/lib"
 	rsync -a --delete --exclude '/node' "$vscode_release_root/" "$target_dir/lib/vscode/"
+	prune_node_pty_prebuilds "$target_dir"
 	cp "$CODE_SERVER_NODE_BIN" "$target_dir/lib/node"
 	chmod 755 "$target_dir/lib/node"
 	"$target_dir/lib/node" "$target_dir/out/node/entry.js" --version >/dev/null
@@ -429,7 +481,7 @@ package_t3code_server() {
 	node_identity="$("$node_bin" -p 'process.version + ":" + process.versions.modules')"
 	npm_version="$("$npm_bin" --version 2>/dev/null || true)"
 	package_digest="$(fingerprint_inputs \
-		--value "t3code-package-v1" \
+		--value "t3code-package-v2" \
 		--value "arch=$GHOSTEX_MACOS_ARCH" \
 		--value "node=$node_identity" \
 		--value "npm=$npm_version" \
@@ -451,6 +503,8 @@ package_t3code_server() {
 	(
 		cd "$target_dir"
 		env PATH="$(dirname "$node_bin"):$PATH" "$npm_bin" install --omit=dev --no-audit --no-fund
+		prune_node_pty_prebuilds "$target_dir"
+		remove_t3code_source_maps "$target_dir"
 		env PATH="$(dirname "$node_bin"):$PATH" "$node_bin" dist/bin.mjs --help >/dev/null
 	)
 	write_cache_stamp "t3code-server-package-$GHOSTEX_MACOS_ARCH" "$package_digest"
@@ -619,10 +673,13 @@ EOF
 gxserver_package_supports_macos_arch() {
 	local target_dir="$1"
 	local binary_path
+	if [[ ! -x "$target_dir/bin/bd" ]]; then
+		return 1
+	fi
 	for binary_path in \
 		"$target_dir/bin/zmx" \
 		"$target_dir/bin/zehn" \
-		"$target_dir/bin/bd" \
+		"$WEB_DIR/bin/bd" \
 		"$target_dir/node_modules/better-sqlite3/build/Release/better_sqlite3.node"; do
 		if ! binary_supports_macos_arch "$binary_path" "$GHOSTEX_MACOS_ARCH"; then
 			return 1
@@ -643,7 +700,7 @@ package_gxserver_if_needed() {
 	#
 	# CDXC:ProjectBoardBeads 2026-06-08-10:46: Package the full upstream Beads CLI with gxserver so Project/Kanban opens without PATH setup. The app build stages exactly one `bd` binary for GHOSTEX_MACOS_ARCH, keeping arm and Intel app artifacts arch-specific instead of shipping a universal Beads binary.
 	package_digest="$(fingerprint_inputs \
-		--value "gxserver-package-v3" \
+		--value "gxserver-package-v4" \
 		--value "arch=$GHOSTEX_MACOS_ARCH" \
 		--value "node=$GXSERVER_NODE_BIN:$GXSERVER_NODE_VERSION:$GXSERVER_NODE_MODULE_VERSION" \
 		--path "$REPO_ROOT/gxserver/src" \
@@ -671,6 +728,7 @@ package_gxserver_if_needed() {
 	)
 	rm -rf "$target_dir"
 	cp -R "$package_dir" "$target_dir"
+	write_gxserver_shared_bd_launcher "$target_dir/bin/bd"
 	write_cache_stamp "gxserver-package-$GHOSTEX_MACOS_ARCH" "$package_digest"
 }
 
