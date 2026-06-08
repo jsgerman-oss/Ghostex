@@ -1,7 +1,7 @@
 
 ## All features:
 
-- 4.0.0-beta.3 beta distribution is available through GitHub Releases and Homebrew DMG installs while Sparkle automatic-update feeds stay on the current public release.
+- 4.0.0 ships session tags, inline Git commit diff review, packaged T3 Code and gxserver runtimes, bundled ghostex/gx CLI tools, agent hook ingestion, steadier working/attention indicators, and the full nightly sidebar and zmx workflow improvements from the 4.0 beta line.
 - Agent working indicators and session titles stay steadier during spinner-heavy Codex, Claude, Cursor, and Pi activity, reducing attention flicker and repeated no-op sidebar refreshes.
 - Background sleep, close, and auto-sleep transitions preserve the focused pane/tab instead of pulling focus away from the active session, and focused agent sessions are always excluded from Agent Auto Sleep.
 - New projects and embedded editor panes appear in the sidebar earlier, and code-server startup failures surface as row errors and toasts.
@@ -20,7 +20,6 @@
 - Ghostex-launched app, gxserver, zmx, agent-hook, Git, Beads, clone, and local dev subprocesses keep ANSI color capability even when the parent shell exports `NO_COLOR`.
 - Native sidebar web bundles use the React Compiler build path for smoother nightly sidebar interactions.
 - Support diagnostics avoid writing raw title previews, command output previews, session id lists, paths, and stderr snippets while keeping counts and timing useful for troubleshooting.
-- 4.0.0-beta.2 beta distribution is available through GitHub Releases and Homebrew DMG installs while Sparkle automatic-update feeds stay on the current public release.
 - Native T3 Code panes keep the managed runtime alive from live pane ownership, including inactive tab siblings, so an open embedded T3 tab is not stopped by sidebar projection gaps.
 - Installed macOS builds package the managed T3 Code server runtime and show bundled, development, or missing status in Settings -> Integrations.
 - zmx Ctrl+G prompt editing follows the currently attached client capability, keeping desktop Monaco available while SSH, mobile, and TUI attaches use terminal-native `gte`.
@@ -38,7 +37,6 @@
 - Clone & Add can be submitted as soon as locally valid repository and destination fields are present, while existing-destination previews still block cloning.
 - Delayed Send timers keep the leading clock visible over tags and deadline-only projections, and native terminal badges relayout immediately when timers start or cancel.
 - Sleep and close actions for presentation-backed zmx sessions use gxserver provider transitions even when older local session metadata is incomplete.
-- 4.0.0 beta distribution is available through GitHub Releases and Homebrew DMG installs while Sparkle automatic-update feeds stay on the current public release.
 - Session tags can be applied, displayed on session cards, filtered in Active and Previous Sessions, and preserved in manual session order.
 - Git commit review can inspect changed-file diffs inline inside the review modal.
 - First-prompt title generation includes Grok Build support, staged rename handling, and submit guards for skipped or stale generated titles.

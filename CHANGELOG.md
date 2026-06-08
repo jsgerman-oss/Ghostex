@@ -8,6 +8,45 @@
 <!-- CDXC:BetaDistribution 2026-06-07-00:09: The beta.3 package includes sidebar focus stability, editor startup failure surfacing, title-storm throttling, packaged gxserver Node-runtime validation, native web bundle compiler support, and privacy-tightened debug logs, so release notes must stay user-facing while covering those shipped behaviors. -->
 <!-- CDXC:BetaDistribution 2026-06-07-02:47: The final beta.3 package also includes color-capable subprocess launches, internal Codex title-generation isolation, safer Codex resume lookup, zmx title-observer health for Auto Sleep, focused-agent auto-sleep protection, T3 startup retention, packaged T3 runtime path resolution, and native-only T3/browser sidebar row restoration. -->
 <!-- CDXC:BetaDistribution 2026-06-07-08:57: The final beta.3 package additionally includes gxserver-owned agent hook installation and hook-event ingestion, duplicate attention side-effect suppression, in-place zmx Full reload, bundled-zmx prompt-editor capability checks, Previous Sessions command filtering, client-clock relative-time ticking, and zehn day-grouped title rows. -->
+<!-- CDXC:Distribution 2026-06-08-12:00: Release notes for 4.0.0 must consolidate the shipped nightly beta work into one public Sparkle, GitHub, and Homebrew release without beta-only distribution bullets. -->
+
+## 4.0.0 - 2026-06-08
+
+- Session tags can be applied, displayed on cards, filtered in Active and Previous Sessions, and preserved in manual sidebar order across restore and Previous Sessions.
+- Git commit review adds inline changed-file diff inspection so review prompts can inspect file patches without leaving the modal.
+- First-prompt title generation is more reliable, including Grok Build support, staged rename handling, guards for skipped or stale generated titles, and retry after cancellation.
+- Native T3 Code panes package the managed runtime in installed macOS builds, keep it alive from live pane ownership, resolve the packaged runtime path, and show bundled, development, or missing status in Settings -> Integrations.
+- zmx Ctrl+G prompt editing follows the currently attached client capability, keeping desktop Monaco available while SSH, mobile, and TUI attaches use terminal-native `gte`.
+- Cmd+T creates a terminal tab next to the focused tab, Cmd+N opens a browser tab next to the focused tab, and Option+1 through Option+4 switch Agents, Source, GitHub, and Kanban views.
+- Closing the active tab in a split pane promotes the adjacent tab in that pane before layout materialization, preserving split layout instead of collapsing unrelated panes.
+- Sleep Inactive and Agent Auto Sleep keep terminals with active Delayed Send timers awake until the scheduled send fires, and focused agent sessions are always excluded from Agent Auto Sleep.
+- Agent working indicators and session titles are steadier during spinner-heavy Codex, Claude, Cursor, and Pi activity, reducing attention flicker and repeated no-op sidebar refreshes.
+- Background sleep, close, and auto-sleep transitions preserve the focused pane/tab instead of pulling focus away from the active session.
+- Agent hook installation covers supported CLIs through gxserver, and installed hooks can report working, attention, idle, first-prompt, and resume metadata directly to gxserver for more reliable status across clients.
+- Duplicate completion sounds and macOS notifications are suppressed when the same attention event is replayed from hook or gxserver state.
+- Codex-powered title generation, board-title generation, and other internal prompt jobs run as ephemeral/internal work so they do not create restorable Codex sessions or overwrite a real session's resume identity.
+- Codex resume validates exact ids and falls back through filtered title lookup, avoiding internal `codex exec` title-generation transcripts.
+- Agent Auto Sleep waits when zmx title-observer health is starting, retrying, or failed instead of treating unavailable working-status detection as idle.
+- Full reload for zmx sessions reloads the clicked session in place instead of creating a duplicate sidebar row, and Ctrl+G prompt editing checks the bundled zmx binary instead of a stale PATH zmx.
+- New projects and embedded editor panes appear in the sidebar earlier, and code-server startup failures surface as row errors and toasts instead of failing silently.
+- Installed macOS builds validate the packaged gxserver Node 22 native-module runtime and show actionable reinstall or Node setup guidance when the runtime does not match.
+- Installed macOS builds bundle `ghostex` and `gx` CLI binaries with session display-title support and packaged runtime roots.
+- Previous Sessions hides command-pane runs, ranks rows by true last activity, and restores durable session tags, restored-from identity, and saved manual sidebar order.
+- Sidebar Last Active labels keep ticking from the client clock even when React Compiler caches the row render.
+- `gx find` / zehn history results are grouped by last-active day, show source session titles above matched prompt text, include compact last-active times, and stay quiet unless the user explicitly runs `zehn update`.
+- Provider session ids in terminal panes are hidden by default and remain available through the explicit session-id overlay setting.
+- Native terminal Cmd+C uses Ghostty's copy action so selected terminal text reaches the system clipboard consistently.
+- Native workspace focus, pane-tab close button chrome, centered sidebar context menus, and visible-row Cmd+number shortcuts are tighter across nightly sidebar interactions.
+- Rename Session > Generate Name keeps the visible "Generating title" overlay active until the generated rename is applied or submitted.
+- Clone & Add can be submitted as soon as locally valid repository and destination fields are present, while existing-destination previews still block cloning.
+- Delayed Send timers keep the leading clock visible over tags and deadline-only projections, and native terminal badges relayout immediately when timers start or cancel.
+- Sleep and close actions for presentation-backed zmx sessions use gxserver provider transitions even when older local session metadata is incomplete.
+- Ghostex-launched app, gxserver, zmx, agent-hook, Git, Beads, clone, and local dev subprocesses keep ANSI color capability even when the parent shell exports `NO_COLOR`.
+- Native sidebar web bundles use the React Compiler build path for smoother sidebar interactions.
+- Debug logs stay quiet in normal use, rotate before growing too large, and show a titlebar warning while Debug logging and UI is enabled.
+- Support diagnostics avoid writing raw title previews, command output previews, session id lists, paths, and stderr snippets while keeping counts and timing useful for troubleshooting.
+- Dragging images onto inactive terminal panes accepts drops reliably, and restarting Ghostex no longer relaunches the app when closing an installed build.
+- Project board and Tasks flows improve ticket routing, comments, placeholders, and Create & Start handoff behavior.
 
 ## 4.0.0-beta.3 - 2026-06-07
 
