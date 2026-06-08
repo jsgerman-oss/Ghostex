@@ -10,6 +10,18 @@
 <!-- CDXC:BetaDistribution 2026-06-07-08:57: The final beta.3 package additionally includes gxserver-owned agent hook installation and hook-event ingestion, duplicate attention side-effect suppression, in-place zmx Full reload, bundled-zmx prompt-editor capability checks, Previous Sessions command filtering, client-clock relative-time ticking, and zehn day-grouped title rows. -->
 <!-- CDXC:Distribution 2026-06-08-12:00: Release notes for 4.0.0 must consolidate the shipped nightly beta work into one public Sparkle, GitHub, and Homebrew release without beta-only distribution bullets. -->
 <!-- CDXC:Distribution 2026-06-08-10:02: Release notes for 4.0.1 must cover the post-4.0.0 nightly merge as user-facing upgrade recovery, terminal focus stability, Git review polish, Source tab startup validation, update UI persistence, and local Apple Silicon startup correctness. -->
+<!-- CDXC:Distribution 2026-06-08-14:24: Release notes for 4.0.2 must cover packaged Beads/code-server runtime fixes, terminal image paste controls, gxserver-backed attention side effects, command completion sound reliability, T3 runtime startup stability, Git workflow toast cleanup, and Android scrollback behavior. -->
+
+## 4.0.2 - 2026-06-08
+
+- Installed macOS builds now package the full embedded code-server runtime, reuse its Node 22 binary for gxserver, include the bundled Beads CLI, and validate that packaged runtime during release builds.
+- Source tab packaging is more reliable because the embedded VS Code runtime carries its ripgrep helper files and cleans up temporary build metadata after packaging.
+- Terminal image paste can convert clipboard images into previewable Markdown links with Cmd+V or Ctrl+V, and Settings -> Terminal Behavior now includes a Paste previewable images toggle for users who want normal clipboard behavior.
+- gxserver presentation updates now carry stable attention event IDs, so macOS can play completion sounds and notifications once for fresh attention events without replaying them during startup or stream recovery.
+- Command-pane completions keep using the action completion sound path and write status updates through per-process temp files, reducing missed completion sounds during concurrent status updates.
+- T3 Code runtime startup is coalesced while Project Editor panes are retargeting, reducing duplicate startup probes and layout churn when opening, closing, or switching embedded T3 panes.
+- Git agent workflows no longer pin duplicate persistent "running" toasts when the visible agent terminal already shows the workflow progress.
+- Ghostex Android auto-scroll now follows new output only when the terminal is already near the bottom, so users can scroll through history without selecting text first.
 
 ## 4.0.1 - 2026-06-08
 

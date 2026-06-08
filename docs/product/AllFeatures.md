@@ -1,6 +1,14 @@
 
 ## All features:
 
+- 4.0.2 improves installed macOS runtime packaging for code-server, gxserver, and Beads; adds a Paste previewable images terminal setting; improves gxserver-backed attention sounds; stabilizes T3 Code runtime startup; removes duplicate Git workflow running toasts; and makes Android auto-scroll preserve scrollback unless the terminal is near the bottom.
+- Installed macOS builds package the embedded code-server runtime, reuse its Node 22 binary for gxserver, include the bundled Beads CLI, and validate packaged runtime contents during release builds.
+- Terminal image paste can convert clipboard images into previewable Markdown links with Cmd+V or Ctrl+V, with a Settings -> Terminal Behavior toggle to preserve normal paste behavior when preferred.
+- gxserver-backed attention presentation carries stable event IDs so macOS completion sounds and notifications run once for fresh attention events without replaying during startup or stream recovery.
+- Command-pane completion sounds use the action completion path and per-process status temp files so concurrent status updates are less likely to hide completion state.
+- T3 Code runtime startup is coalesced while Project Editor panes retarget, reducing duplicate runtime probes and layout churn around embedded T3 panes.
+- Git agent workflows open visible agent terminals without also pinning duplicate persistent running toasts.
+- Ghostex Android auto-scroll follows output only when already near the bottom, allowing users to inspect scrollback without selecting text first.
 - 4.0.1 improves post-upgrade recovery for missing gxserver project/session rows, terminal focus stability during passive sidebar refreshes, Git commit review diff workflows, Source tab startup validation, Sparkle update button persistence, and local Apple Silicon startup architecture selection.
 - Ghostex 3.x to 4.x upgrades can rebuild missing gxserver project and session rows from canonical shared state or pre-cutover shared-state backups after an interrupted or corrupt migration.
 - Passive terminal-title and sidebar refreshes do not steal keyboard focus from the terminal while you are typing, and sidebar session clicks begin native focus/layout work before the sidebar highlight rerenders.
