@@ -1815,6 +1815,11 @@ function toCliSession(session, project, index, presentationSession) {
           : providerState || lifecycleState || "unknown";
   const providerSessionName = session.zmxName ?? session.providerState?.zmxName;
   const title = presentationSession?.title ?? session.title;
+  /*
+   * CDXC:GxserverSessionTitles 2026-06-07-09:33:
+   * CLI and mobile inventory should expose gxserver's rendered display title separately from the raw durable title, so clients can show the same unsynced/placeholder title chrome without leaking display glyphs into rename or restore payloads.
+   */
+  const displayTitle = presentationSession?.displayTitle ?? title;
   return {
     actions: presentationSession?.actions,
     agent: session.agentId,
@@ -1826,6 +1831,8 @@ function toCliSession(session, project, index, presentationSession) {
     createdAt: presentationSession?.createdAt ?? session.createdAt,
     globalRef: session.globalRef,
     groupId: presentationSession?.groupId,
+    displayTitle,
+    displayTitleTooltip: presentationSession?.displayTitleTooltip ?? displayTitle,
     isFocused: false,
     isFavorite: presentationSession?.isFavorite ?? session.isFavorite,
     isLocalOnly: false,
@@ -3479,9 +3486,11 @@ function resolveZehnLaunch() {
   }
 
   const cliDir = path.dirname(fileURLToPath(import.meta.url));
-  const bundledBin = path.resolve(cliDir, "..", "bin", "zehn");
-  if (fileExistsSync(bundledBin)) {
-    return { args: [], command: bundledBin, cwd: undefined, env: process.env };
+  for (const bundledRoot of ghostexBundledWebResourceRoots(cliDir)) {
+    const bundledBin = path.resolve(bundledRoot, "bin", "zehn");
+    if (fileExistsSync(bundledBin)) {
+      return { args: [], command: bundledBin, cwd: undefined, env: process.env };
+    }
   }
 
   const repoRoot = path.resolve(cliDir, "..");
@@ -3533,6 +3542,7 @@ function resolveGxserverCliLaunch() {
 
   const cliDir = path.dirname(fileURLToPath(import.meta.url));
   const roots = uniquePaths([
+    ...ghostexBundledWebResourceRoots(cliDir),
     path.resolve(cliDir, ".."),
     process.env.GHOSTEX_SOURCE_ROOT,
     findGhostexSourceRoot(process.cwd()),
@@ -3564,7 +3574,8 @@ function resolveGhostexTuiLaunch(flags = {}) {
   if (explicitBin) {
     return { args: [], command: explicitBin, env: {} };
   }
-  const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+  const cliDir = path.dirname(fileURLToPath(import.meta.url));
+  const repoRoot = path.resolve(cliDir, "..");
   /**
    * CDXC:GhostexTui 2026-05-25-15:11:
    * Installed Homebrew/app CLIs run from the application resource directory,
@@ -3572,8 +3583,19 @@ function resolveGhostexTuiLaunch(flags = {}) {
    * bundle root and the current checkout root so bare `gx` can find the TUI
    * binary or Cargo manifest instead of emitting cargo errors for a missing
    * bundled `tui/` directory.
+   *
+   * CDXC:GhostexTui 2026-06-07-12:13:
+   * Installed `gx` must open the TUI without requiring the user to run it from
+   * a source checkout. Treat the app resource root as a packaged runtime root
+   * and launch Web/bin/ghostex-tui before considering source-only Cargo paths.
+   *
+   * CDXC:CliInstall 2026-06-07-13:53:
+   * DMG and Homebrew command links now target Contents/Resources/CLI while helper
+   * binaries remain in Contents/Resources/Web/bin. Probe the sibling Web resource
+   * root before source roots so the installed CLI keeps using bundled tools.
    */
   const roots = uniquePaths([
+    ...ghostexBundledWebResourceRoots(cliDir),
     repoRoot,
     process.env.GHOSTEX_SOURCE_ROOT,
     findGhostexSourceRoot(process.cwd()),
@@ -3589,9 +3611,27 @@ function resolveGhostexTuiLaunch(flags = {}) {
   );
 }
 
+function ghostexBundledWebResourceRoots(cliDir) {
+  /**
+   * CDXC:CliInstall 2026-06-07-13:53:
+   * Installed app CLIs moved from Web/cli to CLI, but zmx/zehn/gxserver/TUI
+   * runtime assets still live under Web. Check both the new sibling Web folder
+   * and the legacy parent layout so old dev bundles and new release bundles
+   * resolve app-owned tools without PATH fallbacks.
+   */
+  return uniquePaths([
+    path.resolve(cliDir, "..", "Web"),
+    path.resolve(cliDir, ".."),
+  ]);
+}
+
 function resolveGhostexTuiLaunchFromRoot(root) {
   if (!root) {
     return undefined;
+  }
+  const bundledBin = path.join(root, "bin", "ghostex-tui");
+  if (fileExistsSync(bundledBin)) {
+    return { args: [], command: bundledBin, env: {} };
   }
   const debugBin = path.join(root, "tui", "target", "debug", "ghostex-tui");
   const releaseBin = path.join(root, "tui", "target", "release", "ghostex-tui");
@@ -4142,16 +4182,22 @@ function rankProviderSessionMatches(sessions, selector) {
 }
 
 function rankSessionTitleMatches(sessions, selector) {
-  const exact = sessions.filter((session) => session.title?.toLowerCase() === selector);
+  const exact = sessions.filter((session) =>
+    session.title?.toLowerCase() === selector ||
+    session.displayTitle?.toLowerCase() === selector
+  );
   if (exact.length > 0) {
     return exact;
   }
-  return sessions.filter((session) => session.title?.toLowerCase().includes(selector));
+  return sessions.filter((session) =>
+    session.title?.toLowerCase().includes(selector) ||
+    session.displayTitle?.toLowerCase().includes(selector)
+  );
 }
 
 function formatSessionMatches(sessions) {
   return sessions
-    .map((session) => `${session.alias}. ${session.projectName} - ${session.title}`)
+    .map((session) => `${session.alias}. ${session.projectName} - ${session.displayTitle ?? session.title}`)
     .join("\n");
 }
 
@@ -4474,9 +4520,10 @@ function stripAnsi(value) {
 
 function formatCompactSessionLine(session, { projectLabel } = {}) {
   const marker = session.isFocused ? "›" : " ";
+  const title = session.displayTitle || session.title || "-";
   const headline = projectLabel
-    ? `${marker} #${session.alias}  ${projectLabel} · ${session.title || "-"}`
-    : `${marker} #${session.alias}  ${session.title || "-"}`;
+    ? `${marker} #${session.alias}  ${projectLabel} · ${title}`
+    : `${marker} #${session.alias}  ${title}`;
   const details = [
     session.agent,
     formatCompactProvider(session),
@@ -5306,6 +5353,7 @@ export {
   requestGxserverRpc,
   resolveGxserverServerTarget,
   resolveListedSessions,
+  resolveGhostexTuiLaunchFromRoot,
   resolveZehnLaunchFromRoot,
   sendGxserverCliAction,
   serverUsage,

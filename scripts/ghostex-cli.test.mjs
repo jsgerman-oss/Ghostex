@@ -33,6 +33,7 @@ import {
   readAndroidReadinessSettings,
   requestGxserverRpc,
   resolveGxserverServerTarget,
+  resolveGhostexTuiLaunchFromRoot,
   resolveListedSessions,
   resolveZehnLaunchFromRoot,
   sendGxserverCliAction,
@@ -323,6 +324,27 @@ printf 'forwarded:%s\\n' "$1"
         command: zehnBin,
       });
       expect(usage()).not.toContain("search |");
+    } finally {
+      await rm(tempDir, { force: true, recursive: true });
+    }
+  });
+
+  test("resolves bundled Ghostex TUI from the app resource bin directory", async () => {
+    /**
+     * CDXC:GhostexTui 2026-06-07-12:13:
+     * Installed `gx` should launch the packaged Ghostex TUI from Web/bin even
+     * when the user runs the CLI outside a Ghostex source checkout.
+     */
+    const tempDir = await mkdtemp(path.join(tmpdir(), "ghostex-tui-"));
+    try {
+      const tuiBin = path.join(tempDir, "bin", "ghostex-tui");
+      await mkdir(path.dirname(tuiBin), { recursive: true });
+      await writeFile(tuiBin, "#!/bin/sh\n");
+
+      expect(resolveGhostexTuiLaunchFromRoot(tempDir)).toMatchObject({
+        args: [],
+        command: tuiBin,
+      });
     } finally {
       await rm(tempDir, { force: true, recursive: true });
     }
