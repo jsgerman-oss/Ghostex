@@ -20,6 +20,7 @@ AGENTS.md
 .agents/skills/ghostex-release-to-brew/SKILL.md
 storybook-static/
 native/macos/ghostexHost/Web/
+native/macos/ghostexHost/CLI/
 native/macos/zmuxHost/Web/
 native/macos/ghostexHost/Vendor/
 native/macos/ghostexHost/build/
@@ -38,6 +39,7 @@ native/macos/ghostexHost/ghostex.xcodeproj/
 # CDXC:Distribution 2026-06-04-01:42: Local Android APK artifacts moved under
 # release/downloads so release outputs are grouped together while the old
 # downloads/*.apk ignore remains as a guard for stale local scripts.
+# CDXC:CliInstall 2026-06-07-13:53: The macOS build stages app-bundled CLI launchers under native/macos/ghostexHost/CLI before Xcode copies them into Contents/Resources/CLI. Keep that folder ignored like Web because it is generated from scripts/ghostex-cli.mjs, scripts/ghostex-cli-launcher.sh, and scripts/skills.
 # CDXC:RepoSafety 2026-05-27-10:44: Image-generation scratch outputs under
 # tmp/imagegen are intermediate asset experiments, not source assets. Commit
 # only the selected asset destination so releases stay source-only and

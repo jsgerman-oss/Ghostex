@@ -31,7 +31,7 @@ private func isTerminalCliInvocation() -> Bool {
 private func runBundledCli(arguments: [String]) -> Never {
   guard
     let cliScriptPath = Bundle.main.resourceURL?
-      .appendingPathComponent("Web/cli/ghostex-cli.mjs").path,
+      .appendingPathComponent("CLI/ghostex-cli.mjs").path,
     FileManager.default.fileExists(atPath: cliScriptPath)
   else {
     fputs("Ghostex CLI is missing from this app bundle. Rebuild or reinstall Ghostex.\n", stderr)
@@ -103,6 +103,10 @@ if !cliArguments.isEmpty || isTerminalCliInvocation() {
    If PATH resolves the command to the app executable rather than the bundled
    shell launcher, a bare terminal invocation still means CLI/TUI intent while
    Dock/Finder launches remain non-TTY GUI launches.
+   CDXC:CliInstall 2026-06-07-13:53:
+   The app-owned CLI now lives under Contents/Resources/CLI instead of Web/cli,
+   so app-executable terminal invocations proxy to the same runtime that DMG and
+   Homebrew symlinks expose.
    */
   runBundledCli(arguments: cliArguments)
 }

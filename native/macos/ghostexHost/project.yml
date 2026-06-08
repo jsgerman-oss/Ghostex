@@ -141,6 +141,10 @@ targets:
       - path: Web
         buildPhase: resources
         type: folder
+      # CDXC:CliInstall 2026-06-07-13:53: The bundled CLI is app runtime, not web UI. Copy the generated CLI folder as Contents/Resources/CLI so both direct DMG launches and Homebrew casks symlink to the same app-owned command implementation.
+      - path: CLI
+        buildPhase: resources
+        type: folder
       # CDXC:Branding 2026-05-08-18:04: The installed macOS app must use the
       # same AppIcon asset catalog as the public Ghostex app so Finder, Dock,
       # app switcher, and signed release builds all resolve the compiled icon
