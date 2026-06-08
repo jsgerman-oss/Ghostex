@@ -5660,6 +5660,7 @@ styleElement.textContent = `
   }
   .titlebar-gxserver-daemon-dot[data-state="error"],
   .titlebar-gxserver-daemon-dot[data-state="nodeUnavailable"],
+  .titlebar-gxserver-daemon-dot[data-state="runtimeUnavailable"],
   .titlebar-gxserver-daemon-dot[data-state="startFailed"] {
     background: #fb7185;
     box-shadow: 0 0 0 3px rgba(251,113,133,0.16);

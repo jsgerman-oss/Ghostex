@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 
 import { spawnSync } from "node:child_process";
-import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -500,7 +500,7 @@ function preflightInstalledGxserverBundle(appPath) {
   }
   verifyInstalledAppCodeSignature(appPath);
   const runtime = readBundledGxserverNativeRuntime(appPath);
-  const nodeResolution = resolveNodeForGxserverPreflight(runtime);
+  const nodeResolution = resolveBundledNodeForGxserverPreflight(appPath);
   const dependencyError = gxserverNodeDependencyError(nodeResolution, runtime);
   if (dependencyError) {
     throw new Error(dependencyError);
@@ -585,90 +585,16 @@ function bundledNativeModulePreflightPaths(gxserverRoot, runtime) {
   return modulePaths;
 }
 
-function resolveNodeForGxserverPreflight(runtime) {
-  const preferredMajor = runtime?.nodeMajor ?? 22;
-  const candidates = systemNodeCandidates(homedir(), preferredMajor);
-  const seenPaths = new Set();
-  let firstVersionedCandidate;
-  for (const candidate of candidates) {
-    if (!existsSync(candidate.path) || seenPaths.has(candidate.path)) {
-      continue;
-    }
-    seenPaths.add(candidate.path);
-    const resolution = probeNode(candidate.path, candidate.source);
-    if (!resolution) {
-      continue;
-    }
-    if (nodeResolutionSatisfies(resolution, runtime)) {
-      return resolution;
-    }
-    firstVersionedCandidate ??= resolution;
-  }
-
-  const envPathResult = spawnSync("/usr/bin/env", ["node", "-p", "process.execPath"], {
-    cwd: repoRoot,
-    encoding: "utf8",
-    env: startEnvironment,
-    stdio: ["ignore", "pipe", "ignore"],
-  });
-  const envNodePath = envPathResult.status === 0 ? envPathResult.stdout.trim() : "";
-  if (envNodePath && !seenPaths.has(envNodePath)) {
-    const resolution = probeNode(envNodePath, "PATH");
-    if (resolution && nodeResolutionSatisfies(resolution, runtime)) {
-      return resolution;
-    }
-    firstVersionedCandidate ??= resolution;
-  }
-
-  return firstVersionedCandidate ?? { moduleVersion: "", path: "", source: "unresolved", version: "" };
-}
-
-function systemNodeCandidates(home, preferredMajor) {
+function resolveBundledNodeForGxserverPreflight(appPath) {
   /*
-  CDXC:LocalStartGxserver 2026-06-07-12:02:
-  The local-start preflight must resolve Node like the app bootstrap does, because LaunchServices does not inherit the shell that ran `bun run start`. Scan the same common direct-install roots before shims or PATH so the module-load probe validates the runtime Ghostex will actually use.
+  CDXC:LocalStartGxserver 2026-06-08-12:17:
+  The macOS app reuses code-server's bundled Node 22 runtime for gxserver. Local-start preflight must load native modules with Contents/Resources/Web/code-server/lib/node, not a developer-installed Node, so app launches cannot later show a system-Node missing or ABI-mismatch error.
   */
-  const candidates = [
-    { path: `/opt/homebrew/opt/node@${preferredMajor}/bin/node`, source: `Homebrew Apple Silicon node@${preferredMajor}` },
-    { path: `/usr/local/opt/node@${preferredMajor}/bin/node`, source: `Homebrew Intel/usr-local node@${preferredMajor}` },
-    { path: "/opt/homebrew/bin/node", source: "Homebrew Apple Silicon" },
-    { path: "/usr/local/bin/node", source: "Homebrew Intel/usr-local" },
-    { path: `${home}/.local/bin/node`, source: "user local bin" },
-    ...versionedNodeCandidates(`${home}/.nvm/versions/node`, "nvm", preferredMajor, "bin/node"),
-    { path: `${home}/.nvm/current/bin/node`, source: "nvm current" },
-    ...versionedNodeCandidates(`${home}/.local/share/mise/installs/node`, "mise install", preferredMajor, "bin/node"),
-    ...versionedNodeCandidates(`${home}/.asdf/installs/nodejs`, "asdf install", preferredMajor, "bin/node"),
-    ...versionedNodeCandidates(`${home}/.nodenv/versions`, "nodenv install", preferredMajor, "bin/node"),
-    ...versionedNodeCandidates(`${home}/.fnm/node-versions`, "fnm install", preferredMajor, "installation/bin/node"),
-    ...versionedNodeCandidates(`${home}/.local/share/fnm/node-versions`, "fnm install", preferredMajor, "installation/bin/node"),
-    ...versionedNodeCandidates(`${home}/Library/Application Support/fnm/node-versions`, "fnm install", preferredMajor, "installation/bin/node"),
-    ...versionedNodeCandidates(`${home}/.volta/tools/image/node`, "Volta install", preferredMajor, "bin/node"),
-    { path: `${home}/.volta/bin/node`, source: "Volta shim" },
-    { path: `${home}/.local/share/mise/shims/node`, source: "mise shim" },
-    { path: `${home}/.asdf/shims/node`, source: "asdf shim" },
-    { path: `${home}/.nodenv/shims/node`, source: "nodenv shim" },
-  ];
-  return candidates;
-}
-
-function versionedNodeCandidates(root, source, preferredMajor, relativeNodePath) {
-  try {
-    return readdirSync(root, { withFileTypes: true })
-      .filter((entry) => (entry.isDirectory() || entry.isSymbolicLink()) && nodeDirectoryNameMatchesMajor(entry.name, preferredMajor))
-      .map((entry) => entry.name)
-      .sort((left, right) => right.localeCompare(left, undefined, { numeric: true, sensitivity: "base" }))
-      .map((entry) => ({
-        path: path.join(root, entry, ...relativeNodePath.split("/")),
-        source,
-      }));
-  } catch {
-    return [];
+  const nodePath = path.join(appPath, "Contents", "Resources", "Web", "code-server", "lib", "node");
+  if (!existsSync(nodePath)) {
+    return { moduleVersion: "", path: "", source: "app bundle", version: "" };
   }
-}
-
-function nodeDirectoryNameMatchesMajor(name, major) {
-  const normalized = name.startsWith("v") ? name.slice(1) : name;
-  return normalized === String(major) || normalized.startsWith(`${major}.`);
+  return probeNode(nodePath, "app bundle") ?? { moduleVersion: "", path: nodePath, source: "app bundle", version: "" };
 }
 
 function probeNode(nodePath, source) {
@@ -699,23 +625,20 @@ function probeNode(nodePath, source) {
 }
 
 function gxserverNodeDependencyError(resolution, runtime) {
+  if (!resolution.path) {
+    return `Installed ${appName} is missing its bundled code-server Node runtime at Web/code-server/lib/node. Rebuild or reinstall Ghostex.`;
+  }
   if (!runtime) {
-    if (!resolution.path) {
-      return "gxserver requires Node.js 22 LTS or newer, but no system Node was found.";
-    }
     const major = nodeVersionMajor(resolution.version);
     return major && major >= 22
       ? undefined
-      : `gxserver requires Node.js 22 LTS or newer, but the detected system Node is ${resolution.version || "unknown"}.`;
+      : `Installed ${appName} bundled code-server Node runtime is too old: ${resolution.version || "unknown"}.`;
   }
   const requirement = runtime.nodeRequirement ?? `Node.js ${runtime.nodeMajor}.x with NODE_MODULE_VERSION ${runtime.nodeModuleVersion}`;
-  if (!resolution.path) {
-    return `gxserver requires ${requirement} for this Ghostex build, but no matching system Node was found.`;
-  }
   if (!nodeResolutionSatisfies(resolution, runtime)) {
     const version = resolution.version || "unknown";
     const moduleVersion = resolution.moduleVersion || "unknown";
-    return `gxserver requires ${requirement} for this Ghostex build, but the detected system Node is ${version} with NODE_MODULE_VERSION ${moduleVersion}.`;
+    return `Installed ${appName} bundled gxserver runtime is ${version} with NODE_MODULE_VERSION ${moduleVersion}, but native modules require ${requirement}. Rebuild or reinstall Ghostex.`;
   }
   return undefined;
 }

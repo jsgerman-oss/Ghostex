@@ -1,6 +1,9 @@
 /*
 CDXC:GxserverLifecycle 2026-05-30-14:04:
-gxserver milestone 1 uses system Node 22 LTS or newer and a fixed local API port of 58744 because the existing macOS bridge owns 58743. Ghostex must report missing or old Node clearly and must not bundle or auto-install a private Node runtime.
+gxserver milestone 1 uses Node 22 LTS or newer and a fixed local API port of 58744 because the existing macOS bridge owns 58743. Standalone/server installs report missing or old system Node clearly, while the macOS app bundles its own runtime.
+
+CDXC:GxserverLifecycle 2026-06-08-12:17:
+The macOS app reuses code-server's bundled Node 22 runtime for gxserver so users do not need a system Node install before local session restore, Project board, or sidebar control-plane features can start.
 */
 
 import {

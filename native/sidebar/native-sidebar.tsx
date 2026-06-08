@@ -3088,9 +3088,9 @@ function handleGxserverStatusEvent(payloadJson: string): void {
     showGxserverStoppedToast(status.message);
     return;
   }
-  if (status.state === "nodeUnavailable" && status.message) {
-    stopGxserverPresentationSubscription("node-unavailable");
-    showGxserverNodeDependencyToast(status.message);
+  if ((status.state === "nodeUnavailable" || status.state === "runtimeUnavailable") && status.message) {
+    stopGxserverPresentationSubscription("runtime-unavailable");
+    showGxserverRuntimeUnavailableToast(status.message);
     return;
   }
   if (status.ok === false && status.message) {
@@ -3622,16 +3622,16 @@ function showGxserverFailureToast(message: string): void {
   });
 }
 
-function showGxserverNodeDependencyToast(message: string): void {
+function showGxserverRuntimeUnavailableToast(message: string): void {
   /*
-  CDXC:GxserverBootstrap 2026-06-06-22:00:
-  App startup must explain missing or ABI-mismatched user-installed Node before gxserver launches, because otherwise the bundled database module can crash the daemon and surface as misleading auth-token errors.
+  CDXC:GxserverBootstrap 2026-06-08-12:17:
+  The macOS app reuses code-server's bundled Node 22 runtime for gxserver, so users should never see an install-Node action when startup fails. Treat missing or ABI-mismatched runtime files as a Ghostex app integrity problem.
   */
   gxserverDaemonToastPendingResolution = true;
-  showAppToast("error", "Node.js 22 required", message, {
+  showAppToast("error", "gxserver runtime unavailable", message, {
     action: {
-      label: "Open Node.js",
-      sidebarMessage: { type: "openExternalUrl", url: "https://nodejs.org/en/download" },
+      label: "Retry",
+      sidebarMessage: { type: "retryGxserverStart" },
     },
     persistent: true,
     toastId: GXSERVER_DAEMON_TOAST_ID,

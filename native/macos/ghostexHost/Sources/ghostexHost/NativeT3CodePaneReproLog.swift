@@ -353,6 +353,7 @@ enum NativeCodeServerRuntimeLauncher {
     let configuredRoot =
       environment["GHOSTEX_CODE_SERVER_ROOT"]?.trimmingCharacters(in: .whitespacesAndNewlines)
       ?? environment["ghostex_CODE_SERVER_ROOT"]?.trimmingCharacters(in: .whitespacesAndNewlines)
+    let sourceRoot = codeServerSourceRoot()
     var candidates: [String] = []
     func appendCandidate(_ path: String) {
       if !candidates.contains(path) {
@@ -366,7 +367,14 @@ enum NativeCodeServerRuntimeLauncher {
        CDXC:CodeServerSubmodule 2026-06-07-11:20:
        Ghostex owns the embedded legacy code-server checkout as a root submodule, so the native launcher must resolve code-server from ghostex_REPO_ROOT or the current repo directory instead of probing maintainer-specific home paths.
        GHOSTEX_CODE_SERVER_ROOT remains the explicit development override when a test needs a different checkout.
+
+       CDXC:CodeServerSubmodule 2026-06-08-11:46:
+       Local LaunchServices starts can keep an already-running app process whose environment predates `bun run start`. Resolve the compiled source root as a development candidate so the Source tab can still find the reviewed code-server submodule instead of showing an initialize-submodule toast while the checkout is present.
        */
+      if let resourceURL = Bundle.main.resourceURL {
+        appendCandidate(resourceURL.appendingPathComponent("Web/code-server", isDirectory: true).path)
+        appendCandidate(resourceURL.appendingPathComponent("code-server", isDirectory: true).path)
+      }
       if let repoRootPath = environment["ghostex_REPO_ROOT"]?.trimmingCharacters(
         in: .whitespacesAndNewlines),
         !repoRootPath.isEmpty
@@ -378,6 +386,7 @@ enum NativeCodeServerRuntimeLauncher {
       appendCandidate(
         URL(fileURLWithPath: FileManager.default.currentDirectoryPath, isDirectory: true)
           .appendingPathComponent("code-server", isDirectory: true).path)
+      appendCandidate(sourceRoot.appendingPathComponent("code-server", isDirectory: true).path)
     }
     for candidate in candidates {
       let repoRoot = URL(fileURLWithPath: candidate, isDirectory: true)
@@ -477,6 +486,9 @@ enum NativeCodeServerRuntimeLauncher {
      a newer major, which leaves the remote extension host reconnecting and
      extension commands stuck on activation. Resolve a matching Node runtime
      before falling back to PATH.
+
+     CDXC:EditorPanes 2026-06-08-12:17:
+     The bundled code-server runtime owns Ghostex's single app Node 22 executable at Web/code-server/lib/node. Prefer that app-owned runtime for code-server and gxserver so Source panes do not depend on user PATH, while preserving explicit GHOSTEX_CODE_SERVER_NODE_PATH for targeted development tests.
      */
     if let configuredNodePath {
       let nodePath = expandedPath(configuredNodePath)
@@ -495,6 +507,35 @@ enum NativeCodeServerRuntimeLauncher {
     }
 
     var attemptedVersions: [[String: Any]] = []
+    for candidate in bundledCodeServerNodeCandidates() {
+      let nodePath = expandedPath(candidate.path)
+      guard FileManager.default.isExecutableFile(atPath: nodePath),
+        let version = nodeRuntimeVersion(at: nodePath)
+      else {
+        continue
+      }
+      if version.major == requiredMajor {
+        appendResolvedCodeServerNodeLog(
+          nodePath: nodePath, requiredMajor: requiredMajor, source: candidate.source, version: version)
+        return nodePath
+      }
+      attemptedVersions.append([
+        "node": nodePath,
+        "source": candidate.source,
+        "version": version.raw,
+      ])
+    }
+
+    if isBundledCodeServerRepoRoot(repoRoot) {
+      throw NSError(
+        domain: "NativeCodeServerRuntimeLauncher",
+        code: 8,
+        userInfo: [
+          NSLocalizedDescriptionKey:
+            "Ghostex is missing its bundled code-server Node \(requiredMajor) runtime. Reinstall or rebuild Ghostex so Web/code-server/lib/node is present and matches code-server."
+        ])
+    }
+
     for candidate in codeServerNodeCandidates(requiredMajor: requiredMajor) {
       let nodePath = expandedPath(candidate)
       guard FileManager.default.isExecutableFile(atPath: nodePath),
@@ -523,6 +564,14 @@ enum NativeCodeServerRuntimeLauncher {
       ])
   }
 
+  private static func codeServerSourceRoot() -> URL {
+    var sourceRoot = URL(fileURLWithPath: #filePath, isDirectory: false)
+    for _ in 0..<6 {
+      sourceRoot.deleteLastPathComponent()
+    }
+    return sourceRoot
+  }
+
   private static func configuredCodeServerNodePath() -> String? {
     let environment = ProcessInfo.processInfo.environment
     let configuredPath =
@@ -544,6 +593,34 @@ enum NativeCodeServerRuntimeLauncher {
       return nil
     }
     return firstInteger(in: nodeEngine)
+  }
+
+  private static func bundledCodeServerNodeCandidates() -> [(path: String, source: String)] {
+    let cwd = URL(fileURLWithPath: FileManager.default.currentDirectoryPath, isDirectory: true)
+    let sourceRoot = codeServerSourceRoot()
+    var candidates: [(path: String, source: String)] = []
+    func appendCandidate(_ url: URL?, source: String) {
+      guard let url else {
+        return
+      }
+      let path = url.path
+      if !candidates.contains(where: { $0.path == path }) {
+        candidates.append((path: path, source: source))
+      }
+    }
+    appendCandidate(
+      Bundle.main.resourceURL?.appendingPathComponent("Web/code-server/lib/node"),
+      source: "app-bundled")
+    appendCandidate(
+      Bundle.main.resourceURL?.appendingPathComponent("code-server/lib/node"),
+      source: "app-bundled")
+    appendCandidate(
+      cwd.appendingPathComponent("native/macos/ghostexHost/Web/code-server/lib/node"),
+      source: "working-tree-bundled")
+    appendCandidate(
+      sourceRoot.appendingPathComponent("native/macos/ghostexHost/Web/code-server/lib/node"),
+      source: "source-bundled")
+    return candidates
   }
 
   private static func codeServerNodeCandidates(requiredMajor: Int) -> [String] {
@@ -669,20 +746,45 @@ enum NativeCodeServerRuntimeLauncher {
      bind the embedded editor port.
     */
     environment.removeValue(forKey: "CODE_SERVER_PARENT_PID")
-    /**
-     CDXC:EditorPanes 2026-05-06-15:00
-     The configured custom code-server checkout serves VS Code from source.
-     Launch it in VS Code dev mode so the workbench-dev shell installs the CSS
-     module import map; otherwise CEF receives CSS files as JavaScript modules
-     and the embedded editor renders blank.
-     */
-    environment["VSCODE_DEV"] = "1"
-    environment["NODE_ENV"] = "development"
-    environment["PATH"] = [
-      repoRoot.appendingPathComponent("node_modules/.bin").path,
-      environment["PATH"] ?? "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin",
-    ].joined(separator: ":")
+    if isBundledCodeServerRuntime(repoRoot: repoRoot) {
+      /*
+       CDXC:EditorPanes 2026-06-08-12:17:
+       Installed Ghostex builds run code-server from the packaged Web/code-server runtime. Do not force VS Code dev mode there; the staged darwin web-server payload should load as a packaged runtime while source checkouts keep the dev-mode import-map behavior below.
+       */
+      environment.removeValue(forKey: "VSCODE_DEV")
+      environment["NODE_ENV"] = "production"
+    } else {
+      /**
+       CDXC:EditorPanes 2026-05-06-15:00
+       The configured custom code-server checkout serves VS Code from source.
+       Launch it in VS Code dev mode so the workbench-dev shell installs the CSS
+       module import map; otherwise CEF receives CSS files as JavaScript modules
+       and the embedded editor renders blank.
+       */
+      environment["VSCODE_DEV"] = "1"
+      environment["NODE_ENV"] = "development"
+      environment["PATH"] = [
+        repoRoot.appendingPathComponent("node_modules/.bin").path,
+        environment["PATH"] ?? "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+      ].joined(separator: ":")
+    }
     return environment
+  }
+
+  private static func isBundledCodeServerRuntime(repoRoot: URL) -> Bool {
+    FileManager.default.isExecutableFile(atPath: repoRoot.appendingPathComponent("lib/node").path)
+  }
+
+  private static func isBundledCodeServerRepoRoot(_ repoRoot: URL) -> Bool {
+    guard let resourceURL = Bundle.main.resourceURL?.standardizedFileURL else {
+      return false
+    }
+    let resourcePath = resourceURL.path
+    let candidatePath = repoRoot.standardizedFileURL.path
+    return candidatePath == resourceURL.appendingPathComponent("Web/code-server", isDirectory: true).path
+      || candidatePath == resourceURL.appendingPathComponent("code-server", isDirectory: true).path
+      || candidatePath.hasPrefix("\(resourcePath)/Web/code-server/")
+      || candidatePath.hasPrefix("\(resourcePath)/code-server/")
   }
 
   private static func resolveCommandPath(_ command: String) throws -> String {
@@ -1450,6 +1552,39 @@ enum NativeT3RuntimeLauncher {
     }
 
     var attemptedVersions: [[String: Any]] = []
+    for candidate in bundledT3NodeCandidates() {
+      let nodePath = expandedPath(candidate.path)
+      guard FileManager.default.isExecutableFile(atPath: nodePath),
+        let version = t3NodeRuntimeVersion(at: nodePath)
+      else {
+        continue
+      }
+      if t3NodeVersionIsSupported(version) {
+        NativeT3CodePaneReproLog.append("nativeT3Runtime.node.resolved", [
+          "node": nodePath,
+          "source": candidate.source,
+          "version": version.raw,
+        ])
+        return nodePath
+      }
+      attemptedVersions.append([
+        "node": nodePath,
+        "source": candidate.source,
+        "version": version.raw,
+      ])
+    }
+
+    if bundledRuntimeEntrypointPath() != nil {
+      throw NSError(
+        domain: "NativeT3RuntimeLauncher",
+        code: 6,
+        userInfo: [
+          NSLocalizedDescriptionKey:
+            "Ghostex is missing a compatible bundled Node runtime for T3 Code. Reinstall or rebuild Ghostex so Web/code-server/lib/node is present and supports T3 Code.",
+          "attemptedVersions": attemptedVersions,
+        ])
+    }
+
     for candidate in t3NodeCandidates() {
       let nodePath = expandedPath(candidate)
       guard FileManager.default.isExecutableFile(atPath: nodePath),
@@ -1479,6 +1614,41 @@ enum NativeT3RuntimeLauncher {
           "T3 Code requires Node 22.16+, 23.11+, or 24.10+. Install a compatible Node runtime from nodejs.org or set GHOSTEX_T3CODE_NODE_PATH.",
         "attemptedVersions": attemptedVersions,
       ])
+  }
+
+  private static func bundledT3NodeCandidates() -> [(path: String, source: String)] {
+    let cwd = URL(fileURLWithPath: FileManager.default.currentDirectoryPath, isDirectory: true)
+    var sourceRoot = URL(fileURLWithPath: #filePath, isDirectory: false)
+    for _ in 0..<6 {
+      sourceRoot.deleteLastPathComponent()
+    }
+    /*
+     CDXC:T3CodePackaging 2026-06-08-12:17:
+     T3 Code is bundled under Web/t3code-server, but it still needs Node to launch. Reuse code-server's bundled Node at Web/code-server/lib/node before checking any developer/system Node so installed Ghostex does not show a Node install error through the T3 Code path.
+     */
+    var candidates: [(path: String, source: String)] = []
+    func appendCandidate(_ url: URL?, source: String) {
+      guard let url else {
+        return
+      }
+      let path = url.path
+      if !candidates.contains(where: { $0.path == path }) {
+        candidates.append((path: path, source: source))
+      }
+    }
+    appendCandidate(
+      Bundle.main.resourceURL?.appendingPathComponent("Web/code-server/lib/node"),
+      source: "app-bundled")
+    appendCandidate(
+      Bundle.main.resourceURL?.appendingPathComponent("code-server/lib/node"),
+      source: "app-bundled")
+    appendCandidate(
+      cwd.appendingPathComponent("native/macos/ghostexHost/Web/code-server/lib/node"),
+      source: "working-tree-bundled")
+    appendCandidate(
+      sourceRoot.appendingPathComponent("native/macos/ghostexHost/Web/code-server/lib/node"),
+      source: "source-bundled")
+    return candidates
   }
 
   private static func t3NodeCandidates() -> [String] {
