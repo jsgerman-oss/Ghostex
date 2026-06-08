@@ -118,7 +118,7 @@ The generated Homebrew helper is:
 gxserver/dist/homebrew/gxserver.rb
 ```
 
-The package uses system Node and declares Node 22 or newer. It does not bundle Node, macOS UI resources, or Beads. It does bundle the pinned `zmx` and `zehn` artifacts.
+The package uses system Node and declares Node 22 or newer. It does not bundle Node or macOS UI resources. It bundles the pinned `zmx`, `zehn`, and upstream Beads `bd` artifacts.
 
 ## App package
 
@@ -143,7 +143,7 @@ The app-launched and standalone daemon paths use the same compiled daemon code.
 - Node: system Node 22 LTS or newer. Ghostex does not install Node automatically.
 - zmx: bundled from the pinned submodule. Ghostex-managed zmx sessions must not use PATH `zmx`.
 - zehn: bundled from the pinned submodule.
-- Beads: not bundled. Install `bd` separately for Project board features.
+- Beads: bundled as the full pinned upstream `bd` CLI. Source checkouts can still use PATH `bd` when no bundled artifact is staged.
 
 If bundled `zmx` is missing, zmx-backed attach metadata must fail clearly. Falling back to PATH `zmx` is not allowed because the pinned fork carries Ghostex refresh behavior.
 
@@ -197,8 +197,8 @@ Bundled zmx missing:
 
 Beads missing:
 
-- Install `bd` separately.
-- Ghostex should show install guidance instead of bundling Beads.
+- Rebuild or reinstall Ghostex so the bundled `bd` artifact is staged.
+- Source checkouts can install `bd` on PATH as a developer fallback.
 
 Full native macOS build blocked:
 

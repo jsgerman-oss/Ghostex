@@ -127,22 +127,44 @@ test("zehn resolves from bundled artifacts and gives build guidance when missing
   }
 });
 
-test("bd is detected from PATH only and returns install guidance when missing", async () => {
+test("bd resolves from app resources before PATH and falls back to PATH for source checkouts", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "gxserver-toolchain-bd-"));
   try {
+    const appWebRoot = path.join(root, "app-web");
+    const gxserverRoot = path.join(appWebRoot, "gxserver");
+    const bundledBdPath = path.join(appWebRoot, "bin", "bd");
     const pathDir = path.join(root, "path-bin");
     const bdPath = path.join(pathDir, "bd");
+    await mkdir(gxserverRoot, { recursive: true });
+    await makeExecutable(bundledBdPath);
     await makeExecutable(bdPath);
 
-    const available = await getBdToolStatus({ envPath: pathDir });
+    const available = await getBdToolStatus({
+      envPath: pathDir,
+      gxserverRoot,
+      repoRoot: path.join(root, "repo"),
+    });
     assert.equal(available.availability, "available");
-    assert.equal(available.executablePath, bdPath);
-    assert.equal(available.source, "path");
+    assert.equal(available.executablePath, bundledBdPath);
+    assert.equal(available.source, "appResource");
 
-    const missing = await getBdToolStatus({ envPath: "" });
+    const pathFallback = await getBdToolStatus({
+      envPath: pathDir,
+      gxserverRoot: path.join(root, "missing-gxserver"),
+      resourcesPath: path.join(root, "missing-resources"),
+    });
+    assert.equal(pathFallback.availability, "available");
+    assert.equal(pathFallback.executablePath, bdPath);
+    assert.equal(pathFallback.source, "path");
+
+    const missing = await getBdToolStatus({
+      envPath: "",
+      gxserverRoot: path.join(root, "missing-gxserver"),
+      resourcesPath: path.join(root, "missing-resources"),
+    });
     assert.equal(missing.availability, "missing");
-    assert.match(missing.message, /does not bundle Beads/);
-    assert.match(missing.guidance ?? "", /brew install beads/);
+    assert.match(missing.message, /resources or PATH/);
+    assert.match(missing.guidance ?? "", /Packaged Ghostex builds include/);
   } finally {
     await rm(root, { force: true, recursive: true });
   }

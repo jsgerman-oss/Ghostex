@@ -27,7 +27,7 @@ Operational commands, install paths, server-only packaging, remote setup, and tr
 - Ghostex must not bundle, privately install, or auto-install Node. If Node is missing or too old, clients show a clear explanation with install guidance for Node 22 LTS or newer.
 - The top-level package is `gxserver/` with its own `package.json`.
 - Build output belongs only in `gxserver/dist/`.
-- Server-only packaging stages the shared daemon package under `gxserver/dist/server-package`, with compiled JS, package manifests, a system-Node `bin/gxserver` launcher, and bundled pinned `bin/zmx` and `bin/zehn` artifacts. Beads is never bundled.
+- Server-only packaging stages the shared daemon package under `gxserver/dist/server-package`, with compiled JS, package manifests, a system-Node `bin/gxserver` launcher, and bundled pinned `bin/zmx`, `bin/zehn`, and upstream Beads `bin/bd` artifacts.
 - Homebrew/server-only helper output lives under `gxserver/dist/homebrew`, declares `node@22`, installs only the headless gxserver package, and must not reference the macOS app bundle, AppKit, WebKit, Xcode, or CEF UI resources.
 - The macOS app copies the same staged server package into `Contents/Resources/Web/gxserver` so app-launched gxserver and standalone gxserver execute the same daemon code. The app may start gxserver when missing, but it does not own shutdown.
 - Direct `gxserver` runs the server in the foreground.
@@ -122,7 +122,7 @@ gxserver status --json
 curl -fsS http://127.0.0.1:58744/api/health
 ```
 
-Remote/headless hosts still need system Node 22 LTS or newer. For Project board features, install Beads separately so `bd` is on PATH.
+Remote/headless hosts still need system Node 22 LTS or newer. Project board features use bundled `bin/bd` by default, with PATH `bd` only as a source-checkout fallback.
 
 When installing the tarball directly instead of using the Homebrew helper, run `npm ci --omit=dev --no-audit --no-fund` in the extracted package before invoking `bin/gxserver`. Homebrew performs that production dependency install with its declared `node@22` dependency.
 

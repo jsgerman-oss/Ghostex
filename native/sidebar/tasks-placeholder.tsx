@@ -162,7 +162,6 @@ const BRIDGE_REQUEST_PREFIX = "__GHOSTEX_PROJECT_BEADS_REQUEST__";
 const BRIDGE_RESPONSE_EVENT = "ghostex-project-beads-response";
 const PROJECT_BOARD_RESPONSE_EVENT = "ghostex-project-board-response";
 const PROJECT_BOARD_IMAGE_RESPONSE_EVENT = "ghostex-project-board-image-response";
-const INSTALL_BEADS_COMMAND = "brew install beads";
 const PROJECT_BOARD_AUTO_REFRESH_INTERVAL_MS = 8_000;
 const PROJECT_BOARD_LABEL_REFRESH_INTERVAL_MS = 60_000;
 const PROJECT_BOARD_MAX_DEPENDENCY_OPTIONS = 600;
@@ -2488,17 +2487,17 @@ function ProjectBoardNotice({ message }: { message: string }) {
   const isMissingProject = /not initialized|no storage|not a beads|bd init|database|\.beads/i.test(message);
   const isMissingBeads =
     !isMissingProject &&
-    /executable|command not found|not found: bd|bd: not found|env: bd: no such file|cannot find/i.test(message);
+    /bd was not found|bundled bd|beads cli|executable|command not found|not found: bd|bd: not found|env: bd: no such file|cannot find/i.test(message);
   const command = isMissingProject ? "bd init" : "";
   const title = isMissingBeads
-    ? "Install Beads to use Project"
+    ? "Beads CLI unavailable"
     : isMissingProject
       ? "Initialize Beads for this project"
       : "Project board unavailable";
   const bodyLines = isMissingBeads
     ? [
-        "Ghostex uses the Beads CLI to read and update Project tickets.",
-        `Run ${INSTALL_BEADS_COMMAND}, then reopen or refresh the Project board.`,
+        "Packaged Ghostex includes the Beads CLI used to read and update Project tickets.",
+        "Update or rebuild Ghostex so the bundled bd is staged, or install bd on PATH for source checkouts.",
       ]
     : isMissingProject
       ? [
@@ -2520,7 +2519,10 @@ function ProjectBoardNotice({ message }: { message: string }) {
 
           CDXC:ProjectBoard 2026-05-29-15:49:
           Missing-Beads setup should use the same polished notice shell but stay intentionally terse: one header and two lines below.
-          Explain why Beads is required and give the install command without adding a second control row.
+          Explain why Beads is required without adding a second control row.
+
+          CDXC:ProjectBoardBeads 2026-06-08-10:46:
+          Project/Kanban should work on first open in packaged Ghostex because the app now bundles the full upstream `bd` CLI. If bd is still unavailable, frame the notice as a stale/broken bundle or source-checkout setup issue instead of telling packaged users to install Homebrew Beads.
         */}
         <div className="project-board-notice-icon" aria-hidden="true">
           <IconAlertTriangle />

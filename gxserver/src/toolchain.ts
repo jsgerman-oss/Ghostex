@@ -45,7 +45,10 @@ CDXC:GxserverToolchain 2026-05-30-14:18:
 Previous-session text search must use Ghostex's reviewed zehn fork from the pinned submodule or packaged resources. Missing zehn can explain how to build/install the artifact, but gxserver must not silently substitute a PATH zehn.
 
 CDXC:GxserverToolchain 2026-05-30-14:18:
-Beads is an upstream user tool rather than a Ghostex-bundled fork. Detect bd on PATH and return setup guidance when absent so Project board clients can surface a direct install action without hiding the missing dependency.
+Beads remains an upstream-owned tool rather than a Ghostex fork. Keep the Project board dependency explicit in toolchain status so clients can surface actionable setup or packaging guidance instead of hiding the missing dependency.
+
+CDXC:GxserverToolchain 2026-06-08-10:46:
+Project board should work on first open in packaged Ghostex without asking users to install Homebrew Beads. Resolve the full pinned upstream `bd` from app/gxserver resources before PATH, while keeping PATH as a source-checkout fallback for developers.
 */
 
 export async function requireBundledZmx(options: GxserverToolchainLayoutOptions = {}): Promise<GxserverResolvedTool> {
@@ -85,6 +88,14 @@ export async function getZmxToolStatus(
 export async function getBdToolStatus(
   options: GxserverToolchainLayoutOptions = {},
 ): Promise<GxserverToolCapabilityStatus> {
+  const bundled = await resolveBundledBdToolStatus(options);
+  if (bundled.availability === "available") {
+    return bundled;
+  }
+  if (bundled.availability === "notExecutable") {
+    return bundled;
+  }
+
   const executablePath = await findExecutableOnPath("bd", options.envPath ?? process.env.PATH ?? "");
   if (executablePath) {
     return {
@@ -98,10 +109,11 @@ export async function getBdToolStatus(
   }
   return {
     availability: "missing",
+    candidatePaths: bundled.candidatePaths,
     capability: "beadsProjectBoard",
     guidance:
-      "Install the Beads CLI so Ghostex can manage Project board tickets. On macOS, run `brew install beads`; in a repository, run `bd init` if the project has not been initialized.",
-    message: "bd was not found on PATH. Ghostex does not bundle Beads.",
+      "Packaged Ghostex builds include the pinned Beads CLI. For source checkouts, build/stage Beads into Ghostex app resources or install `bd` on PATH; in a repository, run `bd init` if the project has not been initialized.",
+    message: "bd was not found in Ghostex resources or PATH.",
     tool: "bd",
   };
 }
@@ -154,6 +166,45 @@ async function resolveBundledToolStatus(
   return missingBundledToolStatus(tool, "missing", candidatePaths);
 }
 
+async function resolveBundledBdToolStatus(
+  options: GxserverToolchainLayoutOptions,
+): Promise<GxserverToolCapabilityStatus> {
+  const candidates = bundledBdToolCandidates(options);
+  const inspected = await Promise.all(candidates.map(inspectCandidate));
+  const executable = inspected.find((candidate) => candidate.availability === "available");
+  if (executable) {
+    return {
+      availability: "available",
+      capability: "beadsProjectBoard",
+      executablePath: executable.executablePath,
+      message: `bd resolved from ${executable.source}. gxserver will use Ghostex's bundled Beads CLI.`,
+      source: executable.source,
+      tool: "bd",
+    };
+  }
+
+  const candidatePaths = candidates.map((candidate) => candidate.executablePath);
+  const nonExecutable = inspected.find((candidate) => candidate.availability === "notExecutable");
+  if (nonExecutable) {
+    return {
+      availability: "notExecutable",
+      candidatePaths,
+      capability: "beadsProjectBoard",
+      guidance:
+        "Packaged Ghostex builds must place an executable pinned Beads CLI at the bundled bd resource path. Rebuild the app resources so Project board operations can run.",
+      message: `Ghostex Project board requires bundled bd, but bundled bd exists and is not executable: ${nonExecutable.executablePath}.`,
+      tool: "bd",
+    };
+  }
+  return {
+    availability: "missing",
+    candidatePaths,
+    capability: "beadsProjectBoard",
+    message: "Bundled bd was not found in Ghostex resources.",
+    tool: "bd",
+  };
+}
+
 interface ToolCandidate {
   executablePath: string;
   source: Exclude<GxserverToolResolutionSource, "path">;
@@ -196,6 +247,42 @@ function bundledToolCandidates(
           },
           {
             executablePath: path.join(resourcesPath, "gxserver", "bin", tool),
+            source: "gxserverBundle" as const,
+          },
+        ]
+      : []),
+  ]);
+}
+
+function bundledBdToolCandidates(options: GxserverToolchainLayoutOptions): readonly ToolCandidate[] {
+  const gxserverRoot = options.gxserverRoot ?? defaultGxserverRoot();
+  const resourcesPath = options.resourcesPath ?? defaultResourcesPath();
+
+  return dedupeCandidates([
+    {
+      executablePath: path.join(gxserverRoot, "bin", "bd"),
+      source: "gxserverBundle",
+    },
+    {
+      executablePath: path.join(gxserverRoot, "..", "bin", "bd"),
+      source: "appResource",
+    },
+    {
+      executablePath: path.join(gxserverRoot, "..", "Web", "bin", "bd"),
+      source: "appResource",
+    },
+    {
+      executablePath: path.join(gxserverRoot, "..", "..", "Web", "bin", "bd"),
+      source: "appResource",
+    },
+    ...(resourcesPath
+      ? [
+          {
+            executablePath: path.join(resourcesPath, "Web", "bin", "bd"),
+            source: "appResource" as const,
+          },
+          {
+            executablePath: path.join(resourcesPath, "gxserver", "bin", "bd"),
             source: "gxserverBundle" as const,
           },
         ]

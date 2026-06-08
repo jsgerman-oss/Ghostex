@@ -369,7 +369,7 @@ test("GitHub command construction is allowlisted", () => {
   assert.throws(() => buildGitHubCommand({ action: "browse" as never, projectPath: "/repo" }, "/repo"), /Unsupported GitHub action/);
 });
 
-test("Beads command construction uses PATH bd only and preserves current board allowlist", async () => {
+test("Beads command construction uses resolved bd and preserves current board allowlist", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "gxserver-beads-ops-"));
   try {
     const repo = path.join(root, "repo");
@@ -445,7 +445,7 @@ test("Beads command construction uses PATH bd only and preserves current board a
       (error: unknown) => {
         assert.equal(error instanceof GxserverTypedOperationError, true);
         assert.equal((error as GxserverTypedOperationError).code, "dependencyUnavailable");
-        assert.match((error as GxserverTypedOperationError).message, /does not bundle Beads/);
+        assert.match((error as GxserverTypedOperationError).message, /resources or PATH/);
         return true;
       },
     );
