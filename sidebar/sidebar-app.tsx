@@ -146,12 +146,20 @@ import {
   type ghostexHotkeySettings,
 } from "../shared/ghostex-hotkeys";
 import type { RemoteMachineSettings } from "../shared/ghostex-settings";
+import type { SidebarAgentButton } from "../shared/sidebar-agents";
 import {
   readRenderedSidebarSessionSlotIds,
   readRenderedSidebarSessionSlots,
   resolveAdjacentRenderedSidebarSessionSlotId,
   resolveVisibleSidebarSessionSlotId,
 } from "./sidebar-visible-session-slots";
+import {
+  PRIMARY_AGENT_LAUNCHER_CHANGED_EVENT,
+  readPrimaryAgentLauncherId,
+  writePrimaryAgentLauncherId,
+  type PrimaryAgentLauncherChangedEvent,
+} from "./primary-agent-launcher";
+import { ProjectAgentLauncherIcon } from "./project-agent-launcher-icon";
 
 export type SidebarAppProps = {
   messageSource?: Pick<Window, "addEventListener" | "removeEventListener">;
@@ -170,6 +178,8 @@ type HeaderSortMenuPosition = {
   left: number;
   top: number;
 };
+
+const REFERENCE_SECTION_AGENT_MENU_WIDTH_PX = 220;
 
 type RecentProjectContextMenuPosition = {
   projectId: string;
@@ -715,9 +725,26 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
   const authoritativeSessionIdsByGroup = useSidebarStore((state) => state.sessionIdsByGroup);
   const [remoteMachineRuntimeStatuses, setRemoteMachineRuntimeStatuses] =
     useState<RemoteMachineRuntimeStatuses>({});
+  const [primaryAgentLauncherId, setPrimaryAgentLauncherId] = useState(readPrimaryAgentLauncherId);
   const buildStamp = useSidebarStore((state) =>
     state.hud.debuggingMode ? state.hud.buildStamp : undefined,
   );
+
+  useEffect(() => {
+    const refreshPrimaryAgentLauncher = (event: Event) => {
+      const changedEvent = event as PrimaryAgentLauncherChangedEvent;
+      setPrimaryAgentLauncherId(
+        typeof changedEvent.detail?.agentId === "string"
+          ? changedEvent.detail.agentId
+          : readPrimaryAgentLauncherId(),
+      );
+    };
+
+    window.addEventListener(PRIMARY_AGENT_LAUNCHER_CHANGED_EVENT, refreshPrimaryAgentLauncher);
+    return () => {
+      window.removeEventListener(PRIMARY_AGENT_LAUNCHER_CHANGED_EVENT, refreshPrimaryAgentLauncher);
+    };
+  }, []);
 
   const postSidebarDebugLog = useEffectEvent((event: string, details: unknown) => {
     if (!debuggingMode) {
@@ -3106,6 +3133,29 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
     vscode.postMessage({ type: "openBrowserChat" });
   };
 
+  const createReferenceAgentChat = (agent: SidebarAgentButton) => {
+    const quickGroupId = displayedReferenceChatGroupIds[0];
+    if (!quickGroupId) {
+      return;
+    }
+
+    /**
+     * CDXC:QuickAgents 2026-06-08-18:25:
+     * The Quick section header should expose the same selected-agent split picker as project headers. Launch through runSidebarAgent with the synthetic Quick group id so native creates a new projectless agent chat instead of targeting the active code project.
+     */
+    setPrimaryAgentLauncherId(agent.agentId);
+    writePrimaryAgentLauncherId(agent.agentId);
+    vscode.postMessage({
+      agentId: agent.agentId,
+      groupId: quickGroupId,
+      type: "runSidebarAgent",
+    });
+  };
+
+  const openConfigureAgentsModal = () => {
+    openAppModal({ modal: "configureAgents", type: "open" });
+  };
+
   const openReferencePlugins = () => {
     vscode.postMessage({ type: "openPluginsBrowserChat" });
   };
@@ -3235,10 +3285,13 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
                     {/* CDXC:QuickSessions 2026-05-16-12:55: The projectless chat collection is user-facing as Quick in the reference sidebar while internal chat group semantics stay unchanged. */}
                     <SidebarReferenceSectionHeader
                       activeSessionsSortMode={activeSessionsSortMode}
+                      agents={agents}
                       collapsed={isReferenceChatsCollapsed}
                       onCreateBrowserChat={createReferenceBrowserChat}
                       onCreateChat={createReferenceChat}
+                      onConfigureAgents={openConfigureAgentsModal}
                       onFilterChats={toggleSessionSearch}
+                      onRunAgent={createReferenceAgentChat}
                       onSetActiveSessionsSortMode={setActiveSessionsSortMode}
                       onToggleSessionTagFilter={toggleSessionTagFilter}
                       onToggleCollapsed={() => {
@@ -3253,6 +3306,7 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
                         }
                         setIsReferenceChatsCollapsed((previous) => !previous);
                       }}
+                      primaryAgentId={primaryAgentLauncherId}
                       sectionKey="quick"
                       selectedSessionTagFilters={selectedSessionTagFilters}
                       title="Quick"
@@ -4012,36 +4066,44 @@ function isNode(value: EventTarget | null): value is Node {
 function SidebarReferenceSectionHeader({
   activeSessionsSortMode,
   actionsAlwaysVisible,
+  agents = [],
   bulkActionLabel,
   collapsed,
   onAddProject,
   onAddRepository,
   onBulkProjectToggle,
+  onConfigureAgents,
   onCreateBrowserChat,
   onCreateChat,
   onFilterChats,
   onReconnect,
+  onRunAgent,
   onSetActiveSessionsSortMode,
   onToggleSessionTagFilter,
   onToggleCollapsed,
+  primaryAgentId,
   sectionKey,
   selectedSessionTagFilters = [],
   title,
 }: {
   activeSessionsSortMode?: SidebarActiveSessionsSortMode;
   actionsAlwaysVisible?: boolean;
+  agents?: readonly SidebarAgentButton[];
   bulkActionLabel?: string;
   collapsed: boolean;
   onAddProject?: () => void;
   onAddRepository?: () => void;
   onBulkProjectToggle?: () => void;
+  onConfigureAgents?: () => void;
   onCreateBrowserChat?: () => void;
   onCreateChat?: () => void;
   onFilterChats?: () => void;
   onReconnect?: () => void;
+  onRunAgent?: (agent: SidebarAgentButton) => void;
   onSetActiveSessionsSortMode?: (sortMode: SidebarActiveSessionsSortMode) => void;
   onToggleSessionTagFilter?: (tag: SidebarSessionTag) => void;
   onToggleCollapsed: () => void;
+  primaryAgentId?: string;
   sectionKey: ReferenceSidebarSectionId;
   selectedSessionTagFilters?: readonly SidebarSessionTag[];
   title: string;
@@ -4085,19 +4147,30 @@ function SidebarReferenceSectionHeader({
    * section headers. Last Active Sorting remains the default, while Manual
    * Sorting preserves the first visible last-active snapshot and later
    * user-defined row order.
+   *
+   * CDXC:QuickAgents 2026-06-08-18:25:
+   * Quick exposes the same selected-agent split picker as project headers, but
+   * keeps Browser and Terminal as separate section-header actions. The main
+   * agent half launches the selected provider and the chevron opens the shared
+   * agent list plus Configure.
    */
   const [sortMenuPosition, setSortMenuPosition] = useState<HeaderSortMenuPosition>();
+  const [agentMenuPosition, setAgentMenuPosition] = useState<HeaderSortMenuPosition>();
   const BulkProjectIcon =
     bulkActionLabel === "Collapse All" ? IconArrowsDiagonalMinimize : IconArrowsDiagonal2;
+  const primaryAgent = agents.find((agent) => agent.agentId === primaryAgentId) ?? agents[0];
+  const primaryAgentLabel = primaryAgent?.name ?? "Agent";
   const hasTagFilters = selectedSessionTagFilters.length > 0;
   const hasActions =
     onAddProject ||
     onAddRepository ||
     onBulkProjectToggle ||
+    onConfigureAgents ||
     onCreateBrowserChat ||
     onCreateChat ||
     onFilterChats ||
     onReconnect ||
+    onRunAgent ||
     onSetActiveSessionsSortMode ||
     onToggleSessionTagFilter;
   const sortModeLabel =
@@ -4110,15 +4183,34 @@ function SidebarReferenceSectionHeader({
 
   const openSortMenu = (event: ReactMouseEvent<HTMLButtonElement>) => {
     const bounds = event.currentTarget.getBoundingClientRect();
+    setAgentMenuPosition(undefined);
     setSortMenuPosition({
       left: bounds.left,
       top: bounds.bottom + 4,
     });
   };
 
+  const openAgentMenu = (event: ReactMouseEvent<HTMLButtonElement>) => {
+    const bounds = event.currentTarget.getBoundingClientRect();
+    setSortMenuPosition(undefined);
+    setAgentMenuPosition({
+      left: bounds.right - REFERENCE_SECTION_AGENT_MENU_WIDTH_PX,
+      top: bounds.bottom + 6,
+    });
+  };
+
   const selectSortMode = (sortMode: SidebarActiveSessionsSortMode) => {
     setSortMenuPosition(undefined);
     onSetActiveSessionsSortMode?.(sortMode);
+  };
+
+  const runAgent = (agent: SidebarAgentButton | undefined) => {
+    setAgentMenuPosition(undefined);
+    if (!agent) {
+      onConfigureAgents?.();
+      return;
+    }
+    onRunAgent?.(agent);
   };
 
   return (
@@ -4155,6 +4247,34 @@ function SidebarReferenceSectionHeader({
             >
               <IconFilter2 aria-hidden="true" size={14} stroke={1.9} />
             </button>
+          ) : null}
+          {onRunAgent || onConfigureAgents ? (
+            <div
+              className="group-agent-split-button reference-sidebar-section-agent-picker"
+              data-open={String(agentMenuPosition !== undefined)}
+            >
+              <button
+                aria-label={`Create ${primaryAgentLabel}`}
+                className="group-agent-main-button reference-sidebar-hover-action-tooltip"
+                data-tooltip={`Create ${primaryAgentLabel}`}
+                onClick={() => runAgent(primaryAgent)}
+                type="button"
+              >
+                <ProjectAgentLauncherIcon agent={primaryAgent} />
+              </button>
+              <button
+                aria-expanded={agentMenuPosition !== undefined}
+                aria-haspopup="menu"
+                aria-label="Select agent"
+                className="group-agent-toggle-button reference-sidebar-hover-action-tooltip"
+                data-open={String(agentMenuPosition !== undefined)}
+                data-tooltip="Select Agent"
+                onClick={openAgentMenu}
+                type="button"
+              >
+                <IconChevronDown aria-hidden="true" size={13} stroke={2} />
+              </button>
+            </div>
           ) : null}
           {onCreateBrowserChat ? (
             <button
@@ -4309,6 +4429,50 @@ function SidebarReferenceSectionHeader({
                 </div>
               ))
             : null}
+        </SidebarContextMenuPortal>
+      ) : null}
+      {agentMenuPosition ? (
+        <SidebarContextMenuPortal
+          menuClassName="session-context-menu group-agent-menu reference-sidebar-agent-menu"
+          menuStyle={{
+            left: `${agentMenuPosition.left}px`,
+            top: `${agentMenuPosition.top}px`,
+            width: `${REFERENCE_SECTION_AGENT_MENU_WIDTH_PX}px`,
+          }}
+          onDismiss={() => setAgentMenuPosition(undefined)}
+        >
+          {agents.map((agent) => (
+            <button
+              aria-pressed={primaryAgent?.agentId === agent.agentId}
+              className="session-context-menu-item group-control-menu-item group-agent-menu-item"
+              data-selected={String(primaryAgent?.agentId === agent.agentId)}
+              key={agent.agentId}
+              onClick={() => runAgent(agent)}
+              role="menuitem"
+              type="button"
+            >
+              <ProjectAgentLauncherIcon agent={agent} colorMode="brand" />
+              <span className="group-agent-menu-label">{agent.name}</span>
+              {primaryAgent?.agentId === agent.agentId ? (
+                <IconCheck aria-hidden="true" className="session-context-menu-icon" size={14} />
+              ) : null}
+            </button>
+          ))}
+          {agents.length > 0 ? (
+            <div className="session-context-menu-divider" role="separator" />
+          ) : null}
+          <button
+            className="session-context-menu-item group-control-menu-item group-agent-menu-item"
+            onClick={() => {
+              setAgentMenuPosition(undefined);
+              onConfigureAgents?.();
+            }}
+            role="menuitem"
+            type="button"
+          >
+            <IconSettings aria-hidden="true" className="session-context-menu-icon" size={14} />
+            <span className="group-agent-menu-label">Configure</span>
+          </button>
         </SidebarContextMenuPortal>
       ) : null}
     </div>

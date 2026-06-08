@@ -107,6 +107,11 @@ private let ghostexNativeColorDisablingEnvironmentKeys = [
   "NO_COLOR",
   "NODE_DISABLE_COLORS",
 ]
+/**
+ CDXC:AutoUpdate 2026-06-08-18:21:
+ Ghostex must check for available app updates at launch and then every 15 minutes while it remains running. Keep the cadence in native code because Sparkle owns appcast evaluation and the React titlebar should only render the resulting availability state.
+ */
+private let ghostexSparkleAvailabilityProbeInterval: TimeInterval = 15 * 60
 
 private func normalizedNativeProcessEnvironment(overrides: [String: String]?) -> [String: String] {
   /**
@@ -619,10 +624,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
   private let lidSleepHelperClient = LidSleepPrivilegedHelperClient.shared
   private let gxserverClient = GxserverClient()
   private var isSparkleUpdateAvailable = false
-  private lazy var updaterController = SPUStandardUpdaterController(
-    startingUpdater: true,
-    updaterDelegate: self,
-    userDriverDelegate: self)
+  private var sparkleAvailabilityProbeTimer: Timer?
+  private var didStartSparkleUpdater = false
+  private lazy var sparkleUserDriver = GhostexSparkleUserDriver(
+    hostBundle: Bundle.main,
+    delegate: self)
+  private lazy var sparkleUpdater = SPUUpdater(
+    hostBundle: Bundle.main,
+    applicationBundle: Bundle.main,
+    userDriver: sparkleUserDriver,
+    delegate: self)
   private var t3CodeRuntimeProcess: Process?
   private var t3CodeRuntimeStartedAt: Date?
   private var t3RuntimeVisibleSessionCwd: String?
@@ -659,8 +670,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
      Ghostex should still initialize Sparkle at launch, but scheduled update
      presentation is mediated by AppDelegate so new releases surface first as
      quiet titlebar chrome instead of an immediate modal prompt.
+
+     CDXC:AutoUpdate 2026-06-08-19:16:
+     Ghostex now provides a compact Sparkle user driver, so AppDelegate owns
+     the SPUUpdater instance directly instead of using SPUStandardUpdaterController,
+     which always creates Sparkle's full download and extraction status UI.
      */
-    _ = updaterController
+    _ = sparkleUpdater
     logGhosttyConfigStartup()
   }
 
@@ -682,7 +698,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
        First upgraded launch must let gxserver finish the legacy macOS shared-state import before WKWebView injects sidebar storage. Creating the sidebar earlier can hydrate old `project-*`/`g-*` IDs and later persist them over the canonical P/G rewrite, so window creation waits for the local gxserver bootstrap result.
        */
       startGxserverBootstrapThenCreateWindow()
-      startSparkleLaunchUpdateProbe()
+      if startSparkleUpdater() {
+        startSparkleUpdateAvailabilityProbes()
+      }
       scheduleOSIntegrationFlushRetry()
     }
     tickTimer = Timer.scheduledTimer(withTimeInterval: 1.0 / 60.0, repeats: true) { [weak self] _ in
@@ -722,6 +740,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
       NSEvent.removeMonitor(appHotkeyEventMonitor)
       self.appHotkeyEventMonitor = nil
     }
+    sparkleAvailabilityProbeTimer?.invalidate()
+    sparkleAvailabilityProbeTimer = nil
     persistMainWindowChrome()
     (window?.contentView as? ghostexRootView)?.persistNativeChromeForAppLifecycle()
     Self.appendNativeHostLifecycleLog(
@@ -1761,29 +1781,88 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
   }
 
   @MainActor
-  private func startSparkleLaunchUpdateProbe() {
+  @discardableResult
+  private func startSparkleUpdater() -> Bool {
+    /**
+     CDXC:AutoUpdate 2026-06-08-19:16:
+     The compact update flow still relies on Sparkle's updater engine. Start
+     SPUUpdater directly before quiet availability probes so Ghostex can replace
+     only the user driver UI while preserving Sparkle's appcast and install
+     state machine.
+     */
+    if didStartSparkleUpdater {
+      return true
+    }
+    do {
+      try sparkleUpdater.start()
+      didStartSparkleUpdater = true
+      return true
+    } catch {
+      showSparkleStartupError(error)
+      return false
+    }
+  }
+
+  @MainActor
+  private func showSparkleStartupError(_ error: Error) {
+    let alert = NSAlert()
+    alert.alertStyle = .warning
+    alert.messageText = "Ghostex updates are unavailable"
+    alert.informativeText = "Sparkle could not start the updater. \(error.localizedDescription)"
+    alert.addButton(withTitle: "OK")
+    alert.runModal()
+  }
+
+  @MainActor
+  private func startSparkleUpdateAvailabilityProbes() {
     /**
      CDXC:AutoUpdate 2026-05-28-14:19:
      Launch should still check whether a newer Ghostex build exists, but the
      first user-facing surface must be the quiet titlebar download button.
      Use Sparkle's informational probe so launch never offers or downloads the
      update before the user clicks the titlebar control.
+
+     CDXC:AutoUpdate 2026-06-08-18:21:
+     Ghostex should also repeat that quiet availability check every 15 minutes
+     while the app stays open, so users who keep the app running still get the
+     titlebar update affordance soon after a new appcast is published.
      */
-    updaterController.updater.checkForUpdateInformation()
+    sparkleAvailabilityProbeTimer?.invalidate()
+    runSparkleUpdateAvailabilityProbe()
+    let timer = Timer.scheduledTimer(
+      withTimeInterval: ghostexSparkleAvailabilityProbeInterval,
+      repeats: true
+    ) { [weak self] _ in
+      Task { @MainActor in
+        self?.runSparkleUpdateAvailabilityProbe()
+      }
+    }
+    timer.tolerance = 60
+    sparkleAvailabilityProbeTimer = timer
+  }
+
+  @MainActor
+  private func runSparkleUpdateAvailabilityProbe() {
+    sparkleUpdater.checkForUpdateInformation()
   }
 
   @IBAction func checkForUpdates(_ sender: Any?) {
-    updaterController.updater.checkForUpdates()
+    sparkleUpdater.checkForUpdates()
   }
 
   @MainActor private func showUpdateDialogFromTitlebar() {
     /**
      CDXC:AutoUpdate 2026-05-28-14:19:
      The titlebar download button is the consent boundary for update UI. Once
-     the user clicks it, hand off to Sparkle's standard dialog so signing,
-     release notes, download, and install behavior stay on the supported path.
+     the user clicks it, hand off to Sparkle so signing, release notes,
+     download, and install behavior stay on the supported path.
+
+     CDXC:AutoUpdate 2026-06-08-19:16:
+     The handoff uses GhostexSparkleUserDriver rather than Sparkle's full
+     standard UI so the release notes and final relaunch prompt remain visible
+     while the download and extraction progress windows stay hidden.
      */
-    updaterController.updater.checkForUpdates()
+    sparkleUpdater.checkForUpdates()
   }
 
   @MainActor private func setSparkleUpdateAvailable(_ available: Bool) {
@@ -1917,6 +1996,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
       ghostty: ghostty,
       defaultWorkspaceBackgroundColor: ghosttyConfigColor("background") ?? .black,
       gxserverBootstrap: gxserverClient.webBootstrap(status: gxserverStatus),
+      initialUpdateAvailable: isSparkleUpdateAvailable,
       sendEvent: { [weak self] event in
         self?.bridge?.send(event)
         (self?.window?.contentView as? ghostexRootView)?.postHostEvent(event)
@@ -5384,6 +5464,7 @@ final class ghostexRootView: NSView {
     ghostty: GhostexGhosttyApp,
     defaultWorkspaceBackgroundColor: NSColor,
     gxserverBootstrap: [String: Any],
+    initialUpdateAvailable: Bool,
     sendEvent: @escaping (HostEvent) -> Void,
     syncGhosttyTerminalSettings: @escaping (SyncGhosttyTerminalSettings) -> Void,
     applyGhosttyConfigSettings: @escaping (ApplyGhosttyConfigSettings) -> Void,
@@ -5452,6 +5533,7 @@ final class ghostexRootView: NSView {
       "homeDir": FileManager.default.homeDirectoryForCurrentUser.path,
       "ghostexHomeDir": GhostexAppStorage.sharedRootDirectory.path,
       "sharedSidebarStorage": GhostexAppStorage.readSharedSidebarStorage(),
+      "updateAvailable": initialUpdateAvailable,
       "workspaceName": workspaceName.isEmpty ? "Ghostex" : workspaceName,
     ]
     if let data = try? JSONSerialization.data(withJSONObject: bootstrap),
@@ -5473,6 +5555,12 @@ final class ghostexRootView: NSView {
        Include the bundle identifier in the native bootstrap so the sidebar's
        production-only CLI auto-linker does not let ghostex-dev local starts
        overwrite the user's public ghostex/gx command symlinks.
+
+       CDXC:AutoUpdate 2026-06-08-18:21:
+       Sparkle can detect an update before the titlebar WKWebView has loaded.
+       Seed the native availability boolean into bootstrap so the initial React
+       render shows the download button without waiting for the next 15-minute
+       appcast probe.
        */
       configuration.userContentController.addUserScript(bootstrapScript)
       modalHostConfiguration.userContentController.addUserScript(bootstrapScript)
@@ -5560,10 +5648,16 @@ final class ghostexRootView: NSView {
      Ghostty surfaces can keep native subviews/layers that draw and receive
      events aggressively. Add the terminal workspace behind the sidebar
      chrome so project/session controls always own their visible hit area.
-     */
+    */
     addSubview(sidebarView)
+    divider.separatorColor = Self.workareaSeparatorColor
     addSubview(divider)
     sidebarWorkareaBorderView.lineColor = Self.workareaSeparatorColor
+    /**
+     CDXC:NativeSidebarChrome 2026-06-08-19:58:
+     The visible sidebar/workarea separator must be the same native view that owns resize dragging and the resize cursor. Keep the older standalone border view hidden so the apparent drag bar cannot become a separate default-cursor hover surface.
+     */
+    sidebarWorkareaBorderView.isHidden = true
     workareaTitlebarBorderView.lineColor = Self.workareaSeparatorColor
     addSubview(sidebarWorkareaBorderView)
     addSubview(workareaTitlebarBorderView)
@@ -6642,6 +6736,9 @@ final class ghostexRootView: NSView {
       payload["projectId"] = activeProjectId
     }
     payload["projectIconDataUrl"] = command.activeProjectIconDataUrl ?? NSNull()
+    if let activeProjectIsQuick = command.activeProjectIsQuick {
+      payload["projectIsQuick"] = activeProjectIsQuick
+    }
     if let activeProjectName = command.activeProjectName {
       payload["projectName"] = activeProjectName
     }
@@ -6702,6 +6799,7 @@ final class ghostexRootView: NSView {
         },
         "generateCommitBody": git.generateCommitBody,
         "hasGitHubCli": git.hasGitHubCli,
+        "hasGitHubRemote": git.hasGitHubRemote,
         "hasOriginRemote": git.hasOriginRemote,
         "hasUpstream": git.hasUpstream,
         "hasWorkingTreeChanges": git.hasWorkingTreeChanges,
@@ -6950,9 +7048,15 @@ final class ghostexRootView: NSView {
      lives in the isolated React titlebar beside the project identity. Push a
      tiny boolean payload so React can render or hide the quiet download button
      without owning appcast parsing or update installation.
+
+     CDXC:AutoUpdate 2026-06-08-18:21:
+     Native may learn about an update before React installs the titlebar bridge.
+     Store the latest boolean on the titlebar window before invoking the bridge
+     so React can hydrate the current update state when it becomes ready.
      */
     titlebarChromeWebView.evaluateJavaScript(
       """
+      window.__ghostex_PENDING_TITLEBAR_UPDATE_AVAILABLE__ = \(available ? "true" : "false");
       window.__ghostex_TITLEBAR__?.setActiveProjectState(\(json));
       undefined;
       """)
@@ -8712,7 +8816,8 @@ final class ghostexRootView: NSView {
     sidebarView.resizeHitExclusionSide = sidebarSide
     sidebarView.resizeHitExclusionWidth = sidebarResizeHitWidth
     divider.frame = frames.divider
-    window?.invalidateCursorRects(for: divider)
+    divider.separatorFrame = dividerSeparatorFrame(for: frames)
+    window?.invalidateCursorRects(for: self)
     workspaceView.frame = frames.workspace
     workspaceInteractionShieldView.frame = frames.workspace
     terminalPaneDropOverlayView.frame = frames.workspace
@@ -8722,7 +8827,6 @@ final class ghostexRootView: NSView {
     workareaTitlebarBorderView.frame = frames.workareaTitlebarBorder
     titlebarChromeView.frame = frames.titlebarChrome
     promoteSidebarChrome()
-    divider.refreshResizeCursorIfHovering()
     startupOverlayView.frame = bounds
     let startupOverlayIconSize = min(
       Self.startupOverlayIconSize,
@@ -8735,6 +8839,18 @@ final class ghostexRootView: NSView {
       height: startupOverlayIconSize
     )
     titlebarChromeView.titlebarHeight = Self.reactTitlebarHeight
+  }
+
+  override func resetCursorRects() {
+    super.resetCursorRects()
+    guard !divider.frame.isNull, !divider.frame.isEmpty else {
+      return
+    }
+    /**
+     CDXC:NativeSidebarChrome 2026-06-08-19:58:
+     Register the sidebar resize cursor on the root layout boundary as well as the handle itself because full-frame transparent WebKit chrome can publish its own cursor rects over the same window. The root rect follows the actual divider frame, keeping the cursor stable across hover and live sidebar resize.
+     */
+    addCursorRect(divider.frame, cursor: .resizeLeftRight)
   }
 
   private func visualSidebarFrame(for frames: RootLayoutFrames) -> CGRect {
@@ -8763,6 +8879,17 @@ final class ghostexRootView: NSView {
       height: frames.sidebar.height)
   }
 
+  private func dividerSeparatorFrame(for frames: RootLayoutFrames) -> CGRect? {
+    let dividerBounds = CGRect(origin: .zero, size: frames.divider.size)
+    let separatorFrame = frames.sidebarWorkareaBorder
+      .offsetBy(dx: -frames.divider.minX, dy: -frames.divider.minY)
+      .intersection(dividerBounds)
+    guard !separatorFrame.isNull, !separatorFrame.isEmpty else {
+      return nil
+    }
+    return separatorFrame
+  }
+
   private func promoteSidebarChrome() {
     /**
      CDXC:SidebarLayering 2026-05-23-01:51:
@@ -8774,9 +8901,15 @@ final class ghostexRootView: NSView {
      CDXC:NativeSidebarChrome 2026-06-05-05:01:
      The #252525 sidebar/workarea separator must remain visible on the
      sidebar's right edge after both shrink and expand drags. The sidebar
-     WKWebView now paints under the transparent resize divider, so promote the
-     1px border above that webview and divider instead of leaving it in its
-     original insertion order where the extended webview can cover it.
+     WKWebView now paints under the transparent resize divider, so the native
+     resize handle draws the separator inside the same AppKit view that owns
+     the drag gesture and cursor rect.
+
+     CDXC:NativeSidebarChrome 2026-06-08-19:58:
+     Z-order-only cursor fixes were not reliable enough for the macOS sidebar
+     boundary. Keep the previous divider-before-border ordering while making
+     the visible boundary belong to PaneResizeHandleView, not the hidden
+     standalone border view.
      */
     addSubview(sidebarView, positioned: .above, relativeTo: titlebarChromeView)
     addSubview(divider, positioned: .above, relativeTo: sidebarView)
@@ -10445,10 +10578,19 @@ final class PaneResizeHandleView: NSView {
   var onDrag: ((CGFloat) -> Void)?
   var onDragEnded: (() -> Void)?
   var onDoubleClick: (() -> Void)?
+  var separatorColor: NSColor = .clear {
+    didSet {
+      needsDisplay = true
+    }
+  }
+  var separatorFrame: CGRect? {
+    didSet {
+      if oldValue != separatorFrame {
+        needsDisplay = true
+      }
+    }
+  }
   private var lastDragWindowX: CGFloat = 0
-  private var cursorTrackingArea: NSTrackingArea?
-  private var isHoveringResizeHandle = false
-  private var cursorMonitor: Any?
 
   override init(frame frameRect: NSRect) {
     super.init(frame: frameRect)
@@ -10462,121 +10604,8 @@ final class PaneResizeHandleView: NSView {
     layer?.backgroundColor = NSColor.clear.cgColor
   }
 
-  deinit {
-    removeCursorMonitor()
-  }
-
-  override var acceptsFirstResponder: Bool {
-    true
-  }
-
-  override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
-    true
-  }
-
-  override func hitTest(_ point: NSPoint) -> NSView? {
-    bounds.contains(point) ? self : nil
-  }
-
-  override func updateTrackingAreas() {
-    super.updateTrackingAreas()
-    if let cursorTrackingArea {
-      removeTrackingArea(cursorTrackingArea)
-    }
-    /**
-     CDXC:NativeSidebarChrome 2026-06-08-08:46:
-     The transparent sidebar resize strip must keep the left-right resize cursor for the whole hover, not just the first AppKit cursor-rect update. Track enter, move, and cursor-update events directly on the native handle so the sidebar WKWebView underneath cannot immediately restore the arrow cursor while the pointer is still in the drag band.
-     */
-    let trackingArea = NSTrackingArea(
-      rect: .zero,
-      options: [.activeAlways, .inVisibleRect, .mouseEnteredAndExited, .mouseMoved, .cursorUpdate],
-      owner: self,
-      userInfo: nil
-    )
-    cursorTrackingArea = trackingArea
-    addTrackingArea(trackingArea)
-  }
-
   override func resetCursorRects() {
-    super.resetCursorRects()
     addCursorRect(bounds, cursor: .resizeLeftRight)
-  }
-
-  override func cursorUpdate(with event: NSEvent) {
-    setResizeCursorIfPointerIsInside(event)
-  }
-
-  override func mouseEntered(with event: NSEvent) {
-    isHoveringResizeHandle = true
-    installCursorMonitor()
-    NSCursor.resizeLeftRight.set()
-  }
-
-  override func mouseMoved(with event: NSEvent) {
-    setResizeCursorIfPointerIsInside(event)
-  }
-
-  override func mouseExited(with event: NSEvent) {
-    if !containsWindowPoint(event.locationInWindow) {
-      isHoveringResizeHandle = false
-      removeCursorMonitor()
-    }
-  }
-
-  func refreshResizeCursorIfHovering() {
-    guard let window else {
-      isHoveringResizeHandle = false
-      removeCursorMonitor()
-      return
-    }
-    let isInside = containsWindowPoint(window.mouseLocationOutsideOfEventStream)
-    isHoveringResizeHandle = isInside
-    if isInside {
-      installCursorMonitor()
-      NSCursor.resizeLeftRight.set()
-    } else {
-      removeCursorMonitor()
-    }
-  }
-
-  private func setResizeCursorIfPointerIsInside(_ event: NSEvent) {
-    guard containsWindowPoint(event.locationInWindow) else {
-      isHoveringResizeHandle = false
-      removeCursorMonitor()
-      return
-    }
-    isHoveringResizeHandle = true
-    installCursorMonitor()
-    NSCursor.resizeLeftRight.set()
-  }
-
-  private func containsWindowPoint(_ windowPoint: NSPoint) -> Bool {
-    bounds.contains(convert(windowPoint, from: nil))
-  }
-
-  private func installCursorMonitor() {
-    guard cursorMonitor == nil else {
-      return
-    }
-    cursorMonitor = NSEvent.addLocalMonitorForEvents(
-      matching: [.mouseMoved, .leftMouseDragged]
-    ) { [weak self] event in
-      guard let self else {
-        return event
-      }
-      if self.isHoveringResizeHandle || self.containsWindowPoint(event.locationInWindow) {
-        self.setResizeCursorIfPointerIsInside(event)
-      }
-      return event
-    }
-  }
-
-  private func removeCursorMonitor() {
-    guard let cursorMonitor else {
-      return
-    }
-    NSEvent.removeMonitor(cursorMonitor)
-    self.cursorMonitor = nil
   }
 
   /**
@@ -10587,10 +10616,18 @@ final class PaneResizeHandleView: NSView {
    */
   override func draw(_ dirtyRect: NSRect) {
     super.draw(dirtyRect)
+    guard let separatorFrame else {
+      return
+    }
+    let visibleSeparatorFrame = separatorFrame.intersection(bounds)
+    guard !visibleSeparatorFrame.isNull, !visibleSeparatorFrame.isEmpty else {
+      return
+    }
+    separatorColor.setFill()
+    visibleSeparatorFrame.fill()
   }
 
   override func mouseDown(with event: NSEvent) {
-    setResizeCursorIfPointerIsInside(event)
     if event.clickCount >= 2 {
       onDoubleClick?()
       return
@@ -10599,7 +10636,6 @@ final class PaneResizeHandleView: NSView {
   }
 
   override func mouseDragged(with event: NSEvent) {
-    setResizeCursorIfPointerIsInside(event)
     /**
      CDXC:NativeSidebarChrome 2026-05-04-08:19
      Sidebar resize drags must track the pointer in stable window coordinates.
@@ -10614,7 +10650,6 @@ final class PaneResizeHandleView: NSView {
   }
 
   override func mouseUp(with event: NSEvent) {
-    setResizeCursorIfPointerIsInside(event)
     onDragEnded?()
   }
 }

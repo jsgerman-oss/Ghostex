@@ -4,7 +4,6 @@ import {
   IconChevronDown,
   IconChevronLeft,
   IconChevronRight,
-  IconCode,
   IconCopy,
   IconFolder,
   IconFolderOpen,
@@ -45,7 +44,6 @@ import {
   type MouseEvent as ReactMouseEvent,
 } from "react";
 import { AppTooltip, SIDEBAR_TOOLTIP_DISMISS_EVENT } from "./app-tooltip";
-import { AGENT_LOGO_COLORS, AGENT_LOGOS } from "./agent-logos";
 import {
   getSidebarSessionLifecycleState,
   type SidebarTheme,
@@ -86,6 +84,13 @@ import {
   readWorkspaceThemeColorHistory,
   writeWorkspaceThemeColorHistory,
 } from "./workspace-theme-color-history";
+import {
+  PRIMARY_AGENT_LAUNCHER_CHANGED_EVENT,
+  readPrimaryAgentLauncherId,
+  writePrimaryAgentLauncherId,
+  type PrimaryAgentLauncherChangedEvent,
+} from "./primary-agent-launcher";
+import { ProjectAgentLauncherIcon } from "./project-agent-launcher-icon";
 
 const CONTEXT_MENU_MARGIN_PX = 12;
 const CONTEXT_MENU_WIDTH_PX = 196;
@@ -95,7 +100,6 @@ const GROUP_CONTROL_MENU_MARGIN_PX = 12;
 const GROUP_AGENT_MENU_WIDTH_PX = 220;
 const PROJECT_HEADER_TOOLTIP_VIEWPORT_MARGIN_PX = 8;
 const PROJECT_HEADER_TOOLTIP_TRIGGER_OFFSET_PX = 8;
-const PROJECT_AGENT_LAUNCHER_STORAGE_KEY = "ghostex-sidebar-project-terminal-launcher";
 const GROUP_DRAG_HOLD_DELAY_MS = 130;
 const GROUP_DRAG_HOLD_TOLERANCE_PX = 12;
 const TOUCH_GROUP_DRAG_HOLD_DELAY_MS = 180;
@@ -761,7 +765,7 @@ export function SessionGroupSection({
   const [isEditing, setIsEditing] = useState(false);
   const [openControlMenu, setOpenControlMenu] = useState<GroupControlMenu>();
   const [primaryProjectAgentLauncherId, setPrimaryProjectAgentLauncherId] = useState(
-    readPrimaryProjectAgentLauncherId,
+    readPrimaryAgentLauncherId,
   );
   const [projectSessionListCollapsedState, setProjectSessionListCollapsedState] = useState(
     readProjectSessionListCollapsedState,
@@ -784,6 +788,22 @@ export function SessionGroupSection({
         PROJECT_SESSION_LIST_COLLAPSED_CHANGED_EVENT,
         refreshCollapsedState,
       );
+    };
+  }, []);
+
+  useEffect(() => {
+    const refreshPrimaryAgentLauncher = (event: Event) => {
+      const changedEvent = event as PrimaryAgentLauncherChangedEvent;
+      setPrimaryProjectAgentLauncherId(
+        typeof changedEvent.detail?.agentId === "string"
+          ? changedEvent.detail.agentId
+          : readPrimaryAgentLauncherId(),
+      );
+    };
+
+    window.addEventListener(PRIMARY_AGENT_LAUNCHER_CHANGED_EVENT, refreshPrimaryAgentLauncher);
+    return () => {
+      window.removeEventListener(PRIMARY_AGENT_LAUNCHER_CHANGED_EVENT, refreshPrimaryAgentLauncher);
     };
   }, []);
 
@@ -1240,7 +1260,7 @@ export function SessionGroupSection({
 
   const persistPrimaryProjectAgentLauncher = (agentId: string) => {
     setPrimaryProjectAgentLauncherId(agentId);
-    writePrimaryProjectAgentLauncherId(agentId);
+    writePrimaryAgentLauncherId(agentId);
   };
 
   const toggleProjectSessionListCollapsed = () => {
@@ -2612,71 +2632,6 @@ export function SessionGroupSection({
       />
     </>
   );
-}
-
-function ProjectAgentLauncherIcon({
-  agent,
-  colorMode = "monochrome",
-}: {
-  agent?: SidebarAgentButton;
-  colorMode?: "brand" | "monochrome";
-}) {
-  if (!agent) {
-    return (
-      <IconCode
-        aria-hidden="true"
-        className="group-agent-launcher-icon group-agent-launcher-tabler-icon"
-        size={14}
-        stroke={1.9}
-      />
-    );
-  }
-
-  if (agent.icon) {
-    /**
-     * CDXC:ProjectAgents 2026-05-16-18:21:
-     * The sidebar project agent dropdown should show colored provider icons for
-     * scanability, while the compact split launcher keeps its quieter
-     * monochrome treatment everywhere outside that dropdown.
-     */
-    const iconColor = colorMode === "brand" ? AGENT_LOGO_COLORS[agent.icon] : "currentColor";
-
-    return (
-      <span
-        aria-hidden="true"
-        className="group-agent-launcher-icon group-agent-launcher-agent-icon"
-        data-agent-icon={agent.icon}
-        style={{
-          backgroundColor: iconColor,
-          maskImage: `url("${AGENT_LOGOS[agent.icon]}")`,
-          WebkitMaskImage: `url("${AGENT_LOGOS[agent.icon]}")`,
-        }}
-      />
-    );
-  }
-
-  return (
-    <IconCode
-      aria-hidden="true"
-      className="group-agent-launcher-icon group-agent-launcher-tabler-icon"
-      size={14}
-      stroke={1.9}
-    />
-  );
-}
-
-function readPrimaryProjectAgentLauncherId(): string | undefined {
-  /**
-   * CDXC:ProjectAgents 2026-05-10-14:18
-   * Project headers persist only the chosen agent for the split agent button.
-   * The storage key remains the historic terminal-launcher key so existing
-   * agent choices survive the UI split that moved Terminal to its own button.
-   */
-  return localStorage.getItem(PROJECT_AGENT_LAUNCHER_STORAGE_KEY)?.trim() || undefined;
-}
-
-function writePrimaryProjectAgentLauncherId(agentId: string): void {
-  localStorage.setItem(PROJECT_AGENT_LAUNCHER_STORAGE_KEY, agentId);
 }
 
 function getPortalMenuStyle(button: HTMLButtonElement | null, menuWidth: number) {

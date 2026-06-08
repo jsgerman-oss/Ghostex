@@ -31,8 +31,8 @@ Remote session sleep, wake, close, and reload now use gxserver lifecycle endpoin
 CDXC:RemoteGxserver 2026-06-03-00:26:
 Remote project Git diff refresh now calls the owning machine's `/api/runGitAction` for bounded status/diff operations and stores the result under the scoped remote project id. This gives remote project headers real Git stats without opening local Git panels or touching local repositories.
 
-CDXC:RemoteGxserver 2026-06-03-00:21:
-Remote session cards can now copy a token-free SSH attach command built from the saved machine SSH settings and the owning gxserver's attach metadata. This covers terminal attach access while focus/pop-out stays blocked until gxserver has a renderer focus event channel.
+CDXC:RemoteGxserver 2026-06-08-19:53:
+Remote session card clicks now open a local Ghostty terminal that runs the same attach contract as Android/iOS: `ssh -tt` to the saved machine, remote login shell, and `ghostex attach --session-id --project-id`. The local Ghostty carrier is hidden from Quick/local sidebar presentation so the visible session remains under its owning remote machine. Explicit Copy Attach Command actions copy the same stable-id SSH command for external terminals.
 
 CDXC:RemoteGxserver 2026-06-03-00:24:
 Remote session cards can now copy SSH-wrapped resume commands by asking the owning gxserver for `/api/readAgentResumePlan`, then executing the returned copy command in the remote project directory over the saved SSH connection. Resume syntax stays server-owned and bearer tokens remain native-only.
@@ -210,11 +210,11 @@ Implemented in the first pass:
 - Remote Clone Repository destination selection uses the copied T3-style remote directory picker instead of the local macOS folder picker.
 - Connected Remote machines subscribe to gxserver presentation events through the native SSH tunnel and apply streamed snapshots/deltas to the owning machine section.
 - Remote Create Session, session sleep/wake/close, session pin/favorite/rename, group sleep/wake, and project remove/close route through the selected machine's gxserver instead of local macOS state.
-- Remote rows block local-only actions such as Finder, local IDE, project editor panes, browser panes, focus/pop-out, direct reload, local Git panels, and local worktree deletion.
+- Remote rows block local-only actions such as Finder, local IDE, browser panes, pop-out, direct reload, local Git panels, and local worktree deletion; session and group focus open a local SSH attach terminal.
 - Previous Sessions search includes connected Remote machines, and remote previous-session delete/restore routes through the owning machine's gxserver.
 - Remote session lifecycle uses the owning machine's `/api/sleepSession`, `/api/wakeSession`, and `/api/killSession`; remote Full Reload restarts the provider by kill-then-wake through gxserver.
 - Remote project header Git diff refresh uses the owning machine's typed `/api/runGitAction` calls and renders stats under the scoped remote project id.
-- Remote session cards copy SSH-wrapped gxserver attach metadata commands for the owning machine using saved SSH settings.
+- Remote session card clicks open local SSH attach terminals using the Android/iOS stable-id attach contract, and the local Ghostty carrier stays hidden from Quick so the visible card remains under the owning remote machine. Explicit Copy Attach Command copies the same SSH-wrapped `ghostex attach --session-id --project-id` command using saved SSH settings.
 - Remote session cards copy SSH-wrapped resume commands from the owning machine's gxserver resume plan.
 - Remote Git direct actions support clean-tree Push and View PR by routing Git/GitHub typed operations through the owning machine's gxserver.
 - Remote Git commit/push/PR review opens the shared Git review modal for remote projects, scopes confirmation by pending request id, opens remote file diffs through gxserver, stages selected files remotely, generates blank commit messages from remote staged diffs with the local prompt agent, commits through remote `/api/runGitAction`, pushes through remote Git, and creates PRs with remote `/api/runGitHubAction`.

@@ -1721,6 +1721,22 @@ body[data-sidebar-tooltips-suppressed="true"] [data-slot="tooltip-content"] {
   transition: opacity 120ms ease;
 }
 
+.sidebar-reference-layout[data-reference-sidebar="true"]
+  .reference-sidebar-section-actions
+  .reference-sidebar-section-agent-picker {
+  /*
+   * CDXC:QuickAgents 2026-06-08-18:25:
+   * The Quick section agent picker reuses the project-header split button classes. Override the project-row hover hiding only inside section-header actions so the picker follows the section action cluster visibility instead of waiting for a project group row hover.
+   */
+  opacity: 1;
+  pointer-events: auto;
+  visibility: visible;
+}
+
+.reference-sidebar-section-agent-picker .reference-sidebar-hover-action-tooltip {
+  position: relative;
+}
+
 .reference-sidebar-section-row:hover .reference-sidebar-section-actions,
 .reference-sidebar-section-row:focus-within .reference-sidebar-section-actions,
 .reference-sidebar-section-row[data-actions-always-visible="true"] .reference-sidebar-section-actions {

@@ -480,9 +480,10 @@ type NativeHostCommand =
       activeProjectEditorCompanionPaneHidden?: boolean;
       activeProjectEditorIsOpen?: boolean;
       activeProjectEditorIsSleeping?: boolean;
-	      activeProjectEditorStatus?: ProjectEditorLoadStatus;
-	      activeProjectId?: string;
+      activeProjectEditorStatus?: ProjectEditorLoadStatus;
+      activeProjectId?: string;
       activeProjectIconDataUrl?: string;
+      activeProjectIsQuick?: boolean;
       activeProjectName?: string;
       activeProjectPath?: string;
       appTitle?: string;
@@ -943,6 +944,13 @@ type NativeBootstrap = {
     settings?: string;
   };
   ghostexHomeDir?: string;
+  /**
+   * CDXC:AutoUpdate 2026-06-08-18:21:
+   * Native injects Sparkle availability into bootstrap so the titlebar can show
+   * the update button on first render even when the launch appcast probe
+   * completes before the React bridge is ready.
+   */
+  updateAvailable?: boolean;
   workspaceName?: string;
 };
 
@@ -967,6 +975,10 @@ declare global {
     };
     __ghostex_NATIVE_MODAL_BRIDGE__?: {
       handleSidebarMessage: (message: SidebarToExtensionMessage) => void;
+    };
+    __ghostex_NATIVE_WORKSPACE_BAR__?: {
+      addProject: (path: string, name?: string) => void;
+      setProjectIcon: (projectId: string, iconDataUrl: string) => void;
     };
     __ghostex_NATIVE_HOTKEYS__?: {
       handleNativeHotkey: (actionId: ghostexHotkeyActionId) => void;
@@ -1004,6 +1016,7 @@ let gxserverPresentationSubscription: ReturnType<typeof gxserverClient.subscribe
 let localGxserverStartupTasksStarted = false;
 const remotePresentationSnapshotsByMachineId = new Map<string, GxserverPresentationSnapshot>();
 const remotePresentationSubscribedMachineIds = new Set<string>();
+const remoteAttachLocalSessionIdByRemoteSessionId = new Map<string, string>();
 const localFirstHiddenPresentationSessions = new Map<
   string,
   { hiddenAt: string; projectId: string; reason: string; sessionId: string }
@@ -2170,6 +2183,22 @@ window.__ghostex_NATIVE_MODAL_BRIDGE__ = {
   },
 };
 
+window.__ghostex_NATIVE_WORKSPACE_BAR__ = {
+  addProject(path, name) {
+    /*
+    CDXC:NativeWorkspacePicker 2026-06-08-18:21:
+    The macOS folder picker returns the selected local directory through this
+    WebKit callback. Route it into the gxserver-backed Add Project flow so the
+    sidebar renders the new project immediately and the daemon owns durable
+    project identity.
+    */
+    void addProject(path, name);
+  },
+  setProjectIcon(projectId, iconDataUrl) {
+    setProjectIcon(projectId, iconDataUrl);
+  },
+};
+
 window.__ghostex_NATIVE_HOTKEYS__ = {
   handleNativeHotkey(actionId) {
     logNativeHotkeyDebug("nativeHotkeys.bridgeActionReceived", { actionId });
@@ -3168,6 +3197,8 @@ function handleRemoteGxserverStatusEvent(remoteMachineId: string, payloadJson: s
     return;
   }
   if (status.state === "installApprovalRequired") {
+    const toast = remoteGxserverStatusFailureToast(status, machineName);
+    showAppToast("warning", toast.title, toast.description);
     openAppModal({
       modal: "remoteGxserverInstall",
       remoteMachineId,
@@ -3180,8 +3211,111 @@ function handleRemoteGxserverStatusEvent(remoteMachineId: string, payloadJson: s
     remotePresentationSubscribedMachineIds.delete(remoteMachineId);
     remotePresentationSnapshotsByMachineId.delete(remoteMachineId);
     publish();
-    showAppToast("error", `${machineName} failed`, status.message || "Remote gxserver connection failed.");
+    const toast = remoteGxserverStatusFailureToast(status, machineName);
+    showAppToast("error", toast.title, toast.description);
   }
+}
+
+function remoteGxserverStatusFailureToast(
+  status: { message?: string; state?: string },
+  machineName: string,
+): { description: string; title: string } {
+  const nativeMessage = typeof status.message === "string" ? status.message.trim() : undefined;
+  /*
+   * CDXC:RemoteMachines 2026-06-08-19:16:
+   * Remote connection failures happen in distinct stages: SSH auth, missing
+   * gxserver, approved install, token read, Keychain storage, tunnel health,
+   * and presentation streaming. Toasts must name the failed stage and the next
+   * concrete action so users do not have to infer the problem from a generic
+   * "remote failed" message.
+   *
+   * CDXC:RemoteMachines 2026-06-08-19:30:
+   * Native remote errors can be raw SSH or gxserver details. Keep the stable
+   * recovery copy first and append native detail after it so the toast remains
+   * actionable even when the low-level message is terse.
+   */
+  switch (status.state) {
+    case "invalid":
+      return {
+        description: remoteFailureDescription(
+          "Open Settings > Remote and check the saved machine name, SSH user, host, and port.",
+          nativeMessage,
+        ),
+        title: `${machineName} remote settings are incomplete`,
+      };
+    case "sshFailed":
+      return {
+        description: remoteFailureDescription(
+          "SSH could not authenticate. Check the saved SSH user, host, port, identity file, and that the key is loaded with ssh-add or saved in Keychain.",
+          nativeMessage,
+        ),
+        title: `SSH failed for ${machineName}`,
+      };
+    case "installApprovalRequired":
+      return {
+        description: remoteFailureDescription(
+          "Ghostex can SSH to this machine, but gxserver is not installed there yet. Click Install gxserver to upload and start the bundled remote package.",
+          nativeMessage,
+        ),
+        title: `Install gxserver on ${machineName}`,
+      };
+    case "installFailed":
+      return {
+        description: remoteFailureDescription(
+          "Ghostex could not copy or unpack the bundled gxserver package. Check SSH write access to the remote home directory and try again.",
+          nativeMessage,
+        ),
+        title: `gxserver install failed on ${machineName}`,
+      };
+    case "tokenUnavailable":
+      return {
+        description: remoteFailureDescription(
+          "Remote gxserver started, but Ghostex could not read its connection token. Reinstall gxserver or check the remote gxserver auth directory permissions.",
+          nativeMessage,
+        ),
+        title: `gxserver token unavailable on ${machineName}`,
+      };
+    case "keychainFailed":
+      return {
+        description: remoteFailureDescription(
+          "Ghostex read the remote connection token, but macOS Keychain rejected storing it. Check Keychain access for Ghostex and retry.",
+          nativeMessage,
+        ),
+        title: `Could not save ${machineName} token`,
+      };
+    case "tunnelFailed":
+      return {
+        description: remoteFailureDescription(
+          "SSH connected, but Ghostex could not reach gxserver through the SSH tunnel. Make sure gxserver is running on the remote machine.",
+          nativeMessage,
+        ),
+        title: `Tunnel failed for ${machineName}`,
+      };
+    case "presentationSubscribeFailed":
+    case "presentationStreamFailed":
+      return {
+        description: remoteFailureDescription(
+          "Ghostex connected to remote gxserver, but project and session updates stopped streaming. Reconnect the machine to reload them.",
+          nativeMessage,
+        ),
+        title: `${machineName} sidebar stream failed`,
+      };
+    default:
+      return {
+        description: remoteFailureDescription(
+          "Remote gxserver connection failed. Reconnect the machine after checking SSH and gxserver on the remote host.",
+          nativeMessage,
+        ),
+        title: `${machineName} remote connection failed`,
+      };
+  }
+}
+
+function remoteFailureDescription(description: string, nativeMessage: string | undefined): string {
+  if (!nativeMessage || nativeMessage === description) {
+    return description;
+  }
+  return `${description} Details: ${nativeMessage}`;
 }
 
 function startRemoteGxserverPresentationSubscription(remoteMachineId: string): void {
@@ -9196,13 +9330,24 @@ async function refreshGitState(): Promise<void> {
       return;
     }
 
-    const [branch, status, diff, untrackedFiles, upstream, remotes, ghVersion, pr] = await Promise.all([
+    const [
+      branch,
+      status,
+      diff,
+      untrackedFiles,
+      upstream,
+      remotes,
+      originRemote,
+      ghVersion,
+      pr,
+    ] = await Promise.all([
       runGxserverGitActionForNativeProject(project, { action: "branch" }),
       runGxserverGitActionForNativeProject(project, { action: "statusPorcelain" }),
       runGxserverGitActionForNativeProject(project, { action: "diffNumstat" }),
       runGxserverGitActionForNativeProject(project, { action: "listUntracked" }),
       runGxserverGitActionForNativeProject(project, { action: "upstreamCounts" }),
       runGxserverGitActionForNativeProject(project, { action: "listRemotes" }),
+      runGxserverGitActionForNativeProject(project, { action: "getOriginRemoteUrl" }),
       runGxserverGitHubActionForNativeProject(project, { action: "version" }),
       runGxserverGitHubActionForNativeProject(project, { action: "prView" }),
     ]);
@@ -9226,6 +9371,8 @@ async function refreshGitState(): Promise<void> {
       branch: branch.stdout.trim() || null,
       deletions: totals.deletions,
       hasGitHubCli: ghVersion.exitCode === 0,
+      hasGitHubRemote:
+        originRemote.exitCode === 0 && normalizeGitHubRemoteUrl(originRemote.stdout) !== undefined,
       hasOriginRemote: remotes.stdout.split(/\s+/).includes("origin"),
       hasUpstream: upstream.exitCode === 0,
       hasWorkingTreeChanges: status.stdout.trim().length > 0,
@@ -9542,13 +9689,24 @@ async function readRemoteSidebarGitState(
    * bound to the active local project. Read a temporary machine-scoped state
    * from the owning gxserver before direct remote push/view-PR decisions.
    */
-  const [branch, status, diff, untrackedFiles, upstream, remotes, ghVersion, pr] = await Promise.all([
+  const [
+    branch,
+    status,
+    diff,
+    untrackedFiles,
+    upstream,
+    remotes,
+    originRemote,
+    ghVersion,
+    pr,
+  ] = await Promise.all([
     runRemoteGxserverGitAction(remoteReference, { action: "branch" }),
     runRemoteGxserverGitAction(remoteReference, { action: "statusPorcelain" }),
     runRemoteGxserverGitAction(remoteReference, { action: "diffNumstat" }),
     runRemoteGxserverGitAction(remoteReference, { action: "listUntracked" }),
     runRemoteGxserverGitAction(remoteReference, { action: "upstreamCounts" }),
     runRemoteGxserverGitAction(remoteReference, { action: "listRemotes" }),
+    runRemoteGxserverGitAction(remoteReference, { action: "getOriginRemoteUrl" }),
     runRemoteGxserverGitHubAction(remoteReference, { action: "version" }),
     runRemoteGxserverGitHubAction(remoteReference, { action: "prView" }),
   ]);
@@ -9573,6 +9731,8 @@ async function readRemoteSidebarGitState(
     branch: branch.stdout.trim() || null,
     deletions: totals.deletions,
     hasGitHubCli: ghVersion.exitCode === 0,
+    hasGitHubRemote:
+      originRemote.exitCode === 0 && normalizeGitHubRemoteUrl(originRemote.stdout) !== undefined,
     hasOriginRemote: remotes.stdout.split(/\s+/).includes("origin"),
     hasUpstream: upstream.exitCode === 0,
     hasWorkingTreeChanges: status.stdout.trim().length > 0,
@@ -14793,6 +14953,7 @@ function createRemotePresentationProjectSidebarGroup({
   const sidebarSessions = sessions.map((session, index) =>
     createRemotePresentationSidebarSession(machineId, project.projectId, session, index),
   );
+  const hasFocusedRemoteAttach = sidebarSessions.some((session) => session.isFocused);
   const scopedProjectId = createRemotePresentationProjectId(machineId, project.projectId);
   const worktree = getRemoteWorktreeMetadataForPresentationProject(machineId, project);
   /*
@@ -14811,7 +14972,7 @@ function createRemotePresentationProjectSidebarGroup({
   return {
     groupId: createRemotePresentationGroupId(machineId, project.projectId),
     canFocusMode: false,
-    isActive: false,
+    isActive: hasFocusedRemoteAttach,
     isFocusModeActive: false,
     kind: "workspace",
     layoutVisibleCount: clampVisibleSessionCount(Math.max(1, sidebarSessions.length)),
@@ -14866,6 +15027,8 @@ function createRemotePresentationSidebarSession(
   const isLive = presentation.lifecycleState === "running";
   const providerSessionState = providerSessionStateForGxserverPresentation(presentation.lifecycleState);
   const agentIcon = resolveNativeSidebarAgentIcon(presentation.agentIcon ?? presentation.agentName ?? presentation.agentId);
+  const sessionId = createRemotePresentationSessionId(machineId, projectId, presentation.sessionId);
+  const isFocused = isRemoteAttachCarrierFocused(sessionId);
   return {
     activity: presentation.activity,
     agentIcon,
@@ -14875,20 +15038,20 @@ function createRemotePresentationSidebarSession(
     displayTitle: presentation.displayTitle,
     displayTitleTooltip: presentation.displayTitleTooltip,
     isFavorite: presentation.isFavorite,
-    isFocused: false,
+    isFocused,
     isGeneratingFirstPromptTitle: presentation.isGeneratingFirstPromptTitle,
     isLive,
     isPinned: presentation.isPinned,
     isPrimaryTitleTerminalTitle: presentation.isPrimaryTitleTerminalTitle,
     isRunning: isLive,
     isSleeping: lifecycleState === "sleeping",
-    isVisible: index === 0,
+    isVisible: isFocused || index === 0,
     lastInteractionAt: presentation.lastActiveAt ?? presentation.updatedAt,
     lifecycleState,
     primaryTitle: presentation.primaryTitle ?? presentation.title,
     providerSessionState,
     row: Math.floor(index / GRID_COLUMN_COUNT),
-    sessionId: createRemotePresentationSessionId(machineId, projectId, presentation.sessionId),
+    sessionId,
     sessionKind: presentation.kind === "agent" ? "terminal" : presentation.kind,
     sessionNumber: String(index + 1),
     sessionPersistenceName: presentation.zmxName,
@@ -15135,9 +15298,17 @@ function createPresentationQuickSidebarSessions(
       const presentationSessions = (presentationSessionsByProject.get(project.projectId) ?? []).map((session, index) =>
         createPresentationSidebarSession(project.projectId, session, index, isActiveProject, project),
       );
+      /*
+      CDXC:RemoteAttach 2026-06-08-19:53:
+      Remote attach terminals use a local Quick project only as a Ghostty carrier. If that carrier's gxserver row is intentionally suppressed, the Quick local-only merge must honor the same suppression so remote clicks do not create a duplicate visible Quick card.
+      */
       const localOnlySessions = createProjectedSidebarGroupsForProject(project)
         .flatMap((group) => group.sessions)
-        .filter((session) => !presentationSessionKeys.has(session.sessionId));
+        .filter(
+          (session) =>
+            !presentationSessionKeys.has(session.sessionId) &&
+            !isGxserverPresentationSessionLocallyHidden(project.projectId, session.sessionId),
+        );
       return presentationProject || localOnlySessions.length > 0
         ? [...presentationSessions, ...localOnlySessions]
         : localOnlySessions;
@@ -15306,7 +15477,8 @@ function createLocalOnlyPaneSidebarSessionsForPresentationProject(
     .filter(
       (session) =>
         (session.sessionKind === "t3" || session.sessionKind === "browser") &&
-        !presentationSessionIds.has(session.sessionId),
+        !presentationSessionIds.has(session.sessionId) &&
+        !isGxserverPresentationSessionLocallyHidden(project.projectId, session.sessionId),
     )
     .map((session) => ({
       ...session,
@@ -18655,11 +18827,13 @@ type LaunchAgentTerminalOptions = {
   commandTitle?: string;
   diagnosticSource?: "fork-session" | "previousSessionRestore";
   focusAfterCreate?: boolean;
+  forceSessionPersistenceOff?: boolean;
   initialPresentation?: "background" | "focused";
   queueProviderStartupText?: boolean;
   restoredFromSessionId?: GxserverSessionId;
   sessionTag?: SidebarSessionTag;
   sidebarOrder?: number;
+  shellCommand?: string;
   sessionPersistenceName?: string;
   sessionPersistenceProvider?: TerminalSessionPersistenceProvider;
   splitDirection?: "horizontal" | "vertical";
@@ -19128,8 +19302,14 @@ function createTerminal(
       return existingChatSession;
     }
   }
+  /*
+  CDXC:RemoteAttach 2026-06-08-19:35:
+  Remote session clicks open a local Ghostty pane whose process command SSH-attaches to the owning machine. That pane must not inherit the local tmux/zmx/zellij setting, because remote attach is already a provider attach on another host and should not be replayed as typed startup text through a second local provider shell.
+  */
   const sessionPersistenceProvider =
-    options?.sessionPersistenceProvider ?? activeSessionPersistenceProviderFromSettings();
+    options?.forceSessionPersistenceOff === true
+      ? undefined
+      : options?.sessionPersistenceProvider ?? activeSessionPersistenceProviderFromSettings();
   const canonicalProject = ensureNativeProjectRegisteredWithGxserver(project, "createTerminal");
   if (!canonicalProject) {
     return undefined;
@@ -19154,6 +19334,7 @@ function createTerminal(
     diagnosticSource: options?.diagnosticSource,
     focusedSessionIdBefore: beforeSnapshot?.focusedSessionId,
     groupId,
+    hasShellCommand: Boolean(options?.shellCommand?.trim()),
     initialInputPreview: initialInput.trim().slice(0, 80),
     initialPresentation: options?.initialPresentation ?? "focused",
     projectId: project.projectId,
@@ -19257,12 +19438,13 @@ function createTerminal(
   if (!session) {
     return undefined;
   }
-  if (initialInput.trim() && agentName) {
+  const hasStartupCommand = Boolean(initialInput.trim() || options?.shellCommand?.trim());
+  if (hasStartupCommand && agentName) {
     suppressNativeSessionActivityIndicators(session.sessionId, "agent-launch");
   }
 
   terminalStateById.set(session.sessionId, {
-    activity: initialInput.trim() && !agentName ? "working" : "idle",
+    activity: hasStartupCommand && !agentName ? "working" : "idle",
     agentName,
     agentSessionId: session.agentSessionId,
     agentSessionPath: session.agentSessionPath,
@@ -19281,6 +19463,7 @@ function createTerminal(
       (group) => group.groupId === result.snapshot.activeGroupId,
     )?.snapshot.focusedSessionId,
     focusAfterCreate: options?.focusAfterCreate !== false,
+    hasShellCommand: Boolean(options?.shellCommand?.trim()),
     initialInputPreview: initialInput.trim().slice(0, 80),
     nativeSessionId,
     projectId: project.projectId,
@@ -19304,7 +19487,7 @@ function createTerminal(
   });
   appendAgentDetectionDebugLog("nativeSidebar.terminalState.created", {
     agentName,
-    initialActivity: initialInput.trim() && !agentName ? "working" : "idle",
+    initialActivity: hasStartupCommand && !agentName ? "working" : "idle",
     initialInputPreview: initialInput.trim().slice(0, 120),
     nativeSessionId,
     sessionId: session.sessionId,
@@ -19370,10 +19553,11 @@ function createTerminal(
      * once so exiting the agent returns to that shell instead of ending the
      * native pane process.
      */
-    initialInput: sessionPersistenceProvider ? "" : initialInput,
+    initialInput: sessionPersistenceProvider || options?.shellCommand ? "" : initialInput,
     sessionId: nativeSessionId,
     sessionPersistenceName,
     sessionPersistenceProvider,
+    shellCommand: sessionPersistenceProvider ? undefined : options?.shellCommand,
     title,
     type: "createTerminal",
   }, project, session.sessionId, initialInput, {
@@ -21996,6 +22180,9 @@ function closeTerminal(
       };
     });
     terminalStateById.delete(reference.sessionId);
+    forgetRemoteAttachLocalSessionForSidebarSession(
+      createCombinedProjectSessionId(reference.project.projectId, reference.sessionId),
+    );
     clearSettledTerminalTitleSync(reference.sessionId);
     forgetProviderSessionState(reference.project.projectId, reference.sessionId);
     pendingNativeTerminalStartupTextBySessionId.delete(reference.sessionId);
@@ -22062,6 +22249,9 @@ function closeTerminal(
     },
   );
   terminalStateById.delete(reference.sessionId);
+  forgetRemoteAttachLocalSessionForSidebarSession(
+    createCombinedProjectSessionId(reference.project.projectId, reference.sessionId),
+  );
   clearSettledTerminalTitleSync(reference.sessionId);
   forgetProviderSessionState(reference.project.projectId, reference.sessionId);
   pendingNativeTerminalStartupTextBySessionId.delete(reference.sessionId);
@@ -27456,6 +27646,14 @@ async function copyAttachCommand(sessionId: string): Promise<void> {
   void navigator.clipboard?.writeText(attachCommand).catch(() => undefined);
 }
 
+type RemoteAttachTarget = { machineId: string; projectId: string; sessionId: string };
+
+type RemoteAttachCommandPlan = {
+  remoteMachine: ghostexSettings["remoteMachines"][number];
+  session: GxserverPresentationSession;
+  sshCommand: string;
+};
+
 function copyRemoteAttachCommand(remoteSessionId: string): boolean {
   const target = parseRemotePresentationSessionId(remoteSessionId);
   if (!target) {
@@ -27465,11 +27663,44 @@ function copyRemoteAttachCommand(remoteSessionId: string): boolean {
   return true;
 }
 
+function openRemoteAttachTerminal(remoteSessionId: string): boolean {
+  const target = parseRemotePresentationSessionId(remoteSessionId);
+  if (!target) {
+    return false;
+  }
+  void openRemoteAttachTerminalForTarget(target);
+  return true;
+}
+
 function copyRemoteGroupAttachCommand(groupId: string): boolean {
   const target = parseRemotePresentationGroupId(groupId);
   if (!target) {
     return false;
   }
+  const attachTarget = selectRemoteGroupAttachTarget(target);
+  if (!attachTarget) {
+    return true;
+  }
+  void copyRemoteAttachCommandForTarget(attachTarget);
+  return true;
+}
+
+function openRemoteGroupAttachTerminal(groupId: string): boolean {
+  const target = parseRemotePresentationGroupId(groupId);
+  if (!target) {
+    return false;
+  }
+  const attachTarget = selectRemoteGroupAttachTarget(target);
+  if (!attachTarget) {
+    return true;
+  }
+  void openRemoteAttachTerminalForTarget(attachTarget);
+  return true;
+}
+
+function selectRemoteGroupAttachTarget(
+  target: { machineId: string; projectId: string },
+): RemoteAttachTarget | undefined {
   const presentation = remotePresentationSnapshotsByMachineId.get(target.machineId);
   const sessions = (presentation?.sessions ?? [])
     .filter((session) =>
@@ -27480,21 +27711,20 @@ function copyRemoteGroupAttachCommand(groupId: string): boolean {
   const session = sessions[0];
   if (!session) {
     showAppToast("info", "Remote attach unavailable", "This remote project has no attachable sessions.");
-    return true;
+    return undefined;
   }
   /*
-   * CDXC:RemoteFocus 2026-06-03-03:34:
-   * Remote group focus/zoom has no local pane topology to activate. Use the
-   * same remote-safe equivalent as remote session focus: copy an SSH-wrapped
-   * gxserver attach command for the best session in that machine/project group,
-   * preferring working/attention and recently active sessions.
+   * CDXC:RemoteFocus 2026-06-08-19:35:
+   * Remote group focus/zoom should choose the best attachable session in that
+   * remote project, preferring running/attention/working and recently active
+   * sessions. The caller decides whether that target is opened in a local
+   * terminal or copied by an explicit copy action.
    */
-  void copyRemoteAttachCommandForTarget({
+  return {
     machineId: target.machineId,
     projectId: target.projectId,
     sessionId: session.sessionId,
-  });
-  return true;
+  };
 }
 
 function copyRemoteProjectOpenCommandForGroup(
@@ -27564,47 +27794,73 @@ function compareRemoteAttachCandidateSessions(
   return (Number.isFinite(rightTime) ? rightTime : 0) - (Number.isFinite(leftTime) ? leftTime : 0);
 }
 
-async function copyRemoteAttachCommandForTarget(
-  target: { machineId: string; projectId: string; sessionId: string },
-): Promise<void> {
+function createRemoteAttachCommandPlan(
+  target: RemoteAttachTarget,
+  action: "copy" | "open",
+): RemoteAttachCommandPlan | undefined {
   const remoteMachine = settings.remoteMachines.find((machine) => machine.id === target.machineId);
   const presentation = remotePresentationSnapshotsByMachineId.get(target.machineId);
   const session = presentation?.sessions.find(
     (candidate) => candidate.projectId === target.projectId && candidate.sessionId === target.sessionId,
   );
   if (!remoteMachine || !session) {
-    showAppToast("info", "Remote command unavailable", "Reconnect the remote machine and try copying the attach command again.");
+    showAppToast(
+      "info",
+      "Remote command unavailable",
+      action === "copy"
+        ? "Reconnect the remote machine and try copying the attach command again."
+        : "Reconnect the remote machine and try opening the remote session again.",
+    );
+    return undefined;
+  }
+  /*
+   * CDXC:RemoteAttach 2026-06-08-19:53:
+   * macOS remote session clicks must match Android/iOS attach semantics: open SSH with a forced PTY and run `ghostex attach --session-id --project-id` inside the remote user's login shell. Do not use raw gxserver attach metadata for the interactive remote pane because the mobile path relies on the stable Ghostex id contract and PTY allocation.
+   */
+  return { remoteMachine, session, sshCommand: buildRemoteGhostexAttachSshCommand(remoteMachine, target) };
+}
+
+async function copyRemoteAttachCommandForTarget(target: RemoteAttachTarget): Promise<void> {
+  const plan = createRemoteAttachCommandPlan(target, "copy");
+  if (!plan) {
     return;
   }
-  try {
-    /*
-     * CDXC:RemoteAttach 2026-06-03-01:38:
-     * Remote attach commands should come from the owning gxserver, not a bare
-     * `zmx attach` string. The server-owned attach script knows the remote cwd,
-     * bundled zmx path, provider state, title notices, and gxserver identity;
-     * the macOS client only wraps that script in the saved SSH connection.
-     */
-    const response = await requestRemoteGxserver<{ attach: GxserverAttachSessionMetadataResult }>(
-      target.machineId,
-      "/api/attachSessionMetadata",
-      {
-        params: {
-          projectId: target.projectId,
-          sessionId: target.sessionId,
-        },
-      },
-    ) as { result: { attach: GxserverAttachSessionMetadataResult } };
-    const attachCommand = response.result.attach.attachCommand?.trim();
-    if (!attachCommand) {
-      showAppToast("info", "Remote command unavailable", "No attach command is available for this remote session.");
-      return;
-    }
-    const sshCommand = buildRemoteSshShellCommand(remoteMachine, attachCommand);
-    void navigator.clipboard?.writeText(sshCommand).catch(() => undefined);
-    showAppToast("info", "Remote attach command copied", `SSH command copied for ${remoteMachine.name}.`);
-  } catch (error) {
-    showAppToast("error", "Remote command failed", error instanceof Error ? error.message : String(error));
+  void navigator.clipboard?.writeText(plan.sshCommand).catch(() => undefined);
+  showAppToast("info", "Remote attach command copied", `SSH command copied for ${plan.remoteMachine.name}.`);
+}
+
+async function openRemoteAttachTerminalForTarget(target: RemoteAttachTarget): Promise<void> {
+  if (focusExistingRemoteAttachTerminal(target)) {
+    return;
   }
+  const plan = createRemoteAttachCommandPlan(target, "open");
+  if (!plan) {
+    return;
+  }
+  /*
+   * CDXC:RemoteAttach 2026-06-08-19:35:
+   * Clicking a remote session is a navigation action, not a clipboard action.
+   * Start a local Ghostty terminal with a hidden zsh process command that runs
+   * the Android-compatible SSH attach command; this preserves explicit Copy
+   * Attach Command while making sidebar click behavior open a usable terminal
+   * pane.
+   */
+  const session = await createNativeQuickTerminal({
+    forceSessionPersistenceOff: true,
+    shellCommand: buildRemoteAttachTerminalProcessCommand(plan.sshCommand),
+    title: createRemoteAttachTerminalTitle(plan.remoteMachine, plan.session),
+  });
+  if (!session) {
+    showAppToast("error", "Remote attach failed", "Ghostex could not create a local terminal for the remote session.");
+    return;
+  }
+  /*
+   * CDXC:RemoteAttach 2026-06-08-19:53:
+   * The native renderer still needs a local Ghostty carrier for the SSH process, but the user's sidebar ownership model is remote-first. Hide the carrier's gxserver row from local/Quick presentation and keep a focus map so the remote machine row remains the visible identity.
+   */
+  hideGxserverPresentationSessionLocally(activeProjectId, session.sessionId, "remote-attach-carrier");
+  rememberRemoteAttachLocalSession(target, createCombinedProjectSessionId(activeProjectId, session.sessionId));
+  publish();
 }
 
 function buildRemoteSshShellCommand(
@@ -27614,14 +27870,49 @@ function buildRemoteSshShellCommand(
   return buildRemoteSshCommand(remoteMachine, [remoteCommand]);
 }
 
+function buildRemoteGhostexAttachSshCommand(
+  remoteMachine: ghostexSettings["remoteMachines"][number],
+  target: RemoteAttachTarget,
+): string {
+  const remoteCommand = buildRemoteLoginShellCommand(buildRemoteGhostexAttachCommand(target));
+  return buildRemoteSshCommand(remoteMachine, [remoteCommand], { forceTty: true });
+}
+
+function buildRemoteGhostexAttachCommand(target: RemoteAttachTarget): string {
+  const parts = [
+    "ghostex",
+    "attach",
+    "--session-id",
+    quoteNativeShellArg(target.sessionId),
+  ];
+  if (target.projectId.trim()) {
+    parts.push("--project-id", quoteNativeShellArg(target.projectId));
+  }
+  return parts.join(" ");
+}
+
+function buildRemoteLoginShellCommand(remoteCommand: string): string {
+  return `/bin/zsh -lc ${quoteNativeShellArg(remoteCommand)}`;
+}
+
 function buildRemoteSshCommand(
   remoteMachine: ghostexSettings["remoteMachines"][number],
   remoteArgs: readonly string[],
+  options: { forceTty?: boolean } = {},
 ): string {
   const args = ["ssh"];
+  if (options.forceTty === true) {
+    args.push("-tt");
+  }
   const identityFile = remoteMachine.sshIdentityFile?.trim();
   if (identityFile) {
-    args.push("-i", identityFile);
+    /*
+     * CDXC:RemoteAttach 2026-06-08-19:35:
+     * Saved Remote machine key paths may use `~`. Expand before shell quoting
+     * so the local SSH process launched by a remote attach terminal resolves
+     * the same identity file that native SSH connection checks use.
+     */
+    args.push("-i", normalizeNativeOpenPath(identityFile));
   }
   if (remoteMachine.sshPort) {
     args.push("-p", String(remoteMachine.sshPort));
@@ -27634,6 +27925,94 @@ function buildRemoteSshCommand(
 
 function quoteRemoteSshCommandArg(value: string): string {
   return /^[A-Za-z0-9_/:=@%+.,-]+$/u.test(value) ? value : quoteNativeShellArg(value);
+}
+
+function buildRemoteAttachTerminalProcessCommand(sshCommand: string): string {
+  return `/bin/zsh -lic ${quoteNativeShellArg([
+    sshCommand,
+    "__ghostex_remote_attach_exit=$?",
+    'printf "\\nRemote attach ended with exit code %s.\\n" "$__ghostex_remote_attach_exit"',
+    "exec /bin/zsh -l",
+  ].join("\n"))}`;
+}
+
+function createRemoteAttachTerminalTitle(
+  remoteMachine: ghostexSettings["remoteMachines"][number],
+  session: GxserverPresentationSession,
+): string {
+  const sessionTitle =
+    session.displayTitle?.trim() ||
+    session.primaryTitle?.trim() ||
+    session.title?.trim() ||
+    DEFAULT_TERMINAL_SESSION_TITLE;
+  return `${remoteMachine.name}: ${sessionTitle}`;
+}
+
+function remoteAttachSessionKey(target: RemoteAttachTarget): string {
+  return createRemotePresentationSessionId(target.machineId, target.projectId, target.sessionId);
+}
+
+function isRemoteAttachCarrierFocused(remoteSessionId: string): boolean {
+  /*
+   * CDXC:RemoteAttach 2026-06-08-19:53:
+   * A focused remote attach pane is implemented as a local hidden carrier, but the sidebar focus ring should stay on the remote session row so the session still appears owned by its remote machine instead of by Quick.
+   */
+  const localSessionId = remoteAttachLocalSessionIdByRemoteSessionId.get(remoteSessionId);
+  const localReference = localSessionId ? parseCombinedProjectSessionId(localSessionId) : undefined;
+  if (!localReference || localReference.projectId !== activeProjectId) {
+    return false;
+  }
+  const terminalState = terminalStateById.get(localReference.sessionId);
+  return (
+    activeSnapshot().focusedSessionId === localReference.sessionId &&
+    terminalState?.lifecycleState === "running"
+  );
+}
+
+function rememberRemoteAttachLocalSession(target: RemoteAttachTarget, localSessionId: string): void {
+  remoteAttachLocalSessionIdByRemoteSessionId.set(remoteAttachSessionKey(target), localSessionId);
+}
+
+function forgetRemoteAttachLocalSessionForSidebarSession(sessionId: string): void {
+  const combinedReference = parseCombinedProjectSessionId(sessionId);
+  for (const [remoteSessionId, localSessionId] of remoteAttachLocalSessionIdByRemoteSessionId) {
+    if (localSessionId === sessionId) {
+      remoteAttachLocalSessionIdByRemoteSessionId.delete(remoteSessionId);
+      continue;
+    }
+    const localReference = parseCombinedProjectSessionId(localSessionId);
+    if (
+      combinedReference &&
+      localReference?.projectId === combinedReference.projectId &&
+      localReference.sessionId === combinedReference.sessionId
+    ) {
+      remoteAttachLocalSessionIdByRemoteSessionId.delete(remoteSessionId);
+      continue;
+    }
+    if (!combinedReference && localReference?.sessionId === sessionId) {
+      remoteAttachLocalSessionIdByRemoteSessionId.delete(remoteSessionId);
+    }
+  }
+}
+
+function focusExistingRemoteAttachTerminal(target: RemoteAttachTarget): boolean {
+  const remoteSessionId = remoteAttachSessionKey(target);
+  const localSessionId = remoteAttachLocalSessionIdByRemoteSessionId.get(remoteSessionId);
+  if (!localSessionId) {
+    return false;
+  }
+  const localReference = parseCombinedProjectSessionId(localSessionId);
+  const localProject = localReference ? findProject(localReference.projectId) : undefined;
+  const localSession = localProject && localReference
+    ? findTerminalSessionInProject(localProject, localReference.sessionId)
+    : undefined;
+  const terminalState = localReference ? terminalStateById.get(localReference.sessionId) : undefined;
+  if (!localProject || !localSession || terminalState?.lifecycleState !== "running") {
+    remoteAttachLocalSessionIdByRemoteSessionId.delete(remoteSessionId);
+    return false;
+  }
+  focusSidebarSession(localSessionId);
+  return true;
 }
 
 function resolveNativeBrowserAccessT3Session(preferredSessionId?: string): T3SessionRecord | undefined {
@@ -28131,6 +28510,7 @@ function closeAllNativeSessions(): void {
   for (const sessionId of sessionIds) {
     const nativeSessionId = forgetNativeSessionMapping(sessionId);
     postNative({ sessionId: nativeSessionId, type: "closeTerminal" });
+    forgetRemoteAttachLocalSessionForSidebarSession(sessionId);
     terminalStateById.delete(sessionId);
     pendingNativeTerminalStartupTextBySessionId.delete(sessionId);
     clearNativeSessionAttentionTracking(sessionId);
@@ -29665,9 +30045,58 @@ async function createNativeChat(title = "chat"): Promise<void> {
   publish();
 }
 
+async function createNativeAgentChat(agent: SidebarAgentButton): Promise<void> {
+  /**
+   * CDXC:QuickAgents 2026-06-08-18:25:
+   * Quick's section-header agent picker is projectless even though it reuses the project-header picker UI. Create and focus a new Quick chat workspace first, then launch the selected provider through the existing T3 or terminal-backed agent path so the agent never lands in the active code project.
+   */
+  const createdAt = new Date();
+  const chatTitle = agent.name.trim() || "agent";
+  const chatPath = createNativeChatDirectoryPath(chatTitle, createdAt);
+  const result = await runNativeProcess("/bin/mkdir", ["-p", chatPath]);
+  if (result.exitCode !== 0) {
+    showNativeMessage(
+      "error",
+      result.stderr.trim() || result.stdout.trim() || `Unable to create agent chat folder: ${chatPath}`,
+    );
+    return;
+  }
+
+  const projectId = createProjectId(chatPath);
+  if (!projects.some((project) => project.projectId === projectId)) {
+    projects = orderNativeProjectsForSidebar([
+      ...projects,
+      {
+        commandsPanel: createProjectCommandsPanelState(),
+        isChat: true,
+        isQuick: true,
+        name: nativeChatTitleFromDate(createdAt),
+        path: chatPath,
+        projectId,
+        quickKind: "terminal",
+        theme: resolveSidebarTheme(settings.sidebarTheme, "dark"),
+        workspace: createDefaultGroupedSessionWorkspaceSnapshot(),
+      },
+    ]);
+    writeStoredProjects("createNativeAgentChat");
+  }
+  focusProject(projectId);
+  if (agent.agentId === "t3") {
+    createNativeT3Session();
+    return;
+  }
+  if (agent.command) {
+    await launchAgentTerminal(agent);
+    return;
+  }
+  publish();
+}
+
 async function createNativeQuickTerminal(options: {
   command?: string;
   cwd?: string;
+  forceSessionPersistenceOff?: boolean;
+  shellCommand?: string;
   title?: string;
 } = {}): Promise<TerminalSessionRecord | undefined> {
   /*
@@ -29697,7 +30126,10 @@ async function createNativeQuickTerminal(options: {
   writeStoredProjects("createQuickTerminal");
   focusProject(projectId);
   const commandText = options.command?.trim();
-  const session = createTerminal(title, commandText ? `${commandText}\r` : "");
+  const session = createTerminal(title, commandText ? `${commandText}\r` : "", undefined, undefined, {
+    forceSessionPersistenceOff: options.forceSessionPersistenceOff,
+    shellCommand: options.shellCommand,
+  });
   if (!session) {
     publish();
   }
@@ -31910,7 +32342,7 @@ function handleRemoteProjectBoardJumpToConversation(
     reference.projectId,
     reference.sessionId,
   );
-  if (!copyRemoteAttachCommand(remoteSessionId)) {
+  if (!openRemoteAttachTerminal(remoteSessionId)) {
     throw new Error("The linked remote session is no longer available.");
   }
 }
@@ -32560,6 +32992,50 @@ function setProjectThemeColor(projectId: string, themeColor: string): void {
         updatedAt: new Date().toISOString(),
       }),
       "setProjectThemeColor",
+    );
+    persistProjectSharedMetadataToGxserver(project, { identityIcon: true });
+  }
+  publish();
+}
+
+function setProjectIcon(projectId: string, iconDataUrl: string): void {
+  const normalizedIconDataUrl = normalizeWorkspaceProjectIconDataUrl(iconDataUrl);
+  if (!normalizedIconDataUrl) {
+    return;
+  }
+
+  /*
+  CDXC:WorkspaceIdentity 2026-06-08-18:21:
+  Native image picking is a trusted macOS interaction, but the project icon
+  itself is shared gxserver identity metadata. Apply the image icon locally
+  first, then persist through the existing identityIcon update path.
+  */
+  let didChange = false;
+  projects = projects.map((project) => {
+    if (project.projectId !== projectId) {
+      return project;
+    }
+    didChange = true;
+    return {
+      ...project,
+      icon: { dataUrl: normalizedIconDataUrl, kind: "image" },
+      iconDataUrl: normalizedIconDataUrl,
+    };
+  });
+  if (!didChange) {
+    return;
+  }
+  writeStoredProjects("setProjectIcon");
+  const project = findProject(projectId);
+  if (project) {
+    updateGxserverProjectDomainMetadataLocally(
+      projectId,
+      (gxserverProject) => ({
+        ...gxserverProject,
+        identityIcon: buildGxserverIdentityIconMetadata(project, gxserverProject.identityIcon),
+        updatedAt: new Date().toISOString(),
+      }),
+      "setProjectIcon",
     );
     persistProjectSharedMetadataToGxserver(project, { identityIcon: true });
   }
@@ -33494,7 +33970,7 @@ async function openGitHubProjectFromTitlebar(): Promise<void> {
 
 function openTasksPlaceholderFromTitlebar(): void {
   const project = activeProject();
-  if (project.isChat === true || project.isRecentProject === true) {
+  if (isQuickProject(project) || project.isRecentProject === true) {
     return;
   }
   /**
@@ -33513,6 +33989,11 @@ function openTasksPlaceholderFromTitlebar(): void {
    * after the ownership split. Build Project mode URL params from gxserver
    * metadata first so stale native project cache cannot keep showing an old
    * Beads key or project title.
+   *
+   * CDXC:ModeSwitcher 2026-06-08-18:39:
+   * Quick sessions are projectless, including newer `isQuick` containers that
+   * are not legacy chat projects. Reject Kanban here too so hotkeys and stale
+   * titlebar bridge calls follow the disabled titlebar state.
    */
   const boardMetadata = resolveProjectBoardDisplayMetadata(project);
   const url = new URL("tasks-placeholder.html", window.location.href);
@@ -35020,7 +35501,7 @@ function handleSidebarMessage(message: SidebarToExtensionMessage): void {
       return;
     }
     case "focusGroup": {
-      if (copyRemoteGroupAttachCommand(message.groupId)) {
+      if (openRemoteGroupAttachTerminal(message.groupId)) {
         return;
       }
       const groupReference = resolveSidebarGroupReference(message.groupId);
@@ -35037,20 +35518,19 @@ function handleSidebarMessage(message: SidebarToExtensionMessage): void {
     case "focusSession":
       if (parseRemotePresentationSessionId(message.sessionId)) {
         /*
-         * CDXC:RemoteFocus 2026-06-03-01:18:
-         * Remote session cards do not have a local AppKit pane to focus.
-         * Treat click/focus as the remote-safe equivalent: copy the SSH zmx
-         * attach command for the owning machine so users can open the session
-         * without exposing gxserver tokens or requiring a renderer focus channel.
+         * CDXC:RemoteFocus 2026-06-08-19:35:
+         * Remote session cards still do not have a native AppKit pane until the
+         * user asks to open them. A click is that open intent: create/focus a
+         * local SSH attach terminal instead of copying the command string.
          */
-        copyRemoteAttachCommand(message.sessionId);
+        openRemoteAttachTerminal(message.sessionId);
         return;
       }
       focusSidebarSession(message.sessionId);
       return;
     case "focusSessionMode":
       if (parseRemotePresentationSessionId(message.sessionId)) {
-        copyRemoteAttachCommand(message.sessionId);
+        openRemoteAttachTerminal(message.sessionId);
         return;
       }
       focusSidebarSessionMode(message.sessionId);
@@ -35790,6 +36270,9 @@ function handleSidebarMessage(message: SidebarToExtensionMessage): void {
           ? resolveSidebarGroupReference(message.groupId)
           : undefined;
       if (groupReference?.isChatCollection) {
+        if (agent) {
+          void createNativeAgentChat(agent);
+        }
         return;
       }
       if (groupReference && activeProjectId !== groupReference.project.projectId) {
@@ -35903,13 +36386,13 @@ function handleSidebarMessage(message: SidebarToExtensionMessage): void {
       if (typeof message.groupId === "string") {
         if (parseRemotePresentationGroupId(message.groupId)) {
           /*
-           * CDXC:RemoteFocus 2026-06-03-04:18:
+           * CDXC:RemoteFocus 2026-06-08-19:35:
            * Remote group zoom/layout controls cannot mutate local pane
-           * topology. Use the same remote-safe equivalent as group focus:
-           * copy an SSH-wrapped attach command for the best session in that
-           * remote project.
+           * topology. Use the same open-terminal behavior as remote group focus
+           * so layout gestures still land the user in an attached shell instead
+           * of a clipboard-only toast.
            */
-          copyRemoteGroupAttachCommand(message.groupId);
+          openRemoteGroupAttachTerminal(message.groupId);
           return;
         }
         const groupReference = resolveSidebarGroupReference(message.groupId);
@@ -36551,6 +37034,13 @@ function syncNativeLayout(
      * active restored workarea mode with every layout command so app launch,
      * titlebar clicks, and sidebar-driven project editor changes all keep the
      * segmented control in sync with the visible surface.
+     *
+     * CDXC:ModeSwitcher 2026-06-08-18:23:
+     * The titlebar GitHub mode should be disabled for Quick/projectless
+     * containers and for active projects without a GitHub remote. Send the
+     * explicit Quick flag and GitHub-remote state through layout sync so the
+     * isolated titlebar mirrors sidebar-owned project context without probing
+     * user paths or remotes itself.
      */
     activeProjectDiffStats: currentProjectEditor.diffStats,
     activeProjectGitState: gitState,
@@ -36567,6 +37057,7 @@ function syncNativeLayout(
     debuggingMode: settings.debuggingMode,
     activeProjectId: currentProject.projectId,
     activeProjectIconDataUrl: resolveWorkspaceProjectIconDataUrl(currentProject),
+    activeProjectIsQuick: isQuickProject(currentProject),
     activeProjectEditorId:
       currentProjectEditorSurfaceState?.isOpen === true &&
       currentProjectEditorSurfaceState.isSleeping !== true
@@ -37993,6 +38484,7 @@ window.addEventListener("ghostex-native-host-event", (event) => {
       }
       terminalState.lifecycleState = "done";
       terminalState.activity = "idle";
+      forgetRemoteAttachLocalSessionForSidebarSession(sidebarSessionId);
       persistTerminalSessionRestoreActivity(sidebarSessionId, undefined);
       nativeWorkingStartedAtBySessionId.delete(sidebarSessionId);
       void syncNativeSessionActivityWithGxserver(sidebarSessionId, { event: "terminalExited" }, "terminal-exited");

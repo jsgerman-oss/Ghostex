@@ -545,6 +545,7 @@ struct SetActiveTerminalSet: Decodable {
   let activeProjectEditorStatus: String?
   let activeProjectId: String?
   let activeProjectIconDataUrl: String?
+  let activeProjectIsQuick: Bool?
   let activeProjectName: String?
   let activeProjectPath: String?
   let activeSessionIds: [String]
@@ -766,6 +767,7 @@ struct TitlebarGitState: Decodable {
   let files: [TitlebarGitChangedFile]
   let generateCommitBody: Bool
   let hasGitHubCli: Bool
+  let hasGitHubRemote: Bool
   let hasOriginRemote: Bool
   let hasUpstream: Bool
   let hasWorkingTreeChanges: Bool

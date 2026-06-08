@@ -16,6 +16,24 @@ function sourceBetweenIn(source: string, start: string, end: string): string {
 }
 
 describe("native sidebar add project source", () => {
+  test("keeps the native folder picker callback wired to gxserver-backed add project", () => {
+    /*
+    CDXC:NativeWorkspacePicker 2026-06-08-18:21:
+    Selecting a folder in the macOS Add Project picker must not disappear at
+    the WebKit boundary. The Swift callback still calls
+    `__ghostex_NATIVE_WORKSPACE_BAR__.addProject`, so native-sidebar must keep
+    that compatibility bridge and route it into the gxserver-backed addProject
+    implementation.
+    */
+    const workspaceBarBridgeSource = sourceBetween(
+      "window.__ghostex_NATIVE_WORKSPACE_BAR__ = {",
+      "window.__ghostex_NATIVE_HOTKEYS__ = {",
+    );
+
+    expect(workspaceBarBridgeSource).toContain("addProject(path, name)");
+    expect(workspaceBarBridgeSource).toContain("void addProject(path, name);");
+  });
+
   test("publishes the project shell before optional first-terminal creation", () => {
     /*
     CDXC:ProjectSidebarOwnership 2026-06-06-23:16:

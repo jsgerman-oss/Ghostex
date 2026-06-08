@@ -3272,6 +3272,74 @@
   border-color: color-mix(in srgb, var(--app-button-background) 42%, var(--app-border) 58%);
 }
 
+/*
+ * CDXC:RemoteMachines 2026-06-08-19:05:
+ * Remote machine settings need a clear title/description hierarchy, a single-line muted subtitle, and a compact Tailscale help affordance beside the description, not a full-width outline button under cramped copy.
+ */
+.settings-management-layout {
+  display: grid;
+  gap: 16px;
+}
+
+.settings-management-header {
+  display: grid;
+  gap: 8px;
+}
+
+.settings-management-header-row {
+  align-items: flex-start;
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+}
+
+.settings-management-heading {
+  color: var(--app-foreground);
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  line-height: 1.2;
+  margin: 0;
+}
+
+.settings-management-description {
+  color: var(--app-muted);
+  flex: 1;
+  font-size: 12px;
+  line-height: 1.5;
+  margin: 0;
+  min-width: 0;
+  white-space: nowrap;
+}
+
+.settings-management-help-button {
+  color: color-mix(in srgb, var(--app-muted) 90%, var(--app-foreground) 10%);
+  flex-shrink: 0;
+  font-size: 11px;
+  font-weight: 500;
+  gap: 4px;
+  height: auto;
+  padding: 2px 6px;
+}
+
+.settings-management-help-button:hover,
+.settings-management-help-button:focus-visible,
+.settings-management-help-button[data-popup-open] {
+  background: color-mix(in srgb, var(--app-card-active) 55%, transparent);
+  color: var(--app-foreground);
+}
+
+.settings-management-list {
+  display: grid;
+  gap: 8px;
+}
+
+.settings-management-row {
+  align-items: center;
+  display: flex;
+  gap: 10px;
+}
+
 .settings-management-main {
   display: grid;
   gap: 3px;
@@ -3299,6 +3367,81 @@
 
 .settings-project-command-card {
   border-radius: 0;
+}
+
+/*
+ * CDXC:RemoteMachines 2026-06-08-19:12:
+ * Saved remote machine cards need a quiet summary header, compact SSH fields, and hover-revealed delete controls so the Remote tab matches Agents/Actions management styling in the settings modal.
+ */
+.settings-remote-machine-card {
+  background: color-mix(in srgb, var(--app-card-active) 38%, transparent);
+  border: 1px solid color-mix(in srgb, var(--app-border) 92%, transparent);
+  border-radius: 0;
+  gap: 0;
+  overflow: hidden;
+  padding-block: 0;
+}
+
+.settings-remote-machine-summary {
+  align-items: center;
+  background: color-mix(in srgb, var(--app-card-active) 58%, transparent);
+  border-bottom: 1px solid color-mix(in srgb, var(--app-border) 88%, transparent);
+  display: flex;
+  gap: 10px;
+  padding: 10px 12px;
+}
+
+.settings-remote-machine-add-summary {
+  padding-block: 11px;
+}
+
+.settings-remote-machine-add-title {
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.2;
+}
+
+.settings-remote-machine-body {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 12px;
+}
+
+.settings-remote-machine-fields {
+  gap: 12px;
+}
+
+.settings-remote-machine-field {
+  gap: 6px;
+}
+
+.settings-remote-machine-field-label {
+  color: var(--app-muted);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.settings-remote-machine-field-description {
+  color: color-mix(in srgb, var(--app-muted) 92%, transparent);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.settings-remote-machine-input {
+  font-size: 13px;
+  height: 2.125rem;
+  padding-inline: 0.625rem;
+}
+
+.settings-remote-machine-user-port {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: minmax(0, 1fr) 5.5rem;
+}
+
+.settings-remote-machine-add-actions {
+  margin-top: 4px;
 }
 
 .settings-project-command-textarea {

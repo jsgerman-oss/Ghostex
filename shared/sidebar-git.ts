@@ -35,6 +35,7 @@ export type SidebarGitState = {
   deletions: number;
   generateCommitBody: boolean;
   hasGitHubCli: boolean;
+  hasGitHubRemote: boolean;
   hasOriginRemote: boolean;
   hasUpstream: boolean;
   hasWorkingTreeChanges: boolean;
@@ -79,6 +80,7 @@ export function createDefaultSidebarGitState(
     deletions: 0,
     generateCommitBody,
     hasGitHubCli: false,
+    hasGitHubRemote: false,
     hasOriginRemote: false,
     hasUpstream: false,
     hasWorkingTreeChanges: false,

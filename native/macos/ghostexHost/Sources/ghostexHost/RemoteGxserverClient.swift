@@ -130,7 +130,7 @@ final class RemoteGxserverClient {
 
     let target = RemoteSshTarget(
       host: command.sshHost,
-      identityFile: command.identityFile?.trimmingCharacters(in: .whitespacesAndNewlines),
+      identityFile: expandedLocalPath(command.identityFile),
       port: command.sshPort,
       user: command.sshUser?.trimmingCharacters(in: .whitespacesAndNewlines)
     )
@@ -179,7 +179,7 @@ final class RemoteGxserverClient {
     target: RemoteSshTarget,
     tokenResult: RemoteProcessResult
   ) -> HostEvent {
-    let token = tokenResult.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+    let token = extractRemoteAuthToken(from: tokenResult.stdout)
     guard isValidAuthToken(token) else {
       return statusEvent(
         command,
@@ -220,12 +220,21 @@ final class RemoteGxserverClient {
 
   private func remoteTokenReadCommand() -> String {
     """
+    GHOSTEX_REMOTE_TOKEN_FILE="$HOME/.ghostex/gxserver/auth/token"; \
     GXSERVER_BIN="$(command -v gxserver 2>/dev/null || true)"; \
+    GHOSTEX_BIN="$(command -v ghostex 2>/dev/null || true)"; \
     if [ -z "$GXSERVER_BIN" ] && [ -x "$HOME/.ghostex/gxserver/package/bin/gxserver" ]; then GXSERVER_BIN="$HOME/.ghostex/gxserver/package/bin/gxserver"; fi; \
-    if [ -z "$GXSERVER_BIN" ]; then exit 127; fi; \
-    "$GXSERVER_BIN" start --json >/dev/null 2>&1 || "$GXSERVER_BIN" start >/dev/null 2>&1 || true; \
-    test -r "$HOME/.ghostex/gxserver/auth/token" || exit 126; \
-    cat "$HOME/.ghostex/gxserver/auth/token"
+    if [ -n "$GXSERVER_BIN" ]; then \
+      "$GXSERVER_BIN" start --json >/dev/null 2>&1 || "$GXSERVER_BIN" start >/dev/null 2>&1 || true; \
+    elif [ -n "$GHOSTEX_BIN" ]; then \
+      "$GHOSTEX_BIN" server start --json >/dev/null 2>&1 || "$GHOSTEX_BIN" server start >/dev/null 2>&1 || true; \
+    else \
+      exit 127; \
+    fi; \
+    test -r "$GHOSTEX_REMOTE_TOKEN_FILE" || exit 126; \
+    printf '__GHOSTEX_REMOTE_TOKEN_START__\\n'; \
+    cat "$GHOSTEX_REMOTE_TOKEN_FILE"; \
+    printf '\\n__GHOSTEX_REMOTE_TOKEN_END__\\n'
     """
   }
 
@@ -250,8 +259,12 @@ final class RemoteGxserverClient {
      CDXC:RemoteMachines 2026-06-02-23:38:
      Approved remote install uses the app-bundled gxserver package. Native
      creates a temporary archive, copies it over SSH, installs under
-     ~/.ghostex/gxserver/package, and starts gxserver from that absolute path so
-     non-login SSH shells do not need ~/.local/bin on PATH.
+     ~/.ghostex/gxserver/package, and starts gxserver from that absolute path.
+
+     CDXC:RemoteMachines 2026-06-08-19:12:
+     Remote startup now runs through the user's zsh login+interactive
+     environment so app-installed gxserver and public `ghostex server` installs
+     can both find user-managed Node runtimes such as mise.
      */
     let tarResult = runProcess(
       executable: "/usr/bin/tar",
@@ -313,6 +326,8 @@ final class RemoteGxserverClient {
       var arguments = [
         "-N",
         "-o", "BatchMode=yes",
+        "-o", "UseKeychain=yes",
+        "-o", "AddKeysToAgent=yes",
         "-o", "ConnectTimeout=8",
         "-o", "ExitOnForwardFailure=yes",
         "-o", "StrictHostKeyChecking=accept-new",
@@ -559,11 +574,13 @@ final class RemoteGxserverClient {
   private func runSsh(target: RemoteSshTarget, remoteCommand: String, timeoutSeconds: TimeInterval) -> RemoteProcessResult {
     var arguments = [
       "-o", "BatchMode=yes",
+      "-o", "UseKeychain=yes",
+      "-o", "AddKeysToAgent=yes",
       "-o", "ConnectTimeout=8",
       "-o", "StrictHostKeyChecking=accept-new",
     ]
     arguments.append(contentsOf: sshTargetArguments(target))
-    arguments.append(remoteCommand)
+    arguments.append(loginShellRemoteCommand(remoteCommand))
     return runProcess(
       executable: "/usr/bin/ssh",
       arguments: arguments,
@@ -579,6 +596,8 @@ final class RemoteGxserverClient {
   ) -> RemoteProcessResult {
     var arguments = [
       "-o", "BatchMode=yes",
+      "-o", "UseKeychain=yes",
+      "-o", "AddKeysToAgent=yes",
       "-o", "ConnectTimeout=8",
       "-o", "StrictHostKeyChecking=accept-new",
     ]
@@ -637,6 +656,33 @@ final class RemoteGxserverClient {
     let host = target.user?.isEmpty == false ? "\(target.user!)@\(target.host)" : target.host
     args.append(host)
     return args
+  }
+
+  private func expandedLocalPath(_ path: String?) -> String? {
+    let trimmed = path?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    guard !trimmed.isEmpty else { return nil }
+    return (trimmed as NSString).expandingTildeInPath
+  }
+
+  private func loginShellRemoteCommand(_ command: String) -> String {
+    /*
+     CDXC:RemoteMachines 2026-06-08-19:12:
+     Remote macOS hosts can have Ghostex, gxserver, and Node installed through
+     Homebrew or mise in user shell startup files. Native SSH setup must execute
+     daemon checks through the user's zsh login+interactive environment and
+     still resolve the app-installed ~/.ghostex package path, otherwise a
+     running `ghostex server` appears missing from non-interactive SSH.
+     */
+    let quotedCommand = shellSingleQuoted(command)
+    return """
+    if [ -x /bin/zsh ]; then exec /bin/zsh -lic \(quotedCommand); \
+    elif command -v zsh >/dev/null 2>&1; then exec zsh -lic \(quotedCommand); \
+    else exec /bin/sh -lc \(quotedCommand); fi
+    """
+  }
+
+  private func shellSingleQuoted(_ value: String) -> String {
+    "'\(value.replacingOccurrences(of: "'", with: "'\\''"))'"
   }
 
   private func remoteTargetHost(_ target: RemoteSshTarget) -> String {
@@ -720,6 +766,17 @@ final class RemoteGxserverClient {
 
   private func isValidAuthToken(_ token: String) -> Bool {
     token.range(of: #"^[A-Za-z0-9_-]{32,}$"#, options: .regularExpression) != nil
+  }
+
+  private func extractRemoteAuthToken(from stdout: String) -> String {
+    if
+      let start = stdout.range(of: "__GHOSTEX_REMOTE_TOKEN_START__"),
+      let end = stdout.range(of: "__GHOSTEX_REMOTE_TOKEN_END__", range: start.upperBound..<stdout.endIndex)
+    {
+      return String(stdout[start.upperBound..<end.lowerBound]).trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+    let matchRange = stdout.range(of: #"[A-Za-z0-9_-]{32,}"#, options: .regularExpression)
+    return matchRange.map { String(stdout[$0]) } ?? stdout.trimmingCharacters(in: .whitespacesAndNewlines)
   }
 
   private func sanitizedProcessFailure(defaultMessage: String, result: RemoteProcessResult) -> String {

@@ -251,6 +251,7 @@ export type NativeGhosttyHostCommand =
       activeProjectEditorStatus?: "idle" | "opening" | "running" | "error";
       activeProjectId?: string;
       activeProjectIconDataUrl?: string;
+      activeProjectIsQuick?: boolean;
       activeProjectName?: string;
       activeProjectPath?: string;
       activeSessionIds: string[];

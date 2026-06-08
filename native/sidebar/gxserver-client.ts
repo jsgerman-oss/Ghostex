@@ -92,6 +92,11 @@ export type NativeGxserverRequestOptions = {
   requestId?: string;
 };
 
+type GxserverRequestContext = {
+  method: NativeGxserverHttpMethod;
+  path: GxserverEndpointPath;
+};
+
 export type NativeSidebarPresentationSubscription = {
   close: () => void;
 };
@@ -109,8 +114,7 @@ export class NativeGxserverClientError extends Error {
   constructor(response: NativeGxserverResponseEvent) {
     const message =
       parseGxserverErrorMessage(response.bodyJson) ??
-      response.error ??
-      `gxserver request failed for ${response.path}`;
+      createNativeGxserverClientErrorMessage(response);
     super(message);
     this.name = "NativeGxserverClientError";
     this.response = response;
@@ -170,13 +174,14 @@ export function createNativeSidebarGxserverClient(
   }
 
   async function fetchHealth(): Promise<GxserverServerHealthResponse> {
+    const requestContext: GxserverRequestContext = { method: "GET", path: "/api/health/server" };
     const response = await fetchWithRetry(`${config.baseUrl}/api/health/server`, {
       headers: createHeaders(),
       method: "GET",
-    }, "GET /api/health/server");
+    }, requestContext);
     const body = await readJson(response);
     if (!response.ok) {
-      throw createGxserverError(body, response.status);
+      throw createGxserverError(body, response.status, requestContext);
     }
     return parseHealth(body);
   }
@@ -185,6 +190,7 @@ export function createNativeSidebarGxserverClient(
     path: GxserverEndpointPath,
     params: Record<string, unknown> = {},
   ): Promise<TResult> {
+    const requestContext: GxserverRequestContext = { method: "POST", path };
     const response = await fetchWithRetry(`${config.baseUrl}${path}`, {
       body: JSON.stringify({
         params,
@@ -195,39 +201,44 @@ export function createNativeSidebarGxserverClient(
         "content-type": "application/json",
       },
       method: "POST",
-    }, `POST ${path}`);
+    }, requestContext);
     const body = await readJson(response);
     if (!response.ok || !isRpcSuccess(body)) {
-      throw createGxserverError(body, response.status);
+      throw createGxserverError(body, response.status, requestContext);
     }
-    return parseRpcResponse<TResult>(body, response.status);
+    return parseRpcResponse<TResult>(body, response.status, requestContext);
   }
 
   function rpcSync<TResult>(
     path: GxserverEndpointPath,
     params: Record<string, unknown> = {},
   ): TResult {
+    const requestContext: GxserverRequestContext = { method: "POST", path };
     const Xhr = globalThis.XMLHttpRequest;
     if (typeof Xhr !== "function") {
       throw new Error("gxserver synchronous RPC requires XMLHttpRequest in the native sidebar runtime.");
     }
     const xhr = new Xhr();
-    xhr.open("POST", `${config.baseUrl}${path}`, false);
-    const headers = {
-      ...createHeaders(),
-      "content-type": "application/json",
-    };
-    for (const [name, value] of Object.entries(headers)) {
-      xhr.setRequestHeader(name, value);
+    try {
+      xhr.open("POST", `${config.baseUrl}${path}`, false);
+      const headers = {
+        ...createHeaders(),
+        "content-type": "application/json",
+      };
+      for (const [name, value] of Object.entries(headers)) {
+        xhr.setRequestHeader(name, value);
+      }
+      xhr.send(
+        JSON.stringify({
+          params,
+          protocolVersion: GXSERVER_PROTOCOL_VERSION,
+        }),
+      );
+    } catch (error) {
+      throw createGxserverTransportError(requestContext, error);
     }
-    xhr.send(
-      JSON.stringify({
-        params,
-        protocolVersion: GXSERVER_PROTOCOL_VERSION,
-      }),
-    );
     const body = xhr.responseText.trim() ? JSON.parse(xhr.responseText) as unknown : undefined;
-    return parseRpcResponse<TResult>(body, xhr.status);
+    return parseRpcResponse<TResult>(body, xhr.status, requestContext);
   }
 
   async function fetchStartupSnapshot(): Promise<NativeSidebarGxserverStartupSnapshot> {
@@ -626,9 +637,10 @@ export function parseNativeGxserverResponse<TResult extends Record<string, unkno
 function parseRpcResponse<TResult>(
   body: unknown,
   status: number,
+  context: GxserverRequestContext,
 ): TResult {
   if (!isRpcSuccess(body)) {
-    throw createGxserverError(body, status);
+    throw createGxserverError(body, status, context);
   }
   if (body.protocolVersion !== GXSERVER_PROTOCOL_VERSION) {
     throw new Error(
@@ -651,11 +663,14 @@ async function readJson(response: Response): Promise<unknown> {
 async function fetchWithRetry(
   url: string,
   init: RequestInit,
-  label: string,
+  context: GxserverRequestContext,
 ): Promise<Response> {
   /*
   CDXC:GxserverSidebarClient 2026-05-30-18:04:
   The desktop app starts gxserver independently and WebKit may issue zmx attach/list requests while the daemon is still binding or completing CORS preflight. Retry transport-level `Load failed`/network errors briefly, but do not retry authenticated HTTP/RPC failures because those are real daemon decisions that should surface immediately.
+
+  CDXC:GxserverSidebarClient 2026-06-08-19:24:
+  User-facing gxserver transport toasts must describe the product action that failed, not WebKit's raw `Load failed`, loopback URLs, or internal API paths. Format retry exhaustion at the client boundary so attach, wake, project, Git, and remote bridge callers do not each leak different diagnostics into toast titles.
   */
   let lastError: unknown;
   for (let attempt = 0; attempt <= NETWORK_RETRY_DELAYS_MS.length; attempt += 1) {
@@ -670,8 +685,7 @@ async function fetchWithRetry(
       await new Promise((resolve) => globalThis.setTimeout(resolve, delayMs));
     }
   }
-  const message = lastError instanceof Error ? lastError.message : String(lastError);
-  throw new Error(`${message} (gxserver ${label} ${url})`);
+  throw createGxserverTransportError(context, lastError);
 }
 
 function parseObject(payloadJson: string): Record<string, unknown> | undefined {
@@ -732,7 +746,11 @@ function isRpcSuccess(value: unknown): value is GxserverRpcSuccessResponse {
   );
 }
 
-function createGxserverError(body: unknown, status: number): Error {
+function createGxserverError(
+  body: unknown,
+  status: number,
+  context: GxserverRequestContext,
+): Error {
   if (
     typeof body === "object" &&
     body !== null &&
@@ -742,11 +760,212 @@ function createGxserverError(body: unknown, status: number): Error {
   ) {
     return new Error((body as GxserverRpcErrorResponse).message);
   }
-  return new Error(`gxserver request failed with HTTP ${status}.`);
+  if (status <= 0) {
+    return createGxserverTransportError(context, undefined);
+  }
+  return new Error(createGxserverHttpErrorMessage(context, status));
 }
 
 function createGxserverRequestId(): string {
   return `gxserver-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+}
+
+function createNativeGxserverClientErrorMessage(response: NativeGxserverResponseEvent): string {
+  const context: GxserverRequestContext = {
+    method: response.path === "/api/health" || response.path === "/api/health/server" ? "GET" : "POST",
+    path: response.path,
+  };
+  const status = response.statusCode;
+  if (status !== undefined && status > 0) {
+    return createGxserverHttpErrorMessage(context, status);
+  }
+  return createGxserverTransportErrorMessage(context, response.error);
+}
+
+function createGxserverTransportError(
+  context: GxserverRequestContext,
+  error: unknown,
+): Error {
+  const detail = error instanceof Error
+    ? error.message
+    : typeof error === "string"
+      ? error
+      : undefined;
+  return new Error(createGxserverTransportErrorMessage(context, detail));
+}
+
+function createGxserverTransportErrorMessage(
+  context: GxserverRequestContext,
+  rawDetail: string | undefined,
+): string {
+  return [
+    `Could not ${describeGxserverOperation(context.path)}.`,
+    describeGxserverTransportFailure(rawDetail),
+    gxserverRecoveryHint(),
+  ].join(" ");
+}
+
+function createGxserverHttpErrorMessage(
+  context: GxserverRequestContext,
+  status: number,
+): string {
+  const operation = describeGxserverOperation(context.path);
+  if (status === 401 || status === 403) {
+    return `Could not ${operation}. Ghostex is not authorized to talk to gxserver. Restart gxserver and try again.`;
+  }
+  if (status === 404 || status === 405) {
+    return `Could not ${operation}. This Ghostex build and gxserver do not recognize the same request. Update or restart Ghostex and gxserver.`;
+  }
+  if (status >= 500) {
+    return `Could not ${operation}. gxserver hit an internal error (${status}). ${gxserverRecoveryHint()}`;
+  }
+  return `Could not ${operation}. gxserver rejected the request (${status}). ${gxserverRecoveryHint()}`;
+}
+
+function describeGxserverTransportFailure(rawDetail: string | undefined): string {
+  const detail = rawDetail?.toLowerCase() ?? "";
+  if (detail.includes("timed out") || detail.includes("timeout")) {
+    return "gxserver did not respond before the timeout.";
+  }
+  if (
+    detail.includes("connection refused") ||
+    detail.includes("could not connect") ||
+    detail.includes("failed to connect")
+  ) {
+    return "gxserver is not accepting connections.";
+  }
+  if (detail.includes("aborted") || detail.includes("cancel")) {
+    return "The gxserver request was canceled before it finished.";
+  }
+  if (detail.includes("unauthorized") || detail.includes("forbidden")) {
+    return "Ghostex could not authenticate with gxserver.";
+  }
+  if (detail.includes("cors") || detail.includes("preflight")) {
+    return "Ghostex could not finish the gxserver browser handshake.";
+  }
+  return "gxserver did not respond.";
+}
+
+function gxserverRecoveryHint(): string {
+  return "Try again; if it keeps failing, restart gxserver.";
+}
+
+function describeGxserverOperation(path: GxserverEndpointPath): string {
+  switch (path) {
+    case "/api/health":
+    case "/api/health/server":
+      return "check gxserver status";
+    case "/api/readAgentSettings":
+      return "load agent settings";
+    case "/api/updateAgentSettings":
+      return "save agent settings";
+    case "/api/readAgentHookStatus":
+      return "check agent hook status";
+    case "/api/installAgentHooks":
+      return "install agent hooks";
+    case "/api/createSession":
+      return "create the session";
+    case "/api/createAgentSession":
+      return "create the agent session";
+    case "/api/forkSession":
+      return "fork the session";
+    case "/api/readAgentLaunchPlan":
+      return "prepare the agent launch command";
+    case "/api/readAgentResumePlan":
+      return "prepare the agent resume command";
+    case "/api/requestSessionRename":
+      return "rename the session";
+    case "/api/cancelFirstPromptAutoTitle":
+      return "stop automatic session title generation";
+    case "/api/readPresentationSnapshot":
+      return "load the session list";
+    case "/api/searchSessions":
+    case "/api/listPreviousSessions":
+      return "load previous sessions";
+    case "/api/transitionSession":
+      return "change the session state";
+    case "/api/sleepSession":
+      return "sleep the session";
+    case "/api/wakeSession":
+      return "wake the session";
+    case "/api/startSessionProvider":
+      return "start the session provider";
+    case "/api/killSession":
+      return "stop the session";
+    case "/api/probeSessionProvider":
+      return "check the session provider";
+    case "/api/listSessions":
+      return "load sessions";
+    case "/api/removeSession":
+      return "remove the session";
+    case "/api/readSessionText":
+      return "read session output";
+    case "/api/sendSessionText":
+    case "/api/sendSessionMessage":
+    case "/api/sendSessionEnter":
+      return "send text to the session";
+    case "/api/focusSession":
+      return "focus the session";
+    case "/api/attachSessionMetadata":
+      return "prepare the terminal attach command";
+    case "/api/createProject":
+    case "/api/addProjectPath":
+      return "add the project";
+    case "/api/updateProject":
+      return "update the project";
+    case "/api/listProjects":
+      return "load projects";
+    case "/api/readProjectStatus":
+      return "load project status";
+    case "/api/removeProject":
+      return "remove the project";
+    case "/api/updateSession":
+      return "update the session";
+    case "/api/updateSessionOrder":
+      return "save the session order";
+    case "/api/runGitAction":
+      return "run the Git action";
+    case "/api/runGitHubAction":
+      return "run the GitHub action";
+    case "/api/runWorktreeAction":
+      return "run the worktree action";
+    case "/api/runProjectSetupCommand":
+      return "run the project setup command";
+    case "/api/runBeadsAction":
+      return "run the Project Board action";
+    case "/api/previewRepositoryClone":
+      return "preview the repository clone";
+    case "/api/startRepositoryClone":
+      return "start cloning the repository";
+    case "/api/readRepositoryCloneJob":
+      return "load repository clone progress";
+    case "/api/cancelRepositoryCloneJob":
+      return "cancel the repository clone";
+    case "/api/browseProjectDirectories":
+      return "browse project folders";
+    case "/api/resolveGitRootForPath":
+      return "detect the Git repository";
+    case "/api/queryLogs":
+      return "load support logs";
+    case "/api/updateAuth":
+      return "update gxserver authentication";
+    case "/api/updateListenerConfig":
+      return "update gxserver listener settings";
+    case "/api/installTool":
+      return "install the tool";
+    case "/api/browseFilesystem":
+      return "browse files";
+    case "/api/destructiveAdminAction":
+      return "run the gxserver admin action";
+    case "/api/events":
+    case "/api/control/stop":
+    case "/api/control/stopAll":
+    case "/api/ingestAgentHookEvent":
+    case "/api/ingestSessionStateEvent":
+    case "/api/ingestTerminalTitleEvent":
+    case "/api/updateAgentActivity":
+      return "complete the gxserver request";
+  }
 }
 
 function parseGxserverErrorMessage(bodyJson: string | undefined): string | undefined {

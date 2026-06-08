@@ -1,9 +1,13 @@
 import { afterEach, describe, expect, test, vi } from "vitest";
-import { createNativeSidebarGxserverClient } from "./gxserver-client";
+import {
+  createNativeSidebarGxserverClient,
+  parseNativeGxserverResponse,
+} from "./gxserver-client";
 
 describe("native sidebar gxserver client", () => {
   afterEach(() => {
     vi.restoreAllMocks();
+    vi.useRealTimers();
     vi.unstubAllGlobals();
   });
 
@@ -209,6 +213,67 @@ describe("native sidebar gxserver client", () => {
       params: { path: "/tmp/example-repo/src" },
       protocolVersion: 1,
     });
+  });
+
+  test("formats WebKit Load failed as a user-facing gxserver action error", async () => {
+    /*
+    CDXC:GxserverVerification 2026-06-08-19:24:
+    gxserver fetch transport errors are toast-facing in several native sidebar flows. They must name the failed product action and must not expose WebKit `Load failed`, internal API paths, or loopback URLs to users.
+    */
+    vi.useFakeTimers();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        throw new Error("Load failed");
+      }),
+    );
+    const client = createNativeSidebarGxserverClient({
+      authToken: "token-123",
+      baseUrl: "http://127.0.0.1:60000",
+    });
+
+    const request = client.fetchAttachSessionMetadata({
+      projectId: "P1a" as never,
+      sessionId: "G1a" as never,
+      startupText: "",
+    }).catch((error: unknown) => error);
+    await vi.runAllTimersAsync();
+
+    const error = await request;
+    expect(error).toBeInstanceOf(Error);
+    const message = error instanceof Error ? error.message : String(error);
+    expect(message).toBe(
+      "Could not prepare the terminal attach command. gxserver did not respond. Try again; if it keeps failing, restart gxserver.",
+    );
+    expect(message).not.toContain("Load failed");
+    expect(message).not.toContain("/api/attachSessionMetadata");
+    expect(message).not.toContain("127.0.0.1");
+  });
+
+  test("formats native bridge gxserver transport errors without raw endpoint diagnostics", () => {
+    expect(() =>
+      parseNativeGxserverResponse({
+        error: "Remote gxserver request timed out",
+        ok: false,
+        path: "/api/browseProjectDirectories",
+        requestId: "bridge-request",
+        type: "gxserverResponse",
+      }),
+    ).toThrow(
+      "Could not browse project folders. gxserver did not respond before the timeout. Try again; if it keeps failing, restart gxserver.",
+    );
+    try {
+      parseNativeGxserverResponse({
+        error: "Remote gxserver request timed out",
+        ok: false,
+        path: "/api/browseProjectDirectories",
+        requestId: "bridge-request",
+        type: "gxserverResponse",
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      expect(message).not.toContain("/api/browseProjectDirectories");
+    }
   });
 
   test("notifies presentation handlers only for unexpected websocket close", () => {

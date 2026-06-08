@@ -239,6 +239,7 @@ type TitlebarProjectState = {
   projectEditorCompanionPaneHidden: boolean;
   projectIconDataUrl?: string | null;
   projectId?: string;
+  projectIsQuick: boolean;
   projectName: string;
   projectPath: string;
   petOverlayEnabled: boolean;
@@ -344,6 +345,7 @@ type ResolvedOpenTarget =
 
 declare global {
   interface Window {
+    __ghostex_PENDING_TITLEBAR_UPDATE_AVAILABLE__?: boolean;
     __ghostex_TITLEBAR__?: {
       closeOpenDropdowns: () => void;
       setActiveProjectState: (state: Partial<TitlebarProjectState>) => void;
@@ -1692,6 +1694,12 @@ function App() {
      * The Exit focus button is conditional titlebar chrome. Republish native
      * hit regions whenever focus mode enters or exits so AppKit routes clicks
      * to the new button instead of treating its frame as draggable titlebar.
+     *
+     * CDXC:AutoUpdate 2026-06-08-18:21:
+     * The update button appears after native Sparkle appcast probes, so
+     * updateAvailable must also republish hit regions. Otherwise AppKit can
+     * keep treating the new button's pixels as draggable titlebar instead of a
+     * clickable handoff into Sparkle.
      */
     return publishSettledHitRegions();
   }, [
@@ -1711,6 +1719,7 @@ function App() {
     projectState.projectIconDataUrl,
     projectState.isFocusModeActive,
     projectState.projectName,
+    projectState.updateAvailable,
     publishSettledHitRegions,
   ]);
 
@@ -1771,6 +1780,7 @@ function App() {
           browserTabs: state.browserTabs ?? current.browserTabs,
           projectEditorCompanionPaneHidden:
             state.projectEditorCompanionPaneHidden ?? current.projectEditorCompanionPaneHidden,
+          projectIsQuick: state.projectIsQuick ?? current.projectIsQuick,
           petOverlayEnabled: state.petOverlayEnabled ?? current.petOverlayEnabled,
           resourceGroups: state.resourceGroups ?? current.resourceGroups,
           sidebarActions: state.sidebarActions ?? current.sidebarActions,
@@ -1782,6 +1792,18 @@ function App() {
         }));
       },
     };
+    if (typeof window.__ghostex_PENDING_TITLEBAR_UPDATE_AVAILABLE__ === "boolean") {
+      /**
+       * CDXC:AutoUpdate 2026-06-08-18:21:
+       * Native may detect an app update before this React bridge exists. Apply
+       * the latest pending native boolean immediately after bridge installation
+       * so the titlebar download button appears during startup instead of only
+       * after a later 15-minute probe.
+       */
+      window.__ghostex_TITLEBAR__.setActiveProjectState({
+        updateAvailable: window.__ghostex_PENDING_TITLEBAR_UPDATE_AVAILABLE__,
+      });
+    }
     return () => {
       delete window.__ghostex_TITLEBAR__;
     };
@@ -2408,12 +2430,41 @@ function App() {
     });
   };
 
+  /**
+   * CDXC:ModeSwitcher 2026-06-08-18:23:
+   * The titlebar GitHub tab/button must be disabled when the active sidebar
+   * context is Quick/projectless or when the active project has no GitHub
+   * remote. Keep this as titlebar state, not a click-time warning, so full and
+   * compact mode controls both present the same unavailable action.
+   */
+  const githubModeDisabledReason = projectState.projectIsQuick
+    ? "Quick sessions do not have a GitHub project view."
+    : projectState.git.hasGitHubRemote
+      ? undefined
+      : "Add a GitHub remote to use GitHub mode.";
+  /*
+   * CDXC:ModeSwitcher 2026-06-08-18:39:
+   * Quick sessions are projectless work areas, so Kanban should be unavailable
+   * there for the same active-context reason as GitHub mode. Disable the
+   * titlebar tab/button before click dispatch instead of opening an empty
+   * project-board surface.
+   */
+  const kanbanModeDisabledReason = projectState.projectIsQuick
+    ? "Quick sessions do not have a Kanban project view."
+    : undefined;
+
   const openGitMode = () => {
+    if (githubModeDisabledReason) {
+      return;
+    }
     setOptimisticMode("git");
     postNative({ type: "openGitHubProjectFromTitlebar" });
   };
 
   const openTasksMode = () => {
+    if (kanbanModeDisabledReason) {
+      return;
+    }
     setOptimisticMode("tasks");
     postNative({ type: "openTasksPlaceholderFromTitlebar" });
   };
@@ -2453,11 +2504,15 @@ function App() {
       value: "code" as const,
     },
     {
+      disabled: githubModeDisabledReason !== undefined,
+      disabledReason: githubModeDisabledReason,
       label: "GitHub",
       onSelect: openGitMode,
       value: "git" as const,
     },
     {
+      disabled: kanbanModeDisabledReason !== undefined,
+      disabledReason: kanbanModeDisabledReason,
       label: "Kanban",
       onSelect: openTasksMode,
       value: "tasks" as const,
@@ -3132,6 +3187,7 @@ function createInitialProjectState(bootstrap: Record<string, unknown>): Titlebar
     },
     keepAwake: createTitlebarKeepAwakeSettings(settings),
     projectEditorCompanionPaneHidden: false,
+    projectIsQuick: false,
     projectName:
       (typeof bootstrap.workspaceName === "string" && bootstrap.workspaceName) ||
       pathParts[pathParts.length - 1] ||
@@ -3149,8 +3205,18 @@ function createInitialProjectState(bootstrap: Record<string, unknown>): Titlebar
       customTargets: settings.customWorkspaceOpenTargets,
       hiddenTargetIds: settings.workspaceOpenTargetHiddenIds,
     },
-    updateAvailable: false,
+    updateAvailable: readInitialTitlebarUpdateAvailable(bootstrap),
   };
+}
+
+function readInitialTitlebarUpdateAvailable(bootstrap: Record<string, unknown>): boolean {
+  /**
+   * CDXC:AutoUpdate 2026-06-08-18:21:
+   * The native launch probe can finish before or during titlebar startup.
+   * Accept both the injected bootstrap boolean and the pending native bridge
+   * boolean so detected updates show the titlebar button on first render.
+   */
+  return bootstrap.updateAvailable === true || window.__ghostex_PENDING_TITLEBAR_UPDATE_AVAILABLE__ === true;
 }
 
 function createTitlebarKeepAwakeSettings(
@@ -4289,6 +4355,8 @@ function getTitlebarModeIcon(mode: TitlebarMode): ReactNode {
 }
 
 type TitlebarModeOption = {
+  disabled?: boolean;
+  disabledReason?: string;
   label: string;
   meta?: ReactNode;
   onSelect: () => void;
@@ -4311,6 +4379,9 @@ function TitlebarModeDropdown({
     return null;
   }
   const selectMode = (mode: TitlebarModeOption) => {
+    if (mode.disabled) {
+      return;
+    }
     onOpenChange(false);
     mode.onSelect();
   };
@@ -4353,6 +4424,7 @@ function TitlebarModeDropdown({
         {modes.map((mode) => (
           <DropdownMenuItem
             className="titlebar-open-menu-item"
+            disabled={mode.disabled}
             key={mode.value}
             onClick={() => selectMode(mode)}
           >
@@ -4412,9 +4484,13 @@ function TitlebarModeSwitcher({
         const isActive = mode.value === activeMode;
         return (
           <button
+            aria-disabled={mode.disabled === true}
             aria-selected={isActive}
+            aria-label={mode.disabledReason ?? mode.label}
             className="titlebar-mode-tab"
             data-active={String(isActive)}
+            data-disabled={String(mode.disabled === true)}
+            disabled={mode.disabled}
             key={mode.value}
             onClick={mode.onSelect}
             role="tab"
@@ -4986,8 +5062,20 @@ styleElement.textContent = `
     color: rgba(255,255,255,0.92);
     outline: none;
   }
+  .titlebar-mode-tab:disabled,
+  .titlebar-mode-tab[data-disabled="true"] {
+    color: rgba(255,255,255,0.26);
+  }
+  .titlebar-mode-tab:disabled .titlebar-mode-tab-content,
+  .titlebar-mode-tab[data-disabled="true"] .titlebar-mode-tab-content {
+    opacity: 0.72;
+  }
   .titlebar-mode-tab[data-active="true"] {
     color: rgba(255,255,255,0.98);
+  }
+  .titlebar-mode-tab:disabled[data-active="true"],
+  .titlebar-mode-tab[data-disabled="true"][data-active="true"] {
+    color: rgba(255,255,255,0.42);
   }
   .titlebar-mode-tab-active {
     background: rgba(255,255,255,0.11);

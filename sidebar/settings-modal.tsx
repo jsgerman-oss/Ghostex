@@ -17,6 +17,14 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardTitle } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import {
+  Popover,
+  PopoverContent,
+  PopoverDescription,
+  PopoverHeader,
+  PopoverTitle,
+  PopoverTrigger,
+} from "@/components/ui/popover";
+import {
   Empty,
   EmptyDescription,
   EmptyHeader,
@@ -3159,18 +3167,59 @@ function RemoteSettingsTab({
   return (
     <div className="settings-tab-scroll scroll-mask-y">
       <div className="settings-management-layout">
-        <div className="settings-management-header">
-          <div>
-            <h3 className="settings-management-heading">Remote machines</h3>
+        <header className="settings-management-header">
+          <h3 className="settings-management-heading">Remote machines</h3>
+          <div className="settings-management-header-row">
             <p className="settings-management-description">
               Saved SSH machines appear as separate sidebar sections.
             </p>
+            <Popover onOpenChange={setIsTailscaleHelpOpen} open={isTailscaleHelpOpen}>
+              <PopoverTrigger
+                render={
+                  <Button
+                    className="settings-management-help-button"
+                    size="sm"
+                    type="button"
+                    variant="ghost"
+                  />
+                }
+              >
+                <IconInfoCircle aria-hidden="true" data-icon="inline-start" />
+                Tailscale setup
+              </PopoverTrigger>
+            <PopoverContent
+              align="end"
+              className="w-80 max-w-[calc(100vw-2rem)] gap-3 p-4"
+              onOpenAutoFocus={(event) => event.preventDefault()}
+              side="top"
+              sideOffset={8}
+            >
+              {/*
+               * CDXC:RemoteMachines 2026-06-08-18:47:
+               * Tailscale setup help should be a compact popover above Remote Machine settings, not a full modal, because it is contextual guidance for filling the SSH host rather than a blocking workflow.
+               *
+               * CDXC:RemoteMachines 2026-06-08-19:05:
+               * The Remote machines header keeps the description muted and places Tailscale setup as a compact ghost help control on the same row, not a full-width outline button under cramped title copy.
+               */}
+              <PopoverHeader>
+                <PopoverTitle className="text-sm">Tailscale setup</PopoverTitle>
+                <PopoverDescription className="text-xs leading-5">
+                  Use Tailscale when the remote machine is not reachable on your local network.
+                </PopoverDescription>
+              </PopoverHeader>
+              <ol className="flex list-decimal flex-col gap-2 pl-5 text-xs leading-5 text-muted-foreground">
+                <li>Install Tailscale on this Mac and sign in.</li>
+                <li>Install Tailscale on the remote machine and sign in to the same tailnet.</li>
+                <li>Confirm both machines are connected in Tailscale.</li>
+                <li>Use the remote machine's Tailscale DNS name or Tailscale IP as the SSH host.</li>
+              </ol>
+              <p className="text-xs leading-5 text-muted-foreground">
+                Ghostex still connects with SSH only; no Tailscale tokens or remote gxserver listener are required.
+              </p>
+            </PopoverContent>
+            </Popover>
           </div>
-          <Button onClick={() => setIsTailscaleHelpOpen(true)} type="button" variant="outline">
-            <IconInfoCircle aria-hidden="true" />
-            Tailscale setup
-          </Button>
-        </div>
+        </header>
 
         <div className="settings-management-list">
           {remoteMachines.length === 0 ? (
@@ -3179,26 +3228,28 @@ function RemoteSettingsTab({
             </div>
           ) : (
             remoteMachines.map((machine) => (
-              <Card className="settings-project-command-card" key={machine.id}>
-                <CardContent className="flex flex-col gap-4 p-4">
-                  <div className="settings-management-row">
-                    <span className="settings-management-icon flex size-9 shrink-0 items-center justify-center bg-muted">
-                      <IconDeviceDesktop aria-hidden="true" />
-                    </span>
-                    <span className="settings-management-main min-w-0">
-                      <span className="settings-management-title">{machine.name}</span>
-                      <span className="settings-management-detail">{formatRemoteMachineSshTarget(machine)}</span>
-                    </span>
+              <Card className="settings-remote-machine-card" key={machine.id} size="sm">
+                <div className="settings-remote-machine-summary settings-management-row">
+                  <span className="settings-management-icon flex size-9 shrink-0 items-center justify-center bg-muted">
+                    <IconDeviceDesktop aria-hidden="true" />
+                  </span>
+                  <span className="settings-management-main min-w-0 flex-1">
+                    <span className="settings-management-title">{machine.name}</span>
+                    <span className="settings-management-detail">{formatRemoteMachineSshTarget(machine)}</span>
+                  </span>
+                  <span className="settings-management-row-actions">
                     <Button
                       aria-label={`Remove ${machine.name}`}
                       onClick={() => removeRemoteMachine(machine.id)}
-                      size="icon"
+                      size="icon-sm"
                       type="button"
                       variant="ghost"
                     >
                       <IconTrash aria-hidden="true" />
                     </Button>
-                  </div>
+                  </span>
+                </div>
+                <CardContent className="settings-remote-machine-body">
                   <RemoteMachineFields
                     draft={{
                       name: machine.name,
@@ -3215,9 +3266,11 @@ function RemoteSettingsTab({
           )}
         </div>
 
-        <Card className="settings-project-command-card">
-          <CardContent className="flex flex-col gap-4 p-4">
-            <CardTitle className="text-sm">Add remote machine</CardTitle>
+        <Card className="settings-remote-machine-card settings-remote-machine-add-card" size="sm">
+          <div className="settings-remote-machine-summary settings-remote-machine-add-summary">
+            <CardTitle className="settings-remote-machine-add-title">Add remote machine</CardTitle>
+          </div>
+          <CardContent className="settings-remote-machine-body">
             {/*
              * CDXC:RemoteMachines 2026-06-02-23:47:
              * Remote settings require a human name and SSH host before saving because the sidebar section title comes from this user label and v1 remote connections support SSH only.
@@ -3226,7 +3279,7 @@ function RemoteSettingsTab({
               draft={newMachine}
               onChange={(patch) => setNewMachine((draft) => ({ ...draft, ...patch }))}
             />
-            <div className="settings-management-actions">
+            <div className="settings-management-actions settings-remote-machine-add-actions">
               <Button disabled={!canAddMachine} onClick={addRemoteMachine} type="button">
                 <IconPlus aria-hidden="true" />
                 Add Machine
@@ -3235,24 +3288,6 @@ function RemoteSettingsTab({
           </CardContent>
         </Card>
       </div>
-
-      <Dialog onOpenChange={setIsTailscaleHelpOpen} open={isTailscaleHelpOpen}>
-        <DialogContent className="ghostex-settings-shadcn settings-modal-dialog max-w-lg p-0 font-sans">
-          <DialogHeader className="px-5 pt-5 pb-3">
-            <DialogTitle>Tailscale setup</DialogTitle>
-          </DialogHeader>
-          <div className="flex flex-col gap-3 px-5 pb-5 text-sm text-muted-foreground">
-            <p>Use Tailscale when the remote machine is not reachable on your local network.</p>
-            <ol className="list-decimal space-y-2 pl-5">
-              <li>Install Tailscale on this Mac and sign in.</li>
-              <li>Install Tailscale on the remote machine and sign in to the same tailnet.</li>
-              <li>Confirm both machines are connected in Tailscale.</li>
-              <li>Use the remote machine's Tailscale DNS name or Tailscale IP as the SSH host.</li>
-            </ol>
-            <p>Ghostex still connects with SSH only; no Tailscale tokens or remote gxserver listener are required.</p>
-          </div>
-        </DialogContent>
-      </Dialog>
     </div>
   );
 }
@@ -3265,42 +3300,46 @@ function RemoteMachineFields({
   onChange: (patch: Partial<RemoteMachineDraft>) => void;
 }) {
   return (
-    <FieldGroup>
-      <Field>
-        <FieldLabel>Name</FieldLabel>
+    <FieldGroup className="settings-remote-machine-fields">
+      <Field className="settings-remote-machine-field">
+        <FieldLabel className="settings-remote-machine-field-label">Name</FieldLabel>
         <Input
           aria-label="Remote machine name"
+          className="settings-remote-machine-input"
           maxLength={80}
           onChange={(event) => onChange({ name: event.currentTarget.value })}
           placeholder="Machine one"
           value={draft.name}
         />
       </Field>
-      <Field>
-        <FieldLabel>SSH host</FieldLabel>
+      <Field className="settings-remote-machine-field">
+        <FieldLabel className="settings-remote-machine-field-label">SSH host</FieldLabel>
         <Input
           aria-label="Remote machine SSH host"
+          className="settings-remote-machine-input"
           maxLength={200}
           onChange={(event) => onChange({ sshHost: event.currentTarget.value })}
           placeholder="100.77.81.4"
           value={draft.sshHost}
         />
       </Field>
-      <div className="grid gap-3 md:grid-cols-2">
-        <Field>
-          <FieldLabel>SSH user</FieldLabel>
+      <div className="settings-remote-machine-user-port">
+        <Field className="settings-remote-machine-field">
+          <FieldLabel className="settings-remote-machine-field-label">SSH user</FieldLabel>
           <Input
             aria-label="Remote machine SSH user"
+            className="settings-remote-machine-input"
             maxLength={120}
             onChange={(event) => onChange({ sshUser: event.currentTarget.value })}
             placeholder="madda"
             value={draft.sshUser}
           />
         </Field>
-        <Field>
-          <FieldLabel>SSH port</FieldLabel>
+        <Field className="settings-remote-machine-field">
+          <FieldLabel className="settings-remote-machine-field-label">SSH port</FieldLabel>
           <Input
             aria-label="Remote machine SSH port"
+            className="settings-remote-machine-input"
             inputMode="numeric"
             maxLength={5}
             onChange={(event) => onChange({ sshPort: event.currentTarget.value.replace(/[^0-9]/gu, "") })}
@@ -3309,15 +3348,19 @@ function RemoteMachineFields({
           />
         </Field>
       </div>
-      <Field>
-        <FieldLabel>Identity file</FieldLabel>
+      <Field className="settings-remote-machine-field">
+        <FieldLabel className="settings-remote-machine-field-label">Identity file</FieldLabel>
         <Input
           aria-label="Remote machine SSH identity file"
+          className="settings-remote-machine-input"
           maxLength={500}
           onChange={(event) => onChange({ sshIdentityFile: event.currentTarget.value })}
           placeholder="~/.ssh/id_ed25519"
           value={draft.sshIdentityFile}
         />
+        <FieldDescription className="settings-remote-machine-field-description">
+          Optional. Leave blank to use your default SSH key.
+        </FieldDescription>
       </Field>
     </FieldGroup>
   );
