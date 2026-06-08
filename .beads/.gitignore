@@ -33,3 +33,6 @@ beads.right.meta.json
 !issues.jsonl
 !metadata.json
 !config.json
+
+# CDXC:ProjectBoard 2026-06-08-10:15: Beads export-state records local export bookkeeping, not reviewable project-board source. Keep it out of release commits while continuing to track issues.jsonl and metadata/config source files.
+export-state.json
