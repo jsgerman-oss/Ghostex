@@ -3,7 +3,6 @@
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { mkdir, readFile, readdir, stat, writeFile } from "node:fs/promises";
-import { homedir } from "node:os";
 import { dirname, join, relative } from "node:path";
 import { spawnSync } from "node:child_process";
 
@@ -23,10 +22,16 @@ const ignoredDirectoryNames = new Set([
 /**
  * CDXC:T3Code 2026-05-02-01:05
  * `bun run start` and its short alias `bun s` launch the normal native app
- * against the local t3code-embed fork, so the fork's server and web assets must
+ * against the root t3code submodule, so the fork's server and web assets must
  * be current before ghostex opens a T3 pane. Fingerprint source files outside
  * generated output and rebuild only when that fingerprint changes, preserving
  * fast no-op starts while preventing stale web/server contract mismatches.
+ *
+ * CDXC:T3CodeSubmodule 2026-06-07-13:00:
+ * Ghostex owns T3 Code as the root `t3code` submodule. Local starts must build
+ * that pinned checkout by default instead of reaching to a sibling
+ * t3code-embed directory whose branch and patches are outside the
+ * parent repo's review surface.
  *
  * CDXC:StartCommand 2026-05-09-16:53
  * `bun s` must be the normal app start path, not the dev app variant. Keep
@@ -36,7 +41,7 @@ const ignoredDirectoryNames = new Set([
 async function main() {
   const t3Root = resolveT3CodeRoot();
   if (!t3Root || !existsSync(join(t3Root, "package.json"))) {
-    console.warn("[t3code] Skipping build check; t3code-embed checkout was not found.");
+    console.warn("[t3code] Skipping build check; t3code submodule checkout was not found.");
     return;
   }
 
@@ -74,7 +79,7 @@ function resolveT3CodeRoot() {
   if (override) {
     return override;
   }
-  return join(homedir(), "dev", "_active", "t3code-embed");
+  return join(repoRoot, "t3code");
 }
 
 async function readPreviousState() {
