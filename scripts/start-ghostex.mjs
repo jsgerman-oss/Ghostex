@@ -129,7 +129,14 @@ async function closeInstalledApp() {
   /*
   CDXC:LocalStartGxserver 2026-05-31-15:52:
   Close only the matching installed app executable before replacing the bundle or stopping stale gxserver. This keeps the visible app from watching its backend disappear and avoids signaling zmx attach processes or the gxserver process by broad name.
+
+  CDXC:LocalStart 2026-06-08-05:00:
+  AppleScript `tell application id ... to quit` can launch a not-running app just to deliver the quit command, which makes `bun run start` look like the app crashed immediately. Probe the exact installed executable first and only send the quit command when there is a live app process to close.
   */
+  let pids = findRunningAppPids();
+  if (pids.length === 0) {
+    return;
+  }
   run("osascript", ["-e", `tell application id "${bundleId}" to quit`], {
     allowFailure: true,
     stdio: "ignore",
@@ -138,7 +145,7 @@ async function closeInstalledApp() {
     return;
   }
 
-  const pids = findRunningAppPids();
+  pids = findRunningAppPids();
   for (const pid of pids) {
     try {
       process.kill(Number(pid), "SIGTERM");
@@ -163,8 +170,35 @@ async function waitForAppExit(timeoutMs) {
 }
 
 function findRunningAppPids() {
-  const pattern = `^${escapeRegExp(installedExecutable)}$`;
-  const result = spawnSync("pgrep", ["-f", pattern], {
+  const bundlePids = findRunningAppPidsByBundleId();
+  if (bundlePids.length > 0) {
+    return bundlePids;
+  }
+  return findRunningAppPidsByExecutablePath();
+}
+
+function findRunningAppPidsByBundleId() {
+  /*
+  CDXC:LocalStart 2026-06-08-07:05:
+  Local starts must close the installed macOS app before copying a rebuilt bundle into /Applications. `pgrep` can miss LaunchServices-launched app processes even when `ps` shows the executable path, so use macOS' bundle identifier process table first and reserve executable-path matching for environments where System Events is unavailable.
+  */
+  const result = spawnSync("osascript", [
+    "-e",
+    `tell application "System Events" to get the unix id of every process whose bundle identifier is "${bundleId}"`,
+  ], {
+    cwd: repoRoot,
+    encoding: "utf8",
+    env: startEnvironment,
+    stdio: ["ignore", "pipe", "ignore"],
+  });
+  if (result.status !== 0 || !result.stdout.trim()) {
+    return [];
+  }
+  return parsePidList(result.stdout);
+}
+
+function findRunningAppPidsByExecutablePath() {
+  const result = spawnSync("ps", ["-axo", "pid=,args=", "-ww"], {
     cwd: repoRoot,
     encoding: "utf8",
     env: startEnvironment,
@@ -174,8 +208,19 @@ function findRunningAppPids() {
     return [];
   }
   return result.stdout
-    .trim()
-    .split(/\s+/)
+    .split(/\r?\n/)
+    .map((line) => line.match(/^\s*(\d+)\s+(.+)$/))
+    .filter((match) => match && isInstalledAppCommandLine(match[2]))
+    .map((match) => match[1]);
+}
+
+function isInstalledAppCommandLine(commandLine) {
+  return commandLine === installedExecutable || commandLine.startsWith(`${installedExecutable} `);
+}
+
+function parsePidList(value) {
+  return value
+    .split(/[,\s]+/)
     .filter(Boolean);
 }
 
@@ -675,10 +720,6 @@ function runCapture(command, args) {
     throw new Error(result.stderr || result.stdout || `${command} failed with status ${result.status}`);
   }
   return result.stdout;
-}
-
-function escapeRegExp(value) {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function sleep(ms) {
