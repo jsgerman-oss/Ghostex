@@ -12,7 +12,6 @@ import {
   DialogContent,
   DialogDescription,
   DialogFooter,
-  DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
 import {
@@ -39,6 +38,23 @@ import {
   type GitDiffViewMode,
   type GitFileDiffModalDraft,
 } from "./git-file-diff-modal";
+
+type GitCommitInlineDiffMode = "all" | "file";
+
+type GitCommitDiffPreferences = {
+  hideWhitespace: boolean;
+  lineWrap: boolean;
+  viewMode: GitDiffViewMode;
+};
+
+const GIT_COMMIT_DIFF_PREFERENCES_STORAGE_KEY =
+  "ghostex.gitCommitModal.diffPreferences.v1";
+
+const DEFAULT_GIT_COMMIT_DIFF_PREFERENCES: GitCommitDiffPreferences = {
+  hideWhitespace: false,
+  lineWrap: false,
+  viewMode: "unified",
+};
 
 export type GitCommitModalDraft = {
   action?: SidebarGitAction;
@@ -109,11 +125,15 @@ export function GitCommitModal({
   const [isEditingFiles, setIsEditingFiles] = useState(false);
   const [isDirectMergeConfirmOpen, setIsDirectMergeConfirmOpen] = useState(false);
   const [localPromptAgentId, setLocalPromptAgentId] = useState("");
+  const [inlineDiffMode, setInlineDiffMode] = useState<GitCommitInlineDiffMode>("file");
+  const [diffDraftCache, setDiffDraftCache] = useState<Record<string, GitFileDiffModalDraft>>(
+    () => ({}),
+  );
+  const [allDiffLoadingFilePath, setAllDiffLoadingFilePath] = useState<string>();
   const [selectedDiffFilePath, setSelectedDiffFilePath] = useState<string>();
   const [loadingDiffFilePath, setLoadingDiffFilePath] = useState<string>();
-  const [inlineDiffViewMode, setInlineDiffViewMode] = useState<GitDiffViewMode>("unified");
-  const [inlineDiffLineWrap, setInlineDiffLineWrap] = useState(false);
-  const [inlineDiffHideWhitespace, setInlineDiffHideWhitespace] = useState(false);
+  const [inlineDiffPreferences, setInlineDiffPreferences] =
+    useState<GitCommitDiffPreferences>(readGitCommitDiffPreferences);
   const initializedDraftRequestRef = useRef<string | undefined>(undefined);
   const commandAgents = useMemo(
     () => agents.filter((agent) => agent.command?.trim()),
@@ -132,6 +152,16 @@ export function GitCommitModal({
     promptAgents.find((agent) => agent.agentId === effectivePromptAgentId)?.agentId ??
     promptAgents[0]?.agentId ??
     "";
+  const inlineDiffViewMode = inlineDiffPreferences.viewMode;
+  const inlineDiffLineWrap = inlineDiffPreferences.lineWrap;
+  const inlineDiffHideWhitespace = inlineDiffPreferences.hideWhitespace;
+  const updateInlineDiffPreferences = (updates: Partial<GitCommitDiffPreferences>) => {
+    setInlineDiffPreferences((currentPreferences) => {
+      const nextPreferences = { ...currentPreferences, ...updates };
+      writeGitCommitDiffPreferences(nextPreferences);
+      return nextPreferences;
+    });
+  };
   const descriptionId = useId();
   const generateAgentId = useId();
   const titleId = useId();
@@ -143,6 +173,11 @@ export function GitCommitModal({
     [changedFiles, excludedFiles],
   );
   const selectedStats = useMemo(() => summarizeChangedFiles(selectedFiles), [selectedFiles]);
+  const allChangedStats = useMemo(() => summarizeChangedFiles(changedFiles), [changedFiles]);
+  const allFilesDiffDraft = useMemo(
+    () => buildAllFilesDiffDraft(changedFiles, diffDraftCache),
+    [changedFiles, diffDraftCache],
+  );
   const allSelected = changedFiles.length > 0 && selectedFiles.length === changedFiles.length;
   const noneSelected = changedFiles.length > 0 && selectedFiles.length === 0;
 
@@ -161,9 +196,9 @@ export function GitCommitModal({
     setExcludedFiles(new Set());
     setIsEditingFiles(false);
     setIsDirectMergeConfirmOpen(false);
-    setInlineDiffViewMode("unified");
-    setInlineDiffLineWrap(false);
-    setInlineDiffHideWhitespace(false);
+    setInlineDiffMode("file");
+    setDiffDraftCache({});
+    setAllDiffLoadingFilePath(undefined);
     const initialDiffFilePath = draft.changedFiles?.[0]?.path;
     setSelectedDiffFilePath(initialDiffFilePath);
     setLoadingDiffFilePath(initialDiffFilePath);
@@ -173,11 +208,42 @@ export function GitCommitModal({
   }, [commandAgents, draft, isOpen]);
 
   useEffect(() => {
-    if (!fileDiffDraft || fileDiffDraft.filePath !== loadingDiffFilePath) {
+    if (!fileDiffDraft) {
       return;
     }
-    setLoadingDiffFilePath(undefined);
-  }, [fileDiffDraft, loadingDiffFilePath]);
+    setDiffDraftCache((currentCache) => ({
+      ...currentCache,
+      [fileDiffDraft.filePath]: fileDiffDraft,
+    }));
+    if (fileDiffDraft.filePath === loadingDiffFilePath) {
+      setLoadingDiffFilePath(undefined);
+    }
+    if (fileDiffDraft.filePath === allDiffLoadingFilePath) {
+      setAllDiffLoadingFilePath(undefined);
+    }
+  }, [allDiffLoadingFilePath, fileDiffDraft, loadingDiffFilePath]);
+
+  useEffect(() => {
+    if (!isOpen || inlineDiffMode !== "all" || allDiffLoadingFilePath) {
+      return;
+    }
+    const nextMissingDiffPath = changedFiles.find(
+      (file) => diffDraftCache[file.path] === undefined,
+    )?.path;
+    if (!nextMissingDiffPath) {
+      return;
+    }
+    setAllDiffLoadingFilePath(nextMissingDiffPath);
+    onOpenFileDiff(nextMissingDiffPath, draft.requestId);
+  }, [
+    allDiffLoadingFilePath,
+    changedFiles,
+    diffDraftCache,
+    draft.requestId,
+    inlineDiffMode,
+    isOpen,
+    onOpenFileDiff,
+  ]);
 
   /**
    * CDXC:TitlebarGit 2026-05-28-07:47:
@@ -194,11 +260,25 @@ export function GitCommitModal({
       ? selectedFiles.map((file) => file.path)
       : undefined;
   const selectedDiffDraft =
-    fileDiffDraft && fileDiffDraft.filePath === selectedDiffFilePath ? fileDiffDraft : undefined;
+    selectedDiffFilePath !== undefined
+      ? diffDraftCache[selectedDiffFilePath] ??
+        (fileDiffDraft && fileDiffDraft.filePath === selectedDiffFilePath ? fileDiffDraft : undefined)
+      : undefined;
   const isSelectedDiffLoading =
+    inlineDiffMode === "file" &&
     selectedDiffFilePath !== undefined &&
     loadingDiffFilePath === selectedDiffFilePath &&
     selectedDiffDraft === undefined;
+  const activeDiffDraft = inlineDiffMode === "all" ? allFilesDiffDraft : selectedDiffDraft;
+  const activeDiffFileLabel =
+    inlineDiffMode === "all" ? "All files" : selectedDiffFilePath;
+  const activeDiffStats =
+    inlineDiffMode === "all"
+      ? allChangedStats
+      : {
+          additions: selectedDiffDraft?.additions ?? 0,
+          deletions: selectedDiffDraft?.deletions ?? 0,
+        };
 
   const handleMessagePaste = (event: ReactClipboardEvent<HTMLTextAreaElement>) => {
     const pastedText = event.clipboardData.getData("text/plain");
@@ -226,9 +306,15 @@ export function GitCommitModal({
   };
 
   const openInlineFileDiff = (filePath: string) => {
+    setInlineDiffMode("file");
     setSelectedDiffFilePath(filePath);
     setLoadingDiffFilePath(filePath);
     onOpenFileDiff(filePath, draft.requestId);
+  };
+
+  const showAllInlineFileDiffs = () => {
+    setInlineDiffMode("all");
+    setLoadingDiffFilePath(undefined);
   };
 
   /*
@@ -278,6 +364,12 @@ export function GitCommitModal({
    * the same row as Edit, place three icon-only tooltip diff controls in the
    * diff header, and use hover-only 5px transparent-gutter scrollbars on the
    * file tree and diff body without scroll-mask overflow fades.
+   *
+   * CDXC:TitlebarGit 2026-06-08-09:41:
+   * Commit review should open directly into the review workspace without a
+   * visible title/subtitle row. Keep Select and Show All beside Branch, let
+   * Show All concatenate every changed-file patch in the diff pane, and persist
+   * diff display options globally across projects and app restarts.
    */
   return (
     <>
@@ -295,15 +387,13 @@ export function GitCommitModal({
           className="ghostex-settings-shadcn settings-modal-dialog command-config-modal-shadcn git-commit-modal-shadcn dark flex flex-col gap-0 overflow-hidden p-0 font-sans"
           data-sidebar-theme="plain-dark"
         >
-          <DialogHeader className="git-commit-modal-header">
-            <DialogTitle className="text-xl" id={titleId}>
-              Commit changes
-            </DialogTitle>
-            <DialogDescription className="git-commit-modal-description" id={descriptionId}>
-              {draft.description ||
-                "Review and confirm your commit. Leave the message blank to auto-generate one."}
-            </DialogDescription>
-          </DialogHeader>
+          <DialogTitle className="sr-only" id={titleId}>
+            Commit changes
+          </DialogTitle>
+          <DialogDescription className="sr-only" id={descriptionId}>
+            {draft.description ||
+              "Review and confirm your commit. Leave the message blank to auto-generate one."}
+          </DialogDescription>
           <div className="git-commit-modal-body">
             <div className="git-commit-modal-left" data-has-message={String(showCommitMessage)}>
               <div className="git-commit-files-panel">
@@ -329,13 +419,23 @@ export function GitCommitModal({
                     ) : null}
                   </div>
                   {changedFiles.length > 0 ? (
-                    <button
-                      className="git-commit-files-edit-button"
-                      onClick={() => setIsEditingFiles((current) => !current)}
-                      type="button"
-                    >
-                      {isEditingFiles ? "Done" : "Edit"}
-                    </button>
+                    <div className="git-commit-files-actions">
+                      <button
+                        className="git-commit-files-edit-button"
+                        onClick={() => setIsEditingFiles((current) => !current)}
+                        type="button"
+                      >
+                        {isEditingFiles ? "Done" : "Select"}
+                      </button>
+                      <button
+                        className="git-commit-files-show-all-button"
+                        data-active={inlineDiffMode === "all" ? "true" : "false"}
+                        onClick={showAllInlineFileDiffs}
+                        type="button"
+                      >
+                        Show All
+                      </button>
+                    </div>
                   ) : null}
                 </div>
                 {changedFiles.length > 0 ? (
@@ -374,7 +474,7 @@ export function GitCommitModal({
                           });
                         }}
                         onOpenFile={openInlineFileDiff}
-                        selectedPath={selectedDiffFilePath}
+                        selectedPath={inlineDiffMode === "file" ? selectedDiffFilePath : undefined}
                       />
                     </div>
                     <div className="git-commit-files-summary">
@@ -419,40 +519,42 @@ export function GitCommitModal({
             </div>
             <section className="git-commit-inline-diff-panel" aria-label="Selected file diff">
               <div className="git-commit-inline-diff-header">
-                {selectedDiffFilePath ? (
+                {activeDiffFileLabel ? (
                   <div className="git-commit-inline-diff-file">
-                    <span className="git-file-diff-modal-path">{selectedDiffFilePath}</span>
-                    {selectedDiffDraft ? (
-                      <span className="git-file-diff-modal-stats">
-                        <span className="changed-files-tree-additions">
-                          +{selectedDiffDraft.additions ?? 0}
-                        </span>
-                        <span className="changed-files-tree-stat-divider">/</span>
-                        <span className="changed-files-tree-deletions">
-                          -{selectedDiffDraft.deletions ?? 0}
-                        </span>
+                    <span className="git-file-diff-modal-path">{activeDiffFileLabel}</span>
+                    <span className="git-file-diff-modal-stats">
+                      <span className="changed-files-tree-additions">
+                        +{activeDiffStats.additions}
                       </span>
-                    ) : null}
+                      <span className="changed-files-tree-stat-divider">/</span>
+                      <span className="changed-files-tree-deletions">
+                        -{activeDiffStats.deletions}
+                      </span>
+                    </span>
                   </div>
                 ) : null}
                 <GitFileDiffControls
                   hideWhitespace={inlineDiffHideWhitespace}
                   lineWrap={inlineDiffLineWrap}
-                  onHideWhitespaceChange={setInlineDiffHideWhitespace}
-                  onLineWrapChange={setInlineDiffLineWrap}
-                  onViewModeChange={setInlineDiffViewMode}
+                  onHideWhitespaceChange={(hideWhitespace) =>
+                    updateInlineDiffPreferences({ hideWhitespace })
+                  }
+                  onLineWrapChange={(lineWrap) => updateInlineDiffPreferences({ lineWrap })}
+                  onViewModeChange={(viewMode) => updateInlineDiffPreferences({ viewMode })}
                   viewMode={inlineDiffViewMode}
                 />
               </div>
               <div className="git-commit-inline-diff-body">
                 <GitFileDiffPanel
-                  draft={selectedDiffDraft}
+                  draft={activeDiffDraft}
                   hideWhitespace={inlineDiffHideWhitespace}
                   isLoading={isSelectedDiffLoading}
                   lineWrap={inlineDiffLineWrap}
-                  onHideWhitespaceChange={setInlineDiffHideWhitespace}
-                  onLineWrapChange={setInlineDiffLineWrap}
-                  onViewModeChange={setInlineDiffViewMode}
+                  onHideWhitespaceChange={(hideWhitespace) =>
+                    updateInlineDiffPreferences({ hideWhitespace })
+                  }
+                  onLineWrapChange={(lineWrap) => updateInlineDiffPreferences({ lineWrap })}
+                  onViewModeChange={(viewMode) => updateInlineDiffPreferences({ viewMode })}
                   placeholder={
                     changedFiles.length > 0
                       ? "Select a file to preview its diff."
@@ -581,4 +683,73 @@ function buildDraftMessage(draft: GitCommitModalDraft): string {
   const subject = draft.suggestedSubject.trim();
   const body = draft.suggestedBody?.trim();
   return body ? `${subject}\n\n${body}` : subject;
+}
+
+function buildAllFilesDiffDraft(
+  files: ReadonlyArray<SidebarGitChangedFile>,
+  diffDraftCache: Readonly<Record<string, GitFileDiffModalDraft>>,
+): GitFileDiffModalDraft | undefined {
+  if (files.length === 0) {
+    return undefined;
+  }
+  const stats = summarizeChangedFiles(files);
+  return {
+    additions: stats.additions,
+    deletions: stats.deletions,
+    filePath: "All files",
+    patch: files
+      .map((file) => diffDraftCache[file.path]?.patch.trimEnd() || buildLoadingFileDiffPatch(file.path))
+      .join("\n\n"),
+  };
+}
+
+function buildLoadingFileDiffPatch(filePath: string): string {
+  return [
+    `diff --git a/${filePath} b/${filePath}`,
+    `--- a/${filePath}`,
+    `+++ b/${filePath}`,
+    "@@ loading diff @@",
+    " Loading diff...",
+  ].join("\n");
+}
+
+function readGitCommitDiffPreferences(): GitCommitDiffPreferences {
+  if (typeof window === "undefined") {
+    return DEFAULT_GIT_COMMIT_DIFF_PREFERENCES;
+  }
+  try {
+    const rawPreferences = window.localStorage.getItem(GIT_COMMIT_DIFF_PREFERENCES_STORAGE_KEY);
+    if (!rawPreferences) {
+      return DEFAULT_GIT_COMMIT_DIFF_PREFERENCES;
+    }
+    const parsedPreferences = JSON.parse(rawPreferences) as Partial<GitCommitDiffPreferences>;
+    return {
+      hideWhitespace: parsedPreferences.hideWhitespace === true,
+      lineWrap: parsedPreferences.lineWrap === true,
+      viewMode: parsedPreferences.viewMode === "split" ? "split" : "unified",
+    };
+  } catch {
+    return DEFAULT_GIT_COMMIT_DIFF_PREFERENCES;
+  }
+}
+
+/*
+ * CDXC:TitlebarGit 2026-06-08-09:41:
+ * Commit review display preferences are global UI preferences, not project
+ * data. Store only the diff mode toggles in localStorage so unified/split,
+ * wrapping, and whitespace visibility survive app restarts without logging or
+ * persisting repository paths.
+ */
+function writeGitCommitDiffPreferences(preferences: GitCommitDiffPreferences): void {
+  if (typeof window === "undefined") {
+    return;
+  }
+  try {
+    window.localStorage.setItem(
+      GIT_COMMIT_DIFF_PREFERENCES_STORAGE_KEY,
+      JSON.stringify(preferences),
+    );
+  } catch {
+    // localStorage can be unavailable in isolated test/story contexts.
+  }
 }

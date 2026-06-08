@@ -1202,6 +1202,7 @@ async function generateAppcast(version, buildVersion, sparkleBinDir, artifact) {
 
   await run(`cp ${shellQuote(appcastPath)} ${shellQuote(workAppcast)}`);
   await run(`cp ${shellQuote(artifact.finalDmg)} ${shellQuote(workDmg)}`);
+  const changelogNotes = await writeSparkleReleaseNotes(version, workDmg);
   await run(
     [
       shellQuote(path.join(sparkleBinDir, "generate_appcast")),
@@ -1209,6 +1210,7 @@ async function generateAppcast(version, buildVersion, sparkleBinDir, artifact) {
       shellQuote(`https://github.com/${config.githubRepo}/releases/download/v${version}/`),
       "--full-release-notes-url",
       shellQuote(`https://github.com/${config.githubRepo}/releases/tag/v${version}`),
+      "--embed-release-notes",
       "--maximum-versions 6",
       "-o",
       shellQuote(workAppcast),
@@ -1233,9 +1235,45 @@ async function generateAppcast(version, buildVersion, sparkleBinDir, artifact) {
   );
   await run(`xmllint --xpath "string((//*[local-name()='item'][1]/*[local-name()='version'])[1])" ${shellQuote(appcastPath)} | grep -Fx ${shellQuote(String(buildVersion))}`);
   await run(`xmllint --xpath "string((//*[local-name()='item'][1]/*[local-name()='shortVersionString'])[1])" ${shellQuote(appcastPath)} | grep -Fx ${shellQuote(version)}`);
+  const embeddedReleaseNotesFormat = await capture(
+    `xmllint --xpath "string((//*[local-name()='item'][1]/*[local-name()='description']/@*[local-name()='format'])[1])" ${shellQuote(appcastPath)}`,
+  );
+  if (embeddedReleaseNotesFormat.trim() !== "markdown") {
+    throw new ReleaseError(`Sparkle feed ${artifact.feed} did not embed markdown release notes for ${version}.`);
+  }
+  const embeddedReleaseNotes = await capture(
+    `xmllint --xpath "string((//*[local-name()='item'][1]/*[local-name()='description'])[1])" ${shellQuote(appcastPath)}`,
+  );
+  if (!embeddedReleaseNotes.includes(changelogNotes.trim())) {
+    throw new ReleaseError(`Sparkle feed ${artifact.feed} is missing the CHANGELOG.md notes for ${version}.`);
+  }
   await run(`rg ${shellQuote(`ghostex-${version}-${artifact.arch}.dmg|sparkle:version|sparkle:shortVersionString|sparkle:edSignature|sparkle-signatures`)} ${shellQuote(appcastPath)} -g '!node_modules/**' -g '!dist/**' -g '!build/**' -g '!coverage/**' -g '!.git/**'`);
 
   await rm(workDir, { recursive: true, force: true });
+}
+
+async function writeSparkleReleaseNotes(version, workDmg) {
+  const changelogNotes = await extractChangelogSection(version);
+  const parsedDmg = path.parse(workDmg);
+  const releaseNotesPath = path.join(parsedDmg.dir, `${parsedDmg.name}.md`);
+  /*
+   CDXC:AutoUpdate 2026-06-08-10:07:
+   Sparkle's update dialog does not render `sparkle:fullReleaseNotesLink`; it
+   shows changelog text only from a per-item description or releaseNotesLink.
+   Write same-basename markdown beside each DMG and force embedding so the
+   update menu shows CHANGELOG.md notes without depending on a separate notes
+   asset or browser fallback.
+   */
+  const releaseNotes = [
+    `# Ghostex ${version}`,
+    "",
+    changelogNotes,
+    "",
+    `[Full release notes](https://github.com/${config.githubRepo}/releases/tag/v${version})`,
+    "",
+  ].join("\n");
+  await writeFile(releaseNotesPath, releaseNotes, "utf8");
+  return changelogNotes;
 }
 
 async function updateSparkleFeeds(version, buildVersion, sparkleBinDir, artifacts) {

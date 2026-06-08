@@ -824,6 +824,68 @@ test("terminal title event API stores gxserver-decided canonical titles", async 
   });
 });
 
+test("terminal title event API does not publish presentation deltas for same-title status bookkeeping", async () => {
+  await withApiServer("local", async ({ baseUrl, token }) => {
+    const createdProject = await requestJson(baseUrl, "/api/createProject", {
+      body: {
+        params: { name: "Ghostex", path: "/repo/ghostex" },
+        protocolVersion: GXSERVER_PROTOCOL_VERSION,
+      },
+      method: "POST",
+      token,
+    });
+    const project = createdProject.body.result.project;
+    const createdSession = await requestJson(baseUrl, "/api/createSession", {
+      body: {
+        params: {
+          projectId: project.projectId,
+          runtimeSettings: { titleSource: "terminal-auto" },
+          title: "Search by Text",
+        },
+        protocolVersion: GXSERVER_PROTOCOL_VERSION,
+      },
+      method: "POST",
+      token,
+    });
+    const session = createdSession.body.result.session;
+    const socket = new WebSocket(toWebSocketUrl(baseUrl, "/api/events"), {
+      headers: authHeaders(token, GXSERVER_PROTOCOL_VERSION),
+    });
+    const readyEventPromise = nextWebSocketEvent(socket, "eventStreamReady");
+    await waitFor(once(socket, "open"), "WebSocket open");
+    assert.equal((await readyEventPromise).type, "eventStreamReady");
+
+    try {
+      /*
+      CDXC:GxserverSessionTitles 2026-06-08-09:30:
+      Repeated terminal-title observations that only create idle status bookkeeping must not publish an immediate presentation delta, because macOS sidebar hydration from that delta can steal first responder from the terminal that owns typing focus.
+      */
+      const observedEventsPromise = collectWebSocketEvents(socket, 600);
+      const ignored = await requestJson(baseUrl, "/api/ingestTerminalTitleEvent", {
+        body: {
+          params: {
+            projectId: project.projectId,
+            rawTitle: "Search by Text",
+            sessionId: session.sessionId,
+            sessionPersistenceProvider: "zmx",
+          },
+          protocolVersion: GXSERVER_PROTOCOL_VERSION,
+        },
+        method: "POST",
+        token,
+      });
+      assert.equal(ignored.status, 200);
+      assert.equal(ignored.body.result.changed, false);
+      assert.equal(ignored.body.result.activity.activity, "idle");
+      assert.equal(ignored.body.result.session.runtimeSettings.agentActivity.lastTitle, "Search by Text");
+      const presentationEvents = (await observedEventsPromise).filter((event) => event.type === "presentationDelta");
+      assert.deepEqual(presentationEvents, []);
+    } finally {
+      socket.close();
+    }
+  });
+});
+
 test("session state event API resolves resumed Codex sessions from shared history", async () => {
   await withApiServer("local", async ({ baseUrl, token }) => {
     const codexSessionId = "019e7af5-c610-7f62-a129-db7bb510b48d";
@@ -3994,6 +4056,20 @@ function runGitForTest(cwd: string, args: readonly string[]): void {
 async function onceMessage(socket: WebSocket): Promise<WebSocket.RawData> {
   const [message] = (await waitFor(once(socket, "message"), "WebSocket message")) as [WebSocket.RawData];
   return message;
+}
+
+async function collectWebSocketEvents(socket: WebSocket, durationMs: number): Promise<Record<string, unknown>[]> {
+  const events: Record<string, unknown>[] = [];
+  const onMessage = (message: WebSocket.RawData) => {
+    events.push(JSON.parse(String(message)) as Record<string, unknown>);
+  };
+  socket.on("message", onMessage);
+  try {
+    await delay(durationMs);
+  } finally {
+    socket.off("message", onMessage);
+  }
+  return events;
 }
 
 async function nextWebSocketEvent(socket: WebSocket, type: string): Promise<Record<string, unknown>> {

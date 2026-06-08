@@ -56,5 +56,11 @@ describe("code-server startup failure bridge", () => {
       "private static func serialize",
     );
     expect(nativeT3Append).toContain("NativeLogPrivacy.sanitizePayload(payload)");
+
+    expect(nativeT3LogSource).toContain("validateCodeServerDevelopmentPayload(repoRoot:");
+    expect(nativeT3LogSource).toContain("lib/vscode/out/server-main.js");
+    expect(nativeT3LogSource).toContain("code-server's raw 500 page");
+    expect(nativeT3LogSource).toContain("@vscode/fs-copyfile/build/Release/vscode_fs.node");
+    expect(nativeT3LogSource).toContain("Git activation failure toast");
   });
 });

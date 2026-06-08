@@ -155,13 +155,18 @@ export async function migrateLegacyMacosStateIntoGxserver(
     if (existing.status === "completed") {
       const repairedAt = options.now?.() ?? new Date().toISOString();
       const source = await readLegacyStateSnapshot(options);
+      const backupSource = await readLegacyBackupStateSnapshot(options);
       let importResult = readLegacySnapshotImportResultFromDatabase(db);
-      if (shouldRecoverCompletedProjectImport(existing, source, importResult)) {
+      const repairSource = selectCompletedImportRepairSource(source, backupSource, importResult);
+      if (shouldRecoverCompletedProjectImport(existing, repairSource, importResult)) {
         /*
         CDXC:GxserverMigration 2026-06-07-13:32:
         Some 3.x to 4.x upgrades can first record the legacy migration marker while project files are unreadable or while a stale browser-only WK snapshot wins source selection. If release app terminal projects become visible on a later launch, import unmapped projects instead of letting an incomplete completion marker permanently hide the user's old sessions from gxserver presentation.
+
+        CDXC:GxserverMigration 2026-06-08-08:58:
+        A completed marker is not enough proof that the gxserver DB still has the imported rows. If the DB lost its canonical projects/sessions while active shared state or the legacy backup still has recoverable sidebar state, rebuild the missing rows before clients read presentation.
         */
-        importResult = importLegacySnapshotIntoDatabase(db, source, {
+        importResult = importLegacySnapshotIntoDatabase(db, repairSource, {
           createProjectId: options.createProjectId,
           createSessionId: options.createSessionId,
           importedAt: repairedAt,
@@ -173,10 +178,10 @@ export async function migrateLegacyMacosStateIntoGxserver(
           ...(existing.logsImported ? { logsImported: existing.logsImported } : {}),
           projectsImported: importResult.projectsImported,
           sessionsImported: importResult.sessionsImported,
-          sourceFilesRead: source.sourceFilesRead,
+          sourceFilesRead: repairSource.sourceFilesRead,
           status: "completed",
         };
-        await rewriteSharedSidebarStateWithGxserverIds(options, source, importResult, repairedAt).catch(async (error) => {
+        await rewriteSharedSidebarStateWithGxserverIds(options, repairSource, importResult, repairedAt).catch(async (error) => {
           await options.logger.log({
             error: error instanceof Error ? error : String(error),
             event: "migration.legacyMacosState.recoveredSharedSidebarRewriteFailed",
@@ -200,7 +205,7 @@ export async function migrateLegacyMacosStateIntoGxserver(
         });
         return { status: recoveredStatus };
       }
-      repairUnmappedLegacySessionsFromSnapshot(db, source, importResult, {
+      repairUnmappedLegacySessionsFromSnapshot(db, repairSource, importResult, {
         createSessionId: options.createSessionId,
         importedAt: repairedAt,
         serverId: options.serverId,
@@ -210,7 +215,7 @@ export async function migrateLegacyMacosStateIntoGxserver(
         repairedAt,
       });
       repairProjectBoardConfigIdReferencesFromDatabase(db, importResult, repairedAt);
-      await rewriteSharedSidebarStateWithGxserverIds(options, source, importResult, repairedAt).catch(async (error) => {
+      await rewriteSharedSidebarStateWithGxserverIds(options, repairSource, importResult, repairedAt).catch(async (error) => {
         await options.logger.log({
           error: error instanceof Error ? error : String(error),
           event: "migration.legacyMacosState.completedSharedSidebarRepairFailed",
@@ -328,8 +333,26 @@ function shouldRecoverCompletedProjectImport(
 ): boolean {
   return (
     ((existing.projectsImported ?? 0) === 0 && source.projects.length > 0) ||
+    shouldRecoverMissingRowsAfterCompletedImport(source, importResult) ||
     source.projects.some((project) => isUnmappedLegacyTerminalProject(project, importResult))
   );
+}
+
+function shouldRecoverMissingRowsAfterCompletedImport(
+  source: LegacyStateSnapshot,
+  importResult: LegacySnapshotImportResult,
+): boolean {
+  /*
+  CDXC:GxserverMigration 2026-06-08-08:58:
+  Completed-marker repair must handle DB loss after the shared file was already rewritten to P/G IDs. Recover only catastrophic missing-row states here; normal post-cutover project/session deletes should not be replayed from stale shared sidebar JSON.
+  */
+  if (source.projects.length > 0 && importResult.projectsImported === 0) {
+    return true;
+  }
+  if (legacySnapshotTerminalSessionCount(source) > 0 && importResult.sessionsImported === 0) {
+    return true;
+  }
+  return false;
 }
 
 function isUnmappedLegacyTerminalProject(project: JsonObject, importResult: LegacySnapshotImportResult): boolean {
@@ -340,6 +363,41 @@ function isUnmappedLegacyTerminalProject(project: JsonObject, importResult: Lega
     importResult.projectIdByLegacyProjectId[legacyProjectId] === undefined &&
     collectLegacyTerminalSessions(project).length > 0
   );
+}
+
+function selectCompletedImportRepairSource(
+  source: LegacyStateSnapshot,
+  backupSource: LegacyStateSnapshot | undefined,
+  importResult: LegacySnapshotImportResult,
+): LegacyStateSnapshot {
+  if (!backupSource) {
+    return source;
+  }
+  const sourceScore = legacySnapshotRecoveryScore(source);
+  const backupScore = legacySnapshotRecoveryScore(backupSource);
+  if (backupScore <= sourceScore) {
+    return source;
+  }
+  if (importResult.projectsImported > 0 && importResult.sessionsImported > 0) {
+    return source;
+  }
+  /*
+  CDXC:GxserverMigration 2026-06-08-08:58:
+  The `.legacy-before-gxserver` files are recovery evidence, not the steady-state owner. Prefer them only when the completed-marker DB is missing imported rows and the active shared snapshot is empty or weaker, so normal post-cutover deletes are not resurrected from a stale backup.
+  */
+  return backupSource;
+}
+
+function legacySnapshotRecoveryScore(snapshot: LegacyStateSnapshot): number {
+  return (
+    snapshot.projects.length * PROJECT_SNAPSHOT_PROJECT_SCORE +
+    legacySnapshotTerminalSessionCount(snapshot) * PROJECT_SNAPSHOT_SESSION_SCORE +
+    snapshot.previousSessions.length * 1_000
+  );
+}
+
+function legacySnapshotTerminalSessionCount(snapshot: LegacyStateSnapshot): number {
+  return snapshot.projects.reduce((count, project) => count + collectLegacyTerminalSessions(project).length, 0);
 }
 
 function recordLegacyMacosStateImportStatus(db: Database.Database, status: GxserverStateImportStatus): void {
@@ -394,6 +452,42 @@ async function readLegacyStateSnapshot(options: GxserverLegacyMacosStateMigratio
     projectCommandsByLegacyId: normalizeLegacyProjectCommands(
       parseJson(localStorageValues[LEGACY_STORAGE_KEYS.projectCommands]),
     ),
+    projects: normalizeObjectArray(isRecord(projectPayload) ? projectPayload.projects : undefined),
+    settings,
+    sourceFilesRead,
+  };
+}
+
+async function readLegacyBackupStateSnapshot(
+  options: GxserverLegacyMacosStateMigrationOptions,
+): Promise<LegacyStateSnapshot | undefined> {
+  const sharedStateDir = options.sharedStateDir ?? path.join(options.paths.homeDir, ".ghostex", "state");
+  const sourceFilesRead: string[] = [];
+  const sharedProjects = await readSharedJsonFilePayload(
+    path.join(sharedStateDir, `${SHARED_PROJECTS_FILE}${LEGACY_SHARED_BACKUP_SUFFIX}`),
+    sourceFilesRead,
+  );
+  const sharedPreviousSessions = await readSharedJsonFilePayload(
+    path.join(sharedStateDir, `${SHARED_PREVIOUS_SESSIONS_FILE}${LEGACY_SHARED_BACKUP_SUFFIX}`),
+    sourceFilesRead,
+  );
+  if (!sharedProjects && !sharedPreviousSessions) {
+    return undefined;
+  }
+  const sharedSettings = await readSharedJsonFilePayload(path.join(sharedStateDir, SHARED_SETTINGS_FILE), sourceFilesRead);
+  const settings = normalizeObject(sharedSettings?.parsed);
+  /*
+  CDXC:GxserverMigration 2026-06-08-08:58:
+  Backup shared-state files are last-resort migration evidence for users whose completed-marker DB lost imported rows. Read only the backed-up project/previous-session snapshots plus active settings; do not mix WK project localStorage into this path because the backup is meant to restore the exact pre-cutover sidebar tree.
+  */
+  const projectPayload = sharedProjects?.parsed;
+  return {
+    agentOrder: [],
+    agents: [],
+    activeProjectId: isRecord(projectPayload) ? text(projectPayload.activeProjectId) : undefined,
+    gitConfig: {},
+    previousSessions: normalizeObjectArray(sharedPreviousSessions?.parsed),
+    projectCommandsByLegacyId: {},
     projects: normalizeObjectArray(isRecord(projectPayload) ? projectPayload.projects : undefined),
     settings,
     sourceFilesRead,
@@ -697,6 +791,7 @@ function importLegacySnapshotIntoDatabase(
     let projectsImported = 0;
     let sessionsImported = 0;
     const existingProjectIds = readExistingIds(db, "project", "");
+    const existingProjectRowIds = readExistingProjectRowIds(db);
     const previousByProject = groupPreviousSessionsByProject(snapshot.previousSessions);
     const existingImportResult = readLegacySnapshotImportResultFromDatabase(db);
     /*
@@ -712,11 +807,22 @@ function importLegacySnapshotIntoDatabase(
         { ...sessionIds },
       ]),
     );
+    const allocatedProjectRowsExisted: boolean[] = [];
     const allocatedProjectIds = snapshot.projects.map((legacyProject) => {
       const legacyProjectId = text(legacyProject.projectId);
       const existingProjectId = legacyProjectId ? projectIdByLegacyProjectId[legacyProjectId] : undefined;
-      const projectId = existingProjectId ?? createUniqueProjectId(existingProjectIds, options.createProjectId);
+      const canonicalProjectId =
+        legacyProjectId && isGxserverProjectId(legacyProjectId) && !existingProjectRowIds.has(legacyProjectId)
+          ? legacyProjectId
+          : undefined;
+      /*
+      CDXC:GxserverMigration 2026-06-08-08:58:
+      Completed-marker recovery may read an already-rewritten shared snapshot whose project ids are canonical P ids while the DB rows are gone. Preserve those ids when the project row is missing so existing native layout, previous-session links, and support diagnostics do not see a second identity rewrite.
+      */
+      const projectId = existingProjectId ?? canonicalProjectId ?? createUniqueProjectId(existingProjectIds, options.createProjectId);
+      allocatedProjectRowsExisted.push(existingProjectRowIds.has(projectId));
       existingProjectIds.add(projectId);
+      existingProjectRowIds.add(projectId);
       if (legacyProjectId) {
         projectIdByLegacyProjectId[legacyProjectId] = projectId;
         sessionIdByLegacyProjectId[legacyProjectId] ??= {};
@@ -727,9 +833,7 @@ function importLegacySnapshotIntoDatabase(
     for (const [projectIndex, legacyProject] of snapshot.projects.entries()) {
       const projectId = allocatedProjectIds[projectIndex]!;
       const legacyProjectId = text(legacyProject.projectId);
-      const existingProjectId = legacyProjectId
-        ? existingImportResult.projectIdByLegacyProjectId[legacyProjectId]
-        : undefined;
+      const projectRowExisted = allocatedProjectRowsExisted[projectIndex] === true;
       const projectPath = text(legacyProject.path);
       const projectName = text(legacyProject.name) ?? nameFromPath(projectPath) ?? projectId;
       const commands = findLegacyProjectCommands(snapshot.projectCommandsByLegacyId, legacyProjectId, legacyProject);
@@ -737,7 +841,7 @@ function importLegacySnapshotIntoDatabase(
         normalizeObject(legacyProject.worktree),
         projectIdByLegacyProjectId,
       );
-      if (!existingProjectId) {
+      if (!projectRowExisted) {
         insertProjectRow(db, {
           attentionRulesJson: stringifyJson(pickAttentionRules(snapshot.settings)),
           completionRulesJson: stringifyJson(pickCompletionRules(snapshot.settings)),
@@ -1233,6 +1337,7 @@ function importLegacyProjectSessions(
   },
 ): number {
   const existingSessionIds = readExistingIds(db, "session", options.projectId);
+  const existingSessionRowIds = readExistingSessionRowIds(db, options.projectId);
   const seenLegacySessionIds = new Set<string>();
   let imported = 0;
 
@@ -1246,21 +1351,32 @@ function importLegacyProjectSessions(
     }
     const existingSessionId = legacySessionId ? options.sessionIdByLegacySessionId?.[legacySessionId] : undefined;
     if (existingSessionId) {
-      imported += 1;
-      continue;
+      if (existingSessionRowIds.has(existingSessionId)) {
+        imported += 1;
+        continue;
+      }
     }
-    if (legacySessionId && isGxserverSessionId(legacySessionId) && existingSessionIds.has(legacySessionId)) {
+    if (legacySessionId && isGxserverSessionId(legacySessionId) && existingSessionRowIds.has(legacySessionId)) {
       if (options.sessionIdByLegacySessionId) {
         options.sessionIdByLegacySessionId[legacySessionId] = legacySessionId;
       }
       imported += 1;
       continue;
     }
-    const sessionId = createUniqueSessionId(existingSessionIds, options.createSessionId);
+    const canonicalSessionId =
+      legacySessionId && isGxserverSessionId(legacySessionId) && !existingSessionRowIds.has(legacySessionId)
+        ? legacySessionId
+        : undefined;
+    /*
+    CDXC:GxserverMigration 2026-06-08-08:58:
+    If the repair source already carries canonical G ids, missing session rows should be rebuilt with those same ids. ID allocations may still remember the old id after a partial DB loss, so test row existence rather than allocation existence before deciding whether the canonical id is reusable.
+    */
+    const sessionId = existingSessionId ?? canonicalSessionId ?? createUniqueSessionId(existingSessionIds, options.createSessionId);
     if (legacySessionId && options.sessionIdByLegacySessionId) {
       options.sessionIdByLegacySessionId[legacySessionId] = sessionId;
     }
     existingSessionIds.add(sessionId);
+    existingSessionRowIds.add(sessionId);
     insertLegacySessionRow(db, legacyProject, session, {
       importedAt: options.importedAt,
       projectId: options.projectId,
@@ -1640,6 +1756,24 @@ function readExistingIds(db: Database.Database, kind: "project" | "session", par
       )
       .all(parentId, parentId)
       .map((row) => row.id),
+  );
+}
+
+function readExistingProjectRowIds(db: Database.Database): Set<GxserverProjectId> {
+  return new Set(
+    db
+      .prepare<[], { projectId: string }>("SELECT projectId FROM projects")
+      .all()
+      .map((row) => row.projectId as GxserverProjectId),
+  );
+}
+
+function readExistingSessionRowIds(db: Database.Database, projectId: GxserverProjectId): Set<GxserverSessionId> {
+  return new Set(
+    db
+      .prepare<[string], { sessionId: string }>("SELECT sessionId FROM sessions WHERE projectId = ?")
+      .all(projectId)
+      .map((row) => row.sessionId as GxserverSessionId),
   );
 }
 

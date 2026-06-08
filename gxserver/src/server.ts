@@ -1299,7 +1299,11 @@ async function dispatchDomainStateEndpoint(
           `Session ${lifecycle.projectId}/${lifecycle.sessionId} does not exist.`,
         );
       }
-      const presentationDeltaBefore = stringifyPresentationSessionDelta(repository, lifecycle.projectId, lifecycle.sessionId);
+      const presentationDeltaBefore = stringifyImmediateTerminalTitlePresentationDelta(
+        repository,
+        lifecycle.projectId,
+        lifecycle.sessionId,
+      );
       const decision = applyTerminalTitleEvent(repository, {
         ...titleEvent,
         projectId: lifecycle.projectId,
@@ -1349,7 +1353,15 @@ async function dispatchDomainStateEndpoint(
           })
         : undefined;
       const responseSession = reconciled?.session ?? repository.getSession(lifecycle.projectId, lifecycle.sessionId) ?? session;
-      const presentationDeltaAfter = stringifyPresentationSessionDelta(repository, lifecycle.projectId, lifecycle.sessionId);
+      /*
+      CDXC:GxserverSessionTitles 2026-06-08-09:30:
+      Same-title terminal observations can update status bookkeeping such as `updatedAt`, `lastActiveAt`, or title-derived activity timestamps without changing the sidebar row. Compare only immediate visible presentation chrome before broadcasting a title-event delta so passive sidebar hydrates do not take macOS keyboard focus from the terminal while users type.
+      */
+      const presentationDeltaAfter = stringifyImmediateTerminalTitlePresentationDelta(
+        repository,
+        lifecycle.projectId,
+        lifecycle.sessionId,
+      );
       const presentationDeltaScheduled = presentationDeltaBefore !== presentationDeltaAfter;
       if (presentationDeltaScheduled) {
         schedulePresentationSessionDelta(runtime, repository, {
@@ -1940,6 +1952,61 @@ function stringifyPresentationSessionDelta(
 ): string | undefined {
   const delta = buildPresentationSessionDelta(repository, projectId, sessionId);
   return delta ? stringifyPresentationDelta(delta) : undefined;
+}
+
+function stringifyImmediateTerminalTitlePresentationDelta(
+  repository: GxserverDomainRepository,
+  projectId: GxserverProjectId,
+  sessionId: GxserverSessionId,
+): string | undefined {
+  const delta = buildPresentationSessionDelta(repository, projectId, sessionId);
+  if (!delta) {
+    return undefined;
+  }
+  if (delta.type !== "sessionPresentationChanged") {
+    return stringifyPresentationDelta(delta);
+  }
+  const session = delta.session;
+  /*
+  CDXC:GxserverSessionTitles 2026-06-08-09:30:
+  Terminal-title events are high-volume and often mutate only freshness fields. Include fields that should immediately repaint or reorder visible sidebar/session chrome, and intentionally omit volatile timestamps so routine title/status bookkeeping waits for the stale-activity refresh instead of rehydrating the macOS sidebar on every observation.
+  */
+  return JSON.stringify({
+    session: {
+      actions: session.actions,
+      activity: session.activity,
+      agentIcon: session.agentIcon,
+      agentId: session.agentId,
+      agentName: session.agentName,
+      attention: session.attention,
+      displayTitle: session.displayTitle,
+      displayTitleTooltip: session.displayTitleTooltip,
+      groupId: session.groupId,
+      isFavorite: session.isFavorite,
+      isGeneratingFirstPromptTitle: session.isGeneratingFirstPromptTitle,
+      isPinned: session.isPinned,
+      isPrimaryTitleTerminalTitle: session.isPrimaryTitleTerminalTitle,
+      isTemporaryTitle: session.isTemporaryTitle,
+      kind: session.kind,
+      lifecycleState: session.lifecycleState,
+      primaryTitle: session.primaryTitle,
+      projectId: session.projectId,
+      sessionId: session.sessionId,
+      sessionTag: session.sessionTag,
+      sidebarOrder: session.sidebarOrder,
+      subtitle: session.subtitle,
+      surface: session.surface,
+      terminalTitle: session.terminalTitle,
+      title: session.title,
+      titleObservation: session.titleObservation,
+      titleSource: session.titleSource,
+      tooltip: session.tooltip,
+      trustedResumeTitle: session.trustedResumeTitle,
+      visibleInSidebarByDefault: session.visibleInSidebarByDefault,
+      zmxName: session.zmxName,
+    },
+    type: delta.type,
+  });
 }
 
 function stringifyPresentationDelta(delta: GxserverPresentationDelta): string {

@@ -1383,10 +1383,14 @@ export function SortableSessionCard({
       event: "repro.sidebarSessionFocusRequested",
       type: "sidebarDebugLog",
     });
+    /*
+     * CDXC:SidebarSessionFocus 2026-06-08-09:31:
+     * Terminal switching should not wait behind local React focus rendering. Keep the forced focus breadcrumb first for native trace correlation, then send the authoritative focusSession command before applying the sidebar highlight locally; the following hydrate reconciles the UI after native focus/layout has started.
+     */
+    vscode.postMessage({ sessionId: session.sessionId, type: "focusSession" });
     if (!session.isFocused) {
       onFocusRequested?.(groupId, session.sessionId);
     }
-    vscode.postMessage({ sessionId: session.sessionId, type: "focusSession" });
   };
 
   const handleKeyDown = (event: ReactKeyboardEvent<HTMLElement>) => {

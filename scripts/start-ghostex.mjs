@@ -16,9 +16,15 @@ const gxserverBaseUrl = "http://127.0.0.1:58744";
 const startEnvironment = withoutColorDisablingEnvironment(process.env);
 
 const variant = parseVariant(process.argv.slice(2), process.env.GHOSTEX_APP_VARIANT);
+/*
+CDXC:LocalStartArchitecture 2026-06-08-08:42:
+Apple Silicon local starts must build and launch Apple-native bundled tools even when the invoking shell, Bun, or Terminal is running under Rosetta. Default the architecture from the physical Mac capability and reserve Intel builds for explicit GHOSTEX_MACOS_ARCH=x86_64 requests.
+*/
+const arch = resolveLocalMacosArch(process.env.GHOSTEX_MACOS_ARCH);
 const buildEnv = {
   ...startEnvironment,
   GHOSTEX_APP_VARIANT: variant,
+  GHOSTEX_MACOS_ARCH: arch,
 };
 /*
 CDXC:DevAppFlavor 2026-05-31-15:52:
@@ -30,13 +36,13 @@ const bundleId = variant === "dev" ? "com.madda.ghostex-dev.host" : "com.madda.g
 CDXC:LocalStart 2026-05-31-15:52:
 Local starts must launch the architecture-specific app product that build-ghostex-host.sh just produced. Keep the DerivedData default aligned with the native build script so arm64 and Intel verification do not copy an older app from another architecture.
 */
-const arch = normalizeMacosArch(process.env.GHOSTEX_MACOS_ARCH || runCapture("uname", ["-m"]).trim());
 const derivedData = process.env.DERIVED_DATA || path.join(repoRoot, "build", arch);
 const builtAppPathFile = path.join(derivedData, "ghostex-built-app-path.txt");
 buildEnv.GHOSTEX_BUILT_APP_PATH_FILE = builtAppPathFile;
 const xcodeDestination = `platform=macOS,arch=${arch}`;
 const installedApp = path.join(installDir, `${appName}.app`);
 const installedExecutable = path.join(installedApp, "Contents", "MacOS", appName);
+ensureCodeServerDevelopmentRuntime();
 
 /*
 CDXC:LocalStartGxserver 2026-05-31-15:52:
@@ -89,6 +95,87 @@ function normalizeMacosArch(value) {
     return "x86_64";
   }
   throw new Error(`Unsupported GHOSTEX_MACOS_ARCH: ${value}`);
+}
+
+function resolveLocalMacosArch(explicitValue) {
+  if (explicitValue && explicitValue.trim()) {
+    return normalizeMacosArch(explicitValue);
+  }
+  if (isAppleSiliconMac()) {
+    return "arm64";
+  }
+  return normalizeMacosArch(runCaptureWithEnvironment("uname", ["-m"], startEnvironment).trim());
+}
+
+function isAppleSiliconMac() {
+  const result = spawnSync("/usr/sbin/sysctl", ["-in", "hw.optional.arm64"], {
+    cwd: repoRoot,
+    encoding: "utf8",
+    env: startEnvironment,
+    stdio: ["ignore", "pipe", "ignore"],
+  });
+  return result.status === 0 && result.stdout.trim() === "1";
+}
+
+function ensureCodeServerDevelopmentRuntime() {
+  /*
+  CDXC:EditorPanes 2026-06-08-09:08:
+  Local macOS starts publish the root code-server checkout to LaunchServices, so they must also prove the nested VS Code dev payload exists before the app opens. Initialize the reviewed submodule automatically, then stop on missing server-main.js with the exact working build commands instead of letting the Source tab render code-server's raw 500 page.
+  */
+  const codeServerRoot = path.join(repoRoot, "code-server");
+  const codeServerEntrypoint = path.join(codeServerRoot, "out", "node", "entry.js");
+  if (!existsSync(codeServerEntrypoint)) {
+    throw new Error(
+      "Embedded code-server output is missing. Run `npm --prefix code-server install` and `npm --prefix code-server run build` before opening the Source tab.",
+    );
+  }
+
+  const vscodePackageJson = path.join(codeServerRoot, "lib", "vscode", "package.json");
+  if (!existsSync(vscodePackageJson)) {
+    run("git", ["-C", codeServerRoot, "submodule", "update", "--init", "lib/vscode"]);
+  }
+  if (!existsSync(vscodePackageJson)) {
+    throw new Error(
+      "Embedded code-server VS Code submodule is missing. Run `git -C code-server submodule update --init lib/vscode` from the Ghostex checkout.",
+    );
+  }
+
+  const vscodeServerMain = path.join(codeServerRoot, "lib", "vscode", "out", "server-main.js");
+  if (!existsSync(vscodeServerMain)) {
+    throw new Error(
+      "Embedded code-server VS Code build output is missing. Run `npm --prefix code-server/lib/vscode install` and `npm --prefix code-server/lib/vscode run compile` before opening the Source tab.",
+    );
+  }
+
+  /*
+  CDXC:EditorPanes 2026-06-08-09:18:
+  VS Code's built-in Git extension depends on the macOS @vscode/fs-copyfile native module. Local Source-tab starts should build that package at the writer boundary instead of letting the workbench open and then fail Git activation with a missing vscode_fs.node toast.
+  */
+  const fsCopyfileRoot = path.join(
+    codeServerRoot,
+    "lib",
+    "vscode",
+    "extensions",
+    "git",
+    "node_modules",
+    "@vscode",
+    "fs-copyfile",
+  );
+  const fsCopyfilePackageJson = path.join(fsCopyfileRoot, "package.json");
+  if (!existsSync(fsCopyfilePackageJson)) {
+    throw new Error(
+      "Embedded VS Code Git extension dependencies are missing. Run `npm --prefix code-server/lib/vscode install` before opening the Source tab.",
+    );
+  }
+  const fsCopyfileNativeModule = path.join(fsCopyfileRoot, "build", "Release", "vscode_fs.node");
+  if (!existsSync(fsCopyfileNativeModule)) {
+    run("npm", ["--prefix", fsCopyfileRoot, "run", "build"]);
+  }
+  if (!existsSync(fsCopyfileNativeModule)) {
+    throw new Error(
+      "Embedded VS Code Git extension native module is missing. Run `npm --prefix code-server/lib/vscode/extensions/git/node_modules/@vscode/fs-copyfile run build` before opening the Source tab.",
+    );
+  }
 }
 
 function readBuiltProductsDir() {
@@ -707,10 +794,14 @@ function run(command, args, options = {}) {
 }
 
 function runCapture(command, args) {
+  return runCaptureWithEnvironment(command, args, buildEnv);
+}
+
+function runCaptureWithEnvironment(command, args, env) {
   const result = spawnSync(command, args, {
     cwd: repoRoot,
     encoding: "utf8",
-    env: buildEnv,
+    env,
     stdio: ["ignore", "pipe", "pipe"],
   });
   if (result.error) {

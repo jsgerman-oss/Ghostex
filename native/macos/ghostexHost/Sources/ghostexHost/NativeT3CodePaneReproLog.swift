@@ -384,6 +384,7 @@ enum NativeCodeServerRuntimeLauncher {
       if FileManager.default.fileExists(
         atPath: repoRoot.appendingPathComponent("out/node/entry.js").path)
       {
+        try validateCodeServerDevelopmentPayload(repoRoot: repoRoot)
         return repoRoot
       }
     }
@@ -394,6 +395,54 @@ enum NativeCodeServerRuntimeLauncher {
         NSLocalizedDescriptionKey:
           "Unable to resolve the embedded code-server checkout. Initialize the code-server submodule or set GHOSTEX_CODE_SERVER_ROOT."
       ])
+  }
+
+  private static func validateCodeServerDevelopmentPayload(repoRoot: URL) throws {
+    /**
+     CDXC:EditorPanes 2026-06-08-09:08:
+     The Source tab uses the legacy code-server checkout in VS Code dev mode, so a healthy /healthz listener is not enough. Refuse to launch when the nested VS Code submodule or compiled server-main.js payload is absent, because otherwise CEF navigates to code-server's raw 500 page instead of the sidebar receiving a startup failure.
+     */
+    guard FileManager.default.fileExists(
+      atPath: repoRoot.appendingPathComponent("lib/vscode/package.json").path)
+    else {
+      throw NSError(
+        domain: "NativeCodeServerRuntimeLauncher",
+        code: 5,
+        userInfo: [
+          NSLocalizedDescriptionKey:
+            "Embedded code-server VS Code submodule is missing. Run `git -C code-server submodule update --init lib/vscode` from the Ghostex checkout."
+        ])
+    }
+
+    guard FileManager.default.fileExists(
+      atPath: repoRoot.appendingPathComponent("lib/vscode/out/server-main.js").path)
+    else {
+      throw NSError(
+        domain: "NativeCodeServerRuntimeLauncher",
+        code: 6,
+        userInfo: [
+          NSLocalizedDescriptionKey:
+            "Embedded code-server VS Code build output is missing. Run `npm --prefix code-server/lib/vscode install` and `npm --prefix code-server/lib/vscode run compile` before opening the Source tab."
+        ])
+    }
+
+    /**
+     CDXC:EditorPanes 2026-06-08-09:18:
+     VS Code's built-in Git extension requires @vscode/fs-copyfile's macOS native module. Validate it with the rest of the dev payload so the Source tab does not open and then show a Git activation failure toast for a missing vscode_fs.node file.
+     */
+    guard FileManager.default.fileExists(
+      atPath: repoRoot.appendingPathComponent(
+        "lib/vscode/extensions/git/node_modules/@vscode/fs-copyfile/build/Release/vscode_fs.node"
+      ).path)
+    else {
+      throw NSError(
+        domain: "NativeCodeServerRuntimeLauncher",
+        code: 7,
+        userInfo: [
+          NSLocalizedDescriptionKey:
+            "Embedded VS Code Git extension native module is missing. Run `npm --prefix code-server/lib/vscode/extensions/git/node_modules/@vscode/fs-copyfile run build` before opening the Source tab."
+        ])
+    }
   }
 
   private static func runtimeStorage() throws -> URL {

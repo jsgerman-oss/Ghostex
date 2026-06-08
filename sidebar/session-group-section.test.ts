@@ -1,6 +1,7 @@
 import { describe, expect, test } from "vitest";
 import {
   formatProjectEditorDiffStatsLabel,
+  getGroupContextMenuItemCount,
   getPinnedSessionDropGapKey,
   PINNED_SESSION_DROP_GAP_AFTER_LAST,
   shouldTreatProjectAsEmptySessionGroup,
@@ -136,6 +137,35 @@ describe("shouldShowProjectEditorDiffStats", () => {
         isRepo: true,
       }),
     ).toBe(true);
+  });
+});
+
+describe("getGroupContextMenuItemCount", () => {
+  test("counts compact worktree project actions with copy path instead of open", () => {
+    expect(
+      getGroupContextMenuItemCount({
+        canFullReloadGroup: true,
+        hasProjectContext: true,
+        isWorktreeProject: true,
+      }),
+    ).toBe(5);
+  });
+
+  test("counts normal project and group actions separately", () => {
+    expect(
+      getGroupContextMenuItemCount({
+        canFullReloadGroup: true,
+        hasProjectContext: true,
+        isWorktreeProject: false,
+      }),
+    ).toBe(6);
+    expect(
+      getGroupContextMenuItemCount({
+        canFullReloadGroup: false,
+        hasProjectContext: false,
+        isWorktreeProject: false,
+      }),
+    ).toBe(3);
   });
 });
 
