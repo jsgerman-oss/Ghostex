@@ -33,7 +33,12 @@ import type { SidebarGitAction, SidebarGitChangedFile } from "../shared/sidebar-
 import { ChangedFilesTree } from "./changed-files-tree";
 import { summarizeChangedFiles } from "./changed-files-tree-utils";
 import { ConfirmationModal } from "./confirmation-modal";
-import { GitFileDiffPanel, type GitFileDiffModalDraft } from "./git-file-diff-modal";
+import {
+  GitFileDiffControls,
+  GitFileDiffPanel,
+  type GitDiffViewMode,
+  type GitFileDiffModalDraft,
+} from "./git-file-diff-modal";
 
 export type GitCommitModalDraft = {
   action?: SidebarGitAction;
@@ -106,6 +111,9 @@ export function GitCommitModal({
   const [localPromptAgentId, setLocalPromptAgentId] = useState("");
   const [selectedDiffFilePath, setSelectedDiffFilePath] = useState<string>();
   const [loadingDiffFilePath, setLoadingDiffFilePath] = useState<string>();
+  const [inlineDiffViewMode, setInlineDiffViewMode] = useState<GitDiffViewMode>("unified");
+  const [inlineDiffLineWrap, setInlineDiffLineWrap] = useState(false);
+  const [inlineDiffHideWhitespace, setInlineDiffHideWhitespace] = useState(false);
   const initializedDraftRequestRef = useRef<string | undefined>(undefined);
   const commandAgents = useMemo(
     () => agents.filter((agent) => agent.command?.trim()),
@@ -153,6 +161,9 @@ export function GitCommitModal({
     setExcludedFiles(new Set());
     setIsEditingFiles(false);
     setIsDirectMergeConfirmOpen(false);
+    setInlineDiffViewMode("unified");
+    setInlineDiffLineWrap(false);
+    setInlineDiffHideWhitespace(false);
     const initialDiffFilePath = draft.changedFiles?.[0]?.path;
     setSelectedDiffFilePath(initialDiffFilePath);
     setLoadingDiffFilePath(initialDiffFilePath);
@@ -260,6 +271,13 @@ export function GitCommitModal({
    * existing commit flow stays on the left, and selected file diffs render on
    * the right with display controls inside the diff overflow menu instead of a
    * second modal stacked above the review.
+   *
+   * CDXC:TitlebarGit 2026-06-08-04:07:
+   * The commit review modal should match t3code's tighter source-control review
+   * controls: remove the Files and Diff headings, keep the branch summary on
+   * the same row as Edit, place three icon-only tooltip diff controls in the
+   * diff header, and use hover-only 5px transparent-gutter scrollbars on the
+   * file tree and diff body without scroll-mask overflow fades.
    */
   return (
     <>
@@ -287,20 +305,23 @@ export function GitCommitModal({
             </DialogDescription>
           </DialogHeader>
           <div className="git-commit-modal-body">
-            <div className="git-commit-modal-left">
+            <div className="git-commit-modal-left" data-has-message={String(showCommitMessage)}>
               <div className="git-commit-files-panel">
-                {draft.branch !== undefined ? (
-                  <div className="git-commit-branch-row">
-                    <span className="command-config-label">Branch</span>
-                    <span className="git-commit-branch-name">{draft.branch ?? "(detached HEAD)"}</span>
-                    {draft.isDefaultRef ? (
-                      <span className="git-commit-default-branch-note">Note: Publishing to Main</span>
-                    ) : null}
-                  </div>
-                ) : null}
                 <div className="git-commit-files-header">
-                  <div>
-                    <span className="command-config-label">Files</span>
+                  <div className="git-commit-files-heading">
+                    {draft.branch !== undefined ? (
+                      <div className="git-commit-branch-row">
+                        <span className="command-config-label">Branch</span>
+                        <span className="git-commit-branch-name">
+                          {draft.branch ?? "(detached HEAD)"}
+                        </span>
+                        {draft.isDefaultRef ? (
+                          <span className="git-commit-default-branch-note">
+                            Note: Publishing to Main
+                          </span>
+                        ) : null}
+                      </div>
+                    ) : null}
                     {isEditingFiles && changedFiles.length > 0 ? (
                       <span className="git-commit-files-selected">
                         {selectedFiles.length} of {changedFiles.length} selected
@@ -336,7 +357,7 @@ export function GitCommitModal({
                         Include all files
                       </label>
                     ) : null}
-                    <div className="git-commit-files-list scroll-mask-y">
+                    <div className="git-commit-files-list">
                       <ChangedFilesTree
                         excludedPaths={excludedFiles}
                         files={changedFiles}
@@ -398,7 +419,6 @@ export function GitCommitModal({
             </div>
             <section className="git-commit-inline-diff-panel" aria-label="Selected file diff">
               <div className="git-commit-inline-diff-header">
-                <div className="git-commit-inline-diff-title">Diff</div>
                 {selectedDiffFilePath ? (
                   <div className="git-commit-inline-diff-file">
                     <span className="git-file-diff-modal-path">{selectedDiffFilePath}</span>
@@ -415,16 +435,31 @@ export function GitCommitModal({
                     ) : null}
                   </div>
                 ) : null}
+                <GitFileDiffControls
+                  hideWhitespace={inlineDiffHideWhitespace}
+                  lineWrap={inlineDiffLineWrap}
+                  onHideWhitespaceChange={setInlineDiffHideWhitespace}
+                  onLineWrapChange={setInlineDiffLineWrap}
+                  onViewModeChange={setInlineDiffViewMode}
+                  viewMode={inlineDiffViewMode}
+                />
               </div>
-              <div className="git-commit-inline-diff-body scroll-mask-y">
+              <div className="git-commit-inline-diff-body">
                 <GitFileDiffPanel
                   draft={selectedDiffDraft}
+                  hideWhitespace={inlineDiffHideWhitespace}
                   isLoading={isSelectedDiffLoading}
+                  lineWrap={inlineDiffLineWrap}
+                  onHideWhitespaceChange={setInlineDiffHideWhitespace}
+                  onLineWrapChange={setInlineDiffLineWrap}
+                  onViewModeChange={setInlineDiffViewMode}
                   placeholder={
                     changedFiles.length > 0
                       ? "Select a file to preview its diff."
                       : "No changed files to preview."
                   }
+                  showToolbar={false}
+                  viewMode={inlineDiffViewMode}
                 />
               </div>
             </section>
@@ -513,6 +548,7 @@ export function GitCommitModal({
                 })
               }
               type="button"
+              variant="outline"
             >
               {draft.confirmLabel}
             </Button>
