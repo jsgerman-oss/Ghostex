@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 
 import { spawnSync } from "node:child_process";
-import { cpSync, existsSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -32,6 +32,8 @@ Local starts must launch the architecture-specific app product that build-ghoste
 */
 const arch = normalizeMacosArch(process.env.GHOSTEX_MACOS_ARCH || runCapture("uname", ["-m"]).trim());
 const derivedData = process.env.DERIVED_DATA || path.join(repoRoot, "build", arch);
+const builtAppPathFile = path.join(derivedData, "ghostex-built-app-path.txt");
+buildEnv.GHOSTEX_BUILT_APP_PATH_FILE = builtAppPathFile;
 const xcodeDestination = `platform=macOS,arch=${arch}`;
 const installedApp = path.join(installDir, `${appName}.app`);
 const installedExecutable = path.join(installedApp, "Contents", "MacOS", appName);
@@ -46,10 +48,16 @@ gxserver implementation changes are detected through the packaged daemon build i
 CDXC:LocalStartGxserver 2026-06-01-12:47:
 `bun run start` is the local test reset path: after closing the app it must stop the gxserver control plane on every run while preserving existing zmx servers, so the relaunched macOS app starts the freshly built daemon and any later zmx restart uses the newly packaged zmx binary.
 */
-run("bun", ["scripts/build-t3code-if-needed.mjs"], { env: buildEnv });
-run(path.join(hostScriptDir, "build-ghostex-host.sh"), [], { env: buildEnv });
+/*
+CDXC:LocalStart 2026-06-07-12:21:
+Local starts must reach the native build script on macOS hosts that kill direct Bun/Node script-path execution before stderr is available. Invoke the script through /bin/bash so `bun run start` follows the same executable path that succeeds in an interactive shell while preserving normal build failures.
 
-const builtApp = path.join(readBuiltProductsDir(), `${appName}.app`);
+CDXC:LocalStartFast 2026-06-07-16:23:
+The native build script owns incremental T3 Code and gxserver packaging, so the launcher should not run a separate T3 source scan before invoking the same packaging path. Use one orchestrator and consume its built-app path handoff instead of asking Xcode for the same build setting again.
+*/
+run("/bin/bash", [path.join(hostScriptDir, "build-ghostex-host.sh")], { env: buildEnv });
+
+const builtApp = readBuiltAppPath();
 if (!existsSync(builtApp)) {
   throw new Error(`Built app is missing at ${builtApp}.`);
 }
@@ -105,6 +113,16 @@ function readBuiltProductsDir() {
     throw new Error("Could not resolve BUILT_PRODUCTS_DIR from xcodebuild.");
   }
   return builtProductsDir;
+}
+
+function readBuiltAppPath() {
+  if (existsSync(builtAppPathFile)) {
+    const appPath = readFileSync(builtAppPathFile, "utf8").trim();
+    if (appPath) {
+      return appPath;
+    }
+  }
+  return path.join(readBuiltProductsDir(), `${appName}.app`);
 }
 
 async function closeInstalledApp() {
@@ -249,11 +267,383 @@ function installAndOpenApp(appPath) {
   /*
   CDXC:MacOSPermissions 2026-05-31-15:52:
   Install local builds to the stable /Applications app path before launching so macOS Accessibility permission remains attached to the same signed app identity across rebuilds.
+
+  CDXC:LocalStartGxserver 2026-06-07-12:02:
+  A local start must prove the installed, signed gxserver bundle can load its native database module with the same Node runtime the macOS app will resolve. Run that preflight after codesign and before `open` so a bad native module signature or Node ABI stops the launch instead of letting the sidebar emit misleading health and Git API failures.
+
+  CDXC:CodeServerSubmodule 2026-06-07-11:20:
+  Local starts launch Ghostex through LaunchServices from /Applications, which gives the app cwd `/` and drops the invoking shell environment. Publish the repo root and root code-server submodule path through launchd before `open` so the native Source tab resolves the reviewed in-repo code-server checkout instead of probing maintainer-local paths.
+
+  CDXC:T3CodeSubmodule 2026-06-07-13:00:
+  Publish the root `t3code` submodule path through launchd with the same local-start environment handoff, so native T3 source fallbacks and diagnostics resolve the parent-pinned fork branch instead of the old sibling t3code-embed checkout.
+
+  CDXC:LocalStartFast 2026-06-07-16:23:
+  Local starts should mirror the already signed build product into /Applications incrementally and verify the copied signature before signing. Re-sign only when verification fails so unchanged CEF, gxserver node_modules, and app resources do not get re-copied and re-signed on every relaunch.
+
+  CDXC:LocalStartFast 2026-06-07-17:32:
+  Outer app verification is not enough for bundled Node modules: linker-signed `.node` files can verify on disk but fail the runtime load preflight. Refuse the skip path when a preflighted native module is still linker-signed so local starts produce a launchable app instead of stopping after the rebuild.
   */
-  rmSync(installedApp, { force: true, recursive: true });
-  cpSync(appPath, installedApp, { recursive: true });
-  run(path.join(hostScriptDir, "codesign-ghostex-host.sh"), [installedApp]);
+  syncInstalledAppBundle(appPath);
+  ensureInstalledAppCodeSignature(installedApp);
+  preflightInstalledGxserverBundle(installedApp);
+  publishLaunchServicesDevelopmentEnvironment();
   run("open", [installedApp]);
+}
+
+function syncInstalledAppBundle(appPath) {
+  run("rsync", ["-a", "--delete", `${appPath}/`, `${installedApp}/`]);
+}
+
+function ensureInstalledAppCodeSignature(appPath) {
+  if (hasReusableInstalledAppCodeSignature(appPath)) {
+    console.log(`Installed ${appName} signature is current; skipping re-sign.`);
+    return;
+  }
+  run(path.join(hostScriptDir, "codesign-ghostex-host.sh"), [appPath]);
+}
+
+function hasReusableInstalledAppCodeSignature(appPath) {
+  return hasValidInstalledAppCodeSignature(appPath) && !hasLinkerSignedBundledNativeModules(appPath);
+}
+
+function hasValidInstalledAppCodeSignature(appPath) {
+  const result = spawnSync("codesign", ["--verify", "--deep", "--strict", appPath], {
+    cwd: repoRoot,
+    encoding: "utf8",
+    env: startEnvironment,
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  if (result.error) {
+    throw result.error;
+  }
+  return result.status === 0;
+}
+
+function hasLinkerSignedBundledNativeModules(appPath) {
+  const gxserverRoot = path.join(appPath, "Contents", "Resources", "Web", "gxserver");
+  if (!existsSync(gxserverRoot)) {
+    return false;
+  }
+  let runtime;
+  try {
+    runtime = readBundledGxserverNativeRuntime(appPath);
+  } catch {
+    return false;
+  }
+  for (const modulePath of bundledNativeModulePreflightPaths(gxserverRoot, runtime)) {
+    if (isLinkerSignedCode(modulePath)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function isLinkerSignedCode(codePath) {
+  const result = spawnSync("codesign", ["-dv", "--verbose=4", codePath], {
+    cwd: repoRoot,
+    encoding: "utf8",
+    env: startEnvironment,
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  if (result.error) {
+    throw result.error;
+  }
+  return result.status === 0 && `${result.stderr}\n${result.stdout}`.includes("linker-signed");
+}
+
+function publishLaunchServicesDevelopmentEnvironment() {
+  run("launchctl", ["setenv", "ghostex_REPO_ROOT", repoRoot], { stdio: "ignore" });
+  run("launchctl", ["setenv", "GHOSTEX_CODE_SERVER_ROOT", path.join(repoRoot, "code-server")], {
+    stdio: "ignore",
+  });
+  run("launchctl", ["setenv", "VSMUX_T3CODE_REPO_ROOT", path.join(repoRoot, "t3code")], {
+    stdio: "ignore",
+  });
+}
+
+function preflightInstalledGxserverBundle(appPath) {
+  const gxserverRoot = path.join(appPath, "Contents", "Resources", "Web", "gxserver");
+  if (!existsSync(gxserverRoot)) {
+    throw new Error(`Installed ${appName} is missing the bundled gxserver package.`);
+  }
+  verifyInstalledAppCodeSignature(appPath);
+  const runtime = readBundledGxserverNativeRuntime(appPath);
+  const nodeResolution = resolveNodeForGxserverPreflight(runtime);
+  const dependencyError = gxserverNodeDependencyError(nodeResolution, runtime);
+  if (dependencyError) {
+    throw new Error(dependencyError);
+  }
+  for (const modulePath of bundledNativeModulePreflightPaths(gxserverRoot, runtime)) {
+    preflightNativeNodeModuleLoad(modulePath, nodeResolution, appPath);
+  }
+}
+
+function verifyInstalledAppCodeSignature(appPath) {
+  const result = spawnSync("codesign", ["--verify", "--deep", "--strict", appPath], {
+    cwd: repoRoot,
+    encoding: "utf8",
+    env: startEnvironment,
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  if (result.error) {
+    throw result.error;
+  }
+  if (result.status !== 0) {
+    const output = sanitizePreflightOutput(`${result.stderr}\n${result.stdout}`, appPath);
+    throw new Error(`Installed ${appName} code signature preflight failed.${output ? ` ${output}` : ""}`);
+  }
+}
+
+function readBundledGxserverNativeRuntime(appPath) {
+  const gxserverRoot = path.join(appPath, "Contents", "Resources", "Web", "gxserver");
+  const runtimePath = path.join(gxserverRoot, "native-runtime.json");
+  const bundledDatabaseModulePath = path.join(
+    gxserverRoot,
+    "node_modules",
+    "better-sqlite3",
+    "build",
+    "Release",
+    "better_sqlite3.node",
+  );
+  if (!existsSync(runtimePath)) {
+    if (existsSync(bundledDatabaseModulePath)) {
+      throw new Error(
+        `Installed ${appName} includes a bundled gxserver database module, but native runtime metadata is missing.`,
+      );
+    }
+    return undefined;
+  }
+  const parsed = JSON.parse(readFileSync(runtimePath, "utf8"));
+  const nodeMajor = Number(parsed.nodeMajor);
+  const nodeModuleVersion = typeof parsed.nodeModuleVersion === "string"
+    ? parsed.nodeModuleVersion.trim()
+    : "";
+  if (!Number.isInteger(nodeMajor) || nodeMajor <= 0 || !nodeModuleVersion) {
+    throw new Error(`Installed ${appName} has invalid gxserver native runtime metadata.`);
+  }
+  return {
+    nativeModules: Array.isArray(parsed.nativeModules)
+      ? parsed.nativeModules.filter((value) => typeof value === "string")
+      : [],
+    nodeMajor,
+    nodeModuleVersion,
+    nodeRequirement: typeof parsed.nodeRequirement === "string" ? parsed.nodeRequirement : undefined,
+  };
+}
+
+function bundledNativeModulePreflightPaths(gxserverRoot, runtime) {
+  const modulePaths = [];
+  const nativeModuleNames = new Set(runtime?.nativeModules ?? []);
+  const bundledDatabaseModulePath = path.join(
+    gxserverRoot,
+    "node_modules",
+    "better-sqlite3",
+    "build",
+    "Release",
+    "better_sqlite3.node",
+  );
+  if (nativeModuleNames.has("better-sqlite3") || existsSync(bundledDatabaseModulePath)) {
+    modulePaths.push(bundledDatabaseModulePath);
+  }
+  for (const modulePath of modulePaths) {
+    if (!existsSync(modulePath)) {
+      throw new Error(`Installed ${appName} is missing a required gxserver native module.`);
+    }
+  }
+  return modulePaths;
+}
+
+function resolveNodeForGxserverPreflight(runtime) {
+  const preferredMajor = runtime?.nodeMajor ?? 22;
+  const candidates = systemNodeCandidates(homedir(), preferredMajor);
+  const seenPaths = new Set();
+  let firstVersionedCandidate;
+  for (const candidate of candidates) {
+    if (!existsSync(candidate.path) || seenPaths.has(candidate.path)) {
+      continue;
+    }
+    seenPaths.add(candidate.path);
+    const resolution = probeNode(candidate.path, candidate.source);
+    if (!resolution) {
+      continue;
+    }
+    if (nodeResolutionSatisfies(resolution, runtime)) {
+      return resolution;
+    }
+    firstVersionedCandidate ??= resolution;
+  }
+
+  const envPathResult = spawnSync("/usr/bin/env", ["node", "-p", "process.execPath"], {
+    cwd: repoRoot,
+    encoding: "utf8",
+    env: startEnvironment,
+    stdio: ["ignore", "pipe", "ignore"],
+  });
+  const envNodePath = envPathResult.status === 0 ? envPathResult.stdout.trim() : "";
+  if (envNodePath && !seenPaths.has(envNodePath)) {
+    const resolution = probeNode(envNodePath, "PATH");
+    if (resolution && nodeResolutionSatisfies(resolution, runtime)) {
+      return resolution;
+    }
+    firstVersionedCandidate ??= resolution;
+  }
+
+  return firstVersionedCandidate ?? { moduleVersion: "", path: "", source: "unresolved", version: "" };
+}
+
+function systemNodeCandidates(home, preferredMajor) {
+  /*
+  CDXC:LocalStartGxserver 2026-06-07-12:02:
+  The local-start preflight must resolve Node like the app bootstrap does, because LaunchServices does not inherit the shell that ran `bun run start`. Scan the same common direct-install roots before shims or PATH so the module-load probe validates the runtime Ghostex will actually use.
+  */
+  const candidates = [
+    { path: `/opt/homebrew/opt/node@${preferredMajor}/bin/node`, source: `Homebrew Apple Silicon node@${preferredMajor}` },
+    { path: `/usr/local/opt/node@${preferredMajor}/bin/node`, source: `Homebrew Intel/usr-local node@${preferredMajor}` },
+    { path: "/opt/homebrew/bin/node", source: "Homebrew Apple Silicon" },
+    { path: "/usr/local/bin/node", source: "Homebrew Intel/usr-local" },
+    { path: `${home}/.local/bin/node`, source: "user local bin" },
+    ...versionedNodeCandidates(`${home}/.nvm/versions/node`, "nvm", preferredMajor, "bin/node"),
+    { path: `${home}/.nvm/current/bin/node`, source: "nvm current" },
+    ...versionedNodeCandidates(`${home}/.local/share/mise/installs/node`, "mise install", preferredMajor, "bin/node"),
+    ...versionedNodeCandidates(`${home}/.asdf/installs/nodejs`, "asdf install", preferredMajor, "bin/node"),
+    ...versionedNodeCandidates(`${home}/.nodenv/versions`, "nodenv install", preferredMajor, "bin/node"),
+    ...versionedNodeCandidates(`${home}/.fnm/node-versions`, "fnm install", preferredMajor, "installation/bin/node"),
+    ...versionedNodeCandidates(`${home}/.local/share/fnm/node-versions`, "fnm install", preferredMajor, "installation/bin/node"),
+    ...versionedNodeCandidates(`${home}/Library/Application Support/fnm/node-versions`, "fnm install", preferredMajor, "installation/bin/node"),
+    ...versionedNodeCandidates(`${home}/.volta/tools/image/node`, "Volta install", preferredMajor, "bin/node"),
+    { path: `${home}/.volta/bin/node`, source: "Volta shim" },
+    { path: `${home}/.local/share/mise/shims/node`, source: "mise shim" },
+    { path: `${home}/.asdf/shims/node`, source: "asdf shim" },
+    { path: `${home}/.nodenv/shims/node`, source: "nodenv shim" },
+  ];
+  return candidates;
+}
+
+function versionedNodeCandidates(root, source, preferredMajor, relativeNodePath) {
+  try {
+    return readdirSync(root, { withFileTypes: true })
+      .filter((entry) => (entry.isDirectory() || entry.isSymbolicLink()) && nodeDirectoryNameMatchesMajor(entry.name, preferredMajor))
+      .map((entry) => entry.name)
+      .sort((left, right) => right.localeCompare(left, undefined, { numeric: true, sensitivity: "base" }))
+      .map((entry) => ({
+        path: path.join(root, entry, ...relativeNodePath.split("/")),
+        source,
+      }));
+  } catch {
+    return [];
+  }
+}
+
+function nodeDirectoryNameMatchesMajor(name, major) {
+  const normalized = name.startsWith("v") ? name.slice(1) : name;
+  return normalized === String(major) || normalized.startsWith(`${major}.`);
+}
+
+function probeNode(nodePath, source) {
+  const result = spawnSync(nodePath, [
+    "-p",
+    "JSON.stringify({version: process.version, modules: process.versions.modules, execPath: process.execPath})",
+  ], {
+    cwd: repoRoot,
+    encoding: "utf8",
+    env: startEnvironment,
+    stdio: ["ignore", "pipe", "ignore"],
+  });
+  if (result.status !== 0 || !result.stdout.trim()) {
+    return undefined;
+  }
+  try {
+    const parsed = JSON.parse(result.stdout);
+    const version = typeof parsed.version === "string" ? parsed.version.trim() : "";
+    const moduleVersion = typeof parsed.modules === "string" ? parsed.modules.trim() : "";
+    const execPath = typeof parsed.execPath === "string" ? parsed.execPath.trim() : nodePath;
+    if (!nodeVersionMajor(version)) {
+      return undefined;
+    }
+    return { moduleVersion, path: execPath || nodePath, source, version };
+  } catch {
+    return undefined;
+  }
+}
+
+function gxserverNodeDependencyError(resolution, runtime) {
+  if (!runtime) {
+    if (!resolution.path) {
+      return "gxserver requires Node.js 22 LTS or newer, but no system Node was found.";
+    }
+    const major = nodeVersionMajor(resolution.version);
+    return major && major >= 22
+      ? undefined
+      : `gxserver requires Node.js 22 LTS or newer, but the detected system Node is ${resolution.version || "unknown"}.`;
+  }
+  const requirement = runtime.nodeRequirement ?? `Node.js ${runtime.nodeMajor}.x with NODE_MODULE_VERSION ${runtime.nodeModuleVersion}`;
+  if (!resolution.path) {
+    return `gxserver requires ${requirement} for this Ghostex build, but no matching system Node was found.`;
+  }
+  if (!nodeResolutionSatisfies(resolution, runtime)) {
+    const version = resolution.version || "unknown";
+    const moduleVersion = resolution.moduleVersion || "unknown";
+    return `gxserver requires ${requirement} for this Ghostex build, but the detected system Node is ${version} with NODE_MODULE_VERSION ${moduleVersion}.`;
+  }
+  return undefined;
+}
+
+function nodeResolutionSatisfies(resolution, runtime) {
+  const major = nodeVersionMajor(resolution.version);
+  if (!major) {
+    return false;
+  }
+  if (!runtime) {
+    return major >= 22;
+  }
+  return major === runtime.nodeMajor && resolution.moduleVersion === runtime.nodeModuleVersion;
+}
+
+function nodeVersionMajor(version) {
+  const normalized = version.startsWith("v") ? version.slice(1) : version;
+  const major = Number(normalized.split(".")[0]);
+  return Number.isInteger(major) ? major : undefined;
+}
+
+function preflightNativeNodeModuleLoad(modulePath, nodeResolution, appPath) {
+  const probeScript = `
+const modulePath = process.argv[1];
+try {
+  require(modulePath);
+} catch (error) {
+  const rawMessage = error && typeof error.message === "string" ? error.message : String(error);
+  const scrubbedMessage = rawMessage.split(modulePath).join("[native-module]");
+  console.error(JSON.stringify({ code: error && error.code, message: scrubbedMessage, name: error && error.name }));
+  process.exit(1);
+}
+`;
+  const result = spawnSync(nodeResolution.path, ["-e", probeScript, modulePath], {
+    cwd: repoRoot,
+    encoding: "utf8",
+    env: startEnvironment,
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  if (result.error) {
+    throw result.error;
+  }
+  if (result.status !== 0) {
+    const output = sanitizePreflightOutput(`${result.stderr}\n${result.stdout}`, appPath);
+    throw new Error(
+      `Installed gxserver native-module preflight failed with ${nodeResolution.version} (NODE_MODULE_VERSION ${nodeResolution.moduleVersion}).${output ? ` ${output}` : ""}`,
+    );
+  }
+}
+
+function sanitizePreflightOutput(value, appPath) {
+  return String(value)
+    .replaceAll(appPath, "[installed-app]")
+    .replaceAll(homedir(), "~")
+    .replaceAll(repoRoot, "[repo]")
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .slice(0, 3)
+    .join(" ");
 }
 
 function run(command, args, options = {}) {
