@@ -841,6 +841,125 @@ test("already-migrated repair imports legacy-shaped sessions written inside cano
   });
 });
 
+test("completed marker rebuilds missing DB rows from canonical shared sidebar state", async () => {
+  await withLegacyImportFixture(async (fixture) => {
+    /*
+    CDXC:GxserverMigration 2026-06-08-08:58:
+    A completed marker can coexist with a missing project/session table after an interrupted or corrupt 3.x to 4.x cutover. The next gxserver launch must rebuild the DB from the already-canonical P/G shared sidebar snapshot without minting a second set of project or session ids.
+    */
+    await runImport(fixture);
+
+    const db = openGxserverDatabase(fixture.paths);
+    try {
+      db.exec("DELETE FROM sessions; DELETE FROM projects;");
+    } finally {
+      db.close();
+    }
+
+    const recovered = await runImport(fixture);
+
+    assert.equal(recovered.status.status, "completed");
+    assert.equal(recovered.status.projectsImported, 2);
+    assert.equal(recovered.status.sessionsImported, 4);
+
+    const repairedDb = openGxserverDatabase(fixture.paths);
+    try {
+      const repository = new GxserverDomainRepository(repairedDb, "S7k");
+      assert.deepEqual(
+        repository.listProjects().map((project) => project.projectId),
+        ["P3a91", "P4b22"],
+      );
+      assert.deepEqual(
+        repository.listSessions().map((session) => session.sessionId).sort(),
+        ["G1z99", "G2abc", "G3def", "G8v20"],
+      );
+      const presentation = readGxserverPresentationSnapshot(repairedDb, "S7k", "2026-06-08T04:58:00.000Z");
+      assert.equal(presentation.projects.length, 2);
+      assert.equal(presentation.sessions.length, 4);
+    } finally {
+      repairedDb.close();
+    }
+
+    const rewrittenSharedProjects = JSON.parse(await readFile(fixture.sharedProjectsFile, "utf8")) as any;
+    assert.equal(rewrittenSharedProjects.activeProjectId, "P3a91");
+    assert.equal(rewrittenSharedProjects.projects[0].projectId, "P3a91");
+    assert.equal(rewrittenSharedProjects.projects[0].workspace.groups[0].snapshot.sessions[0].sessionId, "G8v20");
+    const rewrittenPreviousSessions = JSON.parse(await readFile(fixture.sharedPreviousSessionsFile, "utf8")) as any[];
+    assert.equal(rewrittenPreviousSessions[0].projectId, "P3a91");
+    assert.equal(rewrittenPreviousSessions[0].sessionId, "G4hij");
+    assert.equal(rewrittenPreviousSessions[0].sessionRecord.projectId, "P3a91");
+    assert.equal(rewrittenPreviousSessions[0].sessionRecord.sessionId, "G4hij");
+  });
+});
+
+test("completed marker can recover from legacy shared-state backups when active shared state is empty", async () => {
+  await withLegacyImportFixture(async (fixture) => {
+    /*
+    CDXC:GxserverMigration 2026-06-08-08:58:
+    The backup shared-state files are the final recovery source when a completed marker and empty active shared files would otherwise leave gxserver with no project presentation. Re-import the backed-up pre-cutover tree into fresh canonical IDs and rewrite active shared state from that repair.
+    */
+    await runImport(fixture);
+    await writeFile(
+      fixture.sharedProjectsFile,
+      JSON.stringify({
+        activeProjectId: undefined,
+        gxserverMigratedAt: "2026-06-08T04:58:00.000Z",
+        projects: [],
+      }),
+      "utf8",
+    );
+    await writeFile(fixture.sharedPreviousSessionsFile, "[]", "utf8");
+
+    const db = openGxserverDatabase(fixture.paths);
+    try {
+      db.exec("DELETE FROM sessions; DELETE FROM projects;");
+    } finally {
+      db.close();
+    }
+    fixture.projectIds.push("P5fix" as GxserverProjectId, "P6fix" as GxserverProjectId);
+    fixture.sessionIds.push(
+      "G5fix" as GxserverSessionId,
+      "G6fix" as GxserverSessionId,
+      "G7fix" as GxserverSessionId,
+      "G8fix" as GxserverSessionId,
+      "G9fix" as GxserverSessionId,
+    );
+
+    const recovered = await runImport(fixture);
+
+    assert.equal(recovered.status.status, "completed");
+    assert.equal(recovered.status.projectsImported, 2);
+    assert.equal(recovered.status.sessionsImported, 4);
+
+    const repairedDb = openGxserverDatabase(fixture.paths);
+    try {
+      const repository = new GxserverDomainRepository(repairedDb, "S7k");
+      assert.deepEqual(
+        repository.listProjects().map((project) => project.projectId),
+        ["P5fix", "P6fix"],
+      );
+      assert.deepEqual(
+        repository.listSessions().map((session) => session.sessionId).sort(),
+        ["G5fix", "G6fix", "G7fix", "G8fix"],
+      );
+      const presentation = readGxserverPresentationSnapshot(repairedDb, "S7k", "2026-06-08T04:58:00.000Z");
+      assert.equal(presentation.projects.length, 2);
+      assert.equal(presentation.sessions.length, 4);
+    } finally {
+      repairedDb.close();
+    }
+
+    const rewrittenSharedProjects = JSON.parse(await readFile(fixture.sharedProjectsFile, "utf8")) as any;
+    assert.equal(rewrittenSharedProjects.projects.length, 2);
+    assert.equal(rewrittenSharedProjects.projects[0].projectId, "P5fix");
+    assert.equal(rewrittenSharedProjects.projects[0].workspace.groups[0].snapshot.sessions[0].sessionId, "G5fix");
+    assert.equal(rewrittenSharedProjects.projects[0].projectId.startsWith("legacy-"), false);
+    const rewrittenPreviousSessions = JSON.parse(await readFile(fixture.sharedPreviousSessionsFile, "utf8")) as any[];
+    assert.equal(rewrittenPreviousSessions[0].projectId, "P5fix");
+    assert.equal(rewrittenPreviousSessions[0].sessionId, "G9fix");
+  });
+});
+
 test("oversized client-local legacy blobs are bounded without blocking first-launch import", async () => {
   await withLegacyImportFixture(async (fixture) => {
     const sharedProjects = JSON.parse(await readFile(fixture.sharedProjectsFile, "utf8")) as {
