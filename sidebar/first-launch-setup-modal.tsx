@@ -182,9 +182,12 @@ const FIRST_LAUNCH_SIDEBAR_PRESETS = FIRST_LAUNCH_SIDEBAR_PRESET_ORDER.flatMap((
  * ZMU-72: Mobile download buttons must match README.md stable release URLs so
  * Android APK and iPhone TestFlight Discord links stay correct without per-version
  * README edits.
+ *
+ * CDXC:FirstLaunchSetup 2026-06-08-16:25:
+ * Android downloads should resolve to the signed APK attached to the current 4.0.2 GitHub release, not the older ghostex-android-latest release alias.
  */
 const FIRST_LAUNCH_ANDROID_APK_URL =
-  "https://github.com/maddada/Ghostex/releases/download/ghostex-android-latest/ghostex-android.apk";
+  "https://github.com/maddada/Ghostex/releases/download/v4.0.2/ghostex-android.apk";
 const FIRST_LAUNCH_IOS_DISCORD_URL = "https://discord.gg/df7b3G92CS";
 const FIRST_LAUNCH_DISCORD_URL = "https://discord.gg/df7b3G92CS";
 
