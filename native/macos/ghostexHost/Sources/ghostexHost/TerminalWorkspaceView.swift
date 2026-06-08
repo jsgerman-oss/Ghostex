@@ -4176,6 +4176,7 @@ final class TerminalWorkspaceView: NSView {
       return
     }
     let processExited = session.view.processExited
+    let terminalText = session.view.surfaceModel?.readText(source: "screen")
     TerminalFocusDebugLog.append(
       event: "nativeWorkspace.closeTerminal.start",
       details: [
@@ -4227,7 +4228,7 @@ final class TerminalWorkspaceView: NSView {
       focusedSessionId = nil
     }
     needsLayout = true
-    sendEvent(.terminalExited(sessionId: sessionId, exitCode: nil))
+    sendEvent(.terminalExited(sessionId: sessionId, exitCode: nil, text: terminalText))
     stopExitPollingIfIdle()
     TerminalFocusDebugLog.append(
       event: "nativeWorkspace.closeTerminal.completed",
@@ -4660,7 +4661,7 @@ final class TerminalWorkspaceView: NSView {
       focusedSessionId = nil
     }
     needsLayout = true
-    sendEvent(.terminalExited(sessionId: sessionId, exitCode: nil))
+    sendEvent(.terminalExited(sessionId: sessionId, exitCode: nil, text: nil))
     NativeT3CodePaneReproLog.append("nativeWorkspace.t3WebPane.close.completed", [
       "activeSessionIds": Array(activeSessionIds).sorted(),
       "focusedSessionId": nullableString(focusedSessionId),

@@ -74,6 +74,15 @@ export type ProjectBoardStartLocation = "currentProject" | "newWorktree";
 export type ProjectBoardBridgeAction =
   | "appendDebugLog"
   | "associateFocusedSession"
+  | "automationArchiveRun"
+  | "automationDelete"
+  | "automationGetState"
+  | "automationOpenRunSession"
+  | "automationOpenWorktree"
+  | "automationMarkRunRead"
+  | "automationRunNow"
+  | "automationSave"
+  | "automationSetEnabled"
   | "getState"
   | "jumpToConversation"
   | "startWork"
@@ -91,16 +100,17 @@ export type ProjectBoardBridgeRequest = {
   projectId?: string;
   projectPath?: string;
   remoteMachineId?: string;
+  payloadJson?: string;
   requestId: string;
   sessionId?: string;
   startLocation?: ProjectBoardStartLocation;
   ticketTitle?: string;
 };
 
-export type ProjectBoardBridgeResponse = {
+export type ProjectBoardBridgeResponse<TPayload = ProjectBoardConversationState> = {
   error?: string;
   ok: boolean;
-  payload?: ProjectBoardConversationState;
+  payload?: TPayload;
   requestId: string;
 };
 

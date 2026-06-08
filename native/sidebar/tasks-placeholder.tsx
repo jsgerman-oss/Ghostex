@@ -1,9 +1,14 @@
 import {
+  IconArchive,
   IconAlertTriangle,
+  IconBell,
+  IconCalendarTime,
   IconCopy,
   IconExternalLink,
+  IconFolderOpen,
   IconLink,
   IconMessageCircle,
+  IconPlayerPlay,
   IconPlus,
   IconRefresh,
   IconSearch,
@@ -105,6 +110,17 @@ import {
   type ProjectBoardConversationState,
   type ProjectBoardStartLocation,
 } from "../../shared/bead-conversation-links";
+import {
+  compareAutomationRunsNewestFirst,
+  computeNextRunAt,
+  normalizeAutomationSchedule,
+  type AutomationDefinition,
+  type AutomationExecutionMode,
+  type AutomationRun,
+  type AutomationSchedule,
+  type ProjectAutomationAgentOption,
+  type ProjectAutomationsBridgeState,
+} from "../../shared/automations";
 import "../../sidebar/styles/shadcn.generated.css";
 
 type LoadState = "idle" | "loading" | "ready" | "error";
@@ -194,12 +210,32 @@ const PROJECT_BOARD_ESTIMATE_FILTER_SELECT_ITEMS: Array<{ label: string; value: 
   { label: "All estimates", value: "all" },
   ...PROJECT_BOARD_TSHIRT_SELECT_ITEMS,
 ];
+const PROJECT_AUTOMATION_TRIAGE_RECENT_COMPLETED_LIMIT = 5;
 
 type BoardRefreshMode = "background" | "initial" | "manual" | "mutation";
 
 type BoardRefreshOptions = {
   includeLabels?: boolean;
   mode?: BoardRefreshMode;
+};
+
+type ProjectSurfaceTab = "triage" | "automations" | "runs" | "board";
+
+type AutomationDraft = {
+  agentId: string;
+  cronExpression: string;
+  enabled: boolean;
+  executionKind: AutomationExecutionMode["kind"];
+  expiresAt: string;
+  id?: string;
+  name: string;
+  prompt: string;
+  projectId: string;
+  schedulePreset: "15m" | "hourly" | "daily" | "weekly" | "cron";
+  scheduleTime: string;
+  setupCommand: string;
+  threadSessionId: string;
+  weeklyDay: string;
 };
 
 type ProjectBoardImageBridgeRequest = {
@@ -366,7 +402,34 @@ function ProjectBoardApp() {
   const labelsSignatureRef = useRef("");
   const lastLabelsRefreshAtRef = useRef(0);
   const newPromptRef = useRef<HTMLTextAreaElement>(null);
+  const automationProjectsRef = useRef<ProjectAutomationsBridgeState["projects"]>([]);
   const [conversationAction, setConversationAction] = useState<ConversationActionState>();
+  const [activeSurfaceTab, setActiveSurfaceTab] = useState<ProjectSurfaceTab>("triage");
+  const [automationState, setAutomationState] = useState<ProjectAutomationsBridgeState>({
+    agents: [],
+    automations: [],
+    projectCanUseWorktrees: false,
+    projectId,
+    projectName,
+    projectPath,
+    projects: [],
+    runs: [],
+  });
+  const [automationConversationState, setAutomationConversationState] =
+    useState<ProjectBoardConversationState>({
+      agents: [],
+      debuggingMode: false,
+      links: [],
+      sessions: [],
+    });
+  const [automationDialogOpen, setAutomationDialogOpen] = useState(false);
+  const [automationDraft, setAutomationDraft] = useState<AutomationDraft>(() =>
+    createAutomationDraft(),
+  );
+  const [automationActionId, setAutomationActionId] = useState("");
+  const [automationTargetProjectId, setAutomationTargetProjectId] = useState(projectId);
+  const [selectedAutomationId, setSelectedAutomationId] = useState("");
+  const [selectedAutomationRunId, setSelectedAutomationRunId] = useState("");
 
   const openNewTicket = useCallback((status: BoardStatusKey = "todo") => {
     setNewTicket((current) => ({ ...current, status }));
@@ -410,11 +473,75 @@ function ProjectBoardApp() {
       }
       const payload = response.payload ?? { agents: [], links: [], sessions: [] };
       setConversationState(payload);
+      setAutomationConversationState((current) =>
+        automationTargetProjectId === projectId ? payload : current,
+      );
       setSelectedAgentId((current) => current || payload.defaultAgentId || payload.agents[0]?.agentId || "");
     } catch (error) {
       console.warn("Project board conversation state unavailable.", error);
     }
-  }, [projectEditorId, projectId, projectPath, remoteMachineId]);
+  }, [automationTargetProjectId, projectEditorId, projectId, projectPath, remoteMachineId]);
+
+  const applyAutomationState = useCallback((payload: ProjectAutomationsBridgeState) => {
+    automationProjectsRef.current = payload.projects;
+    setAutomationState(payload);
+    setAutomationTargetProjectId(payload.projectId);
+  }, []);
+
+  const loadAutomationState = useCallback(async (targetProjectId?: string) => {
+    const requestedProjectId = targetProjectId?.trim() || automationTargetProjectId || projectId;
+    const targetProject = automationProjectsRef.current.find(
+      (candidate) => candidate.projectId === requestedProjectId,
+    );
+    try {
+      const response = await sendProjectBoardRequest<ProjectAutomationsBridgeState>({
+        action: "automationGetState",
+        projectId: requestedProjectId,
+        projectPath: targetProject?.path ?? (requestedProjectId === projectId ? projectPath : undefined),
+        ...(remoteMachineId ? { remoteMachineId } : {}),
+      });
+      if (!response.ok) {
+        throw new Error(response.error || "Could not load automations.");
+      }
+      if (response.payload) {
+        applyAutomationState(response.payload);
+        setAutomationDraft((current) =>
+          current.agentId
+            ? current
+            : {
+                ...current,
+                agentId: response.payload?.defaultAgentId || response.payload?.agents[0]?.agentId || "",
+                projectId: current.projectId || response.payload?.projectId || projectId,
+                executionKind: response.payload?.projectCanUseWorktrees === false ? "local" : current.executionKind,
+              },
+        );
+      }
+    } catch (error) {
+      console.warn("Project automations state unavailable.", error);
+    }
+  }, [applyAutomationState, automationTargetProjectId, projectId, projectPath, remoteMachineId]);
+
+  const loadAutomationConversationState = useCallback(async (targetProjectId?: string) => {
+    const requestedProjectId = targetProjectId?.trim() || automationTargetProjectId || projectId;
+    const targetProject = automationProjectsRef.current.find(
+      (candidate) => candidate.projectId === requestedProjectId,
+    );
+    try {
+      const response = await sendProjectBoardRequest({
+        action: "getState",
+        projectId: requestedProjectId,
+        projectPath: targetProject?.path ?? (requestedProjectId === projectId ? projectPath : undefined),
+        ...(remoteMachineId ? { remoteMachineId } : {}),
+      });
+      if (!response.ok) {
+        throw new Error(response.error || "Could not load automation sessions.");
+      }
+      setAutomationConversationState(response.payload ?? { agents: [], links: [], sessions: [] });
+    } catch (error) {
+      console.warn("Project automation sessions unavailable.", error);
+      setAutomationConversationState({ agents: [], debuggingMode: false, links: [], sessions: [] });
+    }
+  }, [automationTargetProjectId, projectId, projectPath, remoteMachineId]);
 
   const logProjectBoardDebug = useCallback(
     (event: string, details?: Record<string, unknown>) => {
@@ -493,9 +620,16 @@ function ProjectBoardApp() {
   }, [displayKey, runBeads]);
 
   useEffect(() => {
-    void loadTickets({ includeLabels: true, mode: "initial" });
     void loadConversationState();
-  }, [loadConversationState, loadTickets]);
+    void loadAutomationState();
+  }, [loadAutomationState, loadConversationState]);
+
+  useEffect(() => {
+    if (activeSurfaceTab !== "board") {
+      return;
+    }
+    void loadTickets({ includeLabels: true, mode: "initial" });
+  }, [activeSurfaceTab, loadTickets]);
 
   useEffect(() => {
     const imageSources = [
@@ -544,13 +678,16 @@ function ProjectBoardApp() {
       if (document.visibilityState !== "visible") {
         return;
       }
-      void loadTickets({
-        includeLabels:
-          includeLabels ||
-          Date.now() - lastLabelsRefreshAtRef.current >= PROJECT_BOARD_LABEL_REFRESH_INTERVAL_MS,
-        mode: "background",
-      });
+      if (activeSurfaceTab === "board") {
+        void loadTickets({
+          includeLabels:
+            includeLabels ||
+            Date.now() - lastLabelsRefreshAtRef.current >= PROJECT_BOARD_LABEL_REFRESH_INTERVAL_MS,
+          mode: "background",
+        });
+      }
       void loadConversationState();
+      void loadAutomationState();
     };
     const intervalId = window.setInterval(
       () => refreshIfVisible(false),
@@ -564,7 +701,7 @@ function ProjectBoardApp() {
       document.removeEventListener("visibilitychange", handleVisible);
       window.removeEventListener("focus", handleVisible);
     };
-  }, [loadConversationState, loadTickets]);
+  }, [activeSurfaceTab, loadAutomationState, loadConversationState, loadTickets]);
 
   const filteredTickets = useMemo(
     () => filterBoardTickets(tickets, searchQuery, priorityFilter, estimateFilter),
@@ -1151,6 +1288,241 @@ function ProjectBoardApp() {
     }
   };
 
+  const openNewAutomationDialog = () => {
+    void loadAutomationConversationState(automationState.projectId);
+    setAutomationDraft(
+      createAutomationDraft({
+        agentId: automationState.defaultAgentId || automationState.agents[0]?.agentId || "",
+        executionKind: automationState.projectCanUseWorktrees ? "worktree" : "local",
+        projectId: automationState.projectId,
+      }),
+    );
+    setAutomationDialogOpen(true);
+  };
+
+  const openEditAutomationDialog = (automation: AutomationDefinition) => {
+    void loadAutomationConversationState(automation.projectIds[0] ?? automationState.projectId);
+    setAutomationDraft(createAutomationDraftFromDefinition(automation));
+    setAutomationDialogOpen(true);
+  };
+
+  const saveAutomation = async () => {
+    const definition = createAutomationDefinitionFromDraft(automationDraft, {
+      fallbackAgentId: automationState.defaultAgentId || automationState.agents[0]?.agentId || "",
+      projectId: automationDraft.projectId || automationState.projectId || projectId,
+    });
+    if (!definition) {
+      setErrorMessage("Name, agent, prompt, and schedule are required.");
+      return;
+    }
+    if (definition.executionMode.kind === "worktree" && !automationDraftCanUseWorktrees) {
+      setErrorMessage(automationDraftWorktreeUnavailableReason || "Worktree mode is unavailable for this project.");
+      return;
+    }
+    setAutomationActionId(definition.id);
+    try {
+      const response = await sendProjectBoardRequest<ProjectAutomationsBridgeState>({
+        action: "automationSave",
+        payloadJson: JSON.stringify(definition),
+        projectId: definition.projectIds[0] ?? projectId,
+        projectPath: automationDraftProject?.path ?? projectPath,
+        ...(remoteMachineId ? { remoteMachineId } : {}),
+      });
+      if (!response.ok) {
+        throw new Error(response.error || "Could not save automation.");
+      }
+      if (response.payload) {
+        applyAutomationState(response.payload);
+      }
+      setAutomationDialogOpen(false);
+      setErrorMessage("");
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : "Could not save automation.");
+    } finally {
+      setAutomationActionId("");
+    }
+  };
+
+  const deleteAutomation = async (automation: AutomationDefinition) => {
+    setAutomationActionId(automation.id);
+    try {
+      const response = await sendProjectBoardRequest<ProjectAutomationsBridgeState>({
+        action: "automationDelete",
+        projectId: automationState.projectId || projectId,
+        projectPath: automationState.projectPath || projectPath,
+        ...(remoteMachineId ? { remoteMachineId } : {}),
+        sessionId: automation.id,
+      });
+      if (!response.ok) {
+        throw new Error(response.error || "Could not delete automation.");
+      }
+      if (response.payload) {
+        applyAutomationState(response.payload);
+      }
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : "Could not delete automation.");
+    } finally {
+      setAutomationActionId("");
+    }
+  };
+
+  const setAutomationEnabled = async (automation: AutomationDefinition, enabled: boolean) => {
+    setAutomationActionId(automation.id);
+    try {
+      const response = await sendProjectBoardRequest<ProjectAutomationsBridgeState>({
+        action: "automationSetEnabled",
+        payloadJson: JSON.stringify({ enabled }),
+        projectId: automationState.projectId || projectId,
+        projectPath: automationState.projectPath || projectPath,
+        ...(remoteMachineId ? { remoteMachineId } : {}),
+        sessionId: automation.id,
+      });
+      if (!response.ok) {
+        throw new Error(response.error || "Could not update automation.");
+      }
+      if (response.payload) {
+        applyAutomationState(response.payload);
+      }
+      setErrorMessage("");
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : "Could not update automation.");
+    } finally {
+      setAutomationActionId("");
+    }
+  };
+
+  const runAutomationNow = async (automation: AutomationDefinition) => {
+    setAutomationActionId(automation.id);
+    try {
+      const response = await sendProjectBoardRequest<ProjectAutomationsBridgeState>({
+        action: "automationRunNow",
+        projectId: automationState.projectId || projectId,
+        projectPath: automationState.projectPath || projectPath,
+        ...(remoteMachineId ? { remoteMachineId } : {}),
+        sessionId: automation.id,
+      });
+      if (!response.ok) {
+        throw new Error(response.error || "Could not run automation.");
+      }
+      if (response.payload) {
+        applyAutomationState(response.payload);
+      }
+      setActiveSurfaceTab("runs");
+      setErrorMessage("");
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : "Could not run automation.");
+    } finally {
+      setAutomationActionId("");
+    }
+  };
+
+  const archiveAutomationRun = async (run: AutomationRun) => {
+    setAutomationActionId(run.id);
+    try {
+      const removeWorktree =
+        Boolean(run.worktree) &&
+        window.confirm(
+          `Archive this run and remove its worktree?\n\nPath: ${run.worktree?.path ?? ""}\nBranch: ${run.worktree?.branch ?? ""}`,
+        );
+      if (removeWorktree) {
+        const confirmation = window.prompt(
+          `Type the exact worktree path to remove it:\n\n${run.worktree?.path ?? ""}`,
+        );
+        if (confirmation !== run.worktree?.path) {
+          setErrorMessage("Worktree removal was not confirmed. The run was not archived.");
+          return;
+        }
+      }
+      const response = await sendProjectBoardRequest<ProjectAutomationsBridgeState>({
+        action: "automationArchiveRun",
+        payloadJson: JSON.stringify({ removeWorktree }),
+        projectId: automationState.projectId || projectId,
+        projectPath: automationState.projectPath || projectPath,
+        ...(remoteMachineId ? { remoteMachineId } : {}),
+        sessionId: run.id,
+      });
+      if (!response.ok) {
+        throw new Error(response.error || "Could not archive automation run.");
+      }
+      if (response.payload) {
+        applyAutomationState(response.payload);
+      }
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : "Could not archive automation run.");
+    } finally {
+      setAutomationActionId("");
+    }
+  };
+
+  const markAutomationRunRead = async (run: AutomationRun) => {
+    setAutomationActionId(run.id);
+    try {
+      const response = await sendProjectBoardRequest<ProjectAutomationsBridgeState>({
+        action: "automationMarkRunRead",
+        projectId: automationState.projectId || projectId,
+        projectPath: automationState.projectPath || projectPath,
+        ...(remoteMachineId ? { remoteMachineId } : {}),
+        sessionId: run.id,
+      });
+      if (!response.ok) {
+        throw new Error(response.error || "Could not mark automation run read.");
+      }
+      if (response.payload) {
+        applyAutomationState(response.payload);
+      }
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : "Could not mark automation run read.");
+    } finally {
+      setAutomationActionId("");
+    }
+  };
+
+  const openAutomationRunSession = async (run: AutomationRun) => {
+    setAutomationActionId(run.id);
+    try {
+      const response = await sendProjectBoardRequest<ProjectAutomationsBridgeState>({
+        action: "automationOpenRunSession",
+        projectId: automationState.projectId || projectId,
+        projectPath: automationState.projectPath || projectPath,
+        ...(remoteMachineId ? { remoteMachineId } : {}),
+        sessionId: run.id,
+      });
+      if (!response.ok) {
+        throw new Error(response.error || "Could not open automation session.");
+      }
+      if (response.payload) {
+        applyAutomationState(response.payload);
+      }
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : "Could not open automation session.");
+    } finally {
+      setAutomationActionId("");
+    }
+  };
+
+  const openAutomationRunWorktree = async (run: AutomationRun) => {
+    setAutomationActionId(run.id);
+    try {
+      const response = await sendProjectBoardRequest<ProjectAutomationsBridgeState>({
+        action: "automationOpenWorktree",
+        projectId: automationState.projectId || projectId,
+        projectPath: automationState.projectPath || projectPath,
+        ...(remoteMachineId ? { remoteMachineId } : {}),
+        sessionId: run.id,
+      });
+      if (!response.ok) {
+        throw new Error(response.error || "Could not open automation worktree.");
+      }
+      if (response.payload) {
+        applyAutomationState(response.payload);
+      }
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : "Could not open automation worktree.");
+    } finally {
+      setAutomationActionId("");
+    }
+  };
+
   const detailConversationLinks = detail.ticket ? (linksByBeadId.get(detail.ticket.id) ?? []) : [];
   const detailPrimaryConversationLink = getPrimaryUsableConversationLink(detailConversationLinks);
   const detailCommentMetadataLink = detailPrimaryConversationLink ?? detailConversationLinks[0];
@@ -1167,6 +1539,23 @@ function ProjectBoardApp() {
     detail.isSaving ||
     Boolean(conversationAction) ||
     (!detailPrimaryConversationLink && conversationState.agents.length === 0);
+  const visibleAutomationRuns = automationState.runs.filter((run) => !run.isArchived);
+  const triageActionRunCount = visibleAutomationRuns.filter(isAutomationRunActionableInTriage).length;
+  const triageAutomationRuns = selectAutomationRunsForTriage(visibleAutomationRuns);
+  const selectedAutomation =
+    automationState.automations.find((automation) => automation.id === selectedAutomationId) ??
+    automationState.automations[0];
+  const selectedTriageRun =
+    triageAutomationRuns.find((run) => run.id === selectedAutomationRunId) ?? triageAutomationRuns[0];
+  const selectedVisibleRun =
+    visibleAutomationRuns.find((run) => run.id === selectedAutomationRunId) ?? visibleAutomationRuns[0];
+  const automationDraftProject =
+    automationState.projects.find((candidate) => candidate.projectId === automationDraft.projectId) ??
+    automationState.projects.find((candidate) => candidate.projectId === automationState.projectId);
+  const automationDraftCanUseWorktrees =
+    automationDraftProject?.canUseWorktrees ?? automationState.projectCanUseWorktrees;
+  const automationDraftWorktreeUnavailableReason =
+    automationDraftProject?.worktreeUnavailableReason ?? automationState.worktreeUnavailableReason;
 
   useEffect(() => {
     if (!newTicketOpen) {
@@ -1187,122 +1576,509 @@ function ProjectBoardApp() {
         </div>
         <div className="project-board-toolbar-actions">
           <Button
-            aria-label="Refresh board"
+            aria-label="Refresh project"
             disabled={loadState === "loading"}
             onClick={() => {
               void loadTickets({ includeLabels: true, mode: "manual" });
               void loadConversationState();
+              void loadAutomationState();
             }}
             size="icon-sm"
             variant="ghost"
           >
             <IconRefresh />
           </Button>
-          <Button
-            className="project-board-ticket-button"
-            onClick={() => openNewTicket()}
-            size="sm"
-            variant="secondary"
-          >
-            <IconPlus data-icon="inline-start" />
-            Ticket
-          </Button>
+          {activeSurfaceTab === "board" ? (
+            <Button onClick={() => openNewTicket()} size="sm" variant="secondary">
+              <IconPlus data-icon="inline-start" />
+              Ticket
+            </Button>
+          ) : (
+            <Button onClick={openNewAutomationDialog} size="sm" variant="secondary">
+              <IconPlus data-icon="inline-start" />
+              Automation
+            </Button>
+          )}
         </div>
       </section>
 
-      <section className="project-board-filters" aria-label="Ticket filters">
-        <div className="project-board-search">
-          {/*
-           * CDXC:SearchInputs 2026-06-04-03:11:
-           * Project Board ticket search is hosted by the native tasks bundle,
-           * so mirror the sidebar search affordance locally: keep the search
-           * icon on the right while empty, replace it with an X button after
-           * typing, and let Escape clear the focused non-empty field.
-           */}
-          <Input
-            aria-label="Search tickets"
-            onChange={(event) => setSearchQuery(event.currentTarget.value)}
-            onKeyDown={(event) => {
-              if (event.key !== "Escape" || searchQuery.length === 0) {
-                return;
-              }
-              event.preventDefault();
-              event.stopPropagation();
-              setSearchQuery("");
-              searchInputRef.current?.focus();
-            }}
-            placeholder="Search tickets"
-            ref={searchInputRef}
-            value={searchQuery}
-          />
-          {searchQuery.length > 0 ? (
-            <button
-              aria-label="Clear ticket search"
-              className="project-board-search-clear-button"
-              onClick={() => {
+      <section className="project-board-tabs" aria-label="Project views">
+        {[
+          ["triage", "Triage"],
+          ["automations", "Automations"],
+          ["runs", "Runs"],
+          ["board", "Board"],
+        ].map(([value, label]) => (
+          <button
+            className="project-board-tab"
+            data-active={activeSurfaceTab === value}
+            key={value}
+            onClick={() => setActiveSurfaceTab(value as ProjectSurfaceTab)}
+            type="button"
+          >
+            {label}
+            {value === "triage" && triageActionRunCount > 0 ? (
+              <span>{triageActionRunCount}</span>
+            ) : null}
+          </button>
+        ))}
+      </section>
+
+      {activeSurfaceTab === "board" ? (
+        <section className="project-board-filters" aria-label="Ticket filters">
+          <div className="project-board-search">
+            {/*
+             * CDXC:SearchInputs 2026-06-04-03:11:
+             * Project Board ticket search is hosted by the native tasks bundle,
+             * so mirror the sidebar search affordance locally: keep the search
+             * icon on the right while empty, replace it with an X button after
+             * typing, and let Escape clear the focused non-empty field.
+             */}
+            <Input
+              aria-label="Search tickets"
+              onChange={(event) => setSearchQuery(event.currentTarget.value)}
+              onKeyDown={(event) => {
+                if (event.key !== "Escape" || searchQuery.length === 0) {
+                  return;
+                }
+                event.preventDefault();
+                event.stopPropagation();
                 setSearchQuery("");
                 searchInputRef.current?.focus();
               }}
-              type="button"
-            >
-              <IconX aria-hidden="true" />
-            </button>
-          ) : (
-            <IconSearch aria-hidden="true" className="project-board-search-icon" />
-          )}
-        </div>
-        <Select
-          items={PROJECT_BOARD_PRIORITY_FILTER_SELECT_ITEMS}
-          onValueChange={(value) => setPriorityFilter(value as BoardPriorityFilter)}
-          value={priorityFilter}
-        >
-          <SelectTrigger aria-label="Filter by priority" className="project-board-filter-select" size="sm">
-            <SelectValue placeholder="All priorities" />
-          </SelectTrigger>
-          <SelectContent>
-            {PROJECT_BOARD_PRIORITY_FILTER_SELECT_ITEMS.map((option) => (
-              <SelectItem key={option.value} value={option.value}>
-                {option.label}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-        <Select
-          items={PROJECT_BOARD_ESTIMATE_FILTER_SELECT_ITEMS}
-          onValueChange={(value) => setEstimateFilter(value as BoardEstimateFilter)}
-          value={estimateFilter}
-        >
-          <SelectTrigger aria-label="Filter by estimate" className="project-board-filter-select" size="sm">
-            <SelectValue placeholder="All estimates" />
-          </SelectTrigger>
-          <SelectContent>
-            {PROJECT_BOARD_ESTIMATE_FILTER_SELECT_ITEMS.map((option) => (
-              <SelectItem key={option.value} value={option.value}>
-                {option.label}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-      </section>
-
-      {errorMessage ? <ProjectBoardNotice message={errorMessage} /> : null}
-
-      <DragDropProvider onDragEnd={handleDragEnd}>
-        <section className="project-board-lanes" aria-label="Project issue board">
-          {BOARD_COLUMNS.map((column) => (
-            <BoardLane
-              column={column}
-              conversationAction={conversationAction}
-              key={column.key}
-              linksByBeadId={linksByBeadId}
-              onAddTicket={openNewTicket}
-              onJumpToConversation={jumpToConversation}
-              onOpenTicket={openTicket}
-              tickets={ticketsByColumn[column.key]}
+              placeholder="Search tickets"
+              ref={searchInputRef}
+              value={searchQuery}
             />
-          ))}
+            {searchQuery.length > 0 ? (
+              <button
+                aria-label="Clear ticket search"
+                className="project-board-search-clear-button"
+                onClick={() => {
+                  setSearchQuery("");
+                  searchInputRef.current?.focus();
+                }}
+                type="button"
+              >
+                <IconX aria-hidden="true" />
+              </button>
+            ) : (
+              <IconSearch aria-hidden="true" className="project-board-search-icon" />
+            )}
+          </div>
+          <Select
+            items={PROJECT_BOARD_PRIORITY_FILTER_SELECT_ITEMS}
+            onValueChange={(value) => setPriorityFilter(value as BoardPriorityFilter)}
+            value={priorityFilter}
+          >
+            <SelectTrigger aria-label="Filter by priority" className="project-board-filter-select" size="sm">
+              <SelectValue placeholder="All priorities" />
+            </SelectTrigger>
+            <SelectContent>
+              {PROJECT_BOARD_PRIORITY_FILTER_SELECT_ITEMS.map((option) => (
+                <SelectItem key={option.value} value={option.value}>
+                  {option.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <Select
+            items={PROJECT_BOARD_ESTIMATE_FILTER_SELECT_ITEMS}
+            onValueChange={(value) => setEstimateFilter(value as BoardEstimateFilter)}
+            value={estimateFilter}
+          >
+            <SelectTrigger aria-label="Filter by estimate" className="project-board-filter-select" size="sm">
+              <SelectValue placeholder="All estimates" />
+            </SelectTrigger>
+            <SelectContent>
+              {PROJECT_BOARD_ESTIMATE_FILTER_SELECT_ITEMS.map((option) => (
+                <SelectItem key={option.value} value={option.value}>
+                  {option.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
         </section>
-      </DragDropProvider>
+      ) : null}
+
+      {activeSurfaceTab === "triage" ? (
+        <section className="project-automation-split">
+          <AutomationRunList
+            actionId={automationActionId}
+            agents={automationState.agents}
+            automations={automationState.automations}
+            emptyTitle="No automation results need triage"
+            onArchive={archiveAutomationRun}
+            onMarkRead={markAutomationRunRead}
+            onOpenSession={openAutomationRunSession}
+            onOpenWorktree={openAutomationRunWorktree}
+            onSelect={setSelectedAutomationRunId}
+            projectName={automationState.projectName}
+            runs={triageAutomationRuns}
+            selectedRunId={selectedTriageRun?.id ?? ""}
+          />
+          <AutomationRunDetail
+            actionId={automationActionId}
+            agents={automationState.agents}
+            automation={selectedTriageRun ? automationState.automations.find((candidate) => candidate.id === selectedTriageRun.automationId) : undefined}
+            onArchive={archiveAutomationRun}
+            onMarkRead={markAutomationRunRead}
+            onOpenSession={openAutomationRunSession}
+            onOpenWorktree={openAutomationRunWorktree}
+            projectName={automationState.projectName}
+            run={selectedTriageRun}
+          />
+        </section>
+      ) : null}
+
+      {activeSurfaceTab === "automations" ? (
+        <section className="project-automation-split">
+          <AutomationDefinitionList
+            actionId={automationActionId}
+            agents={automationState.agents}
+            automations={automationState.automations}
+            onDelete={deleteAutomation}
+            onEdit={openEditAutomationDialog}
+            onRunNow={runAutomationNow}
+            onSelect={setSelectedAutomationId}
+            onSetEnabled={setAutomationEnabled}
+            runs={automationState.runs}
+            selectedAutomationId={selectedAutomation?.id ?? ""}
+          />
+          <AutomationDefinitionDetail
+            actionId={automationActionId}
+            agents={automationState.agents}
+            automation={selectedAutomation}
+            onDelete={deleteAutomation}
+            onEdit={openEditAutomationDialog}
+            onRunNow={runAutomationNow}
+            onSetEnabled={setAutomationEnabled}
+            runs={automationState.runs}
+          />
+        </section>
+      ) : null}
+
+      {activeSurfaceTab === "runs" ? (
+        <section className="project-automation-split">
+          <AutomationRunList
+            actionId={automationActionId}
+            agents={automationState.agents}
+            automations={automationState.automations}
+            emptyTitle="No automation runs yet"
+            onArchive={archiveAutomationRun}
+            onMarkRead={markAutomationRunRead}
+            onOpenSession={openAutomationRunSession}
+            onOpenWorktree={openAutomationRunWorktree}
+            onSelect={setSelectedAutomationRunId}
+            projectName={automationState.projectName}
+            runs={visibleAutomationRuns}
+            selectedRunId={selectedVisibleRun?.id ?? ""}
+          />
+          <AutomationRunDetail
+            actionId={automationActionId}
+            agents={automationState.agents}
+            automation={selectedVisibleRun ? automationState.automations.find((candidate) => candidate.id === selectedVisibleRun.automationId) : undefined}
+            onArchive={archiveAutomationRun}
+            onMarkRead={markAutomationRunRead}
+            onOpenSession={openAutomationRunSession}
+            onOpenWorktree={openAutomationRunWorktree}
+            projectName={automationState.projectName}
+            run={selectedVisibleRun}
+          />
+        </section>
+      ) : null}
+
+      {activeSurfaceTab === "board" ? (
+        <>
+          {errorMessage ? <ProjectBoardNotice message={errorMessage} /> : null}
+          <DragDropProvider onDragEnd={handleDragEnd}>
+            <section className="project-board-lanes" aria-label="Project issue board">
+              {BOARD_COLUMNS.map((column) => (
+                <BoardLane
+                  column={column}
+                  conversationAction={conversationAction}
+                  key={column.key}
+                  linksByBeadId={linksByBeadId}
+                  onAddTicket={openNewTicket}
+                  onJumpToConversation={jumpToConversation}
+                  onOpenTicket={openTicket}
+                  tickets={ticketsByColumn[column.key]}
+                />
+              ))}
+            </section>
+          </DragDropProvider>
+        </>
+      ) : errorMessage ? (
+        <ProjectBoardNotice message={errorMessage} />
+      ) : null}
+
+      <Dialog open={automationDialogOpen} onOpenChange={setAutomationDialogOpen}>
+        <DialogContent className="project-automation-dialog">
+          <DialogHeader>
+            <DialogTitle>{automationDraft.id ? "Edit automation" : "Create automation"}</DialogTitle>
+            <DialogDescription>{projectName}</DialogDescription>
+          </DialogHeader>
+          <div className="project-automation-form">
+            <label>
+              <span>Name</span>
+              <Input
+                onChange={(event) =>
+                  setAutomationDraft((current) => ({ ...current, name: event.currentTarget.value }))
+                }
+                value={automationDraft.name}
+              />
+            </label>
+            <label>
+              <span>Agent</span>
+              <Select
+                onValueChange={(value) =>
+                  setAutomationDraft((current) => ({ ...current, agentId: value }))
+                }
+                value={automationDraft.agentId}
+              >
+                <SelectTrigger>
+                  <SelectValue placeholder="Choose agent" />
+                </SelectTrigger>
+                <SelectContent>
+                  {automationState.agents.map((agent) => (
+                    <SelectItem key={agent.agentId} value={agent.agentId}>
+                      {agent.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </label>
+            <label>
+              <span>Project</span>
+              <Select
+                onValueChange={(value) => {
+                  const targetProject = automationState.projects.find((candidate) => candidate.projectId === value);
+                  setAutomationTargetProjectId(value);
+                  setAutomationDraft((current) => ({
+                    ...current,
+                    executionKind:
+                      current.executionKind === "worktree" && targetProject?.canUseWorktrees === false
+                        ? "local"
+                        : current.executionKind,
+                    projectId: value,
+                    threadSessionId: current.projectId === value ? current.threadSessionId : "",
+                  }));
+                  void loadAutomationState(value);
+                  void loadAutomationConversationState(value);
+                }}
+                value={automationDraft.projectId || automationState.projectId}
+              >
+                <SelectTrigger>
+                  <SelectValue placeholder="Choose project" />
+                </SelectTrigger>
+                <SelectContent>
+                  {(automationState.projects.length > 0
+                    ? automationState.projects
+                    : [
+                        {
+                          canUseWorktrees: automationState.projectCanUseWorktrees,
+                          label: automationState.projectName || projectName,
+                          path: automationState.projectPath || projectPath,
+                          projectId: automationState.projectId || projectId,
+                          worktreeUnavailableReason: automationState.worktreeUnavailableReason,
+                        },
+                      ]
+                  ).map((targetProject) => (
+                    <SelectItem key={targetProject.projectId} value={targetProject.projectId}>
+                      {targetProject.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </label>
+            <label>
+              <span>Schedule</span>
+              <Select
+                onValueChange={(value) =>
+                  setAutomationDraft((current) => ({
+                    ...current,
+                    schedulePreset: value as AutomationDraft["schedulePreset"],
+                  }))
+                }
+                value={automationDraft.schedulePreset}
+              >
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="15m">Every 15 minutes</SelectItem>
+                  <SelectItem value="hourly">Hourly</SelectItem>
+                  <SelectItem value="daily">Daily</SelectItem>
+                  <SelectItem value="weekly">Weekly</SelectItem>
+                  <SelectItem value="cron">Custom cron</SelectItem>
+                </SelectContent>
+              </Select>
+            </label>
+            {automationDraft.schedulePreset === "cron" ? (
+              <label>
+                <span>Cron</span>
+                <Input
+                  onChange={(event) =>
+                    setAutomationDraft((current) => ({
+                      ...current,
+                      cronExpression: event.currentTarget.value,
+                    }))
+                  }
+                  placeholder="*/15 * * * *"
+                  value={automationDraft.cronExpression}
+                />
+              </label>
+            ) : null}
+            {automationDraft.schedulePreset === "daily" || automationDraft.schedulePreset === "weekly" ? (
+              <label>
+                <span>Time</span>
+                <Input
+                  onChange={(event) =>
+                    setAutomationDraft((current) => ({
+                      ...current,
+                      scheduleTime: event.currentTarget.value,
+                    }))
+                  }
+                  type="time"
+                  value={automationDraft.scheduleTime}
+                />
+              </label>
+            ) : null}
+            {automationDraft.schedulePreset === "weekly" ? (
+              <label>
+                <span>Day</span>
+                <Select
+                  onValueChange={(value) =>
+                    setAutomationDraft((current) => ({ ...current, weeklyDay: value }))
+                  }
+                  value={automationDraft.weeklyDay}
+                >
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"].map(
+                      (day, index) => (
+                        <SelectItem key={day} value={String(index)}>
+                          {day}
+                        </SelectItem>
+                      ),
+                    )}
+                  </SelectContent>
+                </Select>
+              </label>
+            ) : null}
+            <div className="project-automation-segmented" role="group" aria-label="Execution mode">
+              {[
+                ["worktree", "Worktree"],
+                ["local", "Local"],
+                ["thread", "Thread"],
+              ].map(([value, label]) => {
+                const disabled = value === "worktree" && !automationDraftCanUseWorktrees;
+                return (
+                  <button
+                    data-active={automationDraft.executionKind === value}
+                    disabled={disabled}
+                    key={value}
+                    onClick={() =>
+                      setAutomationDraft((current) => ({
+                        ...current,
+                        executionKind: value as AutomationExecutionMode["kind"],
+                      }))
+                    }
+                    title={disabled ? automationDraftWorktreeUnavailableReason : undefined}
+                    type="button"
+                  >
+                    {label}
+                  </button>
+                );
+              })}
+            </div>
+            {!automationDraftCanUseWorktrees && automationDraftWorktreeUnavailableReason ? (
+              <p className="project-automation-inline-note">{automationDraftWorktreeUnavailableReason}</p>
+            ) : null}
+            {automationDraft.executionKind === "worktree" ? (
+              <label>
+                <span>Setup command</span>
+                <Input
+                  onChange={(event) =>
+                    setAutomationDraft((current) => ({
+                      ...current,
+                      setupCommand: event.currentTarget.value,
+                    }))
+                  }
+                  placeholder="Use project worktree command"
+                  value={automationDraft.setupCommand}
+                />
+              </label>
+            ) : null}
+            {automationDraft.executionKind === "thread" ? (
+              <>
+                <label>
+                  <span>Session</span>
+                  <Select
+                    onValueChange={(value) =>
+                      setAutomationDraft((current) => ({ ...current, threadSessionId: value }))
+                    }
+                    value={automationDraft.threadSessionId}
+                  >
+                    <SelectTrigger>
+                      <SelectValue placeholder="Choose session" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {automationConversationState.sessions.map((session) => (
+                        <SelectItem key={session.sessionId} value={session.sessionId}>
+                          {session.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </label>
+                <label>
+                  <span>Expires</span>
+                  <Input
+                    onChange={(event) =>
+                      setAutomationDraft((current) => ({
+                        ...current,
+                        expiresAt: event.currentTarget.value,
+                      }))
+                    }
+                    type="datetime-local"
+                    value={automationDraft.expiresAt}
+                  />
+                </label>
+              </>
+            ) : null}
+            <label className="project-automation-prompt-field">
+              <span>Prompt</span>
+              <Textarea
+                onChange={(event) =>
+                  setAutomationDraft((current) => ({ ...current, prompt: event.currentTarget.value }))
+                }
+                value={automationDraft.prompt}
+              />
+            </label>
+            <label className="project-automation-enabled">
+              <input
+                checked={automationDraft.enabled}
+                onChange={(event) =>
+                  setAutomationDraft((current) => ({ ...current, enabled: event.currentTarget.checked }))
+                }
+                type="checkbox"
+              />
+              <span>Enabled</span>
+            </label>
+          </div>
+          <DialogFooter>
+            <Button onClick={() => setAutomationDialogOpen(false)} type="button" variant="ghost">
+              Cancel
+            </Button>
+            <Button disabled={Boolean(automationActionId)} onClick={saveAutomation} type="button">
+              Save
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <Dialog
         open={Boolean(detail.ticket)}
@@ -2245,6 +3021,57 @@ function compareConversationLinksNewestFirst(
   return (Number.isNaN(rightTime) ? 0 : rightTime) - (Number.isNaN(leftTime) ? 0 : leftTime);
 }
 
+function compareAutomationRunsForTriage(left: AutomationRun, right: AutomationRun): number {
+  const unreadDelta = Number(right.isUnread) - Number(left.isUnread);
+  if (unreadDelta !== 0) {
+    return unreadDelta;
+  }
+  const statusDelta = automationTriageStatusWeight(right.status) - automationTriageStatusWeight(left.status);
+  if (statusDelta !== 0) {
+    return statusDelta;
+  }
+  return compareAutomationRunsNewestFirst(left, right);
+}
+
+function selectAutomationRunsForTriage(runs: AutomationRun[]): AutomationRun[] {
+  const selectedRuns = new Map<string, AutomationRun>();
+  for (const run of runs.filter(isAutomationRunActionableInTriage).sort(compareAutomationRunsForTriage)) {
+    selectedRuns.set(run.id, run);
+  }
+  for (const run of runs
+    .filter(isAutomationRunRecentlyCompletedForTriage)
+    .sort(compareAutomationRunsNewestFirst)
+    .slice(0, PROJECT_AUTOMATION_TRIAGE_RECENT_COMPLETED_LIMIT)) {
+    selectedRuns.set(run.id, run);
+  }
+  return [...selectedRuns.values()].sort(compareAutomationRunsForTriage);
+}
+
+function isAutomationRunActionableInTriage(run: AutomationRun): boolean {
+  return (
+    run.isUnread ||
+    run.status === "findings" ||
+    run.status === "needs_attention" ||
+    run.status === "failed"
+  );
+}
+
+function isAutomationRunRecentlyCompletedForTriage(run: AutomationRun): boolean {
+  return Boolean(run.completedAt) && run.status !== "running" && run.status !== "queued";
+}
+
+function automationTriageStatusWeight(status: AutomationRun["status"]): number {
+  switch (status) {
+    case "needs_attention":
+    case "failed":
+      return 3;
+    case "findings":
+      return 2;
+    default:
+      return 1;
+  }
+}
+
 function BoardLane({
   column,
   conversationAction,
@@ -2483,6 +3310,567 @@ function TicketCard({
   );
 }
 
+function AutomationDefinitionList({
+  actionId,
+  agents,
+  automations,
+  onDelete,
+  onEdit,
+  onRunNow,
+  onSelect,
+  onSetEnabled,
+  runs,
+  selectedAutomationId,
+}: {
+  actionId: string;
+  agents: ProjectAutomationAgentOption[];
+  automations: AutomationDefinition[];
+  onDelete: (automation: AutomationDefinition) => void;
+  onEdit: (automation: AutomationDefinition) => void;
+  onRunNow: (automation: AutomationDefinition) => void;
+  onSelect: (automationId: string) => void;
+  onSetEnabled: (automation: AutomationDefinition, enabled: boolean) => void;
+  runs: AutomationRun[];
+  selectedAutomationId: string;
+}) {
+  if (automations.length === 0) {
+    return (
+      <Card className="project-automation-empty" size="sm">
+        <CardContent>
+          <IconCalendarTime aria-hidden="true" />
+          <strong>No automations yet</strong>
+        </CardContent>
+      </Card>
+    );
+  }
+  return (
+    <section className="project-automation-list" aria-label="Automations">
+      {automations.map((automation) => {
+        const lastRun = runs.find((run) => run.automationId === automation.id);
+        const unreadCount = runs.filter(
+          (run) => run.automationId === automation.id && run.isUnread && !run.isArchived,
+        ).length;
+        const agentLabel = automationAgentLabel(agents, automation.agentId);
+        const isBusy = actionId === automation.id;
+        return (
+          <Card
+            className="project-automation-card"
+            data-selected={automation.id === selectedAutomationId}
+            key={automation.id}
+            onClick={() => onSelect(automation.id)}
+            role="button"
+            size="sm"
+            tabIndex={0}
+          >
+            <CardContent>
+              <div className="project-automation-card-main">
+                <div>
+                  <div className="project-automation-card-title">
+                    <span data-enabled={automation.enabled}>{automation.enabled ? "Enabled" : "Paused"}</span>
+                    <strong>{automation.name}</strong>
+                  </div>
+                  <p>{describeAutomationSchedule(automation.schedule)}</p>
+                  <p>{agentLabel} - {describeAutomationMode(automation.executionMode)}</p>
+                </div>
+                <div className="project-automation-card-meta">
+                  <span>{automation.nextRunAt ? formatShortDate(automation.nextRunAt) : "No next run"}</span>
+                  <span>{lastRun ? automationRunStatusLabel(lastRun.status) : "Never run"}</span>
+                  {unreadCount > 0 ? <span>{unreadCount} unread</span> : null}
+                </div>
+              </div>
+              <div className="project-automation-card-actions">
+                <Button
+                  aria-label={`Run ${automation.name}`}
+                  disabled={isBusy}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    onRunNow(automation);
+                  }}
+                  size="icon-sm"
+                  type="button"
+                  variant="ghost"
+                >
+                  <IconPlayerPlay />
+                </Button>
+                <Button
+                  disabled={isBusy}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    onSetEnabled(automation, !automation.enabled);
+                  }}
+                  size="sm"
+                  type="button"
+                  variant="outline"
+                >
+                  {automation.enabled ? "Pause" : "Resume"}
+                </Button>
+                <Button
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    onEdit(automation);
+                  }}
+                  size="sm"
+                  type="button"
+                  variant="outline"
+                >
+                  Edit
+                </Button>
+                <Button
+                  aria-label={`Delete ${automation.name}`}
+                  disabled={isBusy}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    onDelete(automation);
+                  }}
+                  size="icon-sm"
+                  type="button"
+                  variant="ghost"
+                >
+                  <IconTrash />
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
+        );
+      })}
+    </section>
+  );
+}
+
+function AutomationRunList({
+  actionId,
+  agents,
+  automations,
+  emptyTitle,
+  onArchive,
+  onMarkRead,
+  onOpenSession,
+  onOpenWorktree,
+  onSelect,
+  projectName,
+  runs,
+  selectedRunId,
+}: {
+  actionId: string;
+  agents: ProjectAutomationAgentOption[];
+  automations: AutomationDefinition[];
+  emptyTitle: string;
+  onArchive: (run: AutomationRun) => void;
+  onMarkRead: (run: AutomationRun) => void;
+  onOpenSession: (run: AutomationRun) => void;
+  onOpenWorktree: (run: AutomationRun) => void;
+  onSelect: (runId: string) => void;
+  projectName: string;
+  runs: AutomationRun[];
+  selectedRunId: string;
+}) {
+  if (runs.length === 0) {
+    return (
+      <Card className="project-automation-empty" size="sm">
+        <CardContent>
+          <IconBell aria-hidden="true" />
+          <strong>{emptyTitle}</strong>
+        </CardContent>
+      </Card>
+    );
+  }
+  return (
+    <section className="project-automation-run-list" aria-label="Automation runs">
+      {runs.map((run) => {
+        const automation = automations.find((candidate) => candidate.id === run.automationId);
+        const agentLabel = automation ? automationAgentLabel(agents, automation.agentId) : "Unknown agent";
+        const isActiveRun = isAutomationRunActive(run);
+        return (
+          <Card
+            className="project-automation-run-card"
+            data-selected={run.id === selectedRunId}
+            data-unread={run.isUnread}
+            key={run.id}
+            onClick={() => onSelect(run.id)}
+            role="button"
+            size="sm"
+            tabIndex={0}
+          >
+            <CardContent>
+              <div className="project-automation-run-main">
+                <div className="project-automation-run-heading">
+                  <span data-status={run.status}>{automationRunStatusLabel(run.status)}</span>
+                  <strong>{automation?.name ?? run.automationId}</strong>
+                </div>
+                <p>{run.findingsSummary || run.errorMessage || "Run is waiting for agent output."}</p>
+                <div className="project-automation-run-meta">
+                  <span>{projectName}</span>
+                  <span>{agentLabel}</span>
+                  <span>{formatShortDate(run.completedAt ?? run.createdAt)}</span>
+                  {run.sessionId ? <span>Session {run.sessionId}</span> : null}
+                  {run.worktree ? <span>{run.worktree.branch}</span> : null}
+                </div>
+              </div>
+              <div className="project-automation-run-actions">
+                {run.sessionId ? (
+                  <Button
+                    aria-label="Open automation session"
+                    disabled={actionId === run.id}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      onOpenSession(run);
+                    }}
+                    size="icon-sm"
+                    type="button"
+                    variant="ghost"
+                  >
+                    <IconExternalLink />
+                  </Button>
+                ) : null}
+                {run.worktree ? (
+                  <Button
+                    aria-label="Open automation worktree"
+                    disabled={actionId === run.id}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      onOpenWorktree(run);
+                    }}
+                    size="icon-sm"
+                    type="button"
+                    variant="ghost"
+                  >
+                    <IconFolderOpen />
+                  </Button>
+                ) : null}
+                {run.isUnread ? (
+                  <Button
+                    aria-label="Mark run read"
+                    disabled={actionId === run.id}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      onMarkRead(run);
+                    }}
+                    size="sm"
+                    type="button"
+                    variant="outline"
+                  >
+                    Read
+                  </Button>
+                ) : null}
+                <Button
+                  aria-label="Archive run"
+                  disabled={actionId === run.id || isActiveRun}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    onArchive(run);
+                  }}
+                  size="icon-sm"
+                  type="button"
+                  variant="ghost"
+                >
+                  <IconArchive />
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
+        );
+      })}
+    </section>
+  );
+}
+
+function AutomationDefinitionDetail({
+  actionId,
+  agents,
+  automation,
+  onDelete,
+  onEdit,
+  onRunNow,
+  onSetEnabled,
+  runs,
+}: {
+  actionId: string;
+  agents: ProjectAutomationAgentOption[];
+  automation: AutomationDefinition | undefined;
+  onDelete: (automation: AutomationDefinition) => void;
+  onEdit: (automation: AutomationDefinition) => void;
+  onRunNow: (automation: AutomationDefinition) => void;
+  onSetEnabled: (automation: AutomationDefinition, enabled: boolean) => void;
+  runs: AutomationRun[];
+}) {
+  if (!automation) {
+    return (
+      <section className="project-automation-detail" aria-label="Automation details">
+        <div className="project-automation-detail-empty">
+          <IconCalendarTime aria-hidden="true" />
+          <strong>No automation selected</strong>
+        </div>
+      </section>
+    );
+  }
+  const automationRuns = runs
+    .filter((run) => run.automationId === automation.id)
+    .slice(0, 5);
+  const agentLabel = automationAgentLabel(agents, automation.agentId);
+  const isBusy = actionId === automation.id;
+  return (
+    <section className="project-automation-detail" aria-label="Automation details">
+      <div className="project-automation-detail-header">
+        <div>
+          <span data-enabled={automation.enabled}>{automation.enabled ? "Enabled" : "Paused"}</span>
+          <h2>{automation.name}</h2>
+        </div>
+        <div className="project-automation-detail-actions">
+          <Button
+            aria-label={`Run ${automation.name}`}
+            disabled={isBusy}
+            onClick={() => onRunNow(automation)}
+            size="icon-sm"
+            type="button"
+            variant="ghost"
+          >
+            <IconPlayerPlay />
+          </Button>
+          <Button
+            disabled={isBusy}
+            onClick={() => onSetEnabled(automation, !automation.enabled)}
+            size="sm"
+            type="button"
+            variant="outline"
+          >
+            {automation.enabled ? "Pause" : "Resume"}
+          </Button>
+          <Button onClick={() => onEdit(automation)} size="sm" type="button" variant="outline">
+            Edit
+          </Button>
+          <Button
+            aria-label={`Delete ${automation.name}`}
+            disabled={isBusy}
+            onClick={() => onDelete(automation)}
+            size="icon-sm"
+            type="button"
+            variant="ghost"
+          >
+            <IconTrash />
+          </Button>
+        </div>
+      </div>
+      <dl className="project-automation-detail-grid">
+        <div>
+          <dt>Schedule</dt>
+          <dd>{describeAutomationSchedule(automation.schedule)}</dd>
+        </div>
+        <div>
+          <dt>Next run</dt>
+          <dd>{automation.nextRunAt ? formatShortDate(automation.nextRunAt) : "Not scheduled"}</dd>
+        </div>
+        <div>
+          <dt>Agent</dt>
+          <dd>{agentLabel}</dd>
+        </div>
+        <div>
+          <dt>Mode</dt>
+          <dd>{describeAutomationMode(automation.executionMode)}</dd>
+        </div>
+        {automation.executionMode.kind === "worktree" && automation.executionMode.setupCommand ? (
+          <div>
+            <dt>Setup</dt>
+            <dd>{automation.executionMode.setupCommand}</dd>
+          </div>
+        ) : null}
+        {automation.executionMode.kind === "thread" ? (
+          <div>
+            <dt>Thread</dt>
+            <dd>{automation.executionMode.sessionId}</dd>
+          </div>
+        ) : null}
+        {automation.executionMode.kind === "thread" && automation.executionMode.expiresAt ? (
+          <div>
+            <dt>Expires</dt>
+            <dd>{formatShortDate(automation.executionMode.expiresAt)}</dd>
+          </div>
+        ) : null}
+      </dl>
+      <Separator />
+      <div className="project-automation-detail-section">
+        <h3>Prompt</h3>
+        <pre>{automation.prompt}</pre>
+      </div>
+      <div className="project-automation-detail-section">
+        <h3>Recent runs</h3>
+        {automationRuns.length > 0 ? (
+          <div className="project-automation-detail-run-stack">
+            {automationRuns.map((run) => (
+              <div key={run.id}>
+                <span data-status={run.status}>{automationRunStatusLabel(run.status)}</span>
+                <p>{formatShortDate(run.completedAt ?? run.createdAt)}</p>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <p>No runs yet.</p>
+        )}
+      </div>
+    </section>
+  );
+}
+
+function AutomationRunDetail({
+  actionId,
+  agents,
+  automation,
+  onArchive,
+  onMarkRead,
+  onOpenSession,
+  onOpenWorktree,
+  projectName,
+  run,
+}: {
+  actionId: string;
+  agents: ProjectAutomationAgentOption[];
+  automation: AutomationDefinition | undefined;
+  onArchive: (run: AutomationRun) => void;
+  onMarkRead: (run: AutomationRun) => void;
+  onOpenSession: (run: AutomationRun) => void;
+  onOpenWorktree: (run: AutomationRun) => void;
+  projectName: string;
+  run: AutomationRun | undefined;
+}) {
+  if (!run) {
+    return (
+      <section className="project-automation-detail" aria-label="Automation run details">
+        <div className="project-automation-detail-empty">
+          <IconBell aria-hidden="true" />
+          <strong>No run selected</strong>
+        </div>
+      </section>
+    );
+  }
+  const agentLabel = automation ? automationAgentLabel(agents, automation.agentId) : "Unknown agent";
+  const isBusy = actionId === run.id;
+  const isActiveRun = isAutomationRunActive(run);
+  return (
+    <section className="project-automation-detail" aria-label="Automation run details">
+      <div className="project-automation-detail-header">
+        <div>
+          <span data-status={run.status}>{automationRunStatusLabel(run.status)}</span>
+          <h2>{automation?.name ?? run.automationId}</h2>
+        </div>
+        <div className="project-automation-detail-actions">
+          {run.sessionId ? (
+            <Button
+              aria-label="Open automation session"
+              disabled={isBusy}
+              onClick={() => onOpenSession(run)}
+              size="icon-sm"
+              type="button"
+              variant="ghost"
+            >
+              <IconExternalLink />
+            </Button>
+          ) : null}
+          {run.worktree ? (
+            <Button
+              aria-label="Open automation worktree"
+              disabled={isBusy}
+              onClick={() => onOpenWorktree(run)}
+              size="icon-sm"
+              type="button"
+              variant="ghost"
+            >
+              <IconFolderOpen />
+            </Button>
+          ) : null}
+          {run.isUnread ? (
+            <Button disabled={isBusy} onClick={() => onMarkRead(run)} size="sm" type="button" variant="outline">
+              Read
+            </Button>
+          ) : null}
+          <Button
+            aria-label="Archive run"
+            disabled={isBusy || isActiveRun}
+            onClick={() => onArchive(run)}
+            size="icon-sm"
+            type="button"
+            variant="ghost"
+          >
+            <IconArchive />
+          </Button>
+        </div>
+      </div>
+      <dl className="project-automation-detail-grid">
+        <div>
+          <dt>Project</dt>
+          <dd>{projectName}</dd>
+        </div>
+        <div>
+          <dt>Agent</dt>
+          <dd>{agentLabel}</dd>
+        </div>
+        <div>
+          <dt>Created</dt>
+          <dd>{formatShortDate(run.createdAt)}</dd>
+        </div>
+        <div>
+          <dt>Completed</dt>
+          <dd>{run.completedAt ? formatShortDate(run.completedAt) : "Still running"}</dd>
+        </div>
+        {run.sessionId ? (
+          <div>
+            <dt>Session</dt>
+            <dd>
+              <span>{run.sessionId}</span>
+              <Button
+                aria-label="Copy automation session id"
+                onClick={() => void navigator.clipboard.writeText(run.sessionId ?? "")}
+                size="icon-sm"
+                type="button"
+                variant="ghost"
+              >
+                <IconCopy />
+              </Button>
+            </dd>
+          </div>
+        ) : null}
+        {run.worktree ? (
+          <>
+            <div>
+              <dt>Branch</dt>
+              <dd>
+                <span>{run.worktree.branch}</span>
+                <Button
+                  aria-label="Copy automation worktree branch"
+                  onClick={() => void navigator.clipboard.writeText(run.worktree?.branch ?? "")}
+                  size="icon-sm"
+                  type="button"
+                  variant="ghost"
+                >
+                  <IconCopy />
+                </Button>
+              </dd>
+            </div>
+            <div>
+              <dt>Worktree</dt>
+              <dd>
+                <span>{run.worktree.path}</span>
+                <Button
+                  aria-label="Copy automation worktree path"
+                  onClick={() => void navigator.clipboard.writeText(run.worktree?.path ?? "")}
+                  size="icon-sm"
+                  type="button"
+                  variant="ghost"
+                >
+                  <IconCopy />
+                </Button>
+              </dd>
+            </div>
+          </>
+        ) : null}
+      </dl>
+      <Separator />
+      <div className="project-automation-detail-section">
+        <h3>Result</h3>
+        <p>{run.findingsSummary || run.errorMessage || "Run is waiting for agent output."}</p>
+      </div>
+    </section>
+  );
+}
+
 function ProjectBoardNotice({ message }: { message: string }) {
   const isMissingProject = /not initialized|no storage|not a beads|bd init|database|\.beads/i.test(message);
   const isMissingBeads =
@@ -2557,6 +3945,221 @@ function handleCmdEnter(event: KeyboardEvent, action: () => void) {
     event.preventDefault();
     action();
   }
+}
+
+function createAutomationDraft(input: Partial<AutomationDraft> = {}): AutomationDraft {
+  return {
+    agentId: input.agentId ?? "",
+    cronExpression: input.cronExpression ?? "*/15 * * * *",
+    enabled: input.enabled ?? true,
+    expiresAt: input.expiresAt ?? "",
+    executionKind: input.executionKind ?? "worktree",
+    id: input.id,
+    name: input.name ?? "",
+    prompt: input.prompt ?? "",
+    projectId: input.projectId ?? "",
+    schedulePreset: input.schedulePreset ?? "15m",
+    scheduleTime: input.scheduleTime ?? "09:00",
+    setupCommand: input.setupCommand ?? "",
+    threadSessionId: input.threadSessionId ?? "",
+    weeklyDay: input.weeklyDay ?? "1",
+  };
+}
+
+function createAutomationDraftFromDefinition(definition: AutomationDefinition): AutomationDraft {
+  const schedule = definition.schedule;
+  if (schedule.kind === "interval" && schedule.everyMs === 15 * 60 * 1000) {
+    return createAutomationDraftFromDefinitionSchedule(definition, "15m");
+  }
+  if (schedule.kind === "interval") {
+    return createAutomationDraftFromDefinitionSchedule(definition, "hourly");
+  }
+  if (schedule.kind === "weekly") {
+    return createAutomationDraftFromDefinitionSchedule(definition, "weekly", {
+      scheduleTime: schedule.time,
+      weeklyDay: String(schedule.days[0] ?? 1),
+    });
+  }
+  if (schedule.kind === "daily") {
+    return createAutomationDraftFromDefinitionSchedule(definition, "daily", {
+      scheduleTime: schedule.time,
+    });
+  }
+  if (schedule.kind === "cron") {
+    return createAutomationDraftFromDefinitionSchedule(definition, "cron", {
+      cronExpression: schedule.expression,
+    });
+  }
+  return createAutomationDraftFromDefinitionSchedule(definition, "15m");
+}
+
+function createAutomationDraftFromDefinitionSchedule(
+  definition: AutomationDefinition,
+  schedulePreset: AutomationDraft["schedulePreset"],
+  input: Partial<AutomationDraft> = {},
+): AutomationDraft {
+  return createAutomationDraft({
+    ...input,
+    agentId: definition.agentId,
+    enabled: definition.enabled,
+    expiresAt:
+      definition.executionMode.kind === "thread" && definition.executionMode.expiresAt
+        ? toDatetimeLocalValue(definition.executionMode.expiresAt)
+        : "",
+    executionKind: definition.executionMode.kind,
+    id: definition.id,
+    name: definition.name,
+    prompt: definition.prompt,
+    projectId: definition.projectIds[0] ?? "",
+    schedulePreset,
+    setupCommand:
+      definition.executionMode.kind === "worktree"
+        ? definition.executionMode.setupCommand ?? ""
+        : "",
+    threadSessionId:
+      definition.executionMode.kind === "thread" ? definition.executionMode.sessionId : "",
+  });
+}
+
+function createAutomationDefinitionFromDraft(
+  draft: AutomationDraft,
+  input: { fallbackAgentId: string; projectId: string },
+): AutomationDefinition | undefined {
+  const name = draft.name.trim();
+  const prompt = draft.prompt.trim();
+  const agentId = draft.agentId.trim() || input.fallbackAgentId.trim();
+  const schedule = createAutomationScheduleFromDraft(draft);
+  if (!name || !prompt || !agentId || !schedule) {
+    return undefined;
+  }
+  const now = new Date().toISOString();
+  const executionMode: AutomationExecutionMode =
+    draft.executionKind === "local"
+      ? { kind: "local" }
+      : draft.executionKind === "thread"
+        ? {
+            expiresAt: datetimeLocalToIso(draft.expiresAt),
+            kind: "thread",
+            sessionId: draft.threadSessionId.trim(),
+          }
+        : {
+            kind: "worktree",
+            setupCommand: draft.setupCommand.trim() || undefined,
+          };
+  if (executionMode.kind === "thread" && !executionMode.sessionId) {
+    return undefined;
+  }
+  return {
+    agentId,
+    createdAt: now,
+    enabled: draft.enabled,
+    executionMode,
+    id: draft.id ?? `automation-${crypto.randomUUID()}`,
+    name,
+    nextRunAt: draft.enabled ? computeNextRunAt(schedule) : undefined,
+    projectIds: [input.projectId],
+    prompt,
+    schedule,
+    updatedAt: now,
+  };
+}
+
+function createAutomationScheduleFromDraft(draft: AutomationDraft): AutomationSchedule | undefined {
+  const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone || "local";
+  const schedule =
+    draft.schedulePreset === "15m"
+      ? { everyMs: 15 * 60 * 1000, kind: "interval" }
+      : draft.schedulePreset === "hourly"
+        ? { everyMs: 60 * 60 * 1000, kind: "interval" }
+        : draft.schedulePreset === "cron"
+          ? {
+              expression: draft.cronExpression,
+              kind: "cron",
+              timezone,
+            }
+        : draft.schedulePreset === "weekly"
+          ? {
+              days: [Number(draft.weeklyDay)],
+              kind: "weekly",
+              time: draft.scheduleTime,
+              timezone,
+            }
+          : {
+              kind: "daily",
+              time: draft.scheduleTime,
+              timezone,
+            };
+  return normalizeAutomationSchedule(schedule);
+}
+
+function describeAutomationSchedule(schedule: AutomationSchedule): string {
+  switch (schedule.kind) {
+    case "interval":
+      return schedule.everyMs === 15 * 60 * 1000
+        ? "Every 15 minutes"
+        : schedule.everyMs === 60 * 60 * 1000
+          ? "Hourly"
+          : `Every ${Math.round(schedule.everyMs / 60_000)} minutes`;
+    case "daily":
+      return `Daily at ${schedule.time}`;
+    case "weekly":
+      return `Weekly ${weekdayLabel(schedule.days[0] ?? 0)} at ${schedule.time}`;
+    case "cron":
+      return schedule.expression;
+  }
+}
+
+function describeAutomationMode(mode: AutomationExecutionMode): string {
+  switch (mode.kind) {
+    case "worktree":
+      return "Worktree";
+    case "thread":
+      return "Thread";
+    case "local":
+      return "Local checkout";
+  }
+}
+
+function automationRunStatusLabel(status: AutomationRun["status"]): string {
+  switch (status) {
+    case "no_findings":
+      return "No findings";
+    case "needs_attention":
+      return "Needs attention";
+    default:
+      return status.replace(/_/gu, " ");
+  }
+}
+
+function isAutomationRunActive(run: Pick<AutomationRun, "status">): boolean {
+  return run.status === "queued" || run.status === "running";
+}
+
+function automationAgentLabel(agents: ProjectAutomationAgentOption[], agentId: string): string {
+  return agents.find((agent) => agent.agentId === agentId)?.label ?? agentId;
+}
+
+function weekdayLabel(day: number): string {
+  return ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"][day] ?? "Weekly";
+}
+
+function datetimeLocalToIso(value: string): string | undefined {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return undefined;
+  }
+  const parsedMs = Date.parse(trimmed);
+  return Number.isFinite(parsedMs) ? new Date(parsedMs).toISOString() : undefined;
+}
+
+function toDatetimeLocalValue(value: string): string {
+  const parsedMs = Date.parse(value);
+  if (!Number.isFinite(parsedMs)) {
+    return "";
+  }
+  const date = new Date(parsedMs);
+  const pad = (part: number) => String(part).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
 }
 
 function waitForProjectBoardRefreshIdle(isBusy: () => boolean): Promise<void> {
@@ -2699,9 +4302,9 @@ function sendBeadsRequest(
   });
 }
 
-function sendProjectBoardRequest(
+function sendProjectBoardRequest<TPayload = ProjectBoardConversationState>(
   request: Omit<ProjectBoardBridgeRequest, "requestId">,
-): Promise<ProjectBoardBridgeResponse> {
+): Promise<ProjectBoardBridgeResponse<TPayload>> {
   return new Promise((resolve, reject) => {
     const requestId = crypto.randomUUID();
     const timeout = window.setTimeout(() => {
@@ -2709,7 +4312,7 @@ function sendProjectBoardRequest(
       reject(new Error("Project board bridge timed out."));
     }, 60_000);
     const onResponse = (event: Event) => {
-      const response = (event as CustomEvent<ProjectBoardBridgeResponse>).detail;
+      const response = (event as CustomEvent<ProjectBoardBridgeResponse<TPayload>>).detail;
       if (response?.requestId !== requestId) {
         return;
       }
@@ -2918,6 +4521,404 @@ styleElement.textContent = `
     align-items: center;
     display: flex;
     gap: 8px;
+  }
+
+  .project-board-tabs {
+    align-items: center;
+    display: flex;
+    flex: 0 0 auto;
+    gap: 6px;
+  }
+
+  .project-board-tab {
+    align-items: center;
+    background: rgba(255, 255, 255, 0.055);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 7px;
+    color: rgba(244, 244, 245, 0.72);
+    display: inline-flex;
+    font: inherit;
+    font-size: 12px;
+    font-weight: 650;
+    gap: 7px;
+    height: 30px;
+    padding: 0 10px;
+  }
+
+  .project-board-tab[data-active="true"] {
+    background: rgba(244, 244, 245, 0.92);
+    color: #151617;
+  }
+
+  .project-board-tab span {
+    background: rgba(255, 255, 255, 0.18);
+    border-radius: 999px;
+    font-size: 11px;
+    min-width: 18px;
+    padding: 1px 5px;
+    text-align: center;
+  }
+
+  .project-board-tab[data-active="true"] span {
+    background: rgba(0, 0, 0, 0.14);
+  }
+
+  .project-automation-split {
+    display: grid;
+    flex: 1 1 auto;
+    gap: 12px;
+    grid-template-columns: minmax(280px, 0.9fr) minmax(320px, 1.1fr);
+    min-height: 0;
+  }
+
+  .project-automation-list,
+  .project-automation-run-list {
+    display: grid;
+    flex: 1 1 auto;
+    gap: 10px;
+    grid-auto-rows: min-content;
+    min-height: 0;
+    overflow: auto;
+    padding-right: 4px;
+  }
+
+  .project-automation-card,
+  .project-automation-run-card,
+  .project-automation-empty {
+    background: rgba(255, 255, 255, 0.055);
+    border-color: rgba(255, 255, 255, 0.09);
+    border-radius: 8px;
+  }
+
+  .project-automation-card[data-selected="true"],
+  .project-automation-run-card[data-selected="true"] {
+    border-color: rgba(244, 244, 245, 0.32);
+    box-shadow: inset 0 0 0 1px rgba(244, 244, 245, 0.18);
+  }
+
+  .project-automation-card [data-slot="card-content"],
+  .project-automation-run-card [data-slot="card-content"] {
+    align-items: center;
+    display: flex;
+    gap: 12px;
+    justify-content: space-between;
+    padding: 14px;
+  }
+
+  .project-automation-card-main,
+  .project-automation-run-main {
+    display: grid;
+    gap: 6px;
+    min-width: 0;
+  }
+
+  .project-automation-card-title,
+  .project-automation-run-heading {
+    align-items: center;
+    display: flex;
+    gap: 8px;
+    min-width: 0;
+  }
+
+  .project-automation-card-title strong,
+  .project-automation-run-heading strong {
+    color: rgba(250, 250, 250, 0.96);
+    font-size: 14px;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .project-automation-card-title span,
+  .project-automation-run-heading span {
+    border-radius: 999px;
+    color: rgba(250, 250, 250, 0.86);
+    flex: 0 0 auto;
+    font-size: 11px;
+    font-weight: 700;
+    padding: 3px 7px;
+    text-transform: capitalize;
+  }
+
+  .project-automation-card-title span[data-enabled="true"],
+  .project-automation-run-heading span[data-status="findings"] {
+    background: rgba(111, 207, 151, 0.18);
+    color: #8ee4ad;
+  }
+
+  .project-automation-card-title span[data-enabled="false"],
+  .project-automation-run-heading span[data-status="failed"],
+  .project-automation-run-heading span[data-status="needs_attention"] {
+    background: rgba(235, 87, 87, 0.18);
+    color: #ff9a9a;
+  }
+
+  .project-automation-card-main p,
+  .project-automation-run-main p,
+  .project-automation-card-meta,
+  .project-automation-run-meta {
+    color: rgba(244, 244, 245, 0.58);
+    font-size: 12px;
+    margin: 0;
+  }
+
+  .project-automation-card-meta,
+  .project-automation-run-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  .project-automation-card-actions {
+    align-items: center;
+    display: flex;
+    flex: 0 0 auto;
+    gap: 6px;
+  }
+
+  .project-automation-run-actions {
+    align-items: center;
+    display: flex;
+    flex: 0 0 auto;
+    gap: 6px;
+  }
+
+  .project-automation-detail {
+    background: rgba(255, 255, 255, 0.04);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 8px;
+    display: grid;
+    gap: 14px;
+    grid-auto-rows: min-content;
+    min-height: 0;
+    overflow: auto;
+    padding: 16px;
+  }
+
+  .project-automation-detail-empty {
+    align-items: center;
+    color: rgba(244, 244, 245, 0.68);
+    display: flex;
+    gap: 10px;
+    min-height: 120px;
+  }
+
+  .project-automation-detail-header {
+    align-items: flex-start;
+    display: flex;
+    gap: 12px;
+    justify-content: space-between;
+    min-width: 0;
+  }
+
+  .project-automation-detail-header h2 {
+    color: rgba(250, 250, 250, 0.96);
+    font-size: 18px;
+    line-height: 1.2;
+    margin: 6px 0 0;
+  }
+
+  .project-automation-detail-header span,
+  .project-automation-detail-run-stack span {
+    border-radius: 999px;
+    color: rgba(250, 250, 250, 0.86);
+    display: inline-flex;
+    font-size: 11px;
+    font-weight: 700;
+    padding: 3px 7px;
+    text-transform: capitalize;
+  }
+
+  .project-automation-detail-header span[data-enabled="true"],
+  .project-automation-detail-header span[data-status="findings"],
+  .project-automation-detail-run-stack span[data-status="findings"] {
+    background: rgba(111, 207, 151, 0.18);
+    color: #8ee4ad;
+  }
+
+  .project-automation-detail-header span[data-enabled="false"],
+  .project-automation-detail-header span[data-status="failed"],
+  .project-automation-detail-header span[data-status="needs_attention"],
+  .project-automation-detail-run-stack span[data-status="failed"],
+  .project-automation-detail-run-stack span[data-status="needs_attention"] {
+    background: rgba(235, 87, 87, 0.18);
+    color: #ff9a9a;
+  }
+
+  .project-automation-detail-actions {
+    align-items: center;
+    display: flex;
+    flex: 0 0 auto;
+    gap: 6px;
+  }
+
+  .project-automation-detail-grid {
+    display: grid;
+    gap: 10px;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    margin: 0;
+  }
+
+  .project-automation-detail-grid div {
+    min-width: 0;
+  }
+
+  .project-automation-detail-grid dt,
+  .project-automation-detail-section h3 {
+    color: rgba(244, 244, 245, 0.52);
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0;
+    margin: 0 0 4px;
+    text-transform: uppercase;
+  }
+
+  .project-automation-detail-grid dd,
+  .project-automation-detail-section p,
+  .project-automation-detail-run-stack p {
+    color: rgba(244, 244, 245, 0.78);
+    font-size: 12px;
+    margin: 0;
+    overflow-wrap: anywhere;
+  }
+
+  .project-automation-detail-grid dd {
+    align-items: center;
+    display: flex;
+    gap: 6px;
+    min-width: 0;
+  }
+
+  .project-automation-detail-grid dd span {
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+
+  .project-automation-detail-section {
+    display: grid;
+    gap: 8px;
+    min-width: 0;
+  }
+
+  .project-automation-detail-section pre {
+    background: rgba(0, 0, 0, 0.22);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 7px;
+    color: rgba(244, 244, 245, 0.82);
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    font-size: 12px;
+    line-height: 1.45;
+    margin: 0;
+    max-height: 220px;
+    overflow: auto;
+    padding: 10px;
+    white-space: pre-wrap;
+  }
+
+  .project-automation-detail-run-stack {
+    display: grid;
+    gap: 8px;
+  }
+
+  .project-automation-detail-run-stack div {
+    align-items: center;
+    background: rgba(255, 255, 255, 0.045);
+    border: 1px solid rgba(255, 255, 255, 0.07);
+    border-radius: 7px;
+    display: flex;
+    justify-content: space-between;
+    padding: 8px 10px;
+  }
+
+  .project-automation-empty [data-slot="card-content"] {
+    align-items: center;
+    color: rgba(244, 244, 245, 0.68);
+    display: flex;
+    gap: 10px;
+    min-height: 96px;
+    padding: 18px;
+  }
+
+  .project-automation-empty svg {
+    color: rgba(244, 244, 245, 0.42);
+    height: 18px;
+    width: 18px;
+  }
+
+  .project-automation-dialog {
+    max-width: 640px;
+  }
+
+  .project-automation-form {
+    display: grid;
+    gap: 12px;
+  }
+
+  .project-automation-form label {
+    color: rgba(244, 244, 245, 0.72);
+    display: grid;
+    font-size: 12px;
+    font-weight: 650;
+    gap: 6px;
+  }
+
+  .project-automation-prompt-field textarea {
+    min-height: 150px;
+  }
+
+  .project-automation-segmented {
+    background: rgba(255, 255, 255, 0.055);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 8px;
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    padding: 3px;
+  }
+
+  .project-automation-segmented button {
+    background: transparent;
+    border: 0;
+    border-radius: 6px;
+    color: rgba(244, 244, 245, 0.72);
+    font: inherit;
+    font-size: 12px;
+    font-weight: 700;
+    height: 30px;
+  }
+
+  .project-automation-segmented button[data-active="true"] {
+    background: rgba(244, 244, 245, 0.9);
+    color: #151617;
+  }
+
+  .project-automation-segmented button:disabled {
+    color: rgba(244, 244, 245, 0.32);
+    cursor: not-allowed;
+  }
+
+  .project-automation-segmented button:disabled[data-active="true"] {
+    background: rgba(255, 255, 255, 0.08);
+    color: rgba(244, 244, 245, 0.42);
+  }
+
+  .project-automation-inline-note {
+    color: rgba(244, 244, 245, 0.54);
+    font-size: 12px;
+    line-height: 1.4;
+    margin: -4px 0 0;
+  }
+
+  .project-automation-enabled {
+    align-items: center;
+    display: flex !important;
+    flex-direction: row;
+  }
+
+  @media (max-width: 860px) {
+    .project-automation-split {
+      grid-template-columns: 1fr;
+    }
   }
 
   .project-board-filters {
