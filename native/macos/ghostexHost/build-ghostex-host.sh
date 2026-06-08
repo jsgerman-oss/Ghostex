@@ -12,7 +12,17 @@ ZMX_ROOT="${ZMX_ROOT:-$REPO_ROOT/zmx}"
 ZEHN_ROOT="${ZEHN_ROOT:-$REPO_ROOT/zehn}"
 TUI_ROOT="${TUI_ROOT:-$REPO_ROOT/tui}"
 GXSERVER_REQUIRED_NODE_MAJOR="22"
-GHOSTEX_MACOS_ARCH="${GHOSTEX_MACOS_ARCH:-$(uname -m)}"
+
+# CDXC:LocalStartArchitecture 2026-06-08-08:42: Apple Silicon local builds must produce Apple-native app resources even when the caller's shell is translated by Rosetta and `uname -m` reports x86_64. Use the physical arm64 capability as the default and keep GHOSTEX_MACOS_ARCH=x86_64 as the explicit Intel build path.
+default_macos_arch() {
+	if [[ "$(/usr/sbin/sysctl -in hw.optional.arm64 2>/dev/null || true)" == "1" ]]; then
+		printf 'arm64\n'
+		return 0
+	fi
+	uname -m
+}
+
+GHOSTEX_MACOS_ARCH="${GHOSTEX_MACOS_ARCH:-$(default_macos_arch)}"
 case "$GHOSTEX_MACOS_ARCH" in
 	arm64 | aarch64)
 		GHOSTEX_MACOS_ARCH="arm64"
@@ -59,6 +69,22 @@ write_cache_stamp() {
 	local digest="$2"
 	mkdir -p "$BUILD_CACHE_DIR"
 	printf '%s\n' "$digest" >"$(cache_stamp_path "$key")"
+}
+
+binary_supports_macos_arch() {
+	local binary_path="$1"
+	local expected_arch="$2"
+	local archs
+	if [[ ! -f "$binary_path" ]]; then
+		return 1
+	fi
+	archs="$(/usr/bin/lipo -archs "$binary_path" 2>/dev/null || true)"
+	for arch in $archs; do
+		if [[ "$arch" == "$expected_arch" ]]; then
+			return 0
+		fi
+	done
+	return 1
 }
 
 resolve_gxserver_node() {
@@ -215,8 +241,12 @@ build_zmx_if_needed() {
 		--path "$ZMX_ROOT/build.zig" \
 		--path "$ZMX_ROOT/build.zig.zon")"
 	if cache_matches "zmx-$GHOSTEX_MACOS_ARCH" "$build_digest" "$output_path"; then
-		echo "zmx is current; skipping Zig build."
-		return 0
+		# CDXC:LocalStartArchitecture 2026-06-08-08:42: zmx writes every macOS target to zmx/zig-out/bin/zmx, so an old per-arch cache stamp is not enough to prove the shared output still contains the requested CPU slice. Verify the Mach-O architecture before skipping or Ghostex can launch Intel zmx from an arm64 app.
+		if binary_supports_macos_arch "$output_path" "$GHOSTEX_MACOS_ARCH"; then
+			echo "zmx is current; skipping Zig build."
+			return 0
+		fi
+		echo "zmx cache is stale for $GHOSTEX_MACOS_ARCH; rebuilding Zig artifact."
 	fi
 
 	(
@@ -266,8 +296,12 @@ build_zehn_if_needed() {
 		--path "$ZEHN_ROOT/build.zig" \
 		--path "$ZEHN_ROOT/build.zig.zon")"
 	if cache_matches "zehn-$GHOSTEX_MACOS_ARCH" "$build_digest" "$output_path"; then
-		echo "zehn is current; skipping Zig build."
-		return 0
+		# CDXC:LocalStartArchitecture 2026-06-08-08:42: zehn also emits to a shared zig-out/bin path across target switches. Check the Mach-O slice before reusing a cached artifact so bundled CLI search tools match the selected app architecture.
+		if binary_supports_macos_arch "$output_path" "$GHOSTEX_MACOS_ARCH"; then
+			echo "zehn is current; skipping Zig build."
+			return 0
+		fi
+		echo "zehn cache is stale for $GHOSTEX_MACOS_ARCH; rebuilding Zig artifact."
 	fi
 
 	(

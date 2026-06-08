@@ -1833,11 +1833,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
   }
 
   func standardUserDriverDidReceiveUserAttention(forUpdate update: SUAppcastItem) {
-    setSparkleUpdateAvailable(false)
+    /**
+     CDXC:AutoUpdate 2026-06-08-08:50:
+     Clicking the titlebar update button should not consume the update affordance.
+     Keep it visible while the installed app build remains behind the Sparkle appcast; only a confirmed latest-version check should hide it.
+     */
+    setSparkleUpdateAvailable(true)
   }
 
   func standardUserDriverWillFinishUpdateSession() {
-    setSparkleUpdateAvailable(false)
+    /**
+     CDXC:AutoUpdate 2026-06-08-08:50:
+     Closing or finishing Sparkle's user-facing update dialog is not proof that
+     Ghostex is on the latest build. Preserve the titlebar button so users can
+     reopen the update flow until Sparkle later reports no valid update.
+     */
+    setSparkleUpdateAvailable(isSparkleUpdateAvailable)
   }
 
   func updater(_ updater: SPUUpdater, didFindValidUpdate item: SUAppcastItem) {
@@ -1849,7 +1860,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
   }
 
   func updater(_ updater: SPUUpdater, didAbortWithError error: Error) {
-    setSparkleUpdateAvailable(false)
+    setSparkleUpdateAvailable(isSparkleUpdateAvailable)
   }
 
   nonisolated func syncFloatOnTopMenu(_ window: NSWindow) {}
@@ -1975,7 +1986,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
       defer: false
     )
     window.onFirstResponderChanged = { [weak root] responder in
-      root?.workspaceView.windowFirstResponderChanged(responder, reason: "windowMakeFirstResponder")
+      root?.handleWindowFirstResponderChanged(responder)
     }
     window.onKeyDownDispatch = { [weak root] event in
       root?.workspaceView.windowKeyDownDispatch(event)
@@ -5336,6 +5347,8 @@ final class ghostexRootView: NSView {
     }
   private var sidebarWidth: CGFloat
   private var sidebarSide: SidebarSide = .left
+  private var lastSidebarFirstResponderIntentAt: Date?
+  private static let sidebarFirstResponderIntentWindow: TimeInterval = 1.0
 
   /**
    CDXC:NativeWorkspaceChrome 2026-04-26-00:47
@@ -5643,6 +5656,85 @@ final class ghostexRootView: NSView {
     }
     let point = convert(event.locationInWindow, from: nil)
     dismissSidebarContextMenuForOutsideClick(at: point)
+    if isInsideInteractiveSidebarContent(point) {
+      markSidebarFirstResponderIntent(reason: "mouseDown")
+    }
+  }
+
+  func handleWindowFirstResponderChanged(_ responder: NSResponder?) {
+    if restoreTerminalFocusAfterPassiveSidebarFirstResponder(responder) {
+      return
+    }
+    workspaceView.windowFirstResponderChanged(responder, reason: "windowMakeFirstResponder")
+  }
+
+  private func isInsideInteractiveSidebarContent(_ pointInRoot: NSPoint) -> Bool {
+    guard sidebarView.frame.contains(pointInRoot) else {
+      return false
+    }
+    let pointInSidebar = sidebarView.convert(pointInRoot, from: self)
+    return sidebarView.hitTest(pointInSidebar) != nil
+  }
+
+  private func markSidebarFirstResponderIntent(reason: String) {
+    lastSidebarFirstResponderIntentAt = Date()
+    TerminalFocusDebugLog.append(
+      event: "nativeFocusTrace.sidebarFirstResponderIntent",
+      details: [
+        "reason": reason,
+      ])
+  }
+
+  private func restoreTerminalFocusAfterPassiveSidebarFirstResponder(_ responder: NSResponder?) -> Bool {
+    guard isSidebarResponder(responder) else {
+      return false
+    }
+    let now = Date()
+    guard !hasRecentSidebarFirstResponderIntent(now: now) else {
+      return false
+    }
+    guard modalHostView.isHidden && activeAppModalKind == nil else {
+      return false
+    }
+    guard let restoreSessionId = workspaceView.appModalReturnFocusTerminalSessionId() else {
+      return false
+    }
+    let intentAgeMs: Any = sidebarFirstResponderIntentAgeMs(now: now).map { $0 as Any } ?? NSNull()
+    /*
+     CDXC:NativeTerminalFocus 2026-06-08-09:30:
+     gxserver presentation deltas can hydrate the sidebar WKWebView while the user is typing in a terminal. A passive WKWebView first-responder handoff must not take keyboard focus from the selected terminal; allow sidebar focus only after recent user input inside the sidebar, otherwise restore terminal first responder at the native boundary.
+     */
+    TerminalFocusDebugLog.append(
+      event: "nativeFocusTrace.passiveSidebarFirstResponderRestored",
+      details: [
+        "intentAgeMs": intentAgeMs,
+        "modalHostHidden": modalHostView.isHidden,
+        "requestedSessionId": restoreSessionId,
+        "responder": responder.map { String(describing: type(of: $0)) } ?? "nil",
+      ])
+    workspaceView.focusTerminal(sessionId: restoreSessionId, reason: "passiveSidebarFirstResponderRestore")
+    return true
+  }
+
+  private func isSidebarResponder(_ responder: NSResponder?) -> Bool {
+    guard let responderView = responder as? NSView else {
+      return false
+    }
+    return responderView === sidebarView || responderView.isDescendant(of: sidebarView)
+  }
+
+  private func hasRecentSidebarFirstResponderIntent(now: Date) -> Bool {
+    guard let lastSidebarFirstResponderIntentAt else {
+      return false
+    }
+    return now.timeIntervalSince(lastSidebarFirstResponderIntentAt) <= Self.sidebarFirstResponderIntentWindow
+  }
+
+  private func sidebarFirstResponderIntentAgeMs(now: Date) -> Int? {
+    guard let lastSidebarFirstResponderIntentAt else {
+      return nil
+    }
+    return max(0, Int(now.timeIntervalSince(lastSidebarFirstResponderIntentAt) * 1000))
   }
 
   private func dismissSidebarContextMenuForOutsideClick(at pointInRoot: NSPoint) {
@@ -8537,6 +8629,7 @@ final class ghostexRootView: NSView {
     sidebarView.resizeHitExclusionSide = sidebarSide
     sidebarView.resizeHitExclusionWidth = sidebarResizeHitWidth
     divider.frame = frames.divider
+    window?.invalidateCursorRects(for: divider)
     workspaceView.frame = frames.workspace
     workspaceInteractionShieldView.frame = frames.workspace
     terminalPaneDropOverlayView.frame = frames.workspace
@@ -8546,6 +8639,7 @@ final class ghostexRootView: NSView {
     workareaTitlebarBorderView.frame = frames.workareaTitlebarBorder
     titlebarChromeView.frame = frames.titlebarChrome
     promoteSidebarChrome()
+    divider.refreshResizeCursorIfHovering()
     startupOverlayView.frame = bounds
     let startupOverlayIconSize = min(
       Self.startupOverlayIconSize,
@@ -10269,6 +10363,9 @@ final class PaneResizeHandleView: NSView {
   var onDragEnded: (() -> Void)?
   var onDoubleClick: (() -> Void)?
   private var lastDragWindowX: CGFloat = 0
+  private var cursorTrackingArea: NSTrackingArea?
+  private var isHoveringResizeHandle = false
+  private var cursorMonitor: Any?
 
   override init(frame frameRect: NSRect) {
     super.init(frame: frameRect)
@@ -10282,8 +10379,121 @@ final class PaneResizeHandleView: NSView {
     layer?.backgroundColor = NSColor.clear.cgColor
   }
 
+  deinit {
+    removeCursorMonitor()
+  }
+
+  override var acceptsFirstResponder: Bool {
+    true
+  }
+
+  override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
+    true
+  }
+
+  override func hitTest(_ point: NSPoint) -> NSView? {
+    bounds.contains(point) ? self : nil
+  }
+
+  override func updateTrackingAreas() {
+    super.updateTrackingAreas()
+    if let cursorTrackingArea {
+      removeTrackingArea(cursorTrackingArea)
+    }
+    /**
+     CDXC:NativeSidebarChrome 2026-06-08-08:46:
+     The transparent sidebar resize strip must keep the left-right resize cursor for the whole hover, not just the first AppKit cursor-rect update. Track enter, move, and cursor-update events directly on the native handle so the sidebar WKWebView underneath cannot immediately restore the arrow cursor while the pointer is still in the drag band.
+     */
+    let trackingArea = NSTrackingArea(
+      rect: .zero,
+      options: [.activeAlways, .inVisibleRect, .mouseEnteredAndExited, .mouseMoved, .cursorUpdate],
+      owner: self,
+      userInfo: nil
+    )
+    cursorTrackingArea = trackingArea
+    addTrackingArea(trackingArea)
+  }
+
   override func resetCursorRects() {
+    super.resetCursorRects()
     addCursorRect(bounds, cursor: .resizeLeftRight)
+  }
+
+  override func cursorUpdate(with event: NSEvent) {
+    setResizeCursorIfPointerIsInside(event)
+  }
+
+  override func mouseEntered(with event: NSEvent) {
+    isHoveringResizeHandle = true
+    installCursorMonitor()
+    NSCursor.resizeLeftRight.set()
+  }
+
+  override func mouseMoved(with event: NSEvent) {
+    setResizeCursorIfPointerIsInside(event)
+  }
+
+  override func mouseExited(with event: NSEvent) {
+    if !containsWindowPoint(event.locationInWindow) {
+      isHoveringResizeHandle = false
+      removeCursorMonitor()
+    }
+  }
+
+  func refreshResizeCursorIfHovering() {
+    guard let window else {
+      isHoveringResizeHandle = false
+      removeCursorMonitor()
+      return
+    }
+    let isInside = containsWindowPoint(window.mouseLocationOutsideOfEventStream)
+    isHoveringResizeHandle = isInside
+    if isInside {
+      installCursorMonitor()
+      NSCursor.resizeLeftRight.set()
+    } else {
+      removeCursorMonitor()
+    }
+  }
+
+  private func setResizeCursorIfPointerIsInside(_ event: NSEvent) {
+    guard containsWindowPoint(event.locationInWindow) else {
+      isHoveringResizeHandle = false
+      removeCursorMonitor()
+      return
+    }
+    isHoveringResizeHandle = true
+    installCursorMonitor()
+    NSCursor.resizeLeftRight.set()
+  }
+
+  private func containsWindowPoint(_ windowPoint: NSPoint) -> Bool {
+    bounds.contains(convert(windowPoint, from: nil))
+  }
+
+  private func installCursorMonitor() {
+    guard cursorMonitor == nil else {
+      return
+    }
+    cursorMonitor = NSEvent.addLocalMonitorForEvents(
+      matching: [.mouseMoved, .leftMouseDragged]
+    ) { [weak self] event in
+      guard let self else {
+        return event
+      }
+      if self.isHoveringResizeHandle || self.containsWindowPoint(event.locationInWindow) {
+        self.setResizeCursorIfPointerIsInside(event)
+      }
+      return event
+    }
+  }
+
+  private func removeCursorMonitor() {
+    guard let cursorMonitor else {
+      return
+    }
+    NSEvent.removeMonitor(cursorMonitor)
+    self.cursorMonitor = nil
   }
 
   /**
@@ -10297,6 +10507,7 @@ final class PaneResizeHandleView: NSView {
   }
 
   override func mouseDown(with event: NSEvent) {
+    setResizeCursorIfPointerIsInside(event)
     if event.clickCount >= 2 {
       onDoubleClick?()
       return
@@ -10305,6 +10516,7 @@ final class PaneResizeHandleView: NSView {
   }
 
   override func mouseDragged(with event: NSEvent) {
+    setResizeCursorIfPointerIsInside(event)
     /**
      CDXC:NativeSidebarChrome 2026-05-04-08:19
      Sidebar resize drags must track the pointer in stable window coordinates.
@@ -10319,6 +10531,7 @@ final class PaneResizeHandleView: NSView {
   }
 
   override func mouseUp(with event: NSEvent) {
+    setResizeCursorIfPointerIsInside(event)
     onDragEnded?()
   }
 }

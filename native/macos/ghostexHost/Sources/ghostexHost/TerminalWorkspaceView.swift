@@ -7618,8 +7618,14 @@ final class TerminalWorkspaceView: NSView {
     projectEditorCompanionSessionId = sessionId
     projectEditorCompanionIsVisible = true
     focusedSessionId = sessionId
-    needsLayout = true
-    layoutSubtreeIfNeeded()
+    let didRetargetWithoutEditorLayout = syncProjectEditorCompanionRetargetIfEditorStable(
+      previousSessionId: previousCompanionSessionId,
+      wasCompanionVisible: wasCompanionVisible,
+      reason: reason)
+    if !didRetargetWithoutEditorLayout {
+      needsLayout = true
+      layoutSubtreeIfNeeded()
+    }
     updateAllTerminalBorders()
 
     guard focus else {
@@ -7685,6 +7691,69 @@ final class TerminalWorkspaceView: NSView {
           reason: "projectEditorCompanion.\(reason)")
       }
     }
+    return true
+  }
+
+  private func syncProjectEditorCompanionRetargetIfEditorStable(
+    previousSessionId: String?,
+    wasCompanionVisible: Bool,
+    reason: String
+  ) -> Bool {
+    guard wasCompanionVisible else {
+      return false
+    }
+    guard
+      let activeProjectEditorId,
+      let editorSession = projectEditorPaneSessions[activeProjectEditorId]
+    else {
+      return false
+    }
+    let workspaceBounds = projectEditorHitTestWorkspaceBounds()
+    guard
+      let companionLayout = projectEditorCompanionLayout(in: workspaceBounds),
+      companionLayout.sessionId == projectEditorCompanionSessionId
+    else {
+      return false
+    }
+    let editorFrames = projectEditorPaneFrames(editorSession, in: companionLayout.editorFrame)
+    let editorTitleBarShouldBeHidden = editorFrames.titleBarFrame.height <= 0
+    let editorTitleBarSettled =
+      editorSession.titleBarView == nil
+      || (
+        editorSession.titleBarView?.superview === self
+        && editorSession.titleBarView?.isHidden == editorTitleBarShouldBeHidden
+        && rectsMatch(editorSession.titleBarView?.frame ?? .zero, editorFrames.titleBarFrame)
+      )
+    guard
+      editorSession.hostView.superview === self,
+      !editorSession.hostView.isHidden,
+      rectsMatch(editorSession.hostView.frame, editorFrames.hostFrame),
+      editorTitleBarSettled
+    else {
+      return false
+    }
+    /*
+     CDXC:ProjectEditorCompanion 2026-06-08-09:47:
+     Sidebar session switches inside Code/Git/Project mode change only the left
+     companion owner. Re-running the full workspace layout also touches the
+     adjacent CEF editor host, which can flash even when its frame is unchanged.
+     If the editor host is already mounted at the expected frame, update only
+     the old/new companion containers, titlebar controls, and resize rail.
+     */
+    if let previousSessionId, previousSessionId != companionLayout.sessionId {
+      movePaneSessionOffscreen(previousSessionId)
+    }
+    projectEditorCompanionResizeWorkspaceBounds = workspaceBounds
+    syncProjectEditorCompanionPane(layout: companionLayout)
+    NativeT3CodePaneReproLog.append("nativeWorkspace.projectEditor.companion.retargetStable", [
+      "activeProjectEditorId": activeProjectEditorId,
+      "editorHostFrame": describeFrame(editorSession.hostView.frame),
+      "previousSessionId": nullableString(previousSessionId),
+      "reason": reason,
+      "sessionId": companionLayout.sessionId,
+      "workspaceBounds": describeFrame(workspaceBounds),
+      "windowNumber": window?.windowNumber ?? NSNull(),
+    ])
     return true
   }
 
