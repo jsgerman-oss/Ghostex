@@ -36,3 +36,7 @@ beads.right.meta.json
 
 # CDXC:ProjectBoard 2026-06-08-10:15: Beads export-state records local export bookkeeping, not reviewable project-board source. Keep it out of release commits while continuing to track issues.jsonl and metadata/config source files.
 export-state.json
+
+# CDXC:ProjectBoard 2026-06-08-10:23: Beads interaction cursors are local daemon bookkeeping. Track the issue JSONL source of truth, not transient touched-ticket or interaction-cache files created while agents move board cards.
+interactions.jsonl
+last-touched
