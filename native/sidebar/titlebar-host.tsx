@@ -2775,7 +2775,7 @@ function App() {
                       </Button>
                     }
                   />
-                  <TooltipContent>Click or right-click for resources.</TooltipContent>
+                  <TooltipContent>Resources Monitor</TooltipContent>
                 </Tooltip>
                 <DropdownMenuTrigger
                   render={
@@ -2869,7 +2869,7 @@ function App() {
                       </Button>
                     }
                   />
-                  <TooltipContent>Click to run. Right-click for Git actions.</TooltipContent>
+                  <TooltipContent>Commit. Right-click for more actions</TooltipContent>
                 </Tooltip>
                 <DropdownMenuTrigger
                   render={
