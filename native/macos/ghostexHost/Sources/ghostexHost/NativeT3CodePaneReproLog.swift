@@ -353,14 +353,32 @@ enum NativeCodeServerRuntimeLauncher {
     let configuredRoot =
       environment["GHOSTEX_CODE_SERVER_ROOT"]?.trimmingCharacters(in: .whitespacesAndNewlines)
       ?? environment["ghostex_CODE_SERVER_ROOT"]?.trimmingCharacters(in: .whitespacesAndNewlines)
-    let home = FileManager.default.homeDirectoryForCurrentUser
-    let candidates =
-      configuredRoot?.isEmpty == false
-      ? [configuredRoot!]
-      : [
-        home.appendingPathComponent("dev/custom/code-server", isDirectory: true).path,
-        home.appendingPathComponent("dev/_custom/code-server", isDirectory: true).path,
-      ]
+    var candidates: [String] = []
+    func appendCandidate(_ path: String) {
+      if !candidates.contains(path) {
+        candidates.append(path)
+      }
+    }
+    if configuredRoot?.isEmpty == false {
+      appendCandidate(configuredRoot!)
+    } else {
+      /**
+       CDXC:CodeServerSubmodule 2026-06-07-11:20:
+       Ghostex owns the embedded legacy code-server checkout as a root submodule, so the native launcher must resolve code-server from ghostex_REPO_ROOT or the current repo directory instead of probing maintainer-specific home paths.
+       GHOSTEX_CODE_SERVER_ROOT remains the explicit development override when a test needs a different checkout.
+       */
+      if let repoRootPath = environment["ghostex_REPO_ROOT"]?.trimmingCharacters(
+        in: .whitespacesAndNewlines),
+        !repoRootPath.isEmpty
+      {
+        appendCandidate(
+          URL(fileURLWithPath: repoRootPath, isDirectory: true)
+            .appendingPathComponent("code-server", isDirectory: true).path)
+      }
+      appendCandidate(
+        URL(fileURLWithPath: FileManager.default.currentDirectoryPath, isDirectory: true)
+          .appendingPathComponent("code-server", isDirectory: true).path)
+    }
     for candidate in candidates {
       let repoRoot = URL(fileURLWithPath: candidate, isDirectory: true)
       if FileManager.default.fileExists(
@@ -374,7 +392,7 @@ enum NativeCodeServerRuntimeLauncher {
       code: 1,
       userInfo: [
         NSLocalizedDescriptionKey:
-          "Unable to resolve the custom code-server checkout. Set GHOSTEX_CODE_SERVER_ROOT or place it at ~/dev/custom/code-server."
+          "Unable to resolve the embedded code-server checkout. Initialize the code-server submodule or set GHOSTEX_CODE_SERVER_ROOT."
       ])
   }
 
@@ -980,9 +998,9 @@ enum NativeT3RuntimeLauncher {
 
   /**
    CDXC:T3Code 2026-05-01-07:04
-   Native T3 panes must use the same managed t3code-embed runtime shape as the
+   Native T3 panes must use the same managed T3 Code runtime shape as the
    reference project: bundled assets run through Node from `dist/bin.mjs`, while
-   the sibling/custom checkout runs through Bun from `apps/server/src/bin.ts`.
+   the root `t3code` submodule or an explicit development override runs through Bun from `apps/server/src/bin.ts`.
    ghostex still supplies the desktop bootstrap envelope on fd 3 so the WKWebView
    renders the authenticated provider without opening a browser.
 
@@ -1235,7 +1253,10 @@ enum NativeT3RuntimeLauncher {
     /**
      CDXC:T3CodePackaging 2026-06-06-05:50:
      Installed Ghostex builds must run T3 Code from the bundled Web/t3code-server package.
-     Only explicit development overrides may use a source checkout, so release users get a clear reinstall/build error instead of silently probing ~/dev/_active/t3code-embed and surfacing a misleading network failure.
+     Only explicit development overrides or a local ghostex_REPO_ROOT start may use a source checkout, so release users get a clear reinstall/build error instead of silently probing maintainer-local folders and surfacing a misleading network failure.
+
+     CDXC:T3CodeSubmodule 2026-06-07-13:00:
+     Local source fallback should resolve the root `t3code` submodule when ghostex_REPO_ROOT is present, keeping native T3 development on the parent-pinned fork branch instead of the old sibling t3code-embed checkout.
      */
     let repoRoot = try resolveManagedT3RepoRoot()
     let entrypoint = repoRoot.appendingPathComponent("apps/server/src/bin.ts").path
@@ -1277,7 +1298,27 @@ enum NativeT3RuntimeLauncher {
     let configuredRoot =
       environment["VSMUX_T3CODE_REPO_ROOT"]?.trimmingCharacters(in: .whitespacesAndNewlines)
       ?? environment["ghostex_T3CODE_REPO_ROOT"]?.trimmingCharacters(in: .whitespacesAndNewlines)
-    let candidates = configuredRoot?.isEmpty == false ? [configuredRoot!] : []
+    var candidates: [String] = []
+    func appendCandidate(_ path: String) {
+      if !candidates.contains(path) {
+        candidates.append(path)
+      }
+    }
+    if configuredRoot?.isEmpty == false {
+      appendCandidate(configuredRoot!)
+    } else {
+      if let repoRootPath = environment["ghostex_REPO_ROOT"]?.trimmingCharacters(
+        in: .whitespacesAndNewlines),
+        !repoRootPath.isEmpty
+      {
+        appendCandidate(
+          URL(fileURLWithPath: repoRootPath, isDirectory: true)
+            .appendingPathComponent("t3code", isDirectory: true).path)
+      }
+      appendCandidate(
+        URL(fileURLWithPath: FileManager.default.currentDirectoryPath, isDirectory: true)
+          .appendingPathComponent("t3code", isDirectory: true).path)
+    }
     for candidate in candidates {
       let repoRoot = URL(fileURLWithPath: candidate, isDirectory: true)
       if FileManager.default.fileExists(
@@ -1291,7 +1332,7 @@ enum NativeT3RuntimeLauncher {
       code: 3,
       userInfo: [
         NSLocalizedDescriptionKey:
-          "The bundled T3 Code runtime is missing from this Ghostex build. Reinstall Ghostex, rebuild the app so Web/t3code-server is packaged, or set VSMUX_T3CODE_REPO_ROOT for development."
+          "The bundled T3 Code runtime is missing from this Ghostex build. Reinstall Ghostex, rebuild the app so Web/t3code-server is packaged, initialize the t3code submodule, or set VSMUX_T3CODE_REPO_ROOT for development."
       ])
   }
 
@@ -1772,7 +1813,7 @@ enum NativeT3RuntimeLauncher {
    extension supervisor. Reuse that supervised provider instead of killing it;
    the native WKWebView authenticates through an owner-issued browser pairing
    credential. For unsupervised listeners, only reuse runtimes from this app's
-   managed home, bundled resources, or the local t3code-embed checkout.
+   managed home, bundled resources, or the root t3code submodule.
    */
   private static func isOwnedT3RuntimeProcess(_ process: NativeT3ListeningProcess) -> Bool {
     guard isAnyT3RuntimeCommand(process.command) else {
@@ -1786,9 +1827,15 @@ enum NativeT3RuntimeLauncher {
     let normalized = process.command.lowercased()
     var ownedMarkers = [
       t3HomeDirectory().path,
-      FileManager.default.homeDirectoryForCurrentUser
-        .appendingPathComponent("dev/_active/t3code-embed/apps/server/src/bin.ts").path,
     ].map { $0.lowercased() }
+    if let repoRootPath = ProcessInfo.processInfo.environment["ghostex_REPO_ROOT"]?.trimmingCharacters(
+      in: .whitespacesAndNewlines),
+      !repoRootPath.isEmpty
+    {
+      ownedMarkers.append(
+        URL(fileURLWithPath: repoRootPath, isDirectory: true)
+          .appendingPathComponent("t3code/apps/server/src/bin.ts").path.lowercased())
+    }
     if let resourcePath = Bundle.main.resourceURL?.path {
       ownedMarkers.append(resourcePath.lowercased())
     }
@@ -1850,7 +1897,7 @@ enum NativeT3RuntimeSessionBootstrap {
    `/{environmentId}/{threadId}` route so WKWebView renders the T3 workspace
    page instead of the blank gray splash surface.
    CDXC:T3Code 2026-05-01-14:31
-   t3code-embed routes threads by execution environment, not projection
+   T3 Code routes threads by execution environment, not projection
    project. A native pane that navigates to `/{projectId}/{threadId}` can
    authenticate and load React but cannot bind the active thread, leaving the
    user on "No active thread"; always resolve the runtime environment
