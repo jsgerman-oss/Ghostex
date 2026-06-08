@@ -1,16 +1,18 @@
 import {
   IconChevronRight,
+  IconCopy,
   IconFile,
   IconFolder,
   IconFolderOpen,
 } from "@tabler/icons-react";
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useMemo, useState, type MouseEvent as ReactMouseEvent } from "react";
 import type { SidebarGitChangedFile } from "../shared/sidebar-git";
 import {
   buildChangedFilesTree,
   type ChangedFilesTreeNode,
   type ChangedFilesTreeStat,
 } from "./changed-files-tree-utils";
+import { SidebarContextMenuPortal } from "./sidebar-context-menu-portal";
 
 const EMPTY_DIRECTORY_OVERRIDES: Record<string, boolean> = {};
 
@@ -23,6 +25,12 @@ export type ChangedFilesTreeProps = {
   onOpenFile?: (filePath: string) => void;
   onToggleFile?: (filePath: string) => void;
   selectedPath?: string;
+};
+
+type FilePathContextMenu = {
+  path: string;
+  x: number;
+  y: number;
 };
 
 export function ChangedFilesTree({
@@ -48,6 +56,7 @@ export function ChangedFilesTree({
     key: expansionStateKey,
     overrides: {},
   }));
+  const [filePathContextMenu, setFilePathContextMenu] = useState<FilePathContextMenu>();
   const expandedDirectories =
     directoryExpansionState.key === expansionStateKey
       ? directoryExpansionState.overrides
@@ -68,6 +77,34 @@ export function ChangedFilesTree({
     },
     [allDirectoriesExpanded, expansionStateKey],
   );
+
+  const openFilePathContextMenu = (
+    event: ReactMouseEvent<HTMLElement>,
+    filePath: string,
+  ) => {
+    /*
+     * CDXC:TitlebarGit 2026-06-08-09:41:
+     * Commit review file rows need a right-click Copy path action. Keep the
+     * menu local to file rows so directory expansion and normal left-click diff
+     * preview behavior stay unchanged.
+     */
+    event.preventDefault();
+    event.stopPropagation();
+    setFilePathContextMenu({
+      path: filePath,
+      x: event.clientX,
+      y: event.clientY,
+    });
+  };
+
+  const copyContextMenuFilePath = () => {
+    const filePath = filePathContextMenu?.path;
+    setFilePathContextMenu(undefined);
+    if (!filePath || !navigator.clipboard) {
+      return;
+    }
+    void navigator.clipboard.writeText(filePath).catch(() => {});
+  };
 
   const renderTreeNode = (node: ChangedFilesTreeNode, depth: number) => {
     const leftPadding = 8 + depth * 14;
@@ -111,6 +148,7 @@ export function ChangedFilesTree({
         data-excluded={String(isExcluded)}
         data-selected={String(node.path === selectedPath)}
         key={`file:${node.path}`}
+        onContextMenu={(event) => openFilePathContextMenu(event, node.path)}
         style={{ paddingLeft: `${leftPadding}px` }}
       >
         {isEditing ? (
@@ -139,9 +177,31 @@ export function ChangedFilesTree({
   };
 
   return (
-    <div className={className ? `changed-files-tree ${className}` : "changed-files-tree"}>
-      {treeNodes.map((node) => renderTreeNode(node, 0))}
-    </div>
+    <>
+      <div className={className ? `changed-files-tree ${className}` : "changed-files-tree"}>
+        {treeNodes.map((node) => renderTreeNode(node, 0))}
+      </div>
+      {filePathContextMenu ? (
+        <SidebarContextMenuPortal
+          menuClassName="session-context-menu git-file-path-context-menu"
+          menuStyle={{
+            left: `${filePathContextMenu.x}px`,
+            position: "fixed",
+            top: `${filePathContextMenu.y}px`,
+          }}
+          onDismiss={() => setFilePathContextMenu(undefined)}
+        >
+          <button
+            className="session-context-menu-item"
+            onClick={copyContextMenuFilePath}
+            type="button"
+          >
+            <IconCopy aria-hidden="true" className="session-context-menu-icon" size={14} />
+            Copy path
+          </button>
+        </SidebarContextMenuPortal>
+      ) : null}
+    </>
   );
 }
 

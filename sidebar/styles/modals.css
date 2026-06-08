@@ -1948,12 +1948,26 @@
    * CDXC:TitlebarGit 2026-06-08-04:47:
    * The file list should behave like a narrow source-control rail while the
    * selected-file diff gets most of the horizontal room for side-by-side review.
+   *
+   * CDXC:TitlebarGit 2026-06-08-09:41:
+   * The commit modal should open without a visible title/subtitle row. Anchor
+   * the close button to the modal corner, make the file-list region larger than
+   * the commit-message editor, and keep the left review stack exactly as tall
+   * as the right diff card.
+   *
+   * CDXC:TitlebarGit 2026-06-08-13:41:
+   * Hide the commit modal close control so users exit commit review through
+   * the explicit footer actions instead of an extra top-right dismissal button.
    */
   --git-review-mono-font: "SF Mono", "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
   height: min(900px, calc(100vh - 1rem));
   max-height: min(900px, calc(100vh - 1rem));
   max-width: min(1480px, calc(100vw - 1rem));
   width: min(1480px, calc(100vw - 1rem));
+}
+
+.git-commit-modal-shadcn [data-slot="dialog-close"] {
+  display: none !important;
 }
 
 .git-commit-modal-header {
@@ -1969,17 +1983,18 @@
 
 .git-commit-modal-body {
   display: grid;
-  grid-template-columns: minmax(320px, 0.62fr) minmax(600px, 1.38fr);
+  grid-template-columns: minmax(360px, 0.72fr) minmax(600px, 1.28fr);
   gap: 16px;
   flex: 1 1 auto;
   min-height: 0;
   overflow: hidden;
-  padding: 0 20px 24px;
+  padding: 20px 20px 24px;
 }
 
 .git-commit-modal-left {
   display: grid;
-  gap: 18px;
+  align-self: stretch;
+  gap: 12px;
   grid-template-rows: minmax(0, 1fr) auto;
   min-height: 0;
   min-width: 0;
@@ -1987,7 +2002,7 @@
 }
 
 .git-commit-modal-left[data-has-message="true"] {
-  grid-template-rows: minmax(0, 1fr) minmax(230px, 0.62fr) auto;
+  grid-template-rows: minmax(0, 1fr) minmax(150px, 0.28fr) auto;
 }
 
 .git-commit-modal-left[data-has-message="true"] .command-config-field {
@@ -2056,10 +2071,10 @@
   border-radius: 0;
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 10px;
   min-height: 0;
   min-width: 0;
-  padding: 14px;
+  padding: 12px;
 }
 
 .git-commit-branch-row {
@@ -2070,14 +2085,17 @@
 }
 
 .git-commit-branch-name {
+  align-items: center;
   background: color-mix(in srgb, var(--foreground) 6%, transparent);
   border: 1px solid color-mix(in srgb, var(--border) 74%, transparent);
   color: color-mix(in srgb, var(--foreground) 92%, var(--muted-foreground) 8%);
+  display: inline-flex;
   font-size: 14px;
   font-weight: 800;
+  min-height: 30px;
   min-width: 0;
   overflow: hidden;
-  padding: 3px 8px;
+  padding: 0 8px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -2094,7 +2112,7 @@
   display: flex;
   gap: 12px;
   justify-content: space-between;
-  min-height: 36px;
+  min-height: 30px;
   min-width: 0;
 }
 
@@ -2112,7 +2130,15 @@
   margin-top: 4px;
 }
 
-.git-commit-files-edit-button {
+.git-commit-files-actions {
+  align-items: center;
+  display: flex;
+  flex: none;
+  gap: 6px;
+}
+
+.git-commit-files-edit-button,
+.git-commit-files-show-all-button {
   background: color-mix(in srgb, var(--input) 30%, transparent);
   border: 1px solid var(--input);
   border-radius: 0;
@@ -2120,8 +2146,9 @@
   flex: none;
   font-size: 14px;
   font-weight: 650;
-  min-height: 36px;
-  padding: 0 14px;
+  height: 30px;
+  min-height: 30px;
+  padding: 0 10px;
   transition:
     background-color 160ms ease,
     border-color 160ms ease,
@@ -2129,9 +2156,16 @@
 }
 
 .git-commit-files-edit-button:hover,
-.git-commit-files-edit-button:focus-visible {
+.git-commit-files-edit-button:focus-visible,
+.git-commit-files-show-all-button:hover,
+.git-commit-files-show-all-button:focus-visible {
   background: color-mix(in srgb, var(--input) 50%, transparent);
   outline: none;
+}
+
+.git-commit-files-show-all-button[data-active="true"] {
+  background: color-mix(in srgb, var(--foreground) 12%, transparent);
+  border-color: color-mix(in srgb, var(--foreground) 28%, transparent);
 }
 
 .git-commit-files-select-all {
@@ -2160,7 +2194,7 @@
   border-radius: 0;
   max-height: none;
   flex: 1 1 auto;
-  min-height: 180px;
+  min-height: 240px;
   min-width: 0;
   overflow: auto;
   padding: 8px;
@@ -2169,11 +2203,13 @@
 }
 
 .git-commit-inline-diff-panel {
+  align-self: stretch;
   background: color-mix(in srgb, var(--input) 12%, transparent);
   border: 1px solid color-mix(in srgb, var(--input) 82%, transparent);
   border-radius: 0;
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
+  height: 100%;
   min-height: 0;
   min-width: 0;
   overflow: hidden;
@@ -2307,6 +2343,10 @@
 .git-commit-modal-shadcn .changed-files-tree-row[data-selected="true"] {
   background: color-mix(in srgb, var(--foreground) 8%, transparent);
   color: color-mix(in srgb, var(--foreground) 96%, var(--muted-foreground) 4%);
+}
+
+.git-file-path-context-menu {
+  min-width: 150px;
 }
 
 .git-commit-modal-shadcn .changed-files-tree-name {

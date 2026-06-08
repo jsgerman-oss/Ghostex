@@ -676,6 +676,26 @@ function clampContextMenuPosition(
   };
 }
 
+export function getGroupContextMenuItemCount({
+  canFullReloadGroup,
+  hasProjectContext,
+  isWorktreeProject,
+}: {
+  canFullReloadGroup: boolean;
+  hasProjectContext: boolean;
+  isWorktreeProject: boolean;
+}): number {
+  /*
+   * CDXC:ProjectGroups 2026-06-08-09:19:
+   * Worktree project headings should expose Copy Path but omit the IDE Open action in their compact context menu. Keep the root context-menu item count explicit by project kind so viewport clamping stays aligned with the visible worktree and repository menu actions.
+   */
+  if (hasProjectContext) {
+    return isWorktreeProject ? 5 : 5 + Number(canFullReloadGroup);
+  }
+
+  return 3 + Number(canFullReloadGroup);
+}
+
 function getControlMenuPosition(button: HTMLButtonElement | null): ContextMenuPosition | undefined {
   if (!button) {
     return undefined;
@@ -1400,14 +1420,6 @@ export function SessionGroupSection({
     });
   };
 
-  const openProjectInIde = () => {
-    setContextMenuPosition(undefined);
-    vscode.postMessage({
-      groupId: group.groupId,
-      type: "openWorkspaceProjectInIdeForGroup",
-    });
-  };
-
   const refreshProjectDiffStats = () => {
     if (!projectContext) {
       return;
@@ -1599,7 +1611,11 @@ export function SessionGroupSection({
             clampContextMenuPosition(
               event.clientX,
               event.clientY,
-              projectContext ? 5 : 3 + Number(canFullReloadGroup),
+              getGroupContextMenuItemCount({
+                canFullReloadGroup,
+                hasProjectContext: Boolean(projectContext),
+                isWorktreeProject: Boolean(projectContext?.worktree),
+              }),
             ),
           );
         }}
@@ -2269,19 +2285,22 @@ export function SessionGroupSection({
                      *
                      * CDXC:ProjectGroups 2026-06-04-13:39:
                      * Project and worktree filesystem menu items should say Open Folder instead of Finder-specific copy so the macOS app presents OS-agnostic action names.
+                     *
+                     * CDXC:ProjectGroups 2026-06-08-09:19:
+                     * Worktree project headings should keep Copy Path but omit Open so the compact menu prioritizes filesystem copy/reveal and worktree-specific rename/delete/remove actions.
                      */}
                     <button
                       className="session-context-menu-item"
-                      onClick={openProjectInIde}
+                      onClick={copyProjectPath}
                       role="menuitem"
                       type="button"
                     >
-                      <IconCode
+                      <IconCopy
                         aria-hidden="true"
                         className="session-context-menu-icon"
                         size={14}
                       />
-                      Open
+                      Copy Path
                     </button>
                     <button
                       className="session-context-menu-item"

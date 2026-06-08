@@ -9111,11 +9111,20 @@ async function refreshGitState(): Promise<void> {
     gitConfirmCommit,
     gitGenerateCommitBody,
   );
+  const project = activeProject();
+  if (isQuickProject(project) || project.isRecentProject === true) {
+    /*
+     * CDXC:QuickSessions 2026-06-08-08:27:
+     * Opening a Quick terminal must not show a Git backend error toast. Quick projects are disposable session containers, not code projects, so Git state refresh should clear the Git UI locally instead of probing gxserver project-scoped Git endpoints.
+     */
+    gitState = { ...baseState, isBusy: false, isRepo: false };
+    publish();
+    return;
+  }
   gitState = { ...gitState, ...baseState, isBusy: true };
   publish();
 
   try {
-    const project = activeProject();
     const repoCheck = await runGxserverGitActionForNativeProject(project, { action: "isInsideWorkTree" });
     if (repoCheck.exitCode !== 0 || repoCheck.stdout.trim() !== "true") {
       gitState = { ...baseState, isRepo: false };
@@ -9226,14 +9235,18 @@ function getProjectDiffStats(projectId: string): SidebarProjectDiffStats {
 async function refreshVisibleProjectDiffStats(): Promise<void> {
   await Promise.all(
     projects
-      .filter((project) => project.isChat !== true && project.isRecentProject !== true)
+      .filter((project) => !isQuickProject(project) && project.isRecentProject !== true)
       .map((project) => refreshProjectDiffStats(project.projectId)),
   );
 }
 
 async function refreshProjectDiffStats(projectId: string): Promise<void> {
   const project = findProject(projectId);
-  if (!project || project.isChat === true) {
+  if (!project || isQuickProject(project)) {
+    /*
+     * CDXC:QuickSessions 2026-06-08-08:27:
+     * Quick terminal/browser/file containers do not own repository headers. Skip project diff probes for them so Quick focus and creation cannot surface project-scoped Git errors as user-visible toasts.
+     */
     return;
   }
   if (pendingProjectDiffRefreshProjectIds.has(projectId)) {
@@ -15578,10 +15591,26 @@ function handleAgentManagerXSessionCommand(rawData: unknown): void {
   }
 }
 
-function publish(): void {
+type PublishOptions = {
+  nativeLayoutBeforeSidebarHydrate?: boolean;
+};
+
+function publish(options: PublishOptions = {}): void {
   const didMaterializeVirtualPaneTabs = ensureActiveWorkspaceVirtualPaneTabs("publish");
   const didCreateNativeSession = ensureVisibleNativeSessions("publish");
   const sidebarMessage = buildSidebarMessage();
+  const syncNativeLayoutForPublish = () =>
+    syncNativeLayout({
+      force: didCreateNativeSession || didMaterializeVirtualPaneTabs,
+      sidebarMessage,
+    });
+  if (options.nativeLayoutBeforeSidebarHydrate === true) {
+    /*
+     * CDXC:SidebarSessionFocus 2026-06-08-09:31:
+     * Sidebar terminal switching must surface the native pane before the synchronous React sidebar hydrate. The freshly built sidebarMessage already contains the projected pane chrome syncNativeLayout needs, so focus-triggered publishes can post setActiveTerminalSet first and let the sidebar UI reconcile later in the same turn.
+     */
+    syncNativeLayoutForPublish();
+  }
   sidebarBus.post(sidebarMessage);
   agentManagerXBridgeClient.publish(createAgentManagerXWorkspaceSnapshots(sidebarMessage));
   /**
@@ -15592,12 +15621,15 @@ function publish(): void {
   */
   postAppModalHost({ message: sidebarMessage, type: "sidebarState" });
   syncNativeT3RuntimeSessionState(sidebarMessage);
-  syncNativeLayout({
-    force: didCreateNativeSession || didMaterializeVirtualPaneTabs,
-    sidebarMessage,
-  });
+  if (options.nativeLayoutBeforeSidebarHydrate !== true) {
+    syncNativeLayoutForPublish();
+  }
   syncNativeSessionStatusIndicators(sidebarMessage);
   syncNativePetOverlayState(sidebarMessage);
+}
+
+function publishSidebarFocusUpdate(): void {
+  publish({ nativeLayoutBeforeSidebarHydrate: true });
 }
 
 function ensureActiveWorkspaceVirtualPaneTabs(reason: string): boolean {
@@ -22064,7 +22096,7 @@ function focusTerminal(sessionId: string): void {
         restoreNativeTerminalSession(reference.project, session, "focus-command-session");
       }
     }
-    publish();
+    publishSidebarFocusUpdate();
     postNativeFocusTerminalForCurrentIntent(
       nativeSessionIdForProjectSidebarSession(
         reference.project.projectId,
@@ -22147,7 +22179,7 @@ function focusTerminal(sessionId: string): void {
       }
     }
     if (shouldKeepProjectEditorOpen) {
-      publish();
+      publishSidebarFocusUpdate();
       postNativeFocusProjectEditorCompanionForCurrentIntent(
         nativeSessionIdForProjectSidebarSession(
           reference.project.projectId,
@@ -22165,7 +22197,7 @@ function focusTerminal(sessionId: string): void {
       ),
       type: "focusWebPane",
     });
-    publish();
+    publishSidebarFocusUpdate();
     return;
   }
   const session = findTerminalSession(reference.sessionId);
@@ -22231,7 +22263,7 @@ function focusTerminal(sessionId: string): void {
   }
   acknowledgeNativeTerminalAttention(reference.sessionId, "sidebar-focus");
   if (restoredSleepingTerminal) {
-    publish();
+    publishSidebarFocusUpdate();
     if (shouldKeepProjectEditorOpen) {
       /*
        * CDXC:ProjectEditorCompanion 2026-06-05-03:59:
@@ -22253,7 +22285,7 @@ function focusTerminal(sessionId: string): void {
     return;
   }
   if (shouldKeepProjectEditorOpen) {
-    publish();
+    publishSidebarFocusUpdate();
     postNativeFocusProjectEditorCompanionForCurrentIntent(
       nativeSessionIdForProjectSidebarSession(
         reference.project.projectId,
@@ -22272,7 +22304,7 @@ function focusTerminal(sessionId: string): void {
     focusIntent,
     "focus-terminal-direct",
   );
-  publish();
+  publishSidebarFocusUpdate();
 }
 
 function recoveredZmxAttachExitKey(
@@ -33311,7 +33343,7 @@ function openProjectTasksEditorSurface(project: NativeProject, tasksUrl: string)
 
 async function openGitHubProjectFromTitlebar(): Promise<void> {
   const project = activeProject();
-  if (project.isChat === true || project.isRecentProject === true) {
+  if (isQuickProject(project) || project.isRecentProject === true) {
     return;
   }
   try {
