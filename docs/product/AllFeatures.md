@@ -1,6 +1,17 @@
 
 ## All features:
 
+- 4.0.3 improves Remote machine sessions with click-to-open SSH attach terminals, clearer remote setup failures, compact Remote settings, Quick section agent launching, safer titlebar mode availability, bundled editor defaults, quieter Sparkle update checks, stable sidebar resize chrome, and smaller installed macOS bundles.
+- Remote session and group clicks can open a local Ghostty terminal that SSH-attaches with the stable `ghostex attach --session-id --project-id` command while explicit copy actions still copy the same SSH command for external terminals.
+- Remote attach carrier terminals are hidden from the local Quick section so remote focus remains visually owned by the remote machine.
+- Remote machine errors identify the failed stage, including SSH authentication, gxserver install, token loading, Keychain storage, tunnel startup, presentation streaming, and gxserver browser transport failures.
+- Remote settings use compact saved-machine cards, inline Tailscale setup help, and clearer optional SSH identity-file guidance.
+- The Quick section header can launch the selected agent directly with the shared project-agent picker, creating projectless Quick agent chats instead of targeting the active code project.
+- Titlebar GitHub mode is disabled when the active project has no GitHub remote, and GitHub/Kanban modes are unavailable for Quick sessions.
+- Embedded code-server editor panes use Ghostex-owned bundled settings by default, seed the Dark 2026 theme for new bundled profiles, and keep local VS Code settings as an explicit Settings opt-in.
+- Sparkle checks for updates quietly at launch and every 15 minutes, can show the titlebar update button on first render, and suppresses download/extraction progress windows while preserving release notes and relaunch prompts.
+- The native sidebar/workarea divider keeps the resize cursor and visible separator aligned while hovering and dragging.
+- Installed macOS bundles prune duplicate Beads payloads, wrong-architecture node-pty prebuilds, and T3 Code source maps before release packaging to reduce download and install size.
 - 4.0.2 improves installed macOS runtime packaging for code-server, gxserver, and Beads; adds a Paste previewable images terminal setting; improves gxserver-backed attention sounds; stabilizes T3 Code runtime startup; removes duplicate Git workflow running toasts; and makes Android auto-scroll preserve scrollback unless the terminal is near the bottom.
 - Installed macOS builds package the embedded code-server runtime, reuse its Node 22 binary for gxserver, include the bundled Beads CLI, and validate packaged runtime contents during release builds.
 - Terminal image paste can convert clipboard images into previewable Markdown links with Cmd+V or Ctrl+V, with a Settings -> Terminal Behavior toggle to preserve normal paste behavior when preferred.

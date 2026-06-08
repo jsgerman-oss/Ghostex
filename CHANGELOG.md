@@ -11,6 +11,20 @@
 <!-- CDXC:Distribution 2026-06-08-12:00: Release notes for 4.0.0 must consolidate the shipped nightly beta work into one public Sparkle, GitHub, and Homebrew release without beta-only distribution bullets. -->
 <!-- CDXC:Distribution 2026-06-08-10:02: Release notes for 4.0.1 must cover the post-4.0.0 nightly merge as user-facing upgrade recovery, terminal focus stability, Git review polish, Source tab startup validation, update UI persistence, and local Apple Silicon startup correctness. -->
 <!-- CDXC:Distribution 2026-06-08-14:24: Release notes for 4.0.2 must cover packaged Beads/code-server runtime fixes, terminal image paste controls, gxserver-backed attention side effects, command completion sound reliability, T3 runtime startup stability, Git workflow toast cleanup, and Android scrollback behavior. -->
+<!-- CDXC:Distribution 2026-06-08-20:20: Release notes for 4.0.3 must cover remote attach terminals, remote setup feedback, Quick agent launching, titlebar mode guards, Sparkle update UI behavior, bundled editor defaults, sidebar resize polish, and smaller macOS app bundles while keeping internal release validation details out of public notes. -->
+
+## 4.0.3 - 2026-06-08
+
+- Remote session and group clicks now open a local Ghostty terminal that SSH-attaches to the selected remote session with the stable `ghostex attach` contract, while Copy Attach Command still copies the SSH command for external terminals.
+- Remote attach carrier terminals stay hidden from the local Quick section, so focus and active styling remain on the owning remote machine row.
+- Remote machine setup and gxserver request failures now show more actionable stage-specific messages for SSH, install, token, tunnel, streaming, and transport problems instead of raw loopback or WebKit errors.
+- Remote settings are easier to scan, with compact saved-machine cards, inline Tailscale setup help, and clearer optional SSH identity-file guidance.
+- The Quick section header can launch the selected agent directly, with the same agent picker used by project headers and new Quick agent chats kept projectless.
+- The titlebar now disables GitHub mode when the active project has no GitHub remote and disables GitHub/Kanban mode for Quick sessions.
+- Embedded code-server editor panes now use Ghostex-owned bundled settings by default, start with the Dark 2026 theme on new profiles, and keep local VS Code settings as an explicit opt-in.
+- Sparkle update checks repeat quietly while Ghostex is running, the titlebar update button can appear on first render, and update download/extraction progress windows stay hidden while the release notes and relaunch prompts remain available.
+- The native sidebar/workarea divider keeps its resize cursor and visible separator aligned during hover and live resizing.
+- Installed macOS app bundles are smaller because release packaging prunes duplicate Beads payloads, wrong-architecture node-pty prebuilds, and T3 Code source maps before notarization.
 
 ## 4.0.2 - 2026-06-08
 
