@@ -47,6 +47,19 @@ const GXSERVER_COLOR_DISABLING_ENVIRONMENT_KEYS = [
   "NO_COLOR",
   "NODE_DISABLE_COLORS",
 ] as const;
+const GXSERVER_MACOS_LAUNCH_IDENTITY_ENVIRONMENT_KEYS = [
+  "LaunchInstanceID",
+  "XPC_FLAGS",
+  "XPC_SERVICE_NAME",
+  "__CFBundleIdentifier",
+] as const;
+
+export interface GxserverZmxChildEnvironmentSanitizationSummary {
+  colorDisablingKeyCount: number;
+  macosLaunchIdentityKeyCount: number;
+  preservedSshAuthSock: boolean;
+  strippedKeyCount: number;
+}
 
 export interface GxserverZmxAttachCommandInput {
   cwd: string;
@@ -504,16 +517,42 @@ function zmxKillThrownErrorMessage(error: unknown): string {
   return `zmx kill command failed: ${String(error)}`;
 }
 
-function gxserverZmxChildEnvironment(): NodeJS.ProcessEnv {
+export function buildGxserverZmxChildEnvironment(environment: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
   /*
   CDXC:GxserverZmxLifecycle 2026-06-07-00:38:
   Fork/resume provider sessions are color-capable terminal workloads. gxserver may be launched from a shell or desktop app that has NO_COLOR set, so every zmx lifecycle child must strip color-disabling keys before zmx starts shells or agents.
+
+  CDXC:GxserverZmxLifecycle 2026-06-08-05:49:
+  Agent CLIs launched inside gxserver-created zmx providers must look like terminal children, not macOS app-extension children. Strip inherited LaunchServices/XPC identity keys from zmx lifecycle subprocesses so macOS keychain-backed tools do not bind credential access to the Ghostex GUI process.
   */
-  const environment = { ...process.env };
-  for (const key of GXSERVER_COLOR_DISABLING_ENVIRONMENT_KEYS) {
-    delete environment[key];
+  const sanitized = { ...environment };
+  for (const key of [
+    ...GXSERVER_COLOR_DISABLING_ENVIRONMENT_KEYS,
+    ...GXSERVER_MACOS_LAUNCH_IDENTITY_ENVIRONMENT_KEYS,
+  ]) {
+    delete sanitized[key];
   }
-  return environment;
+  return sanitized;
+}
+
+export function summarizeZmxChildEnvironmentSanitization(
+  environment: NodeJS.ProcessEnv = process.env,
+): GxserverZmxChildEnvironmentSanitizationSummary {
+  const colorDisablingKeyCount = countPresentEnvironmentKeys(environment, GXSERVER_COLOR_DISABLING_ENVIRONMENT_KEYS);
+  const macosLaunchIdentityKeyCount = countPresentEnvironmentKeys(
+    environment,
+    GXSERVER_MACOS_LAUNCH_IDENTITY_ENVIRONMENT_KEYS,
+  );
+  return {
+    colorDisablingKeyCount,
+    macosLaunchIdentityKeyCount,
+    preservedSshAuthSock: environment.SSH_AUTH_SOCK !== undefined,
+    strippedKeyCount: colorDisablingKeyCount + macosLaunchIdentityKeyCount,
+  };
+}
+
+function countPresentEnvironmentKeys(environment: NodeJS.ProcessEnv, keys: readonly string[]): number {
+  return keys.reduce((count, key) => count + (environment[key] === undefined ? 0 : 1), 0);
 }
 
 export function runZshScript(script: string, options: GxserverZmxCommandOptions = {}): Promise<GxserverZmxCommandResult> {
@@ -522,7 +561,7 @@ export function runZshScript(script: string, options: GxserverZmxCommandOptions 
   const timeoutMs = options.timeoutMs ?? ZMX_LIFECYCLE_COMMAND_TIMEOUT_MS;
   return new Promise((resolve, reject) => {
     const child = spawn("/bin/zsh", ["-lc", script], {
-      env: gxserverZmxChildEnvironment(),
+      env: buildGxserverZmxChildEnvironment(),
       stdio: ["pipe", "pipe", "pipe"],
     });
     const stdout: Buffer[] = [];

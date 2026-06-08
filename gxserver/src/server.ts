@@ -103,6 +103,7 @@ import {
   probeZmxSession,
   providerStatePatch,
   providerZmxSessionName,
+  summarizeZmxChildEnvironmentSanitization,
   GXSERVER_ZMX_HISTORY_STDOUT_LIMIT_BYTES,
   GXSERVER_ZMX_SEND_TEXT_LIMIT_BYTES,
   runZshScript,
@@ -3589,6 +3590,7 @@ async function startSessionProvider(
     details: {
       exitCode: result.exitCode,
       startupTextBytes: Buffer.byteLength(startupText, "utf8"),
+      zmxChildEnvironment: summarizeZmxChildEnvironmentSanitization(),
       zmxName: zmxSessionName,
     },
   });
