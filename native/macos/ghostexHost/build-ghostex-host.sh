@@ -343,7 +343,9 @@ package_code_server_if_needed() {
 		--path "$CODE_SERVER_ROOT/.node-version" \
 		--path "$CODE_SERVER_ROOT/src/browser")"
 	# CDXC:CodeServerRuntime 2026-06-08-12:17: The app bundle must contain a self-contained code-server runtime at Web/code-server and the single shared Node executable at Web/code-server/lib/node. gxserver rebuilds better-sqlite3 against this same Node, so missing code-server resources are build failures instead of installed-user Node prompts.
-	if cache_matches "code-server-package-$GHOSTEX_MACOS_ARCH" "$package_digest" "$target_dir/out/node/entry.js" "$target_dir/lib/vscode/out/server-main.js" "$target_dir/lib/node" "$target_dir/node_modules"; then
+	if cache_matches "code-server-package-$GHOSTEX_MACOS_ARCH" "$package_digest" "$target_dir/out/node/entry.js" "$target_dir/lib/vscode/out/server-main.js" "$target_dir/lib/node" "$target_dir/node_modules" &&
+		binary_supports_macos_arch "$target_dir/lib/node" "$GHOSTEX_MACOS_ARCH"; then
+		# CDXC:CodeServerRuntime 2026-06-08-16:23: Web/code-server is a shared staging directory reused by arm64 and x86_64 release passes. A per-arch cache stamp is only valid when the staged Node executable still contains the requested CPU slice; otherwise restage the package so app validation and gxserver native modules use the matching runtime.
 		echo "code-server package is current; skipping package rebuild."
 		return 0
 	fi
@@ -614,6 +616,21 @@ EOF
 	write_cache_stamp "beads-$GHOSTEX_MACOS_ARCH" "$build_digest"
 }
 
+gxserver_package_supports_macos_arch() {
+	local target_dir="$1"
+	local binary_path
+	for binary_path in \
+		"$target_dir/bin/zmx" \
+		"$target_dir/bin/zehn" \
+		"$target_dir/bin/bd" \
+		"$target_dir/node_modules/better-sqlite3/build/Release/better_sqlite3.node"; do
+		if ! binary_supports_macos_arch "$binary_path" "$GHOSTEX_MACOS_ARCH"; then
+			return 1
+		fi
+	done
+	return 0
+}
+
 package_gxserver_if_needed() {
 	local package_dir="$REPO_ROOT/gxserver/dist/server-package"
 	local target_dir="$WEB_DIR/gxserver"
@@ -639,7 +656,9 @@ package_gxserver_if_needed() {
 		--path "$WEB_DIR/bin/zmx" \
 		--path "$WEB_DIR/bin/zehn" \
 		--path "$WEB_DIR/bin/bd")"
-	if cache_matches "gxserver-package-$GHOSTEX_MACOS_ARCH" "$package_digest" "$package_dir/build-identity.json" "$target_dir/build-identity.json" "$target_dir/native-runtime.json"; then
+	if cache_matches "gxserver-package-$GHOSTEX_MACOS_ARCH" "$package_digest" "$package_dir/build-identity.json" "$target_dir/build-identity.json" "$target_dir/native-runtime.json" &&
+		gxserver_package_supports_macos_arch "$target_dir"; then
+		# CDXC:GxserverPackaging 2026-06-08-16:23: Web/gxserver is also shared across dual-architecture release passes. Do not accept a cache hit unless the staged zmx, zehn, bd, and better-sqlite3 binaries match the requested architecture, or Intel and arm64 DMGs can silently inherit the previous pass's native modules.
 		echo "gxserver package is current; skipping package rebuild."
 		return 0
 	fi
