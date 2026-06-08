@@ -111,6 +111,13 @@ const COMMANDS = new Map([
   ["run-agent", bridgeAction("runAgent", parseAgent)],
   ["run-command", bridgeAction("runCommand", parseCommandButton)],
   ["click-button", bridgeAction("clickButton", parseClickButton)],
+  ["save-agent", bridgeAction("saveAgent", parseSaveAgent, { failOnNotOk: true })],
+  ["automation-state", bridgeAction("automationState", parseAutomationProject, { failOnNotOk: true })],
+  ["automation-save", bridgeAction("automationSave", parseAutomationSave, { failOnNotOk: true })],
+  ["automation-run-now", bridgeAction("automationRunNow", parseAutomationId, { failOnNotOk: true })],
+  ["automation-set-enabled", bridgeAction("automationSetEnabled", parseAutomationEnabled, { failOnNotOk: true })],
+  ["automation-archive-run", bridgeAction("automationArchiveRun", parseAutomationRun, { failOnNotOk: true })],
+  ["automation-mark-run-read", bridgeAction("automationMarkRunRead", parseAutomationRun, { failOnNotOk: true })],
   ["focus-session", bridgeAction("focusSession", parseSessionSelector)],
   ["acknowledge-session-attention", bridgeAction("acknowledgeSessionAttention", parseSessionSelector)],
   ["ack-session-attention", bridgeAction("acknowledgeSessionAttention", parseSessionSelector)],
@@ -118,6 +125,7 @@ const COMMANDS = new Map([
   ["switch-project", bridgeAction("switchProject", parseProject)],
   ["move-project", bridgeAction("moveProject", parseProjectMove, { failOnNotOk: true })],
   ["add-project", bridgeAction("addProject", parseProjectPath)],
+  ["remove-project", bridgeAction("removeProject", parseProject, { failOnNotOk: true })],
   ["close-session", bridgeAction("closeSession", parseSessionSelector)],
   ["restart-session", bridgeAction("restartSession", parseSessionSelector)],
   ["fork-session", bridgeAction("forkSession", parseSessionSelector)],
@@ -3065,6 +3073,53 @@ function parseClickButton(rest, flags) {
   };
 }
 
+function parseSaveAgent(rest, flags) {
+  return {
+    acceptAllMode: flags.acceptAllMode,
+    agentId: flags.agentId ?? rest[0],
+    command: flags.command ?? rest.slice(2).join(" "),
+    icon: flags.icon,
+    name: flags.name ?? rest[1],
+  };
+}
+
+function parseAutomationProject(rest, flags) {
+  return {
+    projectId: flags.projectId,
+    projectPath: flags.projectPath ?? flags.path ?? rest[0],
+  };
+}
+
+function parseAutomationSave(rest, flags) {
+  const definitionJson = flags.definitionJson ?? flags.payloadJson ?? rest.join(" ");
+  return {
+    ...parseAutomationProject([], flags),
+    definition: typeof definitionJson === "string" ? parseJson(definitionJson) : undefined,
+  };
+}
+
+function parseAutomationId(rest, flags) {
+  return {
+    ...parseAutomationProject([], flags),
+    automationId: flags.automationId ?? flags.id ?? rest[0],
+  };
+}
+
+function parseAutomationEnabled(rest, flags) {
+  return {
+    ...parseAutomationId(rest, flags),
+    enabled: parseBoolean(flags.enabled ?? flags.value ?? rest[1] ?? "true"),
+  };
+}
+
+function parseAutomationRun(rest, flags) {
+  return {
+    ...parseAutomationProject([], flags),
+    removeWorktree: parseBoolean(flags.removeWorktree ?? "false"),
+    runId: flags.runId ?? flags.id ?? rest[0],
+  };
+}
+
 function parseGroup(rest, flags) {
   return { groupId: flags.groupId ?? rest[0] };
 }
@@ -3387,6 +3442,16 @@ function usage() {
     formatHelpCommand("focus-group <groupId>", "Focus a project group"),
   ].join("\n");
 
+  const automationCommands = [
+    formatHelpCommand("save-agent --agent-id id --name name --command command", "Create or update an agent button"),
+    formatHelpCommand("automation-state [--path path|--project-id id]", "Print project automations and run history"),
+    formatHelpCommand("automation-save --path path --definition-json json", "Create or update an automation"),
+    formatHelpCommand("automation-run-now <automationId> --path path", "Queue an automation immediately"),
+    formatHelpCommand("automation-set-enabled <automationId> <true|false> --path path", "Pause or resume an automation"),
+    formatHelpCommand("automation-archive-run --run-id id --path path [--remove-worktree true]", "Archive a completed run"),
+    formatHelpCommand("automation-mark-run-read --run-id id --path path", "Mark a run as read"),
+  ].join("\n");
+
   const inputCommands = [
     formatHelpCommand("send-text <selector> <text>", "Type text into a session by id or quoted title"),
     formatHelpCommand("send-enter <selector>", "Send Enter to a session by id or quoted title"),
@@ -3439,6 +3504,9 @@ ${sessionCommands}
 
 Workspace:
 ${workspaceCommands}
+
+Automations:
+${automationCommands}
 
 Input:
 ${inputCommands}

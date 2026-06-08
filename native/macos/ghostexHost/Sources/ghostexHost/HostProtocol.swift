@@ -404,6 +404,7 @@ struct ProjectBoardBridgeRequest: Decodable {
   let prompt: String?
   let projectId: String?
   let projectPath: String?
+  let payloadJson: String?
   let requestId: String
   let sessionId: String?
   let startLocation: String?
@@ -1056,7 +1057,7 @@ enum HostEvent: Encodable {
   case paneTabCloseRequested(sessionId: String, scope: PaneTabCloseScope)
   case paneTabSleepRequested(sessionId: String, scope: PaneTabSleepScope)
   case terminalCwdChanged(sessionId: String, cwd: String)
-  case terminalExited(sessionId: String, exitCode: Int?)
+  case terminalExited(sessionId: String, exitCode: Int?, text: String?)
   case terminalFocused(sessionId: String)
   case terminalBell(sessionId: String)
   case nativeSessionSurfaceMissing(sessionId: String)
@@ -1211,10 +1212,11 @@ enum HostEvent: Encodable {
       try container.encode("terminalCwdChanged", forKey: .type)
       try container.encode(sessionId, forKey: .sessionId)
       try container.encode(cwd, forKey: .cwd)
-    case .terminalExited(let sessionId, let exitCode):
+    case .terminalExited(let sessionId, let exitCode, let text):
       try container.encode("terminalExited", forKey: .type)
       try container.encode(sessionId, forKey: .sessionId)
       try container.encodeIfPresent(exitCode, forKey: .exitCode)
+      try container.encodeIfPresent(text, forKey: .text)
     case .terminalFocused(let sessionId):
       try container.encode("terminalFocused", forKey: .type)
       try container.encode(sessionId, forKey: .sessionId)

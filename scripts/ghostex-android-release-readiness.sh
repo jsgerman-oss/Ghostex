@@ -174,10 +174,19 @@ EOF
     exit 2
   fi
 
+  android_root_path="$(cd "$android_root" && pwd -P)"
   if ! signing_store_path="$(resolve_existing_file_path "$GHOSTEX_ANDROID_SIGNING_STORE_FILE")"; then
     invalid+=("GHOSTEX_ANDROID_SIGNING_STORE_FILE does not exist: $GHOSTEX_ANDROID_SIGNING_STORE_FILE")
+    signing_store_dir="$(cd "$(dirname "$GHOSTEX_ANDROID_SIGNING_STORE_FILE")" 2>/dev/null && pwd -P || true)"
+    if [[ -n "$signing_store_dir" ]]; then
+      signing_store_candidate="$signing_store_dir/$(basename "$GHOSTEX_ANDROID_SIGNING_STORE_FILE")"
+      case "$signing_store_candidate" in
+        "$android_root_path" | "$android_root_path"/*)
+          invalid+=("GHOSTEX_ANDROID_SIGNING_STORE_FILE must live outside the Android checkout: $GHOSTEX_ANDROID_SIGNING_STORE_FILE")
+          ;;
+      esac
+    fi
   else
-    android_root_path="$(cd "$android_root" && pwd -P)"
     case "$signing_store_path" in
       "$android_root_path" | "$android_root_path"/*)
         invalid+=("GHOSTEX_ANDROID_SIGNING_STORE_FILE must live outside the Android checkout: $GHOSTEX_ANDROID_SIGNING_STORE_FILE")

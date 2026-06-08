@@ -110,6 +110,19 @@ import {
   type ProjectBoardSessionOption,
   type ProjectBoardStartLocation,
 } from "../../shared/bead-conversation-links";
+import {
+  computeNextRunAt,
+  normalizeAutomationDefinition,
+  normalizeAutomationDefinitions,
+  normalizeAutomationRuns,
+  normalizeAutomationSchedule,
+  parseAutomationResult,
+  type AutomationDefinition,
+  type AutomationExecutionMode,
+  type AutomationRun,
+  type AutomationRunStatus,
+  type ProjectAutomationsBridgeState,
+} from "../../shared/automations";
 import { normalizeSessionRecord } from "../../shared/session-grid-state-helpers";
 import {
   createDefaultSidebarGitState,
@@ -189,6 +202,7 @@ import {
   shouldPreferTerminalTitleForAgentIcon,
   supportsTerminalTitleSessionSync,
   type SidebarAgentButton,
+  type SidebarAgentIcon,
   type StoredSidebarAgent,
 } from "../../shared/sidebar-agents";
 import { resolveSidebarAgentLaunchCommand } from "../../shared/sidebar-agent-accept-all";
@@ -747,7 +761,7 @@ type NativeHostEvent =
       type: "paneTabReorderRequested";
     }
   | { cwd: string; sessionId: string; type: "terminalCwdChanged" }
-  | { exitCode?: number; sessionId: string; type: "terminalExited" }
+  | { exitCode?: number; sessionId: string; text?: string; type: "terminalExited" }
   | { sessionId: string; type: "terminalFocused" }
   | { sessionId: string; type: "terminalBell" }
   | { sessionId: string; type: "nativeSessionSurfaceMissing" }
@@ -1131,6 +1145,23 @@ const pendingGitCommitRequests = new Map<
   string,
   { action: SidebarGitAction; body?: string; hasCommit: boolean; projectId: string; subject: string }
 >();
+const automationRunBySessionId = new Map<
+  string,
+  { automationId: string; projectId: string; runId: string; sessionProjectId: string }
+>();
+const automationTimerByAutomationKey = new Map<string, number>();
+const AUTOMATION_NEEDS_ATTENTION_ERROR_PREFIX = "AUTOMATION_NEEDS_ATTENTION:";
+const AUTOMATION_THREAD_EXPIRED_ERROR = `${AUTOMATION_NEEDS_ATTENTION_ERROR_PREFIX} thread expired`;
+
+class AutomationWorktreeSetupError extends Error {
+  constructor(
+    message: string,
+    readonly worktreeProject: NativeProject,
+  ) {
+    super(message);
+    this.name = "AutomationWorktreeSetupError";
+  }
+}
 
 type NativeProject = {
   commandsPanel: CommandsPanelState;
@@ -1166,6 +1197,8 @@ type NativeProject = {
    */
   beadsDisplayKey?: string;
   beadConversationLinks?: BeadConversationLink[];
+  automations?: AutomationDefinition[];
+  automationRuns?: AutomationRun[];
   workspace: GroupedSessionWorkspaceSnapshot;
 };
 
@@ -5134,6 +5167,8 @@ function normalizeStoredNativeProject(candidate: unknown): NativeProject[] {
         project.beadConversationLinks,
         projectId,
       ),
+      automations: normalizeAutomationDefinitions(project.automations),
+      automationRuns: normalizeAutomationRuns(project.automationRuns),
       workspace: normalizeSimpleGroupedSessionWorkspaceSnapshot(project.workspace),
     },
   ];
@@ -12286,7 +12321,7 @@ async function launchAgentTerminal(
    * cannot replay the original worktree prompt.
    */
   const initialInput = initialPromptText
-    ? `${launchCommand}\r${initialPromptText}`
+    ? `${launchCommand}\r${initialPromptText}\r`
     : `${launchCommand}\r`;
   return createTerminal(
     createAgentSessionDefaultTitle(agent.name),
@@ -18893,6 +18928,106 @@ async function handleNativeCliCommand(action: string, payload: Record<string, un
         }
         throw new Error(`Unsupported button kind: ${kind}`);
       }
+      case "saveAgent": {
+        const name = typeof payload.name === "string" ? payload.name.trim() : "";
+        const command = typeof payload.command === "string" ? payload.command.trim() : "";
+        if (!name || !command) {
+          return { error: "Agent name and command are required.", ok: false };
+        }
+        saveSidebarAgent({
+          acceptAllMode:
+            payload.acceptAllMode === "inherit" ||
+            payload.acceptAllMode === "enabled" ||
+            payload.acceptAllMode === "disabled"
+              ? payload.acceptAllMode
+              : undefined,
+          agentId: typeof payload.agentId === "string" ? payload.agentId : undefined,
+          command,
+          icon: typeof payload.icon === "string" ? payload.icon as SidebarAgentIcon : undefined,
+          name,
+          type: "saveSidebarAgent",
+        });
+        return { ok: true, state: summarizeCliState() };
+      }
+      case "automationState": {
+        const project = resolveNativeCliProject(payload);
+        return { automationState: await createProjectAutomationsBridgeState(project), ok: true };
+      }
+      case "automationSave": {
+        const project = resolveNativeCliProject(payload);
+        const definition = normalizeAutomationDefinition(payload.definition);
+        if (!definition) {
+          return { error: "Automation definition is incomplete.", ok: false };
+        }
+        const saved = saveProjectAutomation(project, definition);
+        rearmAutomationTimers();
+        publish();
+        return { automationState: await createProjectAutomationsBridgeState(saved), ok: true };
+      }
+      case "automationRunNow": {
+        const project = resolveNativeCliProject(payload);
+        const automationId = typeof payload.automationId === "string" ? payload.automationId.trim() : "";
+        if (!automationId) {
+          return { error: "Automation id is required.", ok: false };
+        }
+        const updated = await runProjectAutomationNow(project, automationId);
+        const withNextRun =
+          updateAutomationNextRunAt(project.projectId, automationId, "cliAutomationRunQueued") ??
+          updated;
+        rearmAutomationTimers();
+        return { automationState: await createProjectAutomationsBridgeState(withNextRun), ok: true };
+      }
+      case "automationSetEnabled": {
+        const project = resolveNativeCliProject(payload);
+        const automationId = typeof payload.automationId === "string" ? payload.automationId.trim() : "";
+        if (!automationId || typeof payload.enabled !== "boolean") {
+          return { error: "Automation id and enabled value are required.", ok: false };
+        }
+        const updated = setProjectAutomationEnabled(project, automationId, payload.enabled);
+        rearmAutomationTimers();
+        publish();
+        return { automationState: await createProjectAutomationsBridgeState(updated), ok: true };
+      }
+      case "automationArchiveRun": {
+        const project = resolveNativeCliProject(payload);
+        const runId = typeof payload.runId === "string" ? payload.runId.trim() : "";
+        if (!runId) {
+          return { error: "Automation run id is required.", ok: false };
+        }
+        const run = findAutomationRun(project, runId);
+        if (!run) {
+          return { error: "Automation run not found.", ok: false };
+        }
+        if (isAutomationRunActive(run)) {
+          return { error: "Active automation runs cannot be archived.", ok: false };
+        }
+        if (payload.removeWorktree === true) {
+          await removeAutomationRunWorktree(project, runId);
+        }
+        const updated = patchAutomationRun(
+          project.projectId,
+          runId,
+          { isArchived: true, isUnread: false },
+          "cliArchiveAutomationRun",
+        ) ?? project;
+        publish();
+        return { automationState: await createProjectAutomationsBridgeState(updated), ok: true };
+      }
+      case "automationMarkRunRead": {
+        const project = resolveNativeCliProject(payload);
+        const runId = typeof payload.runId === "string" ? payload.runId.trim() : "";
+        if (!runId) {
+          return { error: "Automation run id is required.", ok: false };
+        }
+        const updated = patchAutomationRun(
+          project.projectId,
+          runId,
+          { isUnread: false },
+          "cliMarkAutomationRunRead",
+        ) ?? project;
+        publish();
+        return { automationState: await createProjectAutomationsBridgeState(updated), ok: true };
+      }
       case "focusSession": {
         const session = requireCliSession(payload);
         focusSidebarSession(session.sessionId);
@@ -18979,6 +19114,11 @@ async function handleNativeCliCommand(action: string, payload: Record<string, un
           typeof payload.name === "string" ? payload.name : undefined,
         );
         return { ok: true, state: summarizeCliState() };
+      case "removeProject": {
+        const project = resolveNativeCliProject(payload);
+        removeProject(project.projectId);
+        return { ok: true, state: summarizeCliState() };
+      }
       case "closeSession": {
         const session = requireCliSession(payload);
         closeTerminal(session.sessionId);
@@ -20022,8 +20162,10 @@ function normalizeNativePathForProjectComparison(path: string): string {
 
 async function createNativeWorktreeForAgentPrompt(input: {
   agent: SidebarAgentButton;
+  failOnSetupError?: boolean;
   logEvent?: (event: string, details?: Record<string, unknown>) => void;
   prompt: string;
+  setupCommand?: string;
   sourceProject: NativeProject;
   successToastTitle?: string;
 }): Promise<{ project: NativeProject; session: TerminalSessionRecord }> {
@@ -20129,7 +20271,7 @@ async function createNativeWorktreeForAgentPrompt(input: {
     sourceProjectId: sourceProject.projectId,
   });
 
-  const setupCommand = sourceProject.worktreeCommand?.trim();
+  const setupCommand = input.setupCommand?.trim() || sourceProject.worktreeCommand?.trim();
   if (setupCommand) {
     showAppToast("info", "Running worktree command");
     logEvent?.("projectBoard.worktree.setup.start", { projectId });
@@ -20150,6 +20292,12 @@ async function createNativeWorktreeForAgentPrompt(input: {
         stderrLength: setupResult.stderr.length,
         stdoutLength: setupResult.stdout.length,
       });
+      if (input.failOnSetupError === true) {
+        throw new AutomationWorktreeSetupError(
+          `Worktree setup failed: ${setupError}`,
+          findProject(projectId) ?? nextWorktreeProject,
+        );
+      }
     }
   }
 
@@ -21668,6 +21816,22 @@ function resolveProjectBoardProject(
   return activeProject();
 }
 
+function resolveNativeCliProject(payload: Record<string, unknown>): NativeProject {
+  const project = resolveProjectBoardProject({
+    projectId: typeof payload.projectId === "string" ? payload.projectId : undefined,
+    projectPath:
+      typeof payload.projectPath === "string"
+        ? payload.projectPath
+        : typeof payload.path === "string"
+          ? payload.path
+          : undefined,
+  });
+  if (!project) {
+    throw new Error("Project not found.");
+  }
+  return project;
+}
+
 function createProjectBoardConversationState(
   project: NativeProject,
 ): ProjectBoardConversationState {
@@ -21978,6 +22142,899 @@ function syncProjectBoardConversationLinksForSession(
   }
 }
 
+async function createProjectAutomationsBridgeState(project: NativeProject): Promise<ProjectAutomationsBridgeState> {
+  const worktreeAvailability = await resolveProjectAutomationWorktreeAvailability(project);
+  return {
+    agents: createDefaultPromptAgentOptions(),
+    automations: normalizeAutomationDefinitions(project.automations),
+    defaultAgentId: resolveDefaultPromptAgentId(),
+    projectCanUseWorktrees: worktreeAvailability.canUseWorktrees,
+    projectId: project.projectId,
+    projectName: project.name,
+    projectPath: project.path,
+    projects: await createProjectAutomationTargetOptions(),
+    runs: normalizeAutomationRuns(project.automationRuns),
+    worktreeUnavailableReason: worktreeAvailability.reason,
+  };
+}
+
+async function createProjectAutomationTargetOptions(): Promise<ProjectAutomationsBridgeState["projects"]> {
+  const targetProjects = projects.filter(
+    (project) =>
+      project.isChat !== true &&
+      project.isQuick !== true &&
+      project.isRecentProject !== true,
+  );
+  return Promise.all(
+    targetProjects.map(async (project) => {
+      const worktreeAvailability = await resolveProjectAutomationWorktreeAvailability(project);
+      return {
+        canUseWorktrees: worktreeAvailability.canUseWorktrees,
+        label: project.name,
+        path: project.path,
+        projectId: project.projectId,
+        worktreeUnavailableReason: worktreeAvailability.reason,
+      };
+    }),
+  );
+}
+
+async function resolveProjectAutomationWorktreeAvailability(
+  project: NativeProject,
+): Promise<{ canUseWorktrees: boolean; reason?: string }> {
+  if (project.isChat === true || project.isQuick === true || project.isRecentProject === true) {
+    return {
+      canUseWorktrees: false,
+      reason: "Worktree mode needs an active code project.",
+    };
+  }
+  const repoCheck = await runGitInProject(project, ["rev-parse", "--is-inside-work-tree"], {
+    allowFailure: true,
+  });
+  if (repoCheck.exitCode !== 0 || repoCheck.stdout.trim() !== "true") {
+    return {
+      canUseWorktrees: false,
+      reason: `${project.name} is not inside a Git work tree. Use Local mode explicitly for non-Git projects.`,
+    };
+  }
+  return { canUseWorktrees: true };
+}
+
+function updateProjectAutomations(
+  projectId: string,
+  update: (project: NativeProject) => NativeProject,
+  reason: string,
+): NativeProject | undefined {
+  let updatedProject: NativeProject | undefined;
+  projects = projects.map((project) => {
+    if (project.projectId !== projectId) {
+      return project;
+    }
+    updatedProject = update(project);
+    return updatedProject;
+  });
+  if (updatedProject) {
+    writeStoredProjects(reason);
+  }
+  return updatedProject;
+}
+
+function automationTimerKey(projectId: string, automationId: string): string {
+  return `${projectId}:${automationId}`;
+}
+
+function rearmAutomationTimers(): void {
+  for (const timerId of automationTimerByAutomationKey.values()) {
+    window.clearTimeout(timerId);
+  }
+  automationTimerByAutomationKey.clear();
+  const now = Date.now();
+  for (const project of projects) {
+    if (project.isRecentProject === true) {
+      continue;
+    }
+    for (const automation of project.automations ?? []) {
+      if (automation.enabled !== true) {
+        continue;
+      }
+      const nextRunAt = automation.nextRunAt ?? computeNextRunAt(automation.schedule);
+      if (!nextRunAt) {
+        continue;
+      }
+      const delayMs = Math.max(0, Math.min(Date.parse(nextRunAt) - now, 24 * 24 * 60 * 60 * 1000));
+      const key = automationTimerKey(project.projectId, automation.id);
+      const timerId = window.setTimeout(() => {
+        automationTimerByAutomationKey.delete(key);
+        void fireScheduledProjectAutomation(project.projectId, automation.id);
+      }, delayMs);
+      automationTimerByAutomationKey.set(key, timerId);
+    }
+  }
+}
+
+async function fireScheduledProjectAutomation(projectId: string, automationId: string): Promise<void> {
+  const project = findProject(projectId);
+  const automation = project?.automations?.find((candidate) => candidate.id === automationId);
+  if (!project || !automation || automation.enabled !== true) {
+    rearmAutomationTimers();
+    return;
+  }
+  const hasActiveRun = (project.automationRuns ?? []).some(
+    (run) =>
+      run.automationId === automation.id &&
+      (run.status === "queued" || run.status === "running"),
+  );
+  if (hasActiveRun) {
+    upsertAutomationRun(
+      project.projectId,
+      createAutomationRunRecord(automation, project.projectId, "skipped", {
+        errorMessage: "Skipped because another run for this automation is still active.",
+        isUnread: false,
+      }),
+    );
+  } else {
+    await runProjectAutomationNow(project, automation.id);
+  }
+  updateAutomationNextRunAt(project.projectId, automation.id, "scheduledAutomationCompleted");
+  publish();
+  rearmAutomationTimers();
+}
+
+function updateAutomationNextRunAt(
+  projectId: string,
+  automationId: string,
+  reason: string,
+): NativeProject | undefined {
+  return updateProjectAutomations(
+    projectId,
+    (project) => ({
+      ...project,
+      automations: normalizeAutomationDefinitions(
+        (project.automations ?? []).map((automation) =>
+          automation.id === automationId
+            ? {
+                ...automation,
+                nextRunAt:
+                  automation.enabled === true
+                    ? computeNextRunAt(automation.schedule, { after: new Date() })
+                    : automation.nextRunAt,
+                updatedAt: new Date().toISOString(),
+              }
+            : automation,
+        ),
+      ),
+    }),
+    reason,
+  );
+}
+
+function disableAutomation(
+  projectId: string,
+  automationId: string,
+  reason: string,
+): NativeProject | undefined {
+  return updateProjectAutomations(
+    projectId,
+    (project) => ({
+      ...project,
+      automations: normalizeAutomationDefinitions(
+        (project.automations ?? []).map((automation) =>
+          automation.id === automationId
+            ? {
+                ...automation,
+                enabled: false,
+                nextRunAt: undefined,
+                updatedAt: new Date().toISOString(),
+              }
+            : automation,
+        ),
+      ),
+    }),
+    reason,
+  );
+}
+
+function createAutomationRunId(automationId: string): string {
+  const normalizedAutomationId = automationId
+    .trim()
+    .replace(/[^a-z0-9_-]+/giu, "-")
+    .replace(/^-+|-+$/gu, "");
+  return `automation-run-${normalizedAutomationId || "run"}-${Date.now().toString(36)}-${Math.random()
+    .toString(36)
+    .slice(2, 8)}`;
+}
+
+function createAutomationId(name: string): string {
+  const slug = name
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/gu, "-")
+    .replace(/^-+|-+$/gu, "")
+    .slice(0, 48);
+  return `automation-${slug || "task"}-${Date.now().toString(36)}`;
+}
+
+function buildAutomationPrompt(prompt: string): string {
+  return `${prompt.trim()}\n\nWhen this automation finishes, end with one of:\n\nAUTOMATION_RESULT: findings\nAUTOMATION_RESULT: no_findings\nAUTOMATION_RESULT: needs_attention\n\nThen include a short summary.`;
+}
+
+function upsertAutomationRun(projectId: string, run: AutomationRun): NativeProject | undefined {
+  return updateProjectAutomations(
+    projectId,
+    (project) => ({
+      ...project,
+      automationRuns: normalizeAutomationRuns([
+        run,
+        ...(project.automationRuns ?? []).filter((candidate) => candidate.id !== run.id),
+      ]),
+    }),
+    "upsertAutomationRun",
+  );
+}
+
+function patchAutomationRun(
+  projectId: string,
+  runId: string,
+  patch: Partial<AutomationRun>,
+  reason: string,
+): NativeProject | undefined {
+  return updateProjectAutomations(
+    projectId,
+    (project) => ({
+      ...project,
+      automationRuns: normalizeAutomationRuns(
+        (project.automationRuns ?? []).map((run) =>
+          run.id === runId ? { ...run, ...patch } : run,
+        ),
+      ),
+    }),
+    reason,
+  );
+}
+
+async function handleProjectAutomationRequest(
+  project: NativeProject,
+  request: ProjectBoardBridgeRequest,
+): Promise<void> {
+  switch (request.action) {
+    case "automationGetState":
+      postProjectAutomationsResponse(request, await createProjectAutomationsBridgeState(project));
+      return;
+    case "automationSave": {
+      const automation = parseProjectAutomationPayload(request);
+      const saved = saveProjectAutomation(project, automation);
+      rearmAutomationTimers();
+      publish();
+      postProjectAutomationsResponse(request, await createProjectAutomationsBridgeState(saved));
+      return;
+    }
+    case "automationDelete": {
+      const automationId = request.sessionId?.trim();
+      if (!automationId) {
+        throw new Error("No automation id was supplied.");
+      }
+      const updated = updateProjectAutomations(
+        project.projectId,
+        (candidate) => ({
+          ...candidate,
+          automations: (candidate.automations ?? []).filter((automation) => automation.id !== automationId),
+        }),
+        "deleteProjectAutomation",
+      ) ?? project;
+      rearmAutomationTimers();
+      publish();
+      postProjectAutomationsResponse(request, await createProjectAutomationsBridgeState(updated));
+      return;
+    }
+    case "automationSetEnabled": {
+      const automationId = request.sessionId?.trim();
+      if (!automationId) {
+        throw new Error("No automation id was supplied.");
+      }
+      const enabled = parseAutomationEnabledPayload(request.payloadJson);
+      const updated = setProjectAutomationEnabled(project, automationId, enabled);
+      rearmAutomationTimers();
+      publish();
+      postProjectAutomationsResponse(request, await createProjectAutomationsBridgeState(updated));
+      return;
+    }
+    case "automationArchiveRun": {
+      const runId = request.sessionId?.trim();
+      if (!runId) {
+        throw new Error("No automation run id was supplied.");
+      }
+      const run = findAutomationRun(project, runId);
+      if (!run) {
+        throw new Error("Automation run not found.");
+      }
+      if (isAutomationRunActive(run)) {
+        throw new Error("Active automation runs cannot be archived.");
+      }
+      const archiveOptions = parseAutomationArchiveOptions(request.payloadJson);
+      if (archiveOptions.removeWorktree === true) {
+        await removeAutomationRunWorktree(project, runId);
+      }
+      const updated = patchAutomationRun(
+        project.projectId,
+        runId,
+        { isArchived: true, isUnread: false },
+        "archiveAutomationRun",
+      ) ?? project;
+      publish();
+      postProjectAutomationsResponse(request, await createProjectAutomationsBridgeState(updated));
+      return;
+    }
+    case "automationOpenRunSession": {
+      const runId = request.sessionId?.trim();
+      if (!runId) {
+        throw new Error("No automation run id was supplied.");
+      }
+      openAutomationRunSession(project, runId);
+      const updated = patchAutomationRun(
+        project.projectId,
+        runId,
+        { isUnread: false },
+        "openAutomationRunSession",
+      ) ?? project;
+      publish();
+      postProjectAutomationsResponse(request, await createProjectAutomationsBridgeState(updated));
+      return;
+    }
+    case "automationOpenWorktree": {
+      const runId = request.sessionId?.trim();
+      if (!runId) {
+        throw new Error("No automation run id was supplied.");
+      }
+      openAutomationRunWorktree(project, runId);
+      const updated = patchAutomationRun(
+        project.projectId,
+        runId,
+        { isUnread: false },
+        "openAutomationRunWorktree",
+      ) ?? project;
+      publish();
+      postProjectAutomationsResponse(request, await createProjectAutomationsBridgeState(updated));
+      return;
+    }
+    case "automationMarkRunRead": {
+      const runId = request.sessionId?.trim();
+      if (!runId) {
+        throw new Error("No automation run id was supplied.");
+      }
+      const updated = patchAutomationRun(
+        project.projectId,
+        runId,
+        { isUnread: false },
+        "markAutomationRunRead",
+      ) ?? project;
+      publish();
+      postProjectAutomationsResponse(request, await createProjectAutomationsBridgeState(updated));
+      return;
+    }
+    case "automationRunNow": {
+      const automationId = request.sessionId?.trim();
+      if (!automationId) {
+        throw new Error("No automation id was supplied.");
+      }
+      const updated = await runProjectAutomationNow(project, automationId);
+      const withNextRun =
+        updateAutomationNextRunAt(project.projectId, automationId, "manualAutomationRunQueued") ??
+        updated;
+      rearmAutomationTimers();
+      postProjectAutomationsResponse(request, await createProjectAutomationsBridgeState(withNextRun));
+      return;
+    }
+    default:
+      throw new Error(`Unsupported automation action: ${request.action}`);
+  }
+}
+
+function parseProjectAutomationPayload(request: ProjectBoardBridgeRequest): AutomationDefinition {
+  if (!request.payloadJson) {
+    throw new Error("No automation payload was supplied.");
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(request.payloadJson);
+  } catch {
+    throw new Error("Automation payload is not valid JSON.");
+  }
+  const normalized = normalizeAutomationDefinition(parsed);
+  if (!normalized) {
+    throw new Error("Automation definition is incomplete.");
+  }
+  return normalized;
+}
+
+function parseAutomationArchiveOptions(payloadJson: string | undefined): { removeWorktree?: boolean } {
+  if (!payloadJson) {
+    return {};
+  }
+  try {
+    const parsed = JSON.parse(payloadJson) as { removeWorktree?: unknown };
+    return { removeWorktree: parsed.removeWorktree === true };
+  } catch {
+    return {};
+  }
+}
+
+function parseAutomationEnabledPayload(payloadJson: string | undefined): boolean {
+  if (!payloadJson) {
+    throw new Error("No automation enabled payload was supplied.");
+  }
+  try {
+    const parsed = JSON.parse(payloadJson) as { enabled?: unknown };
+    if (typeof parsed.enabled === "boolean") {
+      return parsed.enabled;
+    }
+  } catch {
+    throw new Error("Automation enabled payload is not valid JSON.");
+  }
+  throw new Error("Automation enabled payload is incomplete.");
+}
+
+function findAutomationRun(project: NativeProject, runId: string): AutomationRun | undefined {
+  return (project.automationRuns ?? []).find((run) => run.id === runId);
+}
+
+function isAutomationRunActive(run: Pick<AutomationRun, "status">): boolean {
+  return run.status === "queued" || run.status === "running";
+}
+
+function recoverAutomationRunSessionIndex(): void {
+  automationRunBySessionId.clear();
+  for (const project of projects) {
+    for (const run of project.automationRuns ?? []) {
+      if (run.status === "queued") {
+        patchAutomationRun(
+          project.projectId,
+          run.id,
+          {
+            completedAt: new Date().toISOString(),
+            errorMessage: "Automation run was queued before Ghostex restarted and did not launch.",
+            isUnread: true,
+            status: "needs_attention",
+          },
+          "recoverQueuedAutomationRun",
+        );
+        continue;
+      }
+      if (run.status !== "running") {
+        continue;
+      }
+      if (!run.sessionId) {
+        patchAutomationRun(
+          project.projectId,
+          run.id,
+          {
+            completedAt: new Date().toISOString(),
+            errorMessage: "Automation run was running before Ghostex restarted but had no linked session.",
+            isUnread: true,
+            status: "needs_attention",
+          },
+          "recoverRunningAutomationRunWithoutSession",
+        );
+        continue;
+      }
+      const sessionProject = findAutomationRunSessionProject(run) ?? project;
+      if (!findTerminalSessionInProject(sessionProject, run.sessionId)) {
+        patchAutomationRun(
+          project.projectId,
+          run.id,
+          {
+            completedAt: new Date().toISOString(),
+            errorMessage: "Automation session is no longer available after restart.",
+            isUnread: true,
+            status: "needs_attention",
+          },
+          "recoverOrphanedAutomationRunSession",
+        );
+        continue;
+      }
+      automationRunBySessionId.set(run.sessionId, {
+        automationId: run.automationId,
+        projectId: project.projectId,
+        runId: run.id,
+        sessionProjectId: sessionProject.projectId,
+      });
+    }
+  }
+}
+
+function findAutomationRunSessionProject(run: AutomationRun): NativeProject | undefined {
+  if (run.worktree?.path) {
+    const normalizedWorktreePath = run.worktree.path.replace(/\/+$/u, "");
+    const worktreeProject = projects.find(
+      (candidate) => candidate.path.replace(/\/+$/u, "") === normalizedWorktreePath,
+    );
+    if (worktreeProject) {
+      return worktreeProject;
+    }
+  }
+  return projects.find((project) =>
+    project.workspace.groups.some((group) =>
+      group.snapshot.sessions.some((session) => session.sessionId === run.sessionId),
+    ),
+  );
+}
+
+function openAutomationRunSession(project: NativeProject, runId: string): void {
+  const run = findAutomationRun(project, runId);
+  if (!run?.sessionId) {
+    throw new Error("Automation run has no linked session.");
+  }
+  const sessionProject = findAutomationRunSessionProject(run);
+  if (!sessionProject) {
+    throw new Error("Automation session is no longer available.");
+  }
+  const session = findTerminalSessionInProject(sessionProject, run.sessionId);
+  if (!session) {
+    throw new Error("Automation session is no longer available.");
+  }
+  focusTerminal(createCombinedProjectSessionId(sessionProject.projectId, session.sessionId));
+}
+
+function openAutomationRunWorktree(project: NativeProject, runId: string): void {
+  const run = findAutomationRun(project, runId);
+  if (!run?.worktree?.path) {
+    throw new Error("Automation run has no linked worktree.");
+  }
+  const normalizedWorktreePath = run.worktree.path.replace(/\/+$/u, "");
+  const worktreeProject = projects.find(
+    (candidate) => candidate.path.replace(/\/+$/u, "") === normalizedWorktreePath,
+  );
+  if (worktreeProject) {
+    focusProject(worktreeProject.projectId);
+    return;
+  }
+  postNative({ type: "openWorkspaceInFinder", workspacePath: run.worktree.path });
+}
+
+async function removeAutomationRunWorktree(project: NativeProject, runId: string): Promise<void> {
+  const run = findAutomationRun(project, runId);
+  const worktree = run?.worktree;
+  if (!worktree) {
+    return;
+  }
+  const normalizedWorktreePath = normalizeNativePathForProjectComparison(worktree.path);
+  const normalizedSourcePath = normalizeNativePathForProjectComparison(worktree.sourcePath);
+  const sourceProject =
+    projects.find((candidate) => normalizeNativePathForProjectComparison(candidate.path) === normalizedSourcePath) ??
+    project;
+  const worktreeProject = projects.find(
+    (candidate) => normalizeNativePathForProjectComparison(candidate.path) === normalizedWorktreePath,
+  );
+  const worktreeMetadata = worktreeProject?.worktree;
+  if (
+    !worktreeProject ||
+    !worktreeMetadata ||
+    worktreeMetadata.branch !== worktree.branch ||
+    normalizeNativePathForProjectComparison(worktreeMetadata.parentProjectPath) !== normalizedSourcePath
+  ) {
+    throw new Error("Automation worktree cleanup only removes worktrees created and tracked by Ghostex.");
+  }
+  await runGitInProject(sourceProject, ["worktree", "remove", worktree.path], { allowFailure: false });
+  await runGitInProject(sourceProject, ["branch", "-D", worktree.branch], { allowFailure: true });
+  await runGitInProject(sourceProject, ["worktree", "prune"], { allowFailure: true });
+  removeWorktreeProjectRecord(worktreeProject, sourceProject, "archiveAutomationRunRemoveWorktree");
+}
+
+function saveProjectAutomation(project: NativeProject, automation: AutomationDefinition): NativeProject {
+  const now = new Date().toISOString();
+  const existing = (project.automations ?? []).find((candidate) => candidate.id === automation.id);
+  const nextAutomation: AutomationDefinition = {
+    ...automation,
+    createdAt: existing?.createdAt ?? automation.createdAt ?? now,
+    id: automation.id || createAutomationId(automation.name),
+    nextRunAt:
+      automation.enabled === true
+        ? automation.nextRunAt ?? computeNextRunAt(automation.schedule)
+        : automation.nextRunAt,
+    updatedAt: now,
+  };
+  return updateProjectAutomations(
+    project.projectId,
+    (candidate) => ({
+      ...candidate,
+      automations: normalizeAutomationDefinitions([
+        nextAutomation,
+        ...(candidate.automations ?? []).filter((entry) => entry.id !== nextAutomation.id),
+      ]),
+    }),
+    "saveProjectAutomation",
+  ) ?? project;
+}
+
+function setProjectAutomationEnabled(
+  project: NativeProject,
+  automationId: string,
+  enabled: boolean,
+): NativeProject {
+  const now = new Date().toISOString();
+  return updateProjectAutomations(
+    project.projectId,
+    (candidate) => ({
+      ...candidate,
+      automations: normalizeAutomationDefinitions(
+        (candidate.automations ?? []).map((automation) =>
+          automation.id === automationId
+            ? {
+                ...automation,
+                enabled,
+                nextRunAt: enabled ? computeNextRunAt(automation.schedule) : undefined,
+                updatedAt: now,
+              }
+            : automation,
+        ),
+      ),
+    }),
+    "setProjectAutomationEnabled",
+  ) ?? project;
+}
+
+async function runProjectAutomationNow(
+  project: NativeProject,
+  automationId: string,
+): Promise<NativeProject> {
+  const currentProject = findProject(project.projectId) ?? project;
+  const automation = (currentProject.automations ?? []).find((candidate) => candidate.id === automationId);
+  if (!automation) {
+    throw new Error("Automation not found.");
+  }
+  const existingActiveRun = (currentProject.automationRuns ?? []).find(
+    (run) =>
+      run.automationId === automation.id &&
+      (run.status === "queued" || run.status === "running"),
+  );
+  if (existingActiveRun) {
+    const skippedRun = createAutomationRunRecord(automation, currentProject.projectId, "skipped", {
+      errorMessage: "Skipped because another run for this automation is still active.",
+      isUnread: false,
+    });
+    const updated = upsertAutomationRun(currentProject.projectId, skippedRun) ?? currentProject;
+    publish();
+    return updated;
+  }
+
+  const run = createAutomationRunRecord(automation, currentProject.projectId, "queued");
+  upsertAutomationRun(currentProject.projectId, run);
+  publish();
+  try {
+    const sessionProject = await launchProjectAutomationRun(currentProject, automation, run);
+    const updated = patchAutomationRun(
+      currentProject.projectId,
+      run.id,
+      {
+        sessionId: run.sessionId,
+        status: "running",
+        worktree:
+          sessionProject.projectId !== currentProject.projectId && sessionProject.worktree
+            ? {
+                branch: sessionProject.worktree.branch,
+                path: sessionProject.path,
+                sourcePath: currentProject.path,
+              }
+            : undefined,
+      },
+      "startAutomationRun",
+    ) ?? currentProject;
+    publish();
+    return updated;
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    if (errorMessage === AUTOMATION_THREAD_EXPIRED_ERROR) {
+      disableAutomation(currentProject.projectId, automation.id, "expiredThreadAutomation");
+    }
+    const failedWorktreeProject =
+      error instanceof AutomationWorktreeSetupError ? error.worktreeProject : undefined;
+    const failed = patchAutomationRun(
+      currentProject.projectId,
+      run.id,
+      {
+        completedAt: new Date().toISOString(),
+        errorMessage: errorMessage.replace(AUTOMATION_NEEDS_ATTENTION_ERROR_PREFIX, "").trim(),
+        isUnread: true,
+        status: errorMessage.startsWith(AUTOMATION_NEEDS_ATTENTION_ERROR_PREFIX)
+          ? "needs_attention"
+          : "failed",
+        worktree:
+          failedWorktreeProject?.worktree
+            ? {
+                branch: failedWorktreeProject.worktree.branch,
+                path: failedWorktreeProject.path,
+                sourcePath: currentProject.path,
+              }
+            : undefined,
+      },
+      "failAutomationRun",
+    ) ?? currentProject;
+    publish();
+    return failed;
+  }
+}
+
+function createAutomationRunRecord(
+  automation: AutomationDefinition,
+  projectId: string,
+  status: AutomationRunStatus,
+  options: Partial<AutomationRun> = {},
+): AutomationRun {
+  const now = new Date().toISOString();
+  return {
+    automationId: automation.id,
+    createdAt: options.createdAt ?? now,
+    errorMessage: options.errorMessage,
+    findingsSummary: options.findingsSummary,
+    id: options.id ?? createAutomationRunId(automation.id),
+    isArchived: options.isArchived ?? false,
+    isUnread: options.isUnread ?? (status !== "no_findings" && status !== "skipped"),
+    projectId,
+    sessionId: options.sessionId,
+    status,
+    worktree: options.worktree,
+  };
+}
+
+async function launchProjectAutomationRun(
+  project: NativeProject,
+  automation: AutomationDefinition,
+  run: AutomationRun,
+): Promise<NativeProject> {
+  const agent = resolveSidebarAgentButtonById(automation.agentId);
+  if (!agent?.command?.trim()) {
+    throw new Error(`${AUTOMATION_NEEDS_ATTENTION_ERROR_PREFIX} selected automation agent is unavailable`);
+  }
+  const prompt = buildAutomationPrompt(automation.prompt);
+  if (automation.executionMode.kind === "thread") {
+    return launchThreadAutomationRun(project, automation.executionMode, prompt, run);
+  }
+  if (automation.executionMode.kind === "worktree") {
+    const created = await createNativeWorktreeForAgentPrompt({
+      agent,
+      failOnSetupError: true,
+      prompt,
+      setupCommand: automation.executionMode.setupCommand,
+      sourceProject: resolveProjectBoardWorktreeSourceProject(project),
+      successToastTitle: "Automation worktree started",
+    });
+    automationRunBySessionId.set(created.session.sessionId, {
+      automationId: automation.id,
+      projectId: project.projectId,
+      runId: run.id,
+      sessionProjectId: created.project.projectId,
+    });
+    run.sessionId = created.session.sessionId;
+    return created.project;
+  }
+
+  if (activeProjectId !== project.projectId) {
+    focusProject(project.projectId);
+  }
+  const groupId = activeProject().workspace.activeGroupId;
+  const visiblePlacement = createFocusedTabGroupPlacement(groupId);
+  const session = await launchAgentTerminal(agent, groupId, { visiblePlacement });
+  if (!session || session.kind !== "terminal") {
+    throw new Error("Could not create an automation agent session.");
+  }
+  const nativeSessionId = nativeSessionIdForProjectSidebarSession(project.projectId, session.sessionId);
+  window.setTimeout(() => {
+    postNative({ sessionId: nativeSessionId, text: prompt, type: "writeTerminalText" });
+    postNative({ sessionId: nativeSessionId, type: "sendTerminalEnter" });
+  }, PROJECT_BOARD_AGENT_PROMPT_STAGING_DELAY_MS);
+  automationRunBySessionId.set(session.sessionId, {
+    automationId: automation.id,
+    projectId: project.projectId,
+    runId: run.id,
+    sessionProjectId: project.projectId,
+  });
+  run.sessionId = session.sessionId;
+  return project;
+}
+
+function launchThreadAutomationRun(
+  project: NativeProject,
+  executionMode: Extract<AutomationExecutionMode, { kind: "thread" }>,
+  prompt: string,
+  run: AutomationRun,
+): NativeProject {
+  if (executionMode.expiresAt && Date.parse(executionMode.expiresAt) <= Date.now()) {
+    throw new Error(AUTOMATION_THREAD_EXPIRED_ERROR);
+  }
+  const sessionReference = resolveProjectBoardLinkSessionReference(project, executionMode.sessionId);
+  const sessionProject = sessionReference.project;
+  if (!sessionProject) {
+    throw new Error(`${AUTOMATION_NEEDS_ATTENTION_ERROR_PREFIX} thread session is no longer available`);
+  }
+  const session = findTerminalSessionInProject(sessionProject, sessionReference.sessionId);
+  if (!session) {
+    throw new Error(`${AUTOMATION_NEEDS_ATTENTION_ERROR_PREFIX} thread session is no longer available`);
+  }
+  if (session.isSleeping === true) {
+    setNativeSessionSleeping(
+      createCombinedProjectSessionId(sessionProject.projectId, session.sessionId),
+      false,
+    );
+  }
+  const nativeSessionId = nativeSessionIdForProjectSidebarSession(
+    sessionProject.projectId,
+    session.sessionId,
+  );
+  window.setTimeout(() => {
+    postNative({ sessionId: nativeSessionId, text: prompt, type: "writeTerminalText" });
+    postNative({ sessionId: nativeSessionId, type: "sendTerminalEnter" });
+  }, PROJECT_BOARD_AGENT_PROMPT_STAGING_DELAY_MS);
+  automationRunBySessionId.set(session.sessionId, {
+    automationId: run.automationId,
+    projectId: project.projectId,
+    runId: run.id,
+    sessionProjectId: sessionProject.projectId,
+  });
+  run.sessionId = session.sessionId;
+  return sessionProject;
+}
+
+async function classifyCompletedAutomationRun(
+  sidebarSessionId: string,
+  completedTerminalText?: string,
+): Promise<void> {
+  const reference = automationRunBySessionId.get(sidebarSessionId);
+  if (!reference) {
+    return;
+  }
+  automationRunBySessionId.delete(sidebarSessionId);
+  const nativeSessionId = nativeSessionIdForProjectSidebarSession(
+    reference.sessionProjectId,
+    sidebarSessionId,
+  );
+  let status: AutomationRunStatus = "needs_attention";
+  let findingsSummary: string | undefined;
+  try {
+    const terminalText =
+      completedTerminalText !== undefined
+        ? completedTerminalText
+        : (await readNativeTerminalText(nativeSessionId, { timeoutMs: 5_000 })).text ?? "";
+    const parsed = parseAutomationResult(terminalText);
+    if (parsed.result) {
+      status = parsed.result;
+      findingsSummary = parsed.summary;
+    }
+  } catch (error) {
+    findingsSummary = error instanceof Error ? error.message : String(error);
+  }
+  patchAutomationRun(
+    reference.projectId,
+    reference.runId,
+    {
+      completedAt: new Date().toISOString(),
+      findingsSummary,
+      isUnread: status !== "no_findings",
+      status,
+    },
+    "completeAutomationRun",
+  );
+  publish();
+}
+
+function failAutomationRunForTerminalError(sidebarSessionId: string, message: string): void {
+  const reference = automationRunBySessionId.get(sidebarSessionId);
+  if (!reference) {
+    return;
+  }
+  automationRunBySessionId.delete(sidebarSessionId);
+  patchAutomationRun(
+    reference.projectId,
+    reference.runId,
+    {
+      completedAt: new Date().toISOString(),
+      errorMessage: message.trim() || "Automation terminal error.",
+      isUnread: true,
+      status: "failed",
+    },
+    "automationTerminalError",
+  );
+  publish();
+}
+
 async function handleProjectBoardRequest(request: ProjectBoardBridgeRequest): Promise<void> {
   const project = resolveProjectBoardProject(request);
   if (!project) {
@@ -21985,6 +23042,10 @@ async function handleProjectBoardRequest(request: ProjectBoardBridgeRequest): Pr
     return;
   }
   try {
+    if (request.action.startsWith("automation")) {
+      await handleProjectAutomationRequest(project, request);
+      return;
+    }
     switch (request.action) {
       case "getState":
         postProjectBoardResponse(request, createProjectBoardConversationState(project));
@@ -22209,6 +23270,24 @@ function requireProjectBoardBeadId(request: ProjectBoardBridgeRequest): string {
 function postProjectBoardResponse(
   request: ProjectBoardBridgeRequest,
   payload?: ProjectBoardConversationState,
+  error?: string,
+): void {
+  postNative({
+    payloadJson: JSON.stringify({
+      error,
+      ok: !error,
+      payload,
+      requestId: request.requestId,
+    }),
+    projectId: request.projectId,
+    requestId: request.requestId,
+    type: "projectBoardResponse",
+  });
+}
+
+function postProjectAutomationsResponse(
+  request: ProjectBoardBridgeRequest,
+  payload?: ProjectAutomationsBridgeState,
   error?: string,
 ): void {
   postNative({
@@ -26749,6 +27828,7 @@ window.addEventListener("ghostex-native-host-event", (event) => {
       if (handleNativeSidebarCommandSessionExit(sidebarSessionId, hostEvent.exitCode)) {
         return;
       }
+      void classifyCompletedAutomationRun(sidebarSessionId, hostEvent.text);
     } else if (hostEvent.type === "terminalError") {
       clearNativeTerminalSurfaceCreationPending(sidebarSessionId);
       const previousActivity = terminalState.activity;
@@ -26756,6 +27836,7 @@ window.addEventListener("ghostex-native-host-event", (event) => {
       terminalState.activity = "attention";
       terminalState.terminalTitle = hostEvent.message;
       nativeWorkingStartedAtBySessionId.delete(sidebarSessionId);
+      failAutomationRunForTerminalError(sidebarSessionId, hostEvent.message);
       if (previousActivity !== "attention") {
         if (previousActivity === "working") {
           markNativeSessionSemanticActivityAt(sidebarSessionId, "attention", "terminal-error");
@@ -28525,6 +29606,8 @@ if (
       publish();
     }
     void refreshProviderSessionStates("startup");
+    recoverAutomationRunSessionIndex();
+    rearmAutomationTimers();
     runNativeAutoSleepMonitor("startup");
     scheduleNativeT3RuntimePrewarm(activeProjectId, "startup");
     openTipsAndTricksOnFirstLaunch();
