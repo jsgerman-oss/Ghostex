@@ -8,6 +8,29 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
         <link>https://github.com/maddada/Ghostex/releases</link>
         <description>Sparkle appcast for Ghostex macOS releases.</description>
         <item>
+            <title>4.0.2</title>
+            <pubDate>Mon, 08 Jun 2026 17:30:52 +0400</pubDate>
+            <sparkle:fullReleaseNotesLink>https://github.com/maddada/Ghostex/releases/tag/v4.0.2</sparkle:fullReleaseNotesLink>
+            <sparkle:version>40002</sparkle:version>
+            <sparkle:shortVersionString>4.0.2</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <description sparkle:format="markdown"><![CDATA[# Ghostex 4.0.2
+
+- Installed macOS builds now package the full embedded code-server runtime, reuse its Node 22 binary for gxserver, include the bundled Beads CLI, and validate that packaged runtime during release builds.
+- Source tab packaging is more reliable because the embedded VS Code runtime carries its ripgrep helper files and cleans up temporary build metadata after packaging.
+- Terminal image paste can convert clipboard images into previewable Markdown links with Cmd+V or Ctrl+V, and Settings -> Terminal Behavior now includes a Paste previewable images toggle for users who want normal clipboard behavior.
+- gxserver presentation updates now carry stable attention event IDs, so macOS can play completion sounds and notifications once for fresh attention events without replaying them during startup or stream recovery.
+- Command-pane completions keep using the action completion sound path and write status updates through per-process temp files, reducing missed completion sounds during concurrent status updates.
+- T3 Code runtime startup is coalesced while Project Editor panes are retargeting, reducing duplicate startup probes and layout churn when opening, closing, or switching embedded T3 panes.
+- Git agent workflows no longer pin duplicate persistent "running" toasts when the visible agent terminal already shows the workflow progress.
+- Ghostex Android auto-scroll now follows new output only when the terminal is already near the bottom, so users can scroll through history without selecting text first.
+
+[Full release notes](https://github.com/maddada/Ghostex/releases/tag/v4.0.2)
+]]></description>
+            <enclosure url="https://github.com/maddada/Ghostex/releases/download/v4.0.2/ghostex-4.0.2-arm64.dmg" length="606998090" type="application/octet-stream" sparkle:edSignature="wEdEOmmkFNB6ACW9YCh0aYGW3SV7rygJNRxzrp6TZUMbTeGjStME5hhUmMhxw5eVl2ZW3QFWHD8WI2Uqbs8uBA=="/>
+        </item>
+        <item>
             <title>4.0.1</title>
             <pubDate>Mon, 08 Jun 2026 10:21:45 +0400</pubDate>
             <sparkle:fullReleaseNotesLink>https://github.com/maddada/Ghostex/releases/tag/v4.0.1</sparkle:fullReleaseNotesLink>
@@ -81,19 +104,9 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
             <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
             <enclosure url="https://github.com/maddada/Ghostex/releases/download/v3.25.0/ghostex-3.25.0-arm64.dmg" length="186517019" type="application/octet-stream" sparkle:edSignature="VxG1Xv3iTTHzvjk6sappYLj9rqBVtmZjwuDcUPFUihj8AAeSk8X2Ym2o8L/7S9fk+WHggw/hY152uvjQsYNuAA=="/>
         </item>
-        <item>
-            <title>3.24.0</title>
-            <pubDate>Sat, 30 May 2026 08:26:51 +0400</pubDate>
-            <sparkle:fullReleaseNotesLink>https://github.com/maddada/Ghostex/releases/tag/v3.24.0</sparkle:fullReleaseNotesLink>
-            <sparkle:version>32400</sparkle:version>
-            <sparkle:shortVersionString>3.24.0</sparkle:shortVersionString>
-            <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
-            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
-            <enclosure url="https://github.com/maddada/Ghostex/releases/download/v3.24.0/ghostex-3.24.0-arm64.dmg" length="187333127" type="application/octet-stream" sparkle:edSignature="QHHqw9d2zNXe6dpoIQ3fwfriP2HF5e0WMfr493dYkDwk9yPOjWVkgeXPeqPHhgcgz5T+j/+JxAgZaoloQFSnCg=="/>
-        </item>
     </channel>
 </rss>
 <!-- sparkle-signatures:
-edSignature: oRjEz/tknDzTkuH5bOKBlIiNFNgFwPQ9QVXqIPJlaO/aK69AnSDaFAwE0UqLmqKQTdyircHMlYVABzxRTTgACw==
-length: 8395
+edSignature: tgamKDMpBWEug5CwGLkmZExdstP1IgH/e5pnrUaiJInGNyBMzpYcBDE7tvHKtwKLzDuraHmsGJ0WHwUXmP/4Dg==
+length: 10078
 -->
