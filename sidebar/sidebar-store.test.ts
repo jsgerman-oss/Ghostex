@@ -153,6 +153,134 @@ describe("sidebar store", () => {
     expect(after.sessionsById["session-2"]).toBe(previousSiblingSession);
   });
 
+  test("should patch changed groups and order without replacing unchanged groups", () => {
+    useSidebarStore
+      .getState()
+      .applySidebarMessage(
+        createHydrateMessage([
+          createGroup("group-1", [
+            createSession("session-1", "groups"),
+            createSession("session-2", "notes"),
+          ]),
+          createGroup("group-2", [createSession("session-3", "logs")]),
+        ]),
+      );
+
+    const before = useSidebarStore.getState();
+    const unchangedGroup = before.groupsById["group-2"];
+    const unchangedSession = before.sessionsById["session-3"];
+
+    useSidebarStore.getState().applyGroupsChangedMessage({
+      groupOrder: ["group-2", "group-1", "group-3"],
+      groups: [
+        createGroup("group-1", [
+          createSession("session-1", "groups"),
+          createSession("session-4", "scratch"),
+        ]),
+        createGroup("group-3", [createSession("session-5", "new project")]),
+      ],
+      removedSessionIds: ["session-2"],
+      revision: 2,
+      type: "sidebarGroupsChanged",
+    });
+
+    const after = useSidebarStore.getState();
+    expect(after.revision).toBe(2);
+    expect(after.groupOrder).toEqual(["group-2", "group-1", "group-3"]);
+    expect(after.workspaceGroupIds).toEqual(["group-2", "group-1", "group-3"]);
+    expect(after.groupsById["group-2"]).toBe(unchangedGroup);
+    expect(after.sessionsById["session-3"]).toBe(unchangedSession);
+    expect(after.sessionIdsByGroup["group-1"]).toEqual(["session-1", "session-4"]);
+    expect(after.sessionsById["session-2"]).toBeUndefined();
+    expect(after.sessionIdsByGroup["group-3"]).toEqual(["session-5"]);
+  });
+
+  test("should apply group removals from sidebar group patches", () => {
+    useSidebarStore
+      .getState()
+      .applySidebarMessage(
+        createHydrateMessage([
+          createGroup("group-1", [createSession("session-1", "groups")]),
+          createGroup("group-2", [createSession("session-2", "notes")]),
+        ]),
+      );
+
+    useSidebarStore.getState().applyGroupsChangedMessage({
+      groupOrder: ["group-1"],
+      groups: [],
+      removedGroupIds: ["group-2"],
+      revision: 2,
+      type: "sidebarGroupsChanged",
+    });
+
+    const after = useSidebarStore.getState();
+    expect(after.groupOrder).toEqual(["group-1"]);
+    expect(after.groupsById["group-2"]).toBeUndefined();
+    expect(after.sessionIdsByGroup["group-2"]).toBeUndefined();
+    expect(after.sessionsById["session-2"]).toBeUndefined();
+  });
+
+  test("should keep local overlays during partial group patches until the host confirms them", () => {
+    useSidebarStore
+      .getState()
+      .applySidebarMessage(
+        createHydrateMessage([
+          createGroup("group-1", [
+            createSession("session-1", "groups"),
+            createSession("session-2", "notes"),
+          ]),
+          createGroup("group-2", [createSession("session-3", "logs")]),
+        ]),
+      );
+
+    useSidebarStore.getState().hideSessionLocally("session-2");
+    useSidebarStore.getState().setSessionSleepingLocally("session-3", true);
+
+    useSidebarStore.getState().applyGroupsChangedMessage({
+      groupOrder: ["group-1", "group-2"],
+      groups: [
+        createGroup("group-1", [
+          createSession("session-1", "groups"),
+          createSession("session-2", "notes"),
+        ]),
+        createGroup("group-2", [createSession("session-3", "logs")]),
+      ],
+      revision: 2,
+      type: "sidebarGroupsChanged",
+    });
+
+    expect(useSidebarStore.getState().sessionsById["session-2"]).toBeUndefined();
+    expect(useSidebarStore.getState().localHiddenSessionIds).toEqual({
+      "session-2": true,
+    });
+    expect(useSidebarStore.getState().sessionsById["session-3"]?.isSleeping).toBe(true);
+    expect(useSidebarStore.getState().localSessionSleepingOverrides).toEqual({
+      "session-3": true,
+    });
+
+    useSidebarStore.getState().applyGroupsChangedMessage({
+      groupOrder: ["group-1", "group-2"],
+      groups: [
+        createGroup("group-1", [createSession("session-1", "groups")]),
+        createGroup("group-2", [
+          {
+            ...createSession("session-3", "logs"),
+            isRunning: false,
+            isSleeping: true,
+            lifecycleState: "sleeping",
+          },
+        ]),
+      ],
+      removedSessionIds: ["session-2"],
+      revision: 3,
+      type: "sidebarGroupsChanged",
+    });
+
+    expect(useSidebarStore.getState().localHiddenSessionIds).toEqual({});
+    expect(useSidebarStore.getState().localSessionSleepingOverrides).toEqual({});
+    expect(useSidebarStore.getState().sessionsById["session-3"]?.isSleeping).toBe(true);
+  });
+
   test("should keep locally closed sessions hidden until the host snapshot drops them", () => {
     useSidebarStore
       .getState()

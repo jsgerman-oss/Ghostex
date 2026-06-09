@@ -751,6 +751,9 @@ export const EmptySidebarDoubleClickEnabled: Story = {
 };
 
 export const SessionCardActions: Story = {
+  args: {
+    showSessionCommandCopyActions: true,
+  },
   play: async ({ canvas, canvasElement, step, userEvent }) => {
     const storyDocument = canvasElement.ownerDocument;
     const body = within(storyDocument.body);

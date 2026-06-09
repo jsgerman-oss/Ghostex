@@ -23,6 +23,7 @@ import {
   createNativePaneOwnerSelectionKey,
   normalizeNativeLayoutSyncValue,
 } from "./native-layout-sync-key";
+import { collectActivePaneOwnerSessionIds } from "../../shared/session-pane-layout-active-owners";
 import {
   resolveNativeSessionTransitionFocusTarget,
   type NativeGxserverSessionTransitionOrigin,
@@ -68,12 +69,15 @@ import {
   type SidebarActiveSessionsSortMode,
   type SidebarDaemonSessionItem,
   type SidebarDaemonSessionsStateMessage,
+  type SidebarGroupsChangedMessage,
+  type SidebarHudChangedMessage,
   type SidebarT3SessionItem,
   type SidebarHydrateMessage,
   type SidebarPreviousSessionItem,
   type SidebarRecentProject,
   type SidebarSessionGroup,
   type SidebarSessionItem,
+  type SidebarSessionPresentationChangedMessage,
   type SidebarSessionTag,
   type SidebarTheme,
   type SidebarToExtensionMessage,
@@ -691,6 +695,12 @@ type NativeHostCommand =
       type: "remoteGxserverConnect";
     }
   | {
+      password: string;
+      remoteMachineId: string;
+      requestId: string;
+      type: "remoteSshPasswordSave";
+    }
+  | {
       method: NativeGxserverHttpMethod;
       paramsJson?: string;
       path: NativeGxserverRequestCommand["path"];
@@ -912,6 +922,14 @@ type NativeHostEvent =
   | { payloadJson: string; type: "gxserverStatus" }
   | { payloadJson: string; remoteMachineId: string; type: "remoteGxserverStatus" }
   | { payloadJson: string; remoteMachineId: string; type: "remoteGxserverPresentationEvent" }
+  | {
+      error?: string;
+      hasPassword: boolean;
+      ok: boolean;
+      remoteMachineId: string;
+      requestId: string;
+      type: "remoteSshPasswordSaveResult";
+    }
   | {
       bodyJson?: string;
       error?: string;
@@ -1380,6 +1398,7 @@ const pendingRemoteGxserverResults = new Map<
     timeout: number;
   }
 >();
+const silentRemoteSshPasswordSaveRequestIds = new Set<string>();
 const remoteGxserverPresentationRecoveryTimeouts = new Map<string, number>();
 const pendingPersistenceSessionStateResults = new Map<
   string,
@@ -1470,8 +1489,39 @@ function isQuickProject(project: Pick<NativeProject, "isChat" | "isQuick">): boo
   return project.isQuick === true || project.isChat === true;
 }
 
-function isRemoteAttachCarrierProject(project: Pick<NativeProject, "isRemoteAttachCarrier">): boolean {
-  return project.isRemoteAttachCarrier === true;
+type RemoteAttachCarrierProjectCandidate = {
+  isRemoteAttachCarrier?: boolean;
+  name?: string;
+  path?: string;
+  projectId?: string;
+  title?: string;
+};
+
+function remoteAttachCarrierProjectPath(): string {
+  return `${nativeGhostexHomeDirectory().replace(/\/+$/u, "")}/remote-attach-carriers`;
+}
+
+function isRemoteAttachCarrierProject(project: RemoteAttachCarrierProjectCandidate): boolean {
+  if (project.isRemoteAttachCarrier === true) {
+    return true;
+  }
+  const path = project.path?.trim();
+  if (
+    path &&
+    normalizeNativePathForProjectComparison(path) ===
+      normalizeNativePathForProjectComparison(remoteAttachCarrierProjectPath())
+  ) {
+    return true;
+  }
+  const title = (project.name ?? project.title ?? "").trim();
+  /*
+   * CDXC:RemoteAttach 2026-06-09-18:49:
+   * Remote attach carrier projects are native implementation details. Detect the
+   * canonical carrier by marker, storage path, or stable generated id so local
+   * gxserver presentation cannot resurrect old carrier sessions under Projects
+   * after app restart when the local-only marker has already been dropped.
+   */
+  return project.projectId === createProjectId("remote-attach-carrier") && title === "Remote Attach";
 }
 
 function quickKindForProject(
@@ -1702,6 +1752,7 @@ const restoredProjectState = readStoredProjects();
 let projects: NativeProject[] = restoredProjectState.projects;
 let activeProjectId = restoredProjectState.activeProjectId;
 let revision = 0;
+let lastPublishedSidebarMessage: SidebarHydrateMessage | undefined;
 let nextNativeLayoutFocusRequestId = 0;
 let pendingNativeLayoutFocusRequest:
   | { reason: string; requestId: number; sessionId: string }
@@ -1820,6 +1871,7 @@ const nativeInPlaceReloadCloseBySessionId = new Map<
 const nativeActivitySuppressedUntilBySessionId = new Map<string, number>();
 const nativeWorkingStartedAtBySessionId = new Map<string, number>();
 const nativePersistedAgentHookEventSyncKeyBySessionId = new Map<string, string>();
+const nativeRejectedPersistedAgentIdentityConflictKeyBySessionId = new Map<string, string>();
 const nativeAttentionEnteredAtBySessionId = new Map<string, number>();
 const nativeAttentionEventIdBySessionId = new Map<string, string>();
 const nativeAttentionAcknowledgementTimeoutBySessionId = new Map<string, number>();
@@ -2848,7 +2900,13 @@ function applyGxserverPresentationDelta(delta: GxserverPresentationDelta, revisi
     revision,
     sessionCount: nextPresentation.sessions.length,
   });
-  publish();
+  if (!lastPublishedSidebarMessage) {
+    publish();
+    return;
+  }
+  publishSidebarPatch((sidebarMessage) =>
+    publishGxserverPresentationSidebarPatch(delta, sidebarMessage),
+  );
 }
 
 function applyGxserverPresentationSessionsToNativePaneChrome(
@@ -2887,6 +2945,9 @@ function applyGxserverPresentationSessionToNativePaneChrome(
 
   let didChange = false;
   const wasGeneratingFirstPromptTitle = terminalState?.firstPromptAutoRenameInProgress === true;
+  const shouldSubmitGeneratedFirstPromptTitleEnter =
+    shouldSubmitStagedGeneratedFirstPromptTitle(wasGeneratingFirstPromptTitle, presentation) &&
+    localSession?.kind === "terminal";
   if (terminalState) {
     const previousActivity = terminalState.activity;
     const attentionEventId = getNativeGxserverPresentationAttentionEventId(presentation);
@@ -2932,26 +2993,43 @@ function applyGxserverPresentationSessionToNativePaneChrome(
 
       CDXC:GxserverSessionTitle 2026-06-05-12:43:
       When gxserver finishes a generated first-prompt title, it has staged `/rename <title>` as text only. The local macOS host must submit that staged command through sendTerminalEnter, not by writing carriage-return text, because agent prompt editors can treat typed CR as a newline instead of the Enter submit action.
+
+      CDXC:GxserverSessionTitle 2026-06-09-20:21:
+      Keep the blocking "Generating title" overlay visible until after the native Enter bridge submits the staged generated rename. Clearing this flag before sendTerminalEnter re-enables user input while `/rename <title>` is still sitting in the agent prompt editor.
       */
-      terminalState.firstPromptAutoRenameInProgress = presentation.isGeneratingFirstPromptTitle;
-      didChange = true;
+      if (shouldSubmitGeneratedFirstPromptTitleEnter && presentation.isGeneratingFirstPromptTitle === false) {
+        terminalState.firstPromptAutoRenameInProgress = true;
+      } else {
+        terminalState.firstPromptAutoRenameInProgress = presentation.isGeneratingFirstPromptTitle;
+        didChange = true;
+      }
     }
   }
-  if (
-    shouldSubmitStagedGeneratedFirstPromptTitle(wasGeneratingFirstPromptTitle, presentation) &&
-    localSession?.kind === "terminal"
-  ) {
+  if (shouldSubmitGeneratedFirstPromptTitleEnter) {
     const sessionKey = gxserverTitleProjectionKey(presentation.projectId, presentation.sessionId);
     if (!submittedFirstPromptGeneratedTitleEnterBySessionKey.has(sessionKey)) {
       submittedFirstPromptGeneratedTitleEnterBySessionKey.add(sessionKey);
       window.setTimeout(() => {
+        const nativeSessionId = nativeSessionIdForProjectSidebarSession(
+          presentation.projectId,
+          presentation.sessionId,
+        );
         postNative({
-          sessionId: nativeSessionIdForProjectSidebarSession(
-            presentation.projectId,
-            presentation.sessionId,
-          ),
+          sessionId: nativeSessionId,
           type: "sendTerminalEnter",
         });
+        const currentTerminalState = terminalStateById.get(presentation.sessionId);
+        const currentPresentation = findGxserverPresentationSession(
+          presentation.projectId,
+          presentation.sessionId,
+        );
+        if (
+          currentTerminalState?.firstPromptAutoRenameInProgress === true &&
+          currentPresentation?.isGeneratingFirstPromptTitle !== true
+        ) {
+          currentTerminalState.firstPromptAutoRenameInProgress = false;
+          publish();
+        }
       }, AUTO_SUBMIT_STAGED_RENAME_DELAY_MS);
     }
   }
@@ -3290,6 +3368,10 @@ function remoteGxserverStatusFailureToast(
    * Native remote errors can be raw SSH or gxserver details. Keep the stable
    * recovery copy first and append native detail after it so the toast remains
    * actionable even when the low-level message is terse.
+   *
+   * CDXC:RemoteMachines 2026-06-09-18:23:
+   * Remote SSH auth can use either an identity file or a Keychain-saved
+   * password, so failure guidance must mention both supported credential paths.
    */
   switch (status.state) {
     case "invalid":
@@ -3303,7 +3385,7 @@ function remoteGxserverStatusFailureToast(
     case "sshFailed":
       return {
         description: remoteFailureDescription(
-          "SSH could not authenticate. Check the saved SSH user, host, port, identity file, and that the key is loaded with ssh-add or saved in Keychain.",
+          "SSH could not authenticate. Check the saved SSH user, host, port, identity file, or saved password. If you use a key, make sure it is loaded with ssh-add or saved in Keychain.",
           nativeMessage,
         ),
         title: `SSH failed for ${machineName}`,
@@ -4378,6 +4460,7 @@ function shouldPersistNativeSidebarDiagnostic(event: string): boolean {
     normalizedEvent.includes("missing") ||
     normalizedEvent.includes("timeout") ||
     normalizedEvent.includes("exhausted") ||
+    normalizedEvent.includes("rejected") ||
     normalizedEvent.includes("crash") ||
     normalizedEvent.includes("unhealthy") ||
     normalizedEvent.includes("portbusy")
@@ -4802,25 +4885,6 @@ function collectSessionPaneLayoutSessionIds(node: SessionPaneLayoutNode | undefi
       return node.sessionIds;
     case "split":
       return node.children.flatMap((child) => collectSessionPaneLayoutSessionIds(child));
-  }
-}
-
-function collectActivePaneOwnerSessionIds(node: SessionPaneLayoutNode | undefined): string[] {
-  if (!node) {
-    return [];
-  }
-  switch (node.kind) {
-    case "leaf":
-      return [node.sessionId];
-    case "tabs": {
-      const activeSessionId =
-        node.activeSessionId && node.sessionIds.includes(node.activeSessionId)
-          ? node.activeSessionId
-          : node.sessionIds[0];
-      return activeSessionId ? [activeSessionId] : [];
-    }
-    case "split":
-      return node.children.flatMap((child) => collectActivePaneOwnerSessionIds(child));
   }
 }
 
@@ -5915,6 +5979,78 @@ function connectRemoteGxserver(remoteMachineId: string, installApproved = false)
   });
 }
 
+function saveRemoteMachinePassword(
+  remoteMachineId: string,
+  password: string,
+  options: { silent?: boolean } = {},
+): void {
+  const requestId = `remote-ssh-password-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+  if (options.silent === true) {
+    silentRemoteSshPasswordSaveRequestIds.add(requestId);
+  }
+  /*
+   * CDXC:RemoteMachines 2026-06-09-18:23:
+   * Remote SSH passwords are one-shot native commands. React may collect the
+   * typed password, but native-sidebar must forward it directly to Swift for
+   * Keychain storage and keep only the request id plus saved-password marker.
+   */
+  postNative({
+    password,
+    remoteMachineId,
+    requestId,
+    type: "remoteSshPasswordSave",
+  });
+}
+
+function syncRemovedRemoteMachinePasswords(
+  previousSettings: ghostexSettings,
+  nextSettings: ghostexSettings,
+): void {
+  const nextMachineIds = new Set(nextSettings.remoteMachines.map((machine) => machine.id));
+  for (const machine of previousSettings.remoteMachines) {
+    if (machine.sshPasswordSaved === true && !nextMachineIds.has(machine.id)) {
+      saveRemoteMachinePassword(machine.id, "", { silent: true });
+    }
+  }
+}
+
+function handleRemoteSshPasswordSaveResult(
+  hostEvent: Extract<NativeHostEvent, { type: "remoteSshPasswordSaveResult" }>,
+): void {
+  const silent = silentRemoteSshPasswordSaveRequestIds.delete(hostEvent.requestId);
+  if (!hostEvent.ok) {
+    if (!silent) {
+      showAppToast(
+        "error",
+        "SSH password not saved",
+        hostEvent.error || "macOS Keychain rejected the remote machine password.",
+      );
+    }
+    return;
+  }
+  if (settings.remoteMachines.some((machine) => machine.id === hostEvent.remoteMachineId)) {
+    const nextRemoteMachines = settings.remoteMachines.map((machine) => {
+      if (machine.id !== hostEvent.remoteMachineId) {
+        return machine;
+      }
+      if (hostEvent.hasPassword) {
+        return { ...machine, sshPasswordSaved: true };
+      }
+      const nextMachine = { ...machine };
+      delete nextMachine.sshPasswordSaved;
+      return nextMachine;
+    });
+    saveSettings({ ...settings, remoteMachines: nextRemoteMachines });
+  }
+  if (!silent) {
+    showAppToast(
+      "success",
+      hostEvent.hasPassword ? "SSH password saved" : "SSH password removed",
+      hostEvent.hasPassword ? "The password is stored in macOS Keychain." : "The Keychain password was removed.",
+    );
+  }
+}
+
 function readNativeTerminalText(
   nativeSessionId: string,
   options: { source?: "screen" | "visible"; timeoutMs?: number } = {},
@@ -6268,6 +6404,7 @@ function saveSettings(nextSettings: ghostexSettings): void {
   syncGhosttyTerminalSettings(settings, previousSettings);
   syncCodeServerRuntimeSettings(settings, previousSettings);
   syncAutoSleepSettings(settings, previousSettings);
+  syncRemovedRemoteMachinePasswords(previousSettings, settings);
   if (
     previousSettings.showUntrackedProjectDiffWhenNoTrackedChanges !==
     settings.showUntrackedProjectDiffWhenNoTrackedChanges
@@ -13680,17 +13817,41 @@ function sidebarSessionIdForNativeSession(sessionId: string): string {
   return durableReference?.sessionId ?? sessionId;
 }
 
+function nativeSessionIdFromGlobalSessionRef(value: string): string | undefined {
+  /*
+   * CDXC:PromptEditor 2026-06-09-21:50:
+   * Prompt-editor close may carry the current gxserver S:P:G ref while sidebar
+   * native focus maps are keyed by P:G. Normalize global refs at the bridge
+   * boundary so the normal click-equivalent focus path can reveal the right
+   * project/session without teaching workspace state to store server ids.
+  */
+  const parts = value.trim().split(":");
+  const serverId = parts[0] ?? "";
+  const projectId = parts[1] ?? "";
+  const sessionId = parts[2] ?? "";
+  if (
+    parts.length === 3 &&
+    /^S[0-9][a-z0-9]$/u.test(serverId) &&
+    /^P[0-9][a-z0-9]{3}$/u.test(projectId) &&
+    /^G[0-9][a-z0-9]{3}$/u.test(sessionId)
+  ) {
+    return `${projectId}:${sessionId}`;
+  }
+  return undefined;
+}
+
 function focusSessionFromPromptEditorClose(nativeSessionId: string): void {
   /*
    * CDXC:PromptEditor 2026-06-09-11:19:
    * When the Ctrl+G Monaco prompt editor closes after the launching terminal has been hidden or deselected by sidebar navigation, native must reuse the sidebar session-focus path rather than directly focusing an AppKit surface. This resolves durable native ids, reveals the tab/project, wakes sleeping sessions if necessary, updates sidebar selection, and publishes the normal native layout focus request just like clicking the session in the sidebar.
    */
-  const durableReference = parseDurableNativeSessionId(nativeSessionId);
+  const normalizedNativeSessionId = nativeSessionIdFromGlobalSessionRef(nativeSessionId) ?? nativeSessionId;
+  const durableReference = parseDurableNativeSessionId(normalizedNativeSessionId);
   const sidebarSessionId = durableReference
     ? createCombinedProjectSessionId(durableReference.project.projectId, durableReference.sessionId)
-    : sidebarSessionIdForNativeSession(nativeSessionId);
+    : sidebarSessionIdForNativeSession(normalizedNativeSessionId);
   appendTerminalFocusDebugLog("nativeFocusTrace.promptEditorSidebarReturnFocus", {
-    nativeSessionId,
+    nativeSessionId: normalizedNativeSessionId,
     sidebarSessionId,
   });
   focusTerminal(sidebarSessionId);
@@ -14981,7 +15142,9 @@ function createPresentationSidebarGroups(
   const localProjectsById = new Map(projects.map((project) => [project.projectId, project]));
   const presentationSessionsByProject = createPresentationSessionsByProjectFromGroups(presentation);
   const visiblePresentationProjects = presentation.projects.filter(
-    (project) => !isGxserverPresentationProjectLocallyHidden(project.projectId),
+    (project) =>
+      !isGxserverPresentationProjectLocallyHidden(project.projectId) &&
+      !isRemoteAttachCarrierProject(project),
   );
   const chatProjects = orderGxserverPresentationProjectsForNativeSidebar(
     visiblePresentationProjects.filter((project) =>
@@ -15010,7 +15173,10 @@ function createPresentationSidebarGroups(
       CDXC:SidebarChats 2026-06-01-19:58:
       Projects under Ghostex chat roots are projectless chat containers. Render their terminal sessions inside the synthetic Chats group and exclude those project rows from the main Projects list so gxserver presentation keeps the pre-cutover Quick/Chats behavior.
       */
-      if (localProject?.isRecentProject === true || localProject?.isRemoteAttachCarrier === true) {
+      if (
+        localProject?.isRecentProject === true ||
+        isRemoteAttachCarrierProject(localProject ?? project)
+      ) {
         return undefined;
       }
       return createPresentationProjectSidebarGroup(
@@ -16024,7 +16190,12 @@ type PublishOptions = {
   nativeLayoutBeforeSidebarHydrate?: boolean;
 };
 
-function publish(options: PublishOptions = {}): void {
+type PublishContext = {
+  sidebarMessage: SidebarHydrateMessage;
+  syncNativeLayoutForPublish: () => void;
+};
+
+function preparePublishContext(): PublishContext {
   const didMaterializeVirtualPaneTabs = ensureActiveWorkspaceVirtualPaneTabs("publish");
   const didCreateNativeSession = ensureVisibleNativeSessions("publish");
   const sidebarMessage = buildSidebarMessage();
@@ -16033,14 +16204,14 @@ function publish(options: PublishOptions = {}): void {
       force: didCreateNativeSession || didMaterializeVirtualPaneTabs,
       sidebarMessage,
     });
-  if (options.nativeLayoutBeforeSidebarHydrate === true) {
-    /*
-     * CDXC:SidebarSessionFocus 2026-06-08-09:31:
-     * Sidebar terminal switching must surface the native pane before the synchronous React sidebar hydrate. The freshly built sidebarMessage already contains the projected pane chrome syncNativeLayout needs, so focus-triggered publishes can post setActiveTerminalSet first and let the sidebar UI reconcile later in the same turn.
-     */
-    syncNativeLayoutForPublish();
-  }
-  sidebarBus.post(sidebarMessage);
+  return {
+    sidebarMessage,
+    syncNativeLayoutForPublish,
+  };
+}
+
+function finishPublishContext(context: PublishContext, options: PublishOptions = {}): void {
+  const { sidebarMessage, syncNativeLayoutForPublish } = context;
   agentManagerXBridgeClient.publish(createAgentManagerXWorkspaceSnapshots(sidebarMessage));
   /**
    * CDXC:AppModals 2026-04-26-15:10
@@ -16055,6 +16226,210 @@ function publish(options: PublishOptions = {}): void {
   }
   syncNativeSessionStatusIndicators(sidebarMessage);
   syncNativePetOverlayState(sidebarMessage);
+}
+
+function publish(options: PublishOptions = {}): void {
+  const context = preparePublishContext();
+  if (options.nativeLayoutBeforeSidebarHydrate === true) {
+    /*
+     * CDXC:SidebarSessionFocus 2026-06-08-09:31:
+     * Sidebar terminal switching must surface the native pane before the synchronous React sidebar hydrate. The freshly built sidebarMessage already contains the projected pane chrome syncNativeLayout needs, so focus-triggered publishes can post setActiveTerminalSet first and let the sidebar UI reconcile later in the same turn.
+     */
+    context.syncNativeLayoutForPublish();
+  }
+  sidebarBus.post(context.sidebarMessage);
+  lastPublishedSidebarMessage = context.sidebarMessage;
+  finishPublishContext(context, options);
+}
+
+function publishSidebarPatch(
+  postPatch: (sidebarMessage: SidebarHydrateMessage) => boolean,
+): void {
+  const context = preparePublishContext();
+  /*
+  CDXC:SidebarHydration 2026-06-09-23:01:
+  gxserver websocket deltas should keep native layout, modal mirrors, Agent Manager snapshots, and status indicators synchronized without forcing the sidebar WKWebView through a full hydrate. Build the normal derived snapshot once, post only patch messages to the sidebar webview, then run the existing non-sidebar consumers from that snapshot.
+  */
+  const didPostPatch = postPatch(context.sidebarMessage);
+  if (didPostPatch) {
+    lastPublishedSidebarMessage = context.sidebarMessage;
+  }
+  finishPublishContext(context);
+}
+
+function publishGxserverPresentationSidebarPatch(
+  delta: GxserverPresentationDelta,
+  sidebarMessage: SidebarHydrateMessage,
+): boolean {
+  const previousSidebarMessage = lastPublishedSidebarMessage;
+  if (!previousSidebarMessage) {
+    return false;
+  }
+  const sessionPatch = createGxserverPresentationSessionPatchMessage(
+    delta,
+    previousSidebarMessage.groups,
+    sidebarMessage.groups,
+    sidebarMessage.revision,
+  );
+  let postedPatch = false;
+  if (sessionPatch) {
+    sidebarBus.post(sessionPatch);
+    postedPatch = true;
+  } else {
+    const groupPatch = createSidebarGroupsChangedMessage(
+      previousSidebarMessage.groups,
+      sidebarMessage.groups,
+      sidebarMessage.revision,
+    );
+    if (groupPatch) {
+      sidebarBus.post(groupPatch);
+      postedPatch = true;
+    }
+  }
+
+  if (!haveSameSidebarSerializableValue(previousSidebarMessage.hud, sidebarMessage.hud)) {
+    sidebarBus.post({
+      hud: sidebarMessage.hud,
+      revision: sidebarMessage.revision,
+      type: "sidebarHudChanged",
+    } satisfies SidebarHudChangedMessage);
+    postedPatch = true;
+  }
+
+  appendSidebarRefreshDebugLog("nativeSidebar.gxserver.presentationDelta.sidebarPatch", {
+    deltaType: delta.type,
+    hudPatched: !haveSameSidebarSerializableValue(previousSidebarMessage.hud, sidebarMessage.hud),
+    postedPatch,
+    revision: sidebarMessage.revision,
+    sessionPatched: sessionPatch !== undefined,
+  });
+  return postedPatch;
+}
+
+function createGxserverPresentationSessionPatchMessage(
+  delta: GxserverPresentationDelta,
+  previousGroups: readonly SidebarSessionGroup[],
+  nextGroups: readonly SidebarSessionGroup[],
+  revision: number,
+): SidebarSessionPresentationChangedMessage | undefined {
+  if (!("session" in delta)) {
+    return undefined;
+  }
+  const sidebarSessionId = createCombinedProjectSessionId(
+    delta.session.projectId,
+    delta.session.sessionId,
+  );
+  const previousLocation = findSidebarSessionLocation(previousGroups, sidebarSessionId);
+  const nextLocation = findSidebarSessionLocation(nextGroups, sidebarSessionId);
+  if (!previousLocation || !nextLocation) {
+    return undefined;
+  }
+  if (previousLocation.group.groupId !== nextLocation.group.groupId) {
+    return undefined;
+  }
+  if (
+    !haveSameSidebarSerializableValue(
+      omitSidebarGroupSessions(previousLocation.group),
+      omitSidebarGroupSessions(nextLocation.group),
+    )
+  ) {
+    return undefined;
+  }
+  const previousSessionIds = previousLocation.group.sessions.map((session) => session.sessionId);
+  const nextSessionIds = nextLocation.group.sessions.map((session) => session.sessionId);
+  if (!haveSameStringArray(previousSessionIds, nextSessionIds)) {
+    return undefined;
+  }
+  for (const nextSession of nextLocation.group.sessions) {
+    if (nextSession.sessionId === sidebarSessionId) {
+      continue;
+    }
+    const previousSession = previousLocation.group.sessions.find(
+      (session) => session.sessionId === nextSession.sessionId,
+    );
+    if (!previousSession || !haveSameSidebarSerializableValue(previousSession, nextSession)) {
+      return undefined;
+    }
+  }
+  if (haveSameSidebarSerializableValue(previousLocation.session, nextLocation.session)) {
+    return undefined;
+  }
+  /*
+  CDXC:SidebarHydration 2026-06-09-23:01:
+  Title/activity/lifecycle gxserver deltas often change one visible row while the sidebar tree shape remains identical. Use the existing row-level patch so these high-frequency updates do not rehydrate the whole WKWebView while the user is typing in a terminal.
+  */
+  return {
+    revision,
+    session: nextLocation.session,
+    type: "sessionPresentationChanged",
+  };
+}
+
+function createSidebarGroupsChangedMessage(
+  previousGroups: readonly SidebarSessionGroup[],
+  nextGroups: readonly SidebarSessionGroup[],
+  revision: number,
+): SidebarGroupsChangedMessage | undefined {
+  const previousGroupsById = new Map(previousGroups.map((group) => [group.groupId, group]));
+  const nextGroupsById = new Map(nextGroups.map((group) => [group.groupId, group]));
+  const groups = nextGroups.filter((group) => {
+    const previousGroup = previousGroupsById.get(group.groupId);
+    return !previousGroup || !haveSameSidebarSerializableValue(previousGroup, group);
+  });
+  const removedGroupIds = previousGroups
+    .filter((group) => !nextGroupsById.has(group.groupId))
+    .map((group) => group.groupId);
+  const previousSessionIds = new Set(
+    previousGroups.flatMap((group) => group.sessions.map((session) => session.sessionId)),
+  );
+  const nextSessionIds = new Set(
+    nextGroups.flatMap((group) => group.sessions.map((session) => session.sessionId)),
+  );
+  const removedSessionIds = [...previousSessionIds].filter((sessionId) => !nextSessionIds.has(sessionId));
+  const groupOrder = nextGroups.map((group) => group.groupId);
+  const previousGroupOrder = previousGroups.map((group) => group.groupId);
+  if (
+    groups.length === 0 &&
+    removedGroupIds.length === 0 &&
+    removedSessionIds.length === 0 &&
+    haveSameStringArray(previousGroupOrder, groupOrder)
+  ) {
+    return undefined;
+  }
+  return {
+    groupOrder,
+    groups,
+    removedGroupIds: removedGroupIds.length > 0 ? removedGroupIds : undefined,
+    removedSessionIds: removedSessionIds.length > 0 ? removedSessionIds : undefined,
+    revision,
+    type: "sidebarGroupsChanged",
+  };
+}
+
+function findSidebarSessionLocation(
+  groups: readonly SidebarSessionGroup[],
+  sessionId: string,
+): { group: SidebarSessionGroup; session: SidebarSessionItem } | undefined {
+  for (const group of groups) {
+    const session = group.sessions.find((candidate) => candidate.sessionId === sessionId);
+    if (session) {
+      return { group, session };
+    }
+  }
+  return undefined;
+}
+
+function omitSidebarGroupSessions(group: SidebarSessionGroup): Omit<SidebarSessionGroup, "sessions"> {
+  const { sessions: _sessions, ...groupWithoutSessions } = group;
+  return groupWithoutSessions;
+}
+
+function haveSameSidebarSerializableValue(left: unknown, right: unknown): boolean {
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
+function haveSameStringArray(left: readonly string[], right: readonly string[]): boolean {
+  return left.length === right.length && left.every((value, index) => value === right[index]);
 }
 
 function publishSidebarFocusUpdate(): void {
@@ -21108,6 +21483,62 @@ function getNativePersistedAttentionEventId(
     normalizeNativeAttentionEventId(persistedState.lastActivityAt);
 }
 
+const NATIVE_CODEX_SESSION_ID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u;
+
+function normalizeNativeCodexSessionId(value: string | undefined): string | undefined {
+  const normalized = value?.trim().toLowerCase();
+  return normalized && NATIVE_CODEX_SESSION_ID_PATTERN.test(normalized) ? normalized : undefined;
+}
+
+function rejectNativePersistedAgentIdentityConflict(
+  sessionId: string,
+  terminalState: NonNullable<ReturnType<typeof terminalStateById.get>>,
+  persistedState: NativePersistedSessionState,
+  source: "agent-activity" | "agent-session-state" | "first-prompt-title" | "session-state-file",
+): boolean {
+  const currentAgentSessionId = normalizeNativeCodexSessionId(terminalState.agentSessionId);
+  const incomingAgentSessionId = normalizeNativeCodexSessionId(persistedState.agentSessionId);
+  if (!currentAgentSessionId || !incomingAgentSessionId || currentAgentSessionId === incomingAgentSessionId) {
+    return false;
+  }
+  const agentId =
+    resolveNativeResumeAgentId(persistedState.agentName) ??
+    resolveNativeResumeAgentId(terminalState.agentName);
+  if (agentId !== "codex") {
+    return false;
+  }
+
+  /*
+  CDXC:SessionIdentity 2026-06-09-22:30:
+  Surfacing a sleeping terminal can replay a legacy state file whose Codex thread id belongs to a different gxserver row. Reject that observation before forwarding status/title/prompt data, otherwise a wrong-thread done state can make the clicked session turn green and play completion audio.
+  */
+  const logKey = [
+    source,
+    currentAgentSessionId,
+    incomingAgentSessionId,
+    persistedState.status ?? "",
+    persistedState.statusUpdatedAt ?? persistedState.lastActivityAt ?? "",
+  ].join("\u001f");
+  if (nativeRejectedPersistedAgentIdentityConflictKeyBySessionId.get(sessionId) !== logKey) {
+    nativeRejectedPersistedAgentIdentityConflictKeyBySessionId.set(sessionId, logKey);
+    appendAgentDetectionDebugLog("nativeSidebar.gxserver.persistedAgentIdentityConflictRejected", {
+      agentId,
+      currentAgentSessionIdPresent: true,
+      hasAgentSessionPath: persistedState.agentSessionPath !== undefined,
+      hasFirstUserMessage: persistedState.firstUserMessage !== undefined,
+      hasStatus: persistedState.status !== undefined,
+      hasTitle: persistedState.title !== undefined,
+      incomingAgentSessionIdPresent: true,
+      reason: "passive-agent-session-id-replacement",
+      sessionId,
+      source,
+      status: persistedState.status,
+    });
+  }
+  return true;
+}
+
 function getNativeGxserverPresentationAttentionEventId(
   presentation: Pick<GxserverPresentationSession, "activity" | "attention">,
 ): string | undefined {
@@ -21198,6 +21629,12 @@ async function processNativeFirstPromptAutoRename(
     session,
     persistedState,
   );
+  if (
+    session.surface !== "commands" &&
+    rejectNativePersistedAgentIdentityConflict(sessionId, terminalState, persistedState, "session-state-file")
+  ) {
+    return;
+  }
   const didUpdatePersistedAgentActivity = syncNativePersistedAgentActivity(
     sessionId,
     terminalState,
@@ -21261,6 +21698,9 @@ async function processNativeFirstPromptAutoRename(
       hasPendingPrompt: Boolean(persistedState.pendingFirstPromptAutoRenamePrompt),
       sessionStateFilePath: terminalState.sessionStateFilePath,
     });
+    return;
+  }
+  if (rejectNativePersistedAgentIdentityConflict(sessionId, terminalState, persistedState, "first-prompt-title")) {
     return;
   }
   /*
@@ -21489,6 +21929,9 @@ function syncNativePersistedAgentActivity(
   new persisted hook status to gxserver and apply the daemon response so every
   client shares the same status state machine.
   */
+  if (rejectNativePersistedAgentIdentityConflict(sessionId, terminalState, persistedState, "agent-activity")) {
+    return false;
+  }
   const syncKey = [
     persistedState.status,
     persistedState.statusUpdatedAt ?? persistedState.lastActivityAt ?? "",
@@ -21555,6 +21998,9 @@ function syncNativePersistedAgentSessionState(
   terminalState: NonNullable<ReturnType<typeof terminalStateById.get>>,
   persistedState: NativePersistedSessionState,
 ): boolean {
+  if (rejectNativePersistedAgentIdentityConflict(sessionId, terminalState, persistedState, "agent-session-state")) {
+    return false;
+  }
   const nextAgentSessionId = persistedState.agentSessionId?.trim() || undefined;
   const nextAgentSessionPath = persistedState.agentSessionPath?.trim() || undefined;
   /**
@@ -24655,6 +25101,7 @@ function runNativeAutoSleepMonitor(source: "interval" | "settings-change" | "sta
     return;
   }
   const nowMs = Date.now();
+  const protectedProjectSessionKeys = collectAutoSleepProtectedProjectSessionKeys();
   const terminalSessionIdsToSleep: string[] = [];
   const browserSessionsToSleep: Array<{ projectId: string; sessionId: string }> = [];
   if (gxserverStartupSnapshot?.presentation) {
@@ -24674,6 +25121,7 @@ function runNativeAutoSleepMonitor(source: "interval" | "settings-change" | "sta
           shouldAutoSleepAgentSession({
             nowMs,
             project: reference.project,
+            protectedProjectSessionKeys,
             projectedSession,
             session,
           })
@@ -24751,6 +25199,7 @@ function runNativeAutoSleepMonitor(source: "interval" | "settings-change" | "sta
           shouldAutoSleepAgentSession({
             nowMs,
             project,
+            protectedProjectSessionKeys,
             projectedSession: projectedSessionsById.get(session.sessionId),
             session,
           })
@@ -24781,11 +25230,13 @@ function runNativeAutoSleepMonitor(source: "interval" | "settings-change" | "sta
 function shouldAutoSleepAgentSession({
   nowMs,
   project,
+  protectedProjectSessionKeys,
   projectedSession,
   session,
 }: {
   nowMs: number;
   project: NativeProject;
+  protectedProjectSessionKeys: ReadonlySet<string>;
   projectedSession?: SidebarSessionItem;
   session: TerminalSessionRecord;
 }): boolean {
@@ -24793,6 +25244,15 @@ function shouldAutoSleepAgentSession({
     return false;
   }
   if (!settings.autoSleepAgentSessionsEnabled) {
+    return false;
+  }
+  /*
+  CDXC:AutoSleep 2026-06-09-20:33:
+  Agent Auto Sleep must not disturb a user's split layout. Treat the active
+  owner of every persisted pane in every project as surfaced, even when Focus
+  Mode or Source/GitHub/Kanban currently hides that pane from AppKit.
+  */
+  if (protectedProjectSessionKeys.has(autoSleepProjectSessionKey(project.projectId, session.sessionId))) {
     return false;
   }
   const terminalState = terminalStateById.get(session.sessionId);
@@ -24843,6 +25303,52 @@ function shouldAutoSleepAgentSession({
     return false;
   }
   return nowMs - lastActivityMs >= settings.autoSleepAgentIdleMinutes * AUTO_SLEEP_MINUTE_MS;
+}
+
+function collectAutoSleepProtectedProjectSessionKeys(): Set<string> {
+  const protectedProjectSessionKeys = new Set<string>();
+  for (const project of projects) {
+    for (const group of project.workspace.groups) {
+      const validSessionIds = new Set(group.snapshot.sessions.map((session) => session.sessionId));
+      for (const sessionId of collectActivePaneOwnerSessionIds(group.snapshot.paneLayout, { validSessionIds })) {
+        protectedProjectSessionKeys.add(autoSleepProjectSessionKey(project.projectId, sessionId));
+      }
+      for (const session of group.snapshot.sessions) {
+        if (session.isPoppedOut === true) {
+          protectedProjectSessionKeys.add(autoSleepProjectSessionKey(project.projectId, session.sessionId));
+        }
+      }
+    }
+    if (project.commandsPanel.isVisible === true) {
+      const validCommandSessionIds = new Set(
+        project.commandsPanel.sessions.map((session) => session.sessionId),
+      );
+      const commandPaneOwnerSessionIds = collectActivePaneOwnerSessionIds(
+        project.commandsPanel.paneLayout,
+        { validSessionIds: validCommandSessionIds },
+      );
+      const protectedCommandSessionIds =
+        commandPaneOwnerSessionIds.length > 0
+          ? commandPaneOwnerSessionIds
+          : project.commandsPanel.activeSessionId &&
+              validCommandSessionIds.has(project.commandsPanel.activeSessionId)
+            ? [project.commandsPanel.activeSessionId]
+            : [];
+      for (const sessionId of protectedCommandSessionIds) {
+        protectedProjectSessionKeys.add(autoSleepProjectSessionKey(project.projectId, sessionId));
+      }
+    }
+    for (const session of project.commandsPanel.sessions) {
+      if (session.isPoppedOut === true) {
+        protectedProjectSessionKeys.add(autoSleepProjectSessionKey(project.projectId, session.sessionId));
+      }
+    }
+  }
+  return protectedProjectSessionKeys;
+}
+
+function autoSleepProjectSessionKey(projectId: string, sessionId: string): string {
+  return `${projectId}\u0000${sessionId}`;
 }
 
 function isTitleObservationUnsafeForAutoSleep(session: SidebarSessionItem | undefined): boolean {
@@ -28179,7 +28685,7 @@ async function createNativeRemoteAttachCarrierTerminal(
 }
 
 async function ensureNativeRemoteAttachCarrierProject(): Promise<NativeProject | undefined> {
-  const carrierPath = `${nativeGhostexHomeDirectory().replace(/\/+$/u, "")}/remote-attach-carriers`;
+  const carrierPath = remoteAttachCarrierProjectPath();
   const existingProject = projects.find((project) =>
     isRemoteAttachCarrierProject(project) &&
     normalizeNativePathForProjectComparison(project.path) === normalizeNativePathForProjectComparison(carrierPath),
@@ -36718,6 +37224,9 @@ function handleSidebarMessage(message: SidebarToExtensionMessage): void {
         installApproved: message.installApproved === true,
       });
       return;
+    case "saveRemoteMachinePassword":
+      saveRemoteMachinePassword(message.remoteMachineId, message.password);
+      return;
     case "openRemoteCloneRepository":
       {
         const remoteMachine = settings.remoteMachines.find((machine) => machine.id === message.remoteMachineId);
@@ -39418,6 +39927,10 @@ window.addEventListener("ghostex-native-host-event", (event) => {
   }
   if (hostEvent.type === "remoteGxserverPresentationEvent") {
     handleRemoteGxserverPresentationEvent(hostEvent.remoteMachineId, hostEvent.payloadJson);
+    return;
+  }
+  if (hostEvent.type === "remoteSshPasswordSaveResult") {
+    handleRemoteSshPasswordSaveResult(hostEvent);
     return;
   }
   if (hostEvent.type === "nativeHotkey") {

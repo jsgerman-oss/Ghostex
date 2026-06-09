@@ -3434,6 +3434,13 @@
   padding-inline: 0.625rem;
 }
 
+.settings-remote-machine-password-row {
+  align-items: center;
+  display: grid;
+  gap: 8px;
+  grid-template-columns: minmax(0, 1fr) 2.125rem;
+}
+
 .settings-remote-machine-user-port {
   display: grid;
   gap: 12px;

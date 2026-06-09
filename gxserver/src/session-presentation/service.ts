@@ -16,6 +16,7 @@ import {
   resolveSessionIdentity,
   type GxserverResolvedSessionIdentity,
 } from "./identity.js";
+import { resolveSessionLaunchAgentMismatch } from "./launch-identity.js";
 import { selectTrustedTitleForIdentity } from "./title-candidates.js";
 
 export interface GxserverSessionPresentationRepository {
@@ -45,10 +46,14 @@ export type GxserverApplySessionStateEventParams = GxserverSessionStateEventPara
   onIdentityConflict?: (conflict: GxserverSessionIdentityConflict) => void;
 };
 
+export type GxserverSessionStateEventApplyResult = GxserverSessionStateEventResult & {
+  identityConflict?: GxserverSessionIdentityConflict;
+};
+
 export function applySessionStateEvent(
   repository: GxserverSessionPresentationRepository,
   params: GxserverApplySessionStateEventParams,
-): GxserverSessionStateEventResult {
+): GxserverSessionStateEventApplyResult {
   const session = repository.getSession(params.projectId, params.sessionId);
   if (!session) {
     throw new Error(`Session ${params.projectId}/${params.sessionId} does not exist.`);
@@ -65,17 +70,48 @@ export function applySessionStateEvent(
     agentSessionPath: params.agentSessionPath,
     startupText: params.startupText,
   });
+  const launchAgentMismatch = resolveSessionLaunchAgentMismatch(session, observedIdentity.agentId);
+  if (launchAgentMismatch) {
+    /*
+    CDXC:GxserverSessionIdentity 2026-06-09-21:59:
+    Passive identity repair is only valid when the session was not launched by gxserver as a different agent. Preserve the existing row when a global hook reports another CLI so every renderer sees the launch-owned identity instead of a cross-wired hook result.
+    */
+    return {
+      changed: false,
+      projection: projectSessionTitle(session),
+      reason: "launch-agent-mismatch",
+      session,
+    };
+  }
   const currentIdentity = resolveStoredSessionIdentity(session);
   const resolvedIdentity = mergeObservedSessionIdentity(observedIdentity, currentIdentity);
+  let identityConflict: GxserverSessionIdentityConflict | undefined;
+  const identityUpdateSource = params.identityUpdateSource ?? "passive";
   const identity = resolveAllowedSessionIdentity({
     currentIdentity,
     currentSession: session,
     observedIdentity,
-    onIdentityConflict: params.onIdentityConflict,
+    onIdentityConflict: (conflict) => {
+      identityConflict = conflict;
+      params.onIdentityConflict?.(conflict);
+    },
     resolvedIdentity,
     sessions: projectSessions,
-    source: params.identityUpdateSource ?? "passive",
+    source: identityUpdateSource,
   });
+  if (identityConflict && identityUpdateSource === "passive") {
+    /*
+    CDXC:GxserverSessionIdentity 2026-06-09-22:30:
+    A passive Codex hook or state-file replay that reports a different thread is not only an identity no-op; its activity, title, and first-prompt payload belong to another terminal row. Reject the whole observation before callers can turn the clicked session green or play completion audio.
+    */
+    return {
+      changed: false,
+      identityConflict,
+      projection: projectSessionTitle(session),
+      reason: "passive-session-identity-conflict",
+      session,
+    };
+  }
   const nextAgentId = identity.agentId ?? session.agentId;
   let runtimeSettings = applySessionIdentityRuntimeSettings({
     currentIdentity,
@@ -141,6 +177,7 @@ export function applySessionStateEvent(
   if (!needsUpdate) {
     return {
       changed: false,
+      ...(identityConflict ? { identityConflict } : {}),
       projection: projectSessionTitle(currentWithIdentity),
       reason: "unchanged",
       session: currentWithIdentity,
@@ -161,6 +198,7 @@ export function applySessionStateEvent(
   });
   return {
     changed: true,
+    ...(identityConflict ? { identityConflict } : {}),
     projection: projectSessionTitle(updated),
     reason,
     session: updated,

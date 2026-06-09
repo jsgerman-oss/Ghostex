@@ -77,6 +77,8 @@ describe("native sidebar attention event side effects", () => {
       "function isNativePersistedWorkingFresh",
     );
     expect(persistedActivity).toContain("nativePersistedAgentHookEventSyncKeyBySessionId");
+    expect(persistedActivity).toContain("rejectNativePersistedAgentIdentityConflict");
+    expect(persistedActivity).toContain('"agent-activity"');
     expect(persistedActivity).toContain("void syncGxserverAgentHookEvent(sessionId, {");
     expect(persistedActivity).toContain("status: persistedState.status");
     expect(persistedActivity).toContain("statusUpdatedAt: persistedState.statusUpdatedAt ?? persistedState.lastActivityAt");
@@ -87,6 +89,39 @@ describe("native sidebar attention event side effects", () => {
     );
     expect(acknowledgePath).toContain("markNativeAttentionEventLocallyAcknowledged");
     expect(acknowledgePath).toContain("nativeAttentionEventIdBySessionId.get(sessionId)");
+  });
+
+  test("rejects wrong-thread persisted Codex state before forwarding status or prompt data", () => {
+    /*
+    CDXC:SessionIdentity 2026-06-09-22:30:
+    A legacy state file can be replayed while waking a terminal. If its Codex
+    thread id disagrees with the live row, native must drop that observation
+    before it can forward attention/title/first-prompt data to gxserver.
+    */
+    const conflictHelper = sourceBetween(
+      "function rejectNativePersistedAgentIdentityConflict",
+      "function getNativeGxserverPresentationAttentionEventId",
+    );
+    expect(conflictHelper).toContain("normalizeNativeCodexSessionId(terminalState.agentSessionId)");
+    expect(conflictHelper).toContain("normalizeNativeCodexSessionId(persistedState.agentSessionId)");
+    expect(conflictHelper).toContain('agentId !== "codex"');
+    expect(conflictHelper).toContain("nativeSidebar.gxserver.persistedAgentIdentityConflictRejected");
+    expect(conflictHelper).toContain("hasFirstUserMessage");
+    expect(conflictHelper).toContain("hasTitle");
+
+    const poller = sourceBetween(
+      "async function processNativeFirstPromptAutoRename",
+      "function resolveSessionTitleGenerationCommandForGxserver",
+    );
+    expect(poller).toContain("rejectNativePersistedAgentIdentityConflict(sessionId, terminalState, persistedState, \"session-state-file\")");
+    expect(poller).toContain("rejectNativePersistedAgentIdentityConflict(sessionId, terminalState, persistedState, \"first-prompt-title\")");
+
+    const persistedSessionState = sourceBetween(
+      "function syncNativePersistedAgentSessionState",
+      "function getStampNativeSessionSemanticActivityScript",
+    );
+    expect(persistedSessionState).toContain("rejectNativePersistedAgentIdentityConflict");
+    expect(persistedSessionState).toContain('"agent-session-state"');
   });
 
   test("keeps command-pane action completion sounds on the command path", () => {

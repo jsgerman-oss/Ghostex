@@ -59,6 +59,30 @@ private let nativeTerminalColorEnvironmentKeys = [
   "TERM_PROGRAM",
   "TERM_PROGRAM_VERSION",
 ]
+private let nativeGhosttySessionIdentityEnvironmentKeys = [
+  "GHOSTEX_AGENT",
+  "GHOSTEX_GLOBAL_SESSION_REF",
+  "GHOSTEX_GXSERVER_AUTH_TOKEN_FILE",
+  "GHOSTEX_GXSERVER_BASE_URL",
+  "GHOSTEX_GXSERVER_PROTOCOL_VERSION",
+  "GHOSTEX_NATIVE_SESSION_ID",
+  "GHOSTEX_SESSION_ID",
+  "GHOSTEX_SESSION_STATE_FILE",
+  "GHOSTEX_WORKSPACE_ID",
+  "GHOSTEX_WORKSPACE_ROOT",
+  "VSMUX_AGENT",
+  "VSMUX_SESSION_ID",
+  "VSMUX_SESSION_STATE_FILE",
+  "VSMUX_WORKSPACE_ID",
+  "VSMUX_WORKSPACE_ROOT",
+  "ZMX_SESSION",
+  "ZMX_SESSION_PREFIX",
+  "ghostex_AGENT",
+  "ghostex_SESSION_ID",
+  "ghostex_SESSION_STATE_FILE",
+  "ghostex_WORKSPACE_ID",
+  "ghostex_WORKSPACE_ROOT",
+]
 
 private let projectBeadsResponseEventName = "ghostex-project-beads-response"
 private let projectBoardResponseEventName = "ghostex-project-board-response"
@@ -1499,7 +1523,7 @@ private func nativeJavaScriptLiteral(_ value: String) -> String {
 
 private func nativeGhosttyTerminalEffectiveProcessEnvironment() -> [String: String] {
   var environment = ProcessInfo.processInfo.environment
-  for key in nativeGhosttyTerminalColorDisablingEnvironmentKeys {
+  for key in nativeGhosttyTerminalColorDisablingEnvironmentKeys + nativeGhosttySessionIdentityEnvironmentKeys {
     environment.removeValue(forKey: key)
   }
   environment["CLICOLOR"] = "1"
@@ -1520,14 +1544,21 @@ private func withNativeGhosttyTerminalProcessEnvironment<T>(_ body: () -> T) -> 
    surface is created. Temporarily sanitize only that creation window so spawned
    shells do not inherit NO_COLOR from the app launch context, then restore the
    app process environment for unrelated native work.
+
+   CDXC:PromptEditor 2026-06-09-21:50:
+   The app may be launched from a Ghostex terminal whose process environment
+   names an old pane. Strip session identity during the Ghostty creation
+   snapshot; explicit per-terminal config re-adds the current P:G/S:P:G ids.
    */
   var savedEnvironment: [String: String?] = [:]
-  let keysToSave = nativeGhosttyTerminalColorDisablingEnvironmentKeys + ["CLICOLOR"]
+  let keysToSave = nativeGhosttyTerminalColorDisablingEnvironmentKeys
+    + nativeGhosttySessionIdentityEnvironmentKeys
+    + ["CLICOLOR"]
   for key in keysToSave {
     savedEnvironment[key] = nativeProcessEnvironmentValue(key)
   }
 
-  for key in nativeGhosttyTerminalColorDisablingEnvironmentKeys {
+  for key in nativeGhosttyTerminalColorDisablingEnvironmentKeys + nativeGhosttySessionIdentityEnvironmentKeys {
     unsetenv(key)
   }
   setenv("CLICOLOR", "1", 1)
@@ -2860,6 +2891,11 @@ final class TerminalWorkspaceView: NSView {
    */
   private static let paneHeaderDragThreshold: CGFloat = 6
   private static let paneHeaderDragGhostMaxWidth: CGFloat = 230
+  /**
+   CDXC:ChromiumBrowserPanes 2026-06-09-18:13:
+   Temporarily disable the native CEF drag hover/release bridge so embedded code-server text selection can be tested without synthetic VS Code drag/drop retargeting. Keep the existing bridge code in place for quick re-enable after the selection regression is confirmed.
+   */
+  private static let isCEFNativeDragHoverBridgeEnabled = false
   private static let cefNativeDragHoverInterval: TimeInterval = 1.0 / 30.0
   private static let cefNativeDragStationaryHoverInterval: TimeInterval = 0.12
   private static let cefNativeDragHoverMinimumDistance: CGFloat = 3
@@ -2907,6 +2943,11 @@ final class TerminalWorkspaceView: NSView {
   private var activeProjectEditorId: String?
   private var focusedSessionId: String?
   private var lastEmittedFocusedSessionId: String?
+  /**
+   CDXC:NativeTerminalFocus 2026-06-09-23:14:
+   Passive sidebar first-responder recovery must return to the terminal that actually owned keyboard focus before sidebar WKWebView churn. Track that responder separately because focusTerminal intentionally suppresses AppKit first-responder callbacks during programmatic native focus changes.
+   */
+  private var lastTerminalFirstResponderSessionId: String?
   private var lastAppliedLayoutFocusRequestId: Int?
   private var workspaceBackgroundColorValue: String?
   private let defaultWorkspaceBackgroundColor: NSColor
@@ -3133,10 +3174,7 @@ final class TerminalWorkspaceView: NSView {
     }
     surfaceView.scrollbarConfiguration = ghostty.config.scrollbar
     surfaceView.translatesAutoresizingMaskIntoConstraints = false
-    let returnFocusSessionId =
-      command.originatingSessionId?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
-      ? command.originatingSessionId
-      : focusedSessionId
+    let returnFocusSessionId = ghostexNativeFocusSessionId(from: command.originatingSessionId) ?? focusedSessionId
     let overlayView = FloatingEditorOverlayView(
       title: command.title?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
         ? command.title!
@@ -3280,10 +3318,7 @@ final class TerminalWorkspaceView: NSView {
         "requestId": command.requestId ?? ""
       ])
 
-    let returnFocusSessionId =
-      command.originatingSessionId?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
-      ? command.originatingSessionId
-      : focusedSessionId
+    let returnFocusSessionId = ghostexNativeFocusSessionId(from: command.originatingSessionId) ?? focusedSessionId
     let overlayView = FloatingEditorOverlayView(
       title: command.title?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
         ? command.title!
@@ -4706,7 +4741,8 @@ final class TerminalWorkspaceView: NSView {
       ))
   }
 
-  func focusWebPane(sessionId: String, reason: String = "explicitFocusWebPaneCommand") {
+  func focusWebPane(sessionId rawSessionId: String, reason: String = "explicitFocusWebPaneCommand") {
+    let sessionId = ghostexNativeFocusSessionId(from: rawSessionId) ?? rawSessionId
     guard let session = webPaneSessions[sessionId] else {
       NativeT3CodePaneReproLog.append("nativeWorkspace.t3WebPane.focus.missing", [
         "knownSessionIds": Array(webPaneSessions.keys).sorted(),
@@ -5689,7 +5725,8 @@ final class TerminalWorkspaceView: NSView {
     }
   }
 
-  func focusTerminal(sessionId: String, reason: String = "explicitFocusTerminalCommand") {
+  func focusTerminal(sessionId rawSessionId: String, reason: String = "explicitFocusTerminalCommand") {
+    let sessionId = ghostexNativeFocusSessionId(from: rawSessionId) ?? rawSessionId
     guard let view = sessions[sessionId]?.view else {
       TerminalFocusDebugLog.append(
         event: "nativeWorkspace.focusTerminal.missingSession",
@@ -5741,6 +5778,9 @@ final class TerminalWorkspaceView: NSView {
     programmaticFocusDepth += 1
     let makeFirstResponderResult = targetWindow?.makeFirstResponder(view) ?? false
     programmaticFocusDepth -= 1
+    if makeFirstResponderResult || targetWindow?.firstResponder === view {
+      rememberTerminalFirstResponderSessionId(sessionId)
+    }
     let responderAfter = responderSnapshot()
     logFocusSurfaceState(
       event: "nativeFocusTrace.focusTerminalSurfaceState",
@@ -6167,6 +6207,8 @@ final class TerminalWorkspaceView: NSView {
      responder handoff while debugging so key-route logs can be correlated with
      the exact responder that existed before the user typed.
      */
+    let responderSessionId = sessionId(containing: responder)
+    rememberTerminalFirstResponderSessionId(responderSessionId)
     TerminalFocusDebugLog.append(
       event: "nativeFocusTrace.windowFirstResponderChanged",
       details: [
@@ -6175,7 +6217,7 @@ final class TerminalWorkspaceView: NSView {
         "lastEmittedFocusedSessionId": nullableString(lastEmittedFocusedSessionId),
         "reason": reason,
         "responder": String(describing: type(of: responder)),
-        "responderSessionId": nullableString(sessionId(containing: responder)),
+        "responderSessionId": nullableString(responderSessionId),
         "visibleSessionIds": orderedVisibleSessionIds(),
       ])
     emitFocusedSessionIfNeeded(for: responder, reason: reason)
@@ -11353,7 +11395,7 @@ final class TerminalWorkspaceView: NSView {
   }
 
   private func syncCEFNativeDragSourceReleaseMonitor(reason: String) {
-    let shouldMonitor = window != nil && !isHidden && hasVisibleCEFInteractionSurface
+    let shouldMonitor = Self.isCEFNativeDragHoverBridgeEnabled && window != nil && !isHidden && hasVisibleCEFInteractionSurface
     if shouldMonitor {
       installCEFNativeDragSourceReleaseMonitorIfNeeded()
     } else {
@@ -12516,9 +12558,13 @@ final class TerminalWorkspaceView: NSView {
      Resolve the explicit originating native session first, then the currently
      focused pane, so the modal-host editor can appear below that terminal when
      there is enough workspace space.
+
+     CDXC:PromptEditor 2026-06-09-21:50:
+     The caller may provide current gxserver identity as S:P:G; normalize that
+     to the local P:G pane id before resolving the source frame.
      */
     let candidates = [
-      originatingSessionId?.trimmingCharacters(in: .whitespacesAndNewlines),
+      ghostexNativeFocusSessionId(from: originatingSessionId),
       focusedSessionId,
     ]
     for candidate in candidates {
@@ -15184,11 +15230,17 @@ final class TerminalWorkspaceView: NSView {
       logEventPrefix: "nativeFocusTrace.sidebarFocusReinforce")
   }
 
-  func canDirectlyRestorePromptEditorFocus(sessionId: String) -> Bool {
+  func canDirectlyRestorePromptEditorFocus(sessionId rawSessionId: String) -> Bool {
     /*
      CDXC:PromptEditor 2026-06-09-11:19:
      Closing the Ctrl+G Monaco prompt editor can directly focus the launching terminal only when that native session is already the selected, visible workspace target. Logs around 2026-06-09 11:15 showed a visible launcher that was no longer selected could be overwritten by sidebar focus state after close, so hidden or deselected launchers must return through the sidebar click-equivalent focus path.
+
+     CDXC:PromptEditor 2026-06-09-21:50:
+     Accept gxserver S:P:G refs at this native focus boundary, but normalize to
+     P:G before checking AppKit workspace maps because native pane state remains
+     local to the current window.
      */
+    let sessionId = ghostexNativeFocusSessionId(from: rawSessionId) ?? rawSessionId
     let focusTarget = workspaceFocusTarget(sessionId: sessionId)
     guard focusTarget.isExpectedSelection else {
       return false
@@ -15201,7 +15253,7 @@ final class TerminalWorkspaceView: NSView {
 
   @discardableResult
   func reinforceWorkspaceFocus(
-    sessionId: String,
+    sessionId rawSessionId: String,
     reason: String,
     logEventPrefix: String = "nativeFocusTrace.workspaceFocusReinforce"
   ) -> Bool {
@@ -15211,7 +15263,12 @@ final class TerminalWorkspaceView: NSView {
 
      CDXC:PromptEditor 2026-06-09-09:05:
      Monaco rich prompt editor dismissal uses the same validated first-responder repair after the modal WKWebView closes. Keep the helper generic so focus restoration can target the selected visible terminal without emitting sidebar-specific diagnostics for prompt-editor saves.
+
+     CDXC:PromptEditor 2026-06-09-21:50:
+     gxserver global S:P:G refs are accepted at this boundary for prompt-editor
+     return focus, but native focus repair still operates on local P:G ids.
      */
+    let sessionId = ghostexNativeFocusSessionId(from: rawSessionId) ?? rawSessionId
     let focusTarget = workspaceFocusTarget(sessionId: sessionId)
     guard focusTarget.isExpectedSelection else {
       TerminalFocusDebugLog.append(
@@ -15480,6 +15537,23 @@ final class TerminalWorkspaceView: NSView {
     return sessionId(containing: responder)
   }
 
+  func passiveSidebarReturnFocusTerminalSessionId() -> String? {
+    /**
+     CDXC:NativeTerminalFocus 2026-06-09-23:14:
+     Sidebar hydration and patch updates are background UI maintenance, not app-modal dismissal. Passive sidebar first-responder recovery must use the live or last real terminal first responder so stale command-panel focus state cannot receive keyboard focus when the user was typing in a workspace terminal.
+     */
+    let responderSessionId = currentResponderSessionId()
+    let candidates = [
+      activeWorkspaceTerminalCandidate(responderSessionId),
+      commandPanelTerminalCandidate(responderSessionId),
+      activeWorkspaceTerminalCandidate(lastTerminalFirstResponderSessionId),
+      commandPanelTerminalCandidate(lastTerminalFirstResponderSessionId),
+      activeWorkspaceTerminalCandidate(focusedSessionId),
+      activeWorkspaceTerminalCandidate(lastEmittedFocusedSessionId),
+    ].compactMap { $0 }
+    return candidates.first
+  }
+
   func appModalReturnFocusTerminalSessionId() -> String? {
     /**
      CDXC:AppModals 2026-05-28-14:52:
@@ -15495,6 +15569,31 @@ final class TerminalWorkspaceView: NSView {
       sessions[sessionId] != nil
         && (activeSessionIds.contains(sessionId) || commandsPanelActiveSessionIds.contains(sessionId))
     }
+  }
+
+  private func rememberTerminalFirstResponderSessionId(_ sessionId: String?) {
+    guard let sessionId,
+      sessions[sessionId] != nil,
+      activeSessionIds.contains(sessionId) || commandsPanelActiveSessionIds.contains(sessionId)
+    else {
+      return
+    }
+    lastTerminalFirstResponderSessionId = sessionId
+  }
+
+  private func activeWorkspaceTerminalCandidate(_ sessionId: String?) -> String? {
+    guard let sessionId, sessions[sessionId] != nil, activeSessionIds.contains(sessionId) else {
+      return nil
+    }
+    return sessionId
+  }
+
+  private func commandPanelTerminalCandidate(_ sessionId: String?) -> String? {
+    guard let sessionId, sessions[sessionId] != nil, commandsPanelActiveSessionIds.contains(sessionId)
+    else {
+      return nil
+    }
+    return sessionId
   }
 
   private func shouldPreserveNonTerminalFirstResponder() -> Bool {

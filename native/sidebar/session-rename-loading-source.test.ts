@@ -41,4 +41,27 @@ describe("native sidebar generated rename loading", () => {
     );
     expect(commandSubmission).toContain("setNativeManualGeneratedRenameInProgress(reference.sessionId, false)");
   });
+
+  test("keeps first-prompt generated title overlay active until native Enter is sent", () => {
+    /*
+    CDXC:GxserverSessionTitle 2026-06-09-20:21:
+    First-prompt generated titles should submit the staged `/rename <title>` through the native Enter bridge before the "Generating title" overlay goes away, so users cannot type into the prompt editor between staging and submit.
+    */
+    const presentationFunction = sourceBetween(
+      "function applyGxserverPresentationSessionToNativePaneChrome",
+      "function materializeGxserverPresentationSession",
+    );
+    expect(presentationFunction).toContain("shouldSubmitGeneratedFirstPromptTitleEnter");
+    expect(presentationFunction).toContain("terminalState.firstPromptAutoRenameInProgress = true;");
+    expect(presentationFunction).toContain("currentPresentation?.isGeneratingFirstPromptTitle !== true");
+
+    const submitBlock = sourceBetween(
+      "if (shouldSubmitGeneratedFirstPromptTitleEnter) {",
+      "if (\n    localSession?.kind === \"terminal\"",
+    );
+    const enterIndex = submitBlock.indexOf('type: "sendTerminalEnter"');
+    const clearIndex = submitBlock.indexOf("currentTerminalState.firstPromptAutoRenameInProgress = false");
+    expect(enterIndex).toBeGreaterThanOrEqual(0);
+    expect(clearIndex).toBeGreaterThan(enterIndex);
+  });
 });

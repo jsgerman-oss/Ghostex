@@ -43,6 +43,7 @@ export type SidebarStoryArgs = {
   isFocusModeActive: boolean;
   renameSessionOnDoubleClick: boolean;
   showCloseButtonOnSessionCards: boolean;
+  showSessionCommandCopyActions: boolean;
   theme: SidebarTheme;
   viewMode: TerminalViewMode;
   visibleCount: VisibleSessionCount;
@@ -145,9 +146,14 @@ export function createSidebarStoryMessage(
   args: SidebarStoryArgs,
   currentSettings?: SidebarStoryCurrentSettings,
 ): SidebarHydrateMessage {
-  const combinedStorySettings = isCombinedReferenceFixture(args.fixture)
+  const storySettings = isCombinedReferenceFixture(args.fixture)
     ? createCombinedStorySettings(currentSettings)
-    : undefined;
+    : args.showSessionCommandCopyActions
+      ? normalizeghostexSettings({
+          ...DEFAULT_ghostex_SETTINGS,
+          showSessionCommandCopyActions: true,
+        })
+      : undefined;
   const groups = cloneGroups(GROUPS_BY_FIXTURE[args.fixture]).map((group) => {
     const visibleCount = group.isActive
       ? args.visibleCount
@@ -167,12 +173,12 @@ export function createSidebarStoryMessage(
     agents: createDefaultSidebarAgentButtons(),
     commands: createDefaultSidebarCommandButtons(),
     commandSessionIndicators: COMMAND_SESSION_INDICATORS_BY_FIXTURE[args.fixture] ?? [],
-    completionBellEnabled: combinedStorySettings?.completionBellEnabled ?? false,
-    completionSound: combinedStorySettings?.completionSound ?? DEFAULT_COMPLETION_SOUND,
+    completionBellEnabled: storySettings?.completionBellEnabled ?? false,
+    completionSound: storySettings?.completionSound ?? DEFAULT_COMPLETION_SOUND,
     completionSoundLabel: getCompletionSoundLabel(
-      combinedStorySettings?.completionSound ?? DEFAULT_COMPLETION_SOUND,
+      storySettings?.completionSound ?? DEFAULT_COMPLETION_SOUND,
     ),
-    debuggingMode: combinedStorySettings?.debuggingMode ?? args.debuggingMode,
+    debuggingMode: storySettings?.debuggingMode ?? args.debuggingMode,
     focusedSessionTitle: getFocusedSessionTitle(groups),
     git: createDefaultSidebarGitState(),
     highlightedVisibleCount: args.highlightedVisibleCount,
@@ -197,14 +203,14 @@ export function createSidebarStoryMessage(
             },
           ]
         : [],
-    settings: combinedStorySettings,
+    settings: storySettings,
     createSessionOnSidebarDoubleClick:
-      combinedStorySettings?.createSessionOnSidebarDoubleClick ??
+      storySettings?.createSessionOnSidebarDoubleClick ??
       args.createSessionOnSidebarDoubleClick,
     renameSessionOnDoubleClick:
-      combinedStorySettings?.renameSessionOnDoubleClick ?? args.renameSessionOnDoubleClick,
+      storySettings?.renameSessionOnDoubleClick ?? args.renameSessionOnDoubleClick,
     showCloseButtonOnSessionCards:
-      combinedStorySettings?.showCloseButtonOnSessionCards ?? args.showCloseButtonOnSessionCards,
+      storySettings?.showCloseButtonOnSessionCards ?? args.showCloseButtonOnSessionCards,
     theme: args.theme,
     viewMode: args.viewMode,
     visibleCount: args.visibleCount,

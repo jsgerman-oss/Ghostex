@@ -52,6 +52,7 @@ enum HostCommand: Decodable {
   case remoteGxserverConnect(RemoteGxserverConnect)
   case remoteGxserverRequest(RemoteGxserverRequest)
   case remoteGxserverSubscribePresentation(RemoteGxserverPresentationSubscribe)
+  case remoteSshPasswordSave(RemoteSshPasswordSave)
   case setKeepAwakeLidSleepPrevention(SetKeepAwakeLidSleepPrevention)
   case syncGhosttyTerminalSettings(SyncGhosttyTerminalSettings)
   case applyGhosttyConfigSettings(ApplyGhosttyConfigSettings)
@@ -151,6 +152,7 @@ enum HostCommand: Decodable {
     case remoteGxserverConnect
     case remoteGxserverRequest
     case remoteGxserverSubscribePresentation
+    case remoteSshPasswordSave
     case setKeepAwakeLidSleepPrevention
     case syncGhosttyTerminalSettings
     case applyGhosttyConfigSettings
@@ -302,6 +304,8 @@ enum HostCommand: Decodable {
       self = .remoteGxserverRequest(try RemoteGxserverRequest(from: decoder))
     case .remoteGxserverSubscribePresentation:
       self = .remoteGxserverSubscribePresentation(try RemoteGxserverPresentationSubscribe(from: decoder))
+    case .remoteSshPasswordSave:
+      self = .remoteSshPasswordSave(try RemoteSshPasswordSave(from: decoder))
     case .setKeepAwakeLidSleepPrevention:
       self = .setKeepAwakeLidSleepPrevention(try SetKeepAwakeLidSleepPrevention(from: decoder))
     case .syncGhosttyTerminalSettings:
@@ -1006,6 +1010,12 @@ struct RemoteGxserverConnect: Decodable {
   let sshUser: String?
 }
 
+struct RemoteSshPasswordSave: Decodable {
+  let password: String
+  let remoteMachineId: String
+  let requestId: String
+}
+
 struct RemoteGxserverRequest: Decodable {
   let method: String
   let paramsJson: String?
@@ -1265,6 +1275,8 @@ enum HostEvent: Encodable {
   case remoteGxserverResponse(
     remoteMachineId: String, requestId: String, path: String, ok: Bool, statusCode: Int?, bodyJson: String?, error: String?)
   case remoteGxserverPresentationEvent(remoteMachineId: String, payloadJson: String)
+  case remoteSshPasswordSaveResult(
+    remoteMachineId: String, requestId: String, ok: Bool, hasPassword: Bool, error: String?)
   case sidebarCliResult(requestId: String, ok: Bool, payloadJson: String)
   case gxserverStatus(payloadJson: String)
 
@@ -1274,6 +1286,7 @@ enum HostEvent: Encodable {
     case foregroundPid
     case hidden
     case heightRatio
+    case hasPassword
     case message
     case protocolVersion
     case action
@@ -1658,6 +1671,13 @@ enum HostEvent: Encodable {
       try container.encode("remoteGxserverPresentationEvent", forKey: .type)
       try container.encode(remoteMachineId, forKey: .remoteMachineId)
       try container.encode(payloadJson, forKey: .payloadJson)
+    case .remoteSshPasswordSaveResult(let remoteMachineId, let requestId, let ok, let hasPassword, let error):
+      try container.encode("remoteSshPasswordSaveResult", forKey: .type)
+      try container.encode(remoteMachineId, forKey: .remoteMachineId)
+      try container.encode(requestId, forKey: .requestId)
+      try container.encode(ok, forKey: .ok)
+      try container.encode(hasPassword, forKey: .hasPassword)
+      try container.encodeIfPresent(error, forKey: .error)
     case .sidebarCliResult(let requestId, let ok, let payloadJson):
       try container.encode("sidebarCliResult", forKey: .type)
       try container.encode(requestId, forKey: .requestId)

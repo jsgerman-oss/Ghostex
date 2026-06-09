@@ -407,7 +407,7 @@ type MonacoAmdRequire = {
 const vscode: WebviewApi = {
   postMessage(message) {
     if (isAppModalDebugLoggingEnabled()) {
-      console.debug("[ghostex-app-modal-host] sidebarCommand", message);
+      console.debug("[ghostex-app-modal-host] sidebarCommand", redactAppModalDebugMessage(message));
     }
     /**
      * CDXC:PreviousSessions 2026-05-07-16:02
@@ -418,6 +418,27 @@ const vscode: WebviewApi = {
     postAppModalHostMessage({ message, type: "sidebarCommand" }, "AppModals:sidebarCommand");
   },
 };
+
+function redactAppModalDebugMessage(message: unknown): unknown {
+  if (
+    typeof message === "object" &&
+    message !== null &&
+    !Array.isArray(message) &&
+    (message as { type?: unknown }).type === "saveRemoteMachinePassword"
+  ) {
+    /*
+     * CDXC:RemoteMachines 2026-06-09-18:23:
+     * SSH password saves are intentionally one-shot Keychain writes. Modal
+     * debug logging must redact the transient password before it reaches the
+     * console so diagnostics cannot capture user credentials.
+     */
+    return {
+      ...(message as Record<string, unknown>),
+      password: "[redacted]",
+    };
+  }
+  return message;
+}
 
 function isAppModalDebugLoggingEnabled(): boolean {
   return useSidebarStore.getState().hud.debuggingMode;
@@ -1244,6 +1265,10 @@ function FloatingPromptEditorModal({
       startX: number,
       startY: number,
     ) => FloatingPromptEditorFrame,
+    options: {
+      preventInitialDefault?: boolean;
+      refocusEditorAfterDrag?: boolean;
+    } = {},
   ) => {
     if (event.button !== 0) {
       return;
@@ -1254,8 +1279,16 @@ function FloatingPromptEditorModal({
      * Floating prompt editor resize/move drags must not text-select Monaco
      * gutter, editor rows, or empty editor chrome. Capture the pointer and
      * suppress document selection until the drag finishes.
+     *
+     * CDXC:PromptEditor 2026-06-09-19:47:
+     * Resizing must leave macOS WebKit keyboard input routed to Monaco. The
+     * resize handle's initial pointer-down is a trusted native focus event, so
+     * that path must not call preventDefault before WebKit updates its input
+     * context; refocus Monaco after drag cleanup when resize CSS is gone.
      */
-    event.preventDefault();
+    if (options.preventInitialDefault !== false) {
+      event.preventDefault();
+    }
     event.stopPropagation();
     activePointerDragCleanupRef.current?.();
     const dragTarget = event.currentTarget;
@@ -1283,6 +1316,11 @@ function FloatingPromptEditorModal({
       window.getSelection()?.removeAllRanges();
       activePointerDragCleanupRef.current = undefined;
       setDragMode(undefined);
+      if (options.refocusEditorAfterDrag) {
+        window.requestAnimationFrame(() => {
+          editorRef.current?.focus?.();
+        });
+      }
     };
     activePointerDragCleanupRef.current = cleanupDrag;
     setDragMode(mode);
@@ -1303,11 +1341,19 @@ function FloatingPromptEditorModal({
   };
 
   const startResize = (event: ReactPointerEvent<HTMLDivElement>) => {
-    beginPanelPointerDrag(event, "resize", (moveEvent, startFrame, startX, startY) => ({
-      ...startFrame,
-      height: startFrame.height + moveEvent.clientY - startY,
-      width: startFrame.width + moveEvent.clientX - startX,
-    }));
+    beginPanelPointerDrag(
+      event,
+      "resize",
+      (moveEvent, startFrame, startX, startY) => ({
+        ...startFrame,
+        height: startFrame.height + moveEvent.clientY - startY,
+        width: startFrame.width + moveEvent.clientX - startX,
+      }),
+      {
+        preventInitialDefault: false,
+        refocusEditorAfterDrag: true,
+      },
+    );
   };
 
   const removeImagePreview = (preview: FloatingPromptEditorImagePreview) => {
@@ -1376,6 +1422,11 @@ function FloatingPromptEditorModal({
      * text. Browser default pointer handling blurs the hidden Monaco textarea
      * after React's panel handler on non-editable targets, so prevent that blur
      * outside Monaco internals and refocus after the default phase.
+     *
+     * CDXC:PromptEditor 2026-06-09-19:58:
+     * Monaco owns its text-surface pointer events, including right-click context
+     * menus. Do not run the panel-level delayed refocus for Monaco targets,
+     * because that blur/focus cycle can immediately dismiss Monaco's menu.
      */
     appendPromptEditorDebugLog("react.panelPointerDown", {
       documentHasFocus: document.hasFocus(),
@@ -1386,9 +1437,11 @@ function FloatingPromptEditorModal({
       targetClass:
         target instanceof Element && typeof target.className === "string" ? target.className : null,
     });
-    if (!isMonacoPointer) {
-      event.preventDefault();
+    if (isMonacoPointer) {
+      return;
     }
+
+    event.preventDefault();
     monacoEditor?.focus?.();
     window.setTimeout(() => {
       const refocusedEditor = editorRef.current;

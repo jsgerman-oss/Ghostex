@@ -78,6 +78,7 @@ import {
   IconPlus,
   IconRefresh,
   IconSettings,
+  IconDeviceFloppy,
   IconTerminal2,
   IconTools,
   IconTrash,
@@ -355,6 +356,7 @@ const MAIN_SETTINGS_SECTION_SETTING_KEYS: Record<
     "hideBrowserFaviconUntilHover",
     "showCloseButtonOnSessionCards",
     "hideLastActiveTimeOnSessionCards",
+    "showSessionCommandCopyActions",
   ],
   workspace: [
     "workspaceActivePaneBorderColor",
@@ -999,6 +1001,11 @@ export function SettingsModal({
         key: "hideLastActiveTimeOnSessionCards",
         subtitle: "Hide Last Active timestamps from session-card title rows.",
         title: "Hide last active time",
+      },
+      {
+        key: "showSessionCommandCopyActions",
+        subtitle: "Show Copy resume and Copy attach command in session context menus.",
+        title: "Show command copy actions",
       },
     ]),
     statusIndicators: getSettingsSectionSearch(settingsSearchQuery, "Status Indicators", [
@@ -1996,6 +2003,21 @@ export function SettingsModal({
                 {...getSettingModificationProps("hideLastActiveTimeOnSessionCards")}
                 onChange={(checked) => updateDraft("hideLastActiveTimeOnSessionCards", checked)}
               />
+              ) : null}
+              {mainSettingVisible(settingsSearch.sessionCards, "showSessionCommandCopyActions") ? (
+              <>
+                {/*
+                 * CDXC:SidebarContextMenu 2026-06-09-23:17:
+                 * Copy resume and Copy attach command are advanced session-card context-menu utilities. Keep both hidden unless this Settings toggle is enabled so the default menu stays focused on normal session actions.
+                 */}
+                <ToggleField
+                  checked={draft.showSessionCommandCopyActions}
+                  description="Show Copy resume and Copy attach command in session context menus."
+                  label="Show command copy actions"
+                  {...getSettingModificationProps("showSessionCommandCopyActions")}
+                  onChange={(checked) => updateDraft("showSessionCommandCopyActions", checked)}
+                />
+              </>
               ) : null}
             </SettingsSection>
             ) : null}
@@ -3016,6 +3038,7 @@ export function SettingsModal({
                 })
               }
               remoteMachines={draft.remoteMachines}
+              vscode={vscode}
             />
           </TabsContent>
           ) : null}
@@ -3111,30 +3134,59 @@ type SettingsOpenTargetEditorState = {
 };
 
 type RemoteMachineDraft = {
+  id: string;
   name: string;
   sshHost: string;
   sshIdentityFile: string;
+  sshPassword: string;
+  sshPasswordSaved: boolean;
   sshPort: string;
   sshUser: string;
 };
 
-function RemoteSettingsTab({
-  onChange,
-  remoteMachines,
-}: {
-  onChange: (remoteMachines: RemoteMachineSettings[]) => void;
-  remoteMachines: RemoteMachineSettings[];
-}) {
-  const [isTailscaleHelpOpen, setIsTailscaleHelpOpen] = useState(false);
-  const [newMachine, setNewMachine] = useState<RemoteMachineDraft>({
+function createRemoteMachineDraft(): RemoteMachineDraft {
+  return {
+    id: `remote-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`,
     name: "",
     sshHost: "",
     sshIdentityFile: "",
+    sshPassword: "",
+    sshPasswordSaved: false,
     sshPort: "",
     sshUser: "",
-  });
+  };
+}
+
+function RemoteSettingsTab({
+  onChange,
+  remoteMachines,
+  vscode,
+}: {
+  onChange: (remoteMachines: RemoteMachineSettings[]) => void;
+  remoteMachines: RemoteMachineSettings[];
+  vscode?: WebviewApi;
+}) {
+  const [isTailscaleHelpOpen, setIsTailscaleHelpOpen] = useState(false);
+  const [newMachine, setNewMachine] = useState<RemoteMachineDraft>(() => createRemoteMachineDraft());
+  const [sshPasswordDrafts, setSshPasswordDrafts] = useState<Record<string, string>>({});
 
   const updateRemoteMachine = (machineId: string, patch: Partial<RemoteMachineDraft>) => {
+    if (patch.sshPassword !== undefined) {
+      setSshPasswordDrafts((drafts) => ({
+        ...drafts,
+        [machineId]: patch.sshPassword ?? "",
+      }));
+    }
+    const settingsPatch = {
+      name: patch.name,
+      sshHost: patch.sshHost,
+      sshIdentityFile: patch.sshIdentityFile,
+      sshPort: patch.sshPort,
+      sshUser: patch.sshUser,
+    };
+    if (Object.values(settingsPatch).every((value) => value === undefined)) {
+      return;
+    }
     const nextMachines = remoteMachines
       .map((machine) => {
         if (machine.id !== machineId) {
@@ -3145,6 +3197,8 @@ function RemoteSettingsTab({
           name: patch.name ?? machine.name,
           sshHost: patch.sshHost ?? machine.sshHost,
           sshIdentityFile: patch.sshIdentityFile ?? machine.sshIdentityFile ?? "",
+          sshPassword: "",
+          sshPasswordSaved: machine.sshPasswordSaved === true,
           sshPort: patch.sshPort ?? (machine.sshPort ? String(machine.sshPort) : ""),
           sshUser: patch.sshUser ?? machine.sshUser ?? "",
         });
@@ -3162,11 +3216,33 @@ function RemoteSettingsTab({
       return;
     }
     onChange(normalizeRemoteMachineSettings([...remoteMachines, machine]));
-    setNewMachine({ name: "", sshHost: "", sshIdentityFile: "", sshPort: "", sshUser: "" });
+    setNewMachine(createRemoteMachineDraft());
   };
 
   const removeRemoteMachine = (machineId: string) => {
     onChange(remoteMachines.filter((machine) => machine.id !== machineId));
+  };
+
+  const saveRemoteMachinePassword = (machine: RemoteMachineSettings) => {
+    const password = sshPasswordDrafts[machine.id] ?? "";
+    if (!password && machine.sshPasswordSaved !== true) {
+      return;
+    }
+    /*
+     * CDXC:RemoteMachines 2026-06-09-18:23:
+     * The Remote settings password field is a transient entry box. Send the
+     * password only when the user presses the save-icon button, then clear the
+     * React draft so the settings JSON and modal state never retain the secret.
+     */
+    vscode?.postMessage({
+      password,
+      remoteMachineId: machine.id,
+      type: "saveRemoteMachinePassword",
+    });
+    setSshPasswordDrafts((drafts) => ({
+      ...drafts,
+      [machine.id]: "",
+    }));
   };
 
   const canAddMachine = newMachine.name.trim().length > 0 && newMachine.sshHost.trim().length > 0;
@@ -3259,13 +3335,18 @@ function RemoteSettingsTab({
                 <CardContent className="settings-remote-machine-body">
                   <RemoteMachineFields
                     draft={{
+                      id: machine.id,
                       name: machine.name,
                       sshHost: machine.sshHost,
                       sshIdentityFile: machine.sshIdentityFile ?? "",
+                      sshPassword: sshPasswordDrafts[machine.id] ?? "",
+                      sshPasswordSaved: machine.sshPasswordSaved === true,
                       sshPort: machine.sshPort ? String(machine.sshPort) : "",
                       sshUser: machine.sshUser ?? "",
                     }}
                     onChange={(patch) => updateRemoteMachine(machine.id, patch)}
+                    onPasswordSave={() => saveRemoteMachinePassword(machine)}
+                    passwordSaveDisabled={!vscode}
                   />
                 </CardContent>
               </Card>
@@ -3284,6 +3365,7 @@ function RemoteSettingsTab({
              */}
             <RemoteMachineFields
               draft={newMachine}
+              hidePasswordField
               onChange={(patch) => setNewMachine((draft) => ({ ...draft, ...patch }))}
             />
             <div className="settings-management-actions settings-remote-machine-add-actions">
@@ -3301,11 +3383,21 @@ function RemoteSettingsTab({
 
 function RemoteMachineFields({
   draft,
+  hidePasswordField = false,
   onChange,
+  onPasswordSave,
+  passwordSaveDisabled = false,
 }: {
   draft: RemoteMachineDraft;
+  hidePasswordField?: boolean;
   onChange: (patch: Partial<RemoteMachineDraft>) => void;
+  onPasswordSave?: () => void;
+  passwordSaveDisabled?: boolean;
 }) {
+  const canSavePassword =
+    !passwordSaveDisabled &&
+    typeof onPasswordSave === "function" &&
+    (draft.sshPassword.trim().length > 0 || draft.sshPasswordSaved);
   return (
     <FieldGroup className="settings-remote-machine-fields">
       <Field className="settings-remote-machine-field">
@@ -3366,9 +3458,41 @@ function RemoteMachineFields({
           value={draft.sshIdentityFile}
         />
         <FieldDescription className="settings-remote-machine-field-description">
-          Optional. Leave blank to use your default SSH key.
+          {hidePasswordField
+            ? "Provide an SSH identity file now, or add the machine and save an SSH password from its card."
+            : "Provide either an SSH identity file or save an SSH password below."}
         </FieldDescription>
       </Field>
+      {!hidePasswordField ? (
+        <Field className="settings-remote-machine-field">
+          <FieldLabel className="settings-remote-machine-field-label">Password</FieldLabel>
+          <div className="settings-remote-machine-password-row">
+            <Input
+              aria-label="Remote machine SSH password"
+              autoComplete="off"
+              className="settings-remote-machine-input"
+              maxLength={500}
+              onChange={(event) => onChange({ sshPassword: event.currentTarget.value })}
+              placeholder={draft.sshPasswordSaved ? "Saved in Keychain" : "SSH password"}
+              type="password"
+              value={draft.sshPassword}
+            />
+            <Button
+              aria-label="Save SSH password"
+              disabled={!canSavePassword}
+              onClick={onPasswordSave}
+              size="icon-sm"
+              type="button"
+              variant="secondary"
+            >
+              <IconDeviceFloppy aria-hidden="true" />
+            </Button>
+          </div>
+          <FieldDescription className="settings-remote-machine-field-description">
+            Passwords are stored in macOS Keychain. Leave blank and press Save to remove a saved password.
+          </FieldDescription>
+        </Field>
+      ) : null}
     </FieldGroup>
   );
 }
@@ -3382,6 +3506,7 @@ function normalizeRemoteMachineDraft(
       name: draft.name,
       sshHost: draft.sshHost,
       sshIdentityFile: draft.sshIdentityFile,
+      sshPasswordSaved: draft.sshPasswordSaved,
       sshPort: draft.sshPort ? Number(draft.sshPort) : undefined,
       sshUser: draft.sshUser,
     },

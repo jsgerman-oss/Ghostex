@@ -510,8 +510,32 @@ export type SidebarSessionStateMessage = {
 };
 
 export type SidebarSessionPresentationChangedMessage = {
+  revision?: number;
   session: SidebarSessionItem;
   type: "sessionPresentationChanged";
+};
+
+export type SidebarGroupsChangedMessage = {
+  groupOrder: string[];
+  groups: SidebarSessionGroup[];
+  removedGroupIds?: string[];
+  removedSessionIds?: string[];
+  revision: number;
+  /*
+  CDXC:SidebarHydration 2026-06-09-23:01:
+  Routine gxserver presentation changes must patch the React sidebar tree instead of posting a full hydrate. Carry changed groups, removals, and authoritative order so session add/remove/reorder/project deltas update visible rows without replacing unrelated sidebar state or letting WKWebView refreshes steal terminal focus.
+  */
+  type: "sidebarGroupsChanged";
+};
+
+export type SidebarHudChangedMessage = {
+  hud: SidebarHudState;
+  revision: number;
+  /*
+  CDXC:SidebarHydration 2026-06-09-23:01:
+  Live presentation patches still need HUD-derived chrome such as focused title, counts, and command indicators. Send HUD as its own patch so gxserver deltas do not force a session-tree hydrate just to keep non-row controls current.
+  */
+  type: "sidebarHudChanged";
 };
 
 export type SidebarPlayCompletionSoundMessage = {
@@ -725,6 +749,8 @@ export type ExtensionToSidebarMessage =
   | SidebarNativeHotkeyMessage
   | AgentsHubCatalogMessage
   | SidebarSessionPresentationChangedMessage
+  | SidebarGroupsChangedMessage
+  | SidebarHudChangedMessage
   | SidebarPlayCompletionSoundMessage
   | SidebarOrderSyncResultMessage
   | SidebarCommandRunStateChangedMessage
@@ -815,6 +841,17 @@ export type SidebarToExtensionMessage =
   | {
       settings: ghostexSettings;
       type: "updateSettings";
+    }
+  | {
+      /**
+       * CDXC:RemoteMachines 2026-06-09-18:23:
+       * Remote settings can save an SSH password, but the password must cross
+       * the webview boundary only as an explicit user action. Native writes it
+       * to macOS Keychain and settings store only the saved-password marker.
+       */
+      password: string;
+      remoteMachineId: string;
+      type: "saveRemoteMachinePassword";
     }
   | {
       /**

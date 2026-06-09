@@ -36,7 +36,9 @@ test("zmx attach command preserves the renderer shell contract", () => {
 
   assert.match(command, /^\/bin\/zsh -lc '/);
   assert.match(command, /zmx_bin=.*\/Applications\/Ghostex\.app\/Contents\/Resources\/Web\/bin\/zmx/);
-  assert.match(command, /unset ZMX_SESSION ZMX_SESSION_PREFIX/);
+  assert.match(command, /unset .*GHOSTEX_NATIVE_SESSION_ID/);
+  assert.match(command, /unset .*GHOSTEX_GLOBAL_SESSION_REF/);
+  assert.match(command, /unset .*ZMX_SESSION ZMX_SESSION_PREFIX/);
   assert.match(command, /export GHOSTEX_GLOBAL_SESSION_REF="\$zmx_global_session_ref"/);
   assert.match(command, /export GHOSTEX_GXSERVER_AUTH_TOKEN_FILE="\$zmx_gxserver_auth_token_file"/);
   assert.match(command, /export GHOSTEX_GXSERVER_BASE_URL="\$zmx_gxserver_base_url"/);
@@ -215,6 +217,7 @@ test("zmx run startup command is prefixed once for Atuin history ignore", () => 
   assert.match(command, /zmx_startup_text=' codex resume abc'/);
   assert.match(command, /zmx_startup_command=' codex resume abc\nexec \/bin\/zsh -li'/);
   assert.match(command, /export GHOSTEX_ZMX_BIN="\$zmx_bin"/);
+  assert.match(command, /unset .*GHOSTEX_NATIVE_SESSION_ID/);
   assert.match(command, /exec "\$zmx_bin" run "\$zmx_session" -d --initial-command \/bin\/zsh -lic "\$zmx_startup_command"/);
 
   const alreadyPrefixed = buildZmxRunCommand({
@@ -250,15 +253,28 @@ test("zmx command runner caps output and pipes stdin without argv payloads", asy
   assert.match(capped.stderr, /stdout exceeded 25 bytes/);
 });
 
-test("zmx child environment strips inherited color-disabling and macOS launch identity variables", () => {
+test("zmx child environment strips inherited color-disabling, macOS launch identity, and session identity variables", () => {
   /*
   CDXC:GxserverZmxLifecycle 2026-06-07-00:38:
   Forked agent providers must stay color-capable even when gxserver starts from an agent terminal with NO_COLOR-style variables. Assert the zmx runner removes those inherited keys before spawning the shell that starts zmx and agent CLIs.
 
   CDXC:GxserverZmxLifecycle 2026-06-08-05:49:
   Cursor-agent and other keychain-backed CLIs launched by zmx providers must not inherit the Ghostex app's LaunchServices/XPC identity. Assert the runner removes those keys while preserving login security-session context and terminal authentication sockets needed by normal developer workflows.
+
+  CDXC:PromptEditor 2026-06-09-21:50:
+  zmx providers must not inherit stale Ghostex local/native session identity
+  from the terminal that launched gxserver. Assert those keys are stripped while
+  provider scripts re-export the current global session identity explicitly.
   */
   const preservedEnvironmentKeys = ["SECURITYSESSIONID", "SSH_AUTH_SOCK"] as const;
+  const sessionIdentityEnvironmentKeys = [
+    "GHOSTEX_GLOBAL_SESSION_REF",
+    "GHOSTEX_NATIVE_SESSION_ID",
+    "GHOSTEX_SESSION_ID",
+    "GHOSTEX_WORKSPACE_ID",
+    "VSMUX_SESSION_ID",
+    "ZMX_SESSION",
+  ] as const;
   const environmentKeys = [
     "ANSI_COLORS_DISABLED",
     "LaunchInstanceID",
@@ -267,6 +283,7 @@ test("zmx child environment strips inherited color-disabling and macOS launch id
     "XPC_FLAGS",
     "XPC_SERVICE_NAME",
     "__CFBundleIdentifier",
+    ...sessionIdentityEnvironmentKeys,
     ...preservedEnvironmentKeys,
   ] as const;
   const environment: NodeJS.ProcessEnv = {};
@@ -279,7 +296,8 @@ test("zmx child environment strips inherited color-disabling and macOS launch id
     colorDisablingKeyCount: 3,
     macosLaunchIdentityKeyCount: 4,
     preservedSshAuthSock: true,
-    strippedKeyCount: 7,
+    sessionIdentityKeyCount: 6,
+    strippedKeyCount: 13,
   });
   const sanitized = buildGxserverZmxChildEnvironment(environment);
   for (const key of environmentKeys) {

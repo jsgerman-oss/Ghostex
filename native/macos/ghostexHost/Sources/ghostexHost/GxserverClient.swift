@@ -105,6 +105,30 @@ final class GxserverClient {
     "NO_COLOR",
     "NODE_DISABLE_COLORS",
   ]
+  private static let sessionIdentityEnvironmentKeys = [
+    "GHOSTEX_AGENT",
+    "GHOSTEX_GLOBAL_SESSION_REF",
+    "GHOSTEX_GXSERVER_AUTH_TOKEN_FILE",
+    "GHOSTEX_GXSERVER_BASE_URL",
+    "GHOSTEX_GXSERVER_PROTOCOL_VERSION",
+    "GHOSTEX_NATIVE_SESSION_ID",
+    "GHOSTEX_SESSION_ID",
+    "GHOSTEX_SESSION_STATE_FILE",
+    "GHOSTEX_WORKSPACE_ID",
+    "GHOSTEX_WORKSPACE_ROOT",
+    "VSMUX_AGENT",
+    "VSMUX_SESSION_ID",
+    "VSMUX_SESSION_STATE_FILE",
+    "VSMUX_WORKSPACE_ID",
+    "VSMUX_WORKSPACE_ROOT",
+    "ZMX_SESSION",
+    "ZMX_SESSION_PREFIX",
+    "ghostex_AGENT",
+    "ghostex_SESSION_ID",
+    "ghostex_SESSION_STATE_FILE",
+    "ghostex_WORKSPACE_ID",
+    "ghostex_WORKSPACE_ROOT",
+  ]
   private let fileManager = FileManager.default
 
   /*
@@ -860,8 +884,14 @@ final class GxserverClient {
 
      CDXC:GxserverBootstrap 2026-06-07-00:38:
      gxserver is the owner of forked zmx provider launches, so its daemon environment must never inherit NO_COLOR from the GUI app or local dev shell. Strip color-disabling keys before Node starts the daemon instead of relying on later terminal-surface cleanup.
+
+     CDXC:PromptEditor 2026-06-09-21:50:
+     gxserver must not inherit Ghostex pane identity from the terminal that
+     launched the app. Provider scripts export the current S:P:G identity
+     explicitly, so strip local/native session keys before starting the daemon
+     to keep Ctrl+G prompt-editor return focus from targeting a stale pane.
      */
-    for key in Self.colorDisablingEnvironmentKeys {
+    for key in Self.colorDisablingEnvironmentKeys + Self.sessionIdentityEnvironmentKeys {
       environment.removeValue(forKey: key)
     }
     let defaultEntries = [

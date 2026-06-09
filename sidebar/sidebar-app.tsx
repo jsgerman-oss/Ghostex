@@ -387,6 +387,7 @@ type SidebarSessionPointerDragState = {
 
 type SidebarUiCollapseState = {
   collapsedGroupsById: Record<string, true>;
+  collapsedRemoteMachineSectionsById: Record<string, true>;
   isRecentProjectsOpen: boolean;
   isReferenceChatsCollapsed: boolean;
   isReferenceProjectsCollapsed: boolean;
@@ -468,6 +469,7 @@ const DEBUG_BUILD_STAMP_STYLE: CSSProperties = {
 function createDefaultSidebarUiCollapseState(): SidebarUiCollapseState {
   return {
     collapsedGroupsById: {},
+    collapsedRemoteMachineSectionsById: {},
     isRecentProjectsOpen: false,
     isReferenceChatsCollapsed: false,
     isReferenceProjectsCollapsed: false,
@@ -505,6 +507,9 @@ function readSidebarUiCollapseState(): SidebarUiCollapseStateReadResult {
         collapsedGroupsById: normalizeStoredCollapsedGroupsById(
           (candidate as Partial<SidebarUiCollapseState>).collapsedGroupsById,
         ),
+        collapsedRemoteMachineSectionsById: normalizeStoredCollapsedGroupsById(
+          (candidate as Partial<SidebarUiCollapseState>).collapsedRemoteMachineSectionsById,
+        ),
         isRecentProjectsOpen:
           (candidate as Partial<SidebarUiCollapseState>).isRecentProjectsOpen === true,
         isReferenceChatsCollapsed:
@@ -539,6 +544,8 @@ function normalizeStoredCollapsedGroupsById(candidate: unknown): Record<string, 
 function summarizeSidebarUiCollapseState(state: SidebarUiCollapseState): Record<string, unknown> {
   return {
     collapsedGroupCount: Object.keys(state.collapsedGroupsById).length,
+    collapsedRemoteMachineSectionCount: Object.keys(state.collapsedRemoteMachineSectionsById)
+      .length,
     isRecentProjectsOpen: state.isRecentProjectsOpen,
     isReferenceChatsCollapsed: state.isReferenceChatsCollapsed,
     isReferenceProjectsCollapsed: state.isReferenceProjectsCollapsed,
@@ -601,6 +608,9 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
   const [collapsedGroupsById, setCollapsedGroupsById] = useState<Record<string, true>>(
     initialUiCollapseState.collapsedGroupsById,
   );
+  const [collapsedRemoteMachineSectionsById, setCollapsedRemoteMachineSectionsById] = useState<
+    Record<string, true>
+  >(initialUiCollapseState.collapsedRemoteMachineSectionsById);
   const [referenceSectionChildAnimations, setReferenceSectionChildAnimations] = useState<
     Record<ReferenceSidebarSectionId, boolean>
   >({
@@ -677,6 +687,8 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
     (state) => state.applyCommandRunStateClearedMessage,
   );
   const applyCommandRunStateMessage = useSidebarStore((state) => state.applyCommandRunStateMessage);
+  const applyGroupsChangedMessage = useSidebarStore((state) => state.applyGroupsChangedMessage);
+  const applyHudChangedMessage = useSidebarStore((state) => state.applyHudChangedMessage);
   const applyOrderSyncResultMessage = useSidebarStore((state) => state.applyOrderSyncResultMessage);
   const applySessionPresentationMessage = useSidebarStore(
     (state) => state.applySessionPresentationMessage,
@@ -1009,6 +1021,42 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
     });
   };
 
+  const setRemoteMachineSectionCollapsed = (machineId: string, collapsed: boolean) => {
+    const wasCollapsed = collapsedRemoteMachineSectionsById[machineId] === true;
+    postSidebarCollapseStateLog("remoteMachineSectionToggle", {
+      changed: wasCollapsed !== collapsed,
+      collapsed,
+      machineHash: hashSidebarCollapseDebugId(machineId),
+      wasCollapsed,
+    });
+    /*
+     * CDXC:RemoteMachines 2026-06-09-19:02:
+     * Remote machine sections are peers of Quick and Projects in the reference
+     * sidebar. Persist their collapsed state by saved machine id so each machine
+     * can collapse independently without affecting local project groups.
+     */
+    setCollapsedRemoteMachineSectionsById((previous) => {
+      if (collapsed) {
+        if (previous[machineId]) {
+          return previous;
+        }
+
+        return {
+          ...previous,
+          [machineId]: true,
+        };
+      }
+
+      if (!previous[machineId]) {
+        return previous;
+      }
+
+      const next = { ...previous };
+      delete next[machineId];
+      return next;
+    });
+  };
+
   const requestNewSession = () => {
     if (isSidebarInteractionBlocked) {
       return;
@@ -1077,6 +1125,16 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
 
     if (event.data.type === "sessionPresentationChanged") {
       applySessionPresentationMessage(event.data);
+      return;
+    }
+
+    if (event.data.type === "sidebarGroupsChanged") {
+      applyGroupsChangedMessage(event.data);
+      return;
+    }
+
+    if (event.data.type === "sidebarHudChanged") {
+      applyHudChangedMessage(event.data);
       return;
     }
 
@@ -1778,6 +1836,19 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
     return next;
   }, [displayedWorkspaceGroupIds, groupsById]);
   const remoteMachines = settings?.remoteMachines ?? [];
+  useEffect(() => {
+    const remoteMachineIds = new Set(remoteMachines.map((machine) => machine.id));
+    setCollapsedRemoteMachineSectionsById((previous) => {
+      let next: Record<string, true> | undefined;
+      for (const machineId of Object.keys(previous)) {
+        if (!remoteMachineIds.has(machineId)) {
+          next ??= { ...previous };
+          delete next[machineId];
+        }
+      }
+      return next ?? previous;
+    });
+  }, [remoteMachines]);
   const moveRemoteMachineSection = useEffectEvent(
     (sourceRemoteMachineId: string, targetRemoteMachineId: string) => {
       if (!settings || sourceRemoteMachineId === targetRemoteMachineId) {
@@ -1944,9 +2015,14 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
      * CDXC:SidebarReference 2026-05-20-12:00
      * The first post-hydrate group-collapse reconcile seeds session-count baseline
      * without expand-on-count-increase so restored projects do not reopen on launch.
+     *
+     * CDXC:RemoteMachines 2026-06-09-19:02:
+     * Remote machine section collapse belongs to the same UI navigation state as
+     * Quick and Projects. Persist each machine independently by saved machine id.
      */
     const nextCollapseState = {
       collapsedGroupsById,
+      collapsedRemoteMachineSectionsById,
       isRecentProjectsOpen,
       isReferenceChatsCollapsed,
       isReferenceProjectsCollapsed,
@@ -1961,6 +2037,7 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
     });
   }, [
     collapsedGroupsById,
+    collapsedRemoteMachineSectionsById,
     isRecentProjectsOpen,
     isReferenceChatsCollapsed,
     isReferenceProjectsCollapsed,
@@ -3472,21 +3549,25 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
                       <div className="reference-sidebar-empty-state">No projects</div>
                     )}
                   </div>
-                ) : null}
-                {!shouldHideReferenceSectionsForSearchEmptyState && remoteMachines.length > 0 ? (
-                  <div className="reference-remote-section-list">
-                    {/*
-                     * CDXC:RemoteMachines 2026-06-02-23:47:
-                     * Saved Remote machines render as peer sidebar sections beside local Projects. Until the SSH/gxserver connection is active, each machine remains visible, faded, non-expandable, and exposes only Reload instead of Add Project or Clone Repository.
-                     */}
-                    {remoteMachines.map((machine, index) => (
-                      <RemoteMachineSidebarSection
-                        index={index}
-                        key={machine.id}
-                        machine={machine}
-                        onAddProject={() =>
-                          openAppModal({
-                            modal: "remoteProjectPicker",
+	                ) : null}
+	                {!shouldHideReferenceSectionsForSearchEmptyState && remoteMachines.length > 0 ? (
+	                  <div className="reference-remote-section-list">
+	                    {/*
+	                     * CDXC:RemoteMachines 2026-06-02-23:47:
+	                     * Saved Remote machines render as peer sidebar sections beside local Projects. Until the SSH/gxserver connection is active, each machine remains visible and exposes Reload instead of Add Project or Clone Repository.
+	                     *
+	                     * CDXC:RemoteMachines 2026-06-09-19:02:
+	                     * Remote machine section rows must collapse like Quick and Projects and use the same section-header styling, including the visible chevron and hover actions.
+	                     */}
+	                    {remoteMachines.map((machine, index) => (
+	                      <RemoteMachineSidebarSection
+	                        collapsed={collapsedRemoteMachineSectionsById[machine.id] === true}
+	                        index={index}
+	                        key={machine.id}
+	                        machine={machine}
+	                        onAddProject={() =>
+	                          openAppModal({
+	                            modal: "remoteProjectPicker",
                             remoteMachineId: machine.id,
                             remoteMachineName: machine.name,
                             type: "open",
@@ -3511,26 +3592,35 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
                             canClose={false}
                             completionFlashNonceBySessionId={completionFlashNonceBySessionId}
                             draggingDisabled={true}
-                            groupId={groupId}
-                            index={groupIndex}
-                            isCollapsed={collapsedGroupsById[groupId] === true}
-                            key={groupId}
-                            onAutoEditHandled={() => undefined}
-                            onCollapsedChange={setGroupCollapsed}
-                            onFocusRequested={() => undefined}
-                            orderedSessionIds={displayedWorkspaceSessionIdsByGroup[groupId] ?? []}
-                            enableProjectSessionListToggle={!isSessionSearchFiltering}
-                            sessionDraggingDisabled={true}
-                            showHeaderActions={false}
-                            showSessionDropPositionIndicators={false}
-                            vscode={vscode}
-                          />
-                        )}
-                        status={remoteMachineRuntimeStatuses[machine.id] ?? "disconnected"}
-                      />
-                    ))}
-                  </div>
-                ) : null}
+	                            groupId={groupId}
+	                            index={groupIndex}
+	                            isCollapsed={collapsedGroupsById[groupId] === true}
+	                            key={groupId}
+	                            onAutoEditHandled={() => undefined}
+	                            onCollapsedChange={setGroupCollapsed}
+	                            onFocusRequested={() => undefined}
+	                            orderedSessionIds={displayedWorkspaceSessionIdsByGroup[groupId] ?? []}
+	                            enableProjectSessionListToggle={!isSessionSearchFiltering}
+	                            projectHeaderActions="terminal-only"
+	                            sessionDraggingDisabled={true}
+	                            showHeaderActions={true}
+	                            showSessionDropPositionIndicators={false}
+	                            vscode={vscode}
+	                          />
+	                        )}
+	                        onToggleCollapsed={() => {
+	                          const nextCollapsed =
+	                            collapsedRemoteMachineSectionsById[machine.id] !== true;
+	                          if (!nextCollapsed) {
+	                            triggerReferenceSectionChildAnimation("remote");
+	                          }
+	                          setRemoteMachineSectionCollapsed(machine.id, nextCollapsed);
+	                        }}
+	                        status={remoteMachineRuntimeStatuses[machine.id] ?? "disconnected"}
+	                      />
+	                    ))}
+	                  </div>
+	                ) : null}
                 {groupDragPreview && typeof document !== "undefined"
                   ? createPortal(
                       <ProjectGroupDragGhost preview={groupDragPreview} />,
@@ -4480,20 +4570,24 @@ function SidebarReferenceSectionHeader({
 }
 
 function RemoteMachineSidebarSection({
+  collapsed,
   index,
   machine,
   onAddProject,
   onCloneRepository,
   onReconnect,
+  onToggleCollapsed,
   projectGroupIds,
   renderProjectGroup,
   status,
 }: {
+  collapsed: boolean;
   index: number;
   machine: RemoteMachineSettings;
   onAddProject: () => void;
   onCloneRepository: () => void;
   onReconnect: () => void;
+  onToggleCollapsed: () => void;
   projectGroupIds: readonly string[];
   renderProjectGroup: (groupId: string, groupIndex: number) => ReactNode;
   status: RemoteMachineRuntimeStatus["state"];
@@ -4517,20 +4611,27 @@ function RemoteMachineSidebarSection({
     >
       <SidebarReferenceSectionHeader
         actionsAlwaysVisible={false}
-        collapsed={true}
+        collapsed={collapsed}
         onAddProject={isConnected ? onAddProject : undefined}
         onAddRepository={isConnected ? onCloneRepository : undefined}
         onReconnect={isConnected ? undefined : onReconnect}
-        onToggleCollapsed={() => undefined}
+        onToggleCollapsed={onToggleCollapsed}
         sectionKey="remote"
         title={machine.name}
       />
-      {isConnected && projectGroupIds.length > 0 ? (
+      {isConnected ? (
         <div
-          className="group-list workspace-group-list reference-remote-project-group-list"
+          aria-hidden={collapsed}
+          className="group-list workspace-group-list reference-project-group-list reference-sidebar-collapsible-body"
+          data-animate-children="false"
+          data-collapsed={String(collapsed)}
           data-sidebar-remote-project-list="true"
         >
-          {projectGroupIds.map((groupId, groupIndex) => renderProjectGroup(groupId, groupIndex))}
+          {projectGroupIds.length > 0 ? (
+            projectGroupIds.map((groupId, groupIndex) => renderProjectGroup(groupId, groupIndex))
+          ) : (
+            <div className="reference-sidebar-empty-state">No projects</div>
+          )}
         </div>
       ) : null}
     </div>

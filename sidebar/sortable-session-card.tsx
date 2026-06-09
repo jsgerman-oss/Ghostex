@@ -62,6 +62,10 @@ import { openAppModal } from "./app-modal-host-bridge";
 import { SidebarContextMenuPortal } from "./sidebar-context-menu-portal";
 import { useSidebarStore } from "./sidebar-store";
 import {
+  readRenderedSidebarSessionSlotIds,
+  resolveRenderedSidebarSessionIdsBelow,
+} from "./sidebar-visible-session-slots";
+import {
   getEffectiveSessionTag,
   getSidebarSessionTagLabel,
   SessionTagIcon,
@@ -250,10 +254,13 @@ export function SortableSessionCard({
   showDropPositionIndicator = true,
   vscode,
 }: SortableSessionCardProps) {
+  const [contextMenuPosition, setContextMenuPosition] = useState<ContextMenuPosition>();
+  const [contextMenuSessionIdsBelow, setContextMenuSessionIdsBelow] = useState<readonly string[]>([]);
+  const effectiveSessionIdsBelow = contextMenuPosition ? contextMenuSessionIdsBelow : sessionIdsBelow;
   const session = useSidebarStore((state) => state.sessionsById[sessionId]);
   const sleepableSessionIdsBelow = useSidebarStore(
     useShallow((state) =>
-      sessionIdsBelow.filter((candidateSessionId) =>
+      effectiveSessionIdsBelow.filter((candidateSessionId) =>
         canSleepSidebarSession(state.sessionsById[candidateSessionId]),
       ),
     ),
@@ -278,6 +285,7 @@ export function SortableSessionCard({
     showCloseButton,
     showDebugSessionNumbers,
     showLastActiveTime,
+    showSessionCommandCopyActions,
   } = useSidebarStore(
     useShallow((state) => ({
       /*
@@ -304,9 +312,17 @@ export function SortableSessionCard({
       showLastActiveTime:
         !(state.hud.settings?.hideLastActiveTimeOnSessionCards ??
           DEFAULT_ghostex_SETTINGS.hideLastActiveTimeOnSessionCards),
+      /*
+       * CDXC:SidebarContextMenu 2026-06-09-23:17:
+       * Copy resume and Copy attach command are opt-in context-menu utilities.
+       * Hide both by default and reveal them only when Settings explicitly
+       * enables command-copy actions for session buttons.
+       */
+      showSessionCommandCopyActions:
+        state.hud.settings?.showSessionCommandCopyActions ??
+        DEFAULT_ghostex_SETTINGS.showSessionCommandCopyActions,
     })),
   );
-  const [contextMenuPosition, setContextMenuPosition] = useState<ContextMenuPosition>();
   const [tagSubmenuPosition, setTagSubmenuPosition] = useState<ContextMenuPosition>();
   const [completionFlashRunId, setCompletionFlashRunId] = useState(0);
   const menuRef = useRef<HTMLDivElement>(null);
@@ -321,9 +337,10 @@ export function SortableSessionCard({
   const canForkSession = session ? !isBrowserSession && supportsFork(session) : false;
   const canDelayedSend = session ? !isBrowserSession && !isT3Session : false;
   const canCopyResumeCommand = session
-    ? !isBrowserSession && supportsResumeCommandCopy(session)
+    ? showSessionCommandCopyActions && !isBrowserSession && supportsResumeCommandCopy(session)
     : false;
   const canCopyAttachCommand =
+    showSessionCommandCopyActions &&
     !isBrowserSession &&
     Boolean(session?.sessionPersistenceProvider && session.sessionPersistenceName);
   const canFullReloadSession = session ? !isBrowserSession && supportsFullReload(session) : false;
@@ -673,10 +690,37 @@ export function SortableSessionCard({
     vscode,
   ]);
 
+  const readLatestSessionIdsBelow = () =>
+    resolveRenderedSidebarSessionIdsBelow({
+      sessionId: session.sessionId,
+      visibleSessionIds: readRenderedSidebarSessionSlotIds(),
+    });
+
+  const getContextMenuCountsForSessionIdsBelow = (nextSessionIdsBelow: readonly string[]) => {
+    const nextSleepableSessionIdsBelow = nextSessionIdsBelow.filter((candidateSessionId) =>
+      canSleepSidebarSession(useSidebarStore.getState().sessionsById[candidateSessionId]),
+    );
+    const nextBelowActionCount =
+      nextSessionIdsBelow.length > 0 ? 1 + Number(nextSleepableSessionIdsBelow.length > 0) : 0;
+    const nextSectionLengths = [
+      primaryActions.length,
+      sessionActions.length,
+      nextBelowActionCount,
+      destructiveActions.length,
+    ].filter((count) => count > 0);
+    return {
+      dividerCount: Math.max(0, nextSectionLengths.length - 1),
+      itemCount: nextSectionLengths.reduce((count, sectionLength) => count + sectionLength, 0),
+    };
+  };
+
   const openContextMenu = (clientY: number) => {
+    const nextSessionIdsBelow = readLatestSessionIdsBelow();
+    const nextMenuCounts = getContextMenuCountsForSessionIdsBelow(nextSessionIdsBelow);
     setTagSubmenuPosition(undefined);
+    setContextMenuSessionIdsBelow(nextSessionIdsBelow);
     setContextMenuPosition(
-      clampContextMenuPosition(clientY, contextMenuItemCount, contextMenuDividerCount),
+      clampContextMenuPosition(clientY, nextMenuCounts.itemCount, nextMenuCounts.dividerCount),
     );
   };
 
@@ -930,7 +974,7 @@ export function SortableSessionCard({
   };
 
   const requestSleepBelow = () => {
-    const targetSessionIds = sessionIdsBelow.filter((candidateSessionId) =>
+    const targetSessionIds = readLatestSessionIdsBelow().filter((candidateSessionId) =>
       canSleepSidebarSession(useSidebarStore.getState().sessionsById[candidateSessionId]),
     );
     if (targetSessionIds.length === 0) {
@@ -949,16 +993,17 @@ export function SortableSessionCard({
   };
 
   const requestCloseBelow = () => {
-    if (sessionIdsBelow.length === 0) {
+    const targetSessionIds = readLatestSessionIdsBelow();
+    if (targetSessionIds.length === 0) {
       return;
     }
 
     flushSync(() => {
       setContextMenuPosition(undefined);
-      useSidebarStore.getState().hideSessionsLocally(sessionIdsBelow);
+      useSidebarStore.getState().hideSessionsLocally(targetSessionIds);
     });
     vscode.postMessage({
-      sessionIds: [...sessionIdsBelow],
+      sessionIds: targetSessionIds,
       type: "closeSessions",
     });
   };
@@ -1071,13 +1116,19 @@ export function SortableSessionCard({
   }
 
   const belowActions: SessionContextMenuAction[] = [];
-  if (sessionIdsBelow.length > 0) {
+  if (effectiveSessionIdsBelow.length > 0) {
     /**
      * CDXC:SidebarContextMenu 2026-06-04-23:40:
      * Session row context menus expose below-scoped lifecycle actions only
      * when the clicked row has visible sessions beneath it. Sleep below targets
      * sleepable terminal/agent rows, while Close below removes every visible
      * row beneath the clicked session in the current sidebar order.
+     *
+     * CDXC:SidebarContextMenu 2026-06-09-23:32:
+     * "Below" must use rendered sidebar order across project groups, not only
+     * the current group's session slice. Snapshot rendered rows at menu open and
+     * recalculate them on click so zmx-backed rows below the group boundary are
+     * sent to the native/gxserver lifecycle path.
      */
     if (sleepableSessionIdsBelow.length > 0) {
       belowActions.push({

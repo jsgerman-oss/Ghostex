@@ -53,11 +53,36 @@ const GXSERVER_MACOS_LAUNCH_IDENTITY_ENVIRONMENT_KEYS = [
   "XPC_SERVICE_NAME",
   "__CFBundleIdentifier",
 ] as const;
+const GXSERVER_SESSION_IDENTITY_ENVIRONMENT_KEYS = [
+  "GHOSTEX_AGENT",
+  "GHOSTEX_GLOBAL_SESSION_REF",
+  "GHOSTEX_GXSERVER_AUTH_TOKEN_FILE",
+  "GHOSTEX_GXSERVER_BASE_URL",
+  "GHOSTEX_GXSERVER_PROTOCOL_VERSION",
+  "GHOSTEX_NATIVE_SESSION_ID",
+  "GHOSTEX_SESSION_ID",
+  "GHOSTEX_SESSION_STATE_FILE",
+  "GHOSTEX_WORKSPACE_ID",
+  "GHOSTEX_WORKSPACE_ROOT",
+  "VSMUX_AGENT",
+  "VSMUX_SESSION_ID",
+  "VSMUX_SESSION_STATE_FILE",
+  "VSMUX_WORKSPACE_ID",
+  "VSMUX_WORKSPACE_ROOT",
+  "ZMX_SESSION",
+  "ZMX_SESSION_PREFIX",
+  "ghostex_AGENT",
+  "ghostex_SESSION_ID",
+  "ghostex_SESSION_STATE_FILE",
+  "ghostex_WORKSPACE_ID",
+  "ghostex_WORKSPACE_ROOT",
+] as const;
 
 export interface GxserverZmxChildEnvironmentSanitizationSummary {
   colorDisablingKeyCount: number;
   macosLaunchIdentityKeyCount: number;
   preservedSshAuthSock: boolean;
+  sessionIdentityKeyCount: number;
   strippedKeyCount: number;
 }
 
@@ -146,7 +171,7 @@ if [ ! -x "$zmx_bin" ]; then
   exit 127
 fi
 export GHOSTEX_ZMX_BIN="$zmx_bin"
-unset ZMX_SESSION ZMX_SESSION_PREFIX
+${zmxSessionIdentityResetShellCommand()}
 if [ -n "$zmx_global_session_ref" ]; then
   export GHOSTEX_GLOBAL_SESSION_REF="$zmx_global_session_ref"
 fi
@@ -255,7 +280,7 @@ if [ -z "$zmx_startup_text" ]; then
   printf '%s\\n' 'gxserver startSessionProvider requires startup text.' >&2
   exit 64
 fi
-unset ZMX_SESSION ZMX_SESSION_PREFIX
+${zmxSessionIdentityResetShellCommand()}
 if [ -n "$zmx_global_session_ref" ]; then
   export GHOSTEX_GLOBAL_SESSION_REF="$zmx_global_session_ref"
 fi
@@ -291,7 +316,7 @@ if [ ! -x "$zmx_bin" ]; then
   exit 127
 fi
 export GHOSTEX_ZMX_BIN="$zmx_bin"
-unset ZMX_SESSION ZMX_SESSION_PREFIX
+${zmxSessionIdentityResetShellCommand()}
 if [ -n "$zmx_global_session_ref" ]; then
   export GHOSTEX_GLOBAL_SESSION_REF="$zmx_global_session_ref"
 fi
@@ -531,6 +556,17 @@ function sessionTitleShellCommand(title: string | undefined): string {
   return `printf '%s\\n' ${shellQuote(trimmedTitle)}`;
 }
 
+function zmxSessionIdentityResetShellCommand(): string {
+  /*
+  CDXC:PromptEditor 2026-06-09-21:50:
+  zmx attach/run scripts must clear inherited local Ghostex session identity
+  before exporting their current gxserver S:P:G identity. This prevents stale
+  GHOSTEX_NATIVE_SESSION_ID and legacy VSMUX/Ghostex state keys from routing
+  Ctrl+G prompt-editor saves back to the terminal that launched gxserver.
+  */
+  return `unset ${GXSERVER_SESSION_IDENTITY_ENVIRONMENT_KEYS.join(" ")}`;
+}
+
 function shellQuote(value: string): string {
   return `'${value.replaceAll("'", "'\\''")}'`;
 }
@@ -570,11 +606,18 @@ export function buildGxserverZmxChildEnvironment(environment: NodeJS.ProcessEnv 
 
   CDXC:GxserverZmxLifecycle 2026-06-08-05:49:
   Agent CLIs launched inside gxserver-created zmx providers must look like terminal children, not macOS app-extension children. Strip inherited LaunchServices/XPC identity keys from zmx lifecycle subprocesses so macOS keychain-backed tools do not bind credential access to the Ghostex GUI process.
+
+  CDXC:PromptEditor 2026-06-09-21:50:
+  gxserver can be launched from an existing Ghostex terminal, so inherited
+  local/native session env may name the wrong pane. Strip those keys before zmx
+  provider scripts export the current global S:P:G identity for prompt-editor
+  hooks and return-focus routing.
   */
   const sanitized = { ...environment };
   for (const key of [
     ...GXSERVER_COLOR_DISABLING_ENVIRONMENT_KEYS,
     ...GXSERVER_MACOS_LAUNCH_IDENTITY_ENVIRONMENT_KEYS,
+    ...GXSERVER_SESSION_IDENTITY_ENVIRONMENT_KEYS,
   ]) {
     delete sanitized[key];
   }
@@ -589,11 +632,13 @@ export function summarizeZmxChildEnvironmentSanitization(
     environment,
     GXSERVER_MACOS_LAUNCH_IDENTITY_ENVIRONMENT_KEYS,
   );
+  const sessionIdentityKeyCount = countPresentEnvironmentKeys(environment, GXSERVER_SESSION_IDENTITY_ENVIRONMENT_KEYS);
   return {
     colorDisablingKeyCount,
     macosLaunchIdentityKeyCount,
     preservedSshAuthSock: environment.SSH_AUTH_SOCK !== undefined,
-    strippedKeyCount: colorDisablingKeyCount + macosLaunchIdentityKeyCount,
+    sessionIdentityKeyCount,
+    strippedKeyCount: colorDisablingKeyCount + macosLaunchIdentityKeyCount + sessionIdentityKeyCount,
   };
 }
 

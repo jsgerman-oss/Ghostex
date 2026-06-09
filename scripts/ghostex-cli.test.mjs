@@ -480,6 +480,11 @@ printf 'forwarded:%s\\n' "$1"
      * The stable EDITOR wrapper must keep macOS app Ctrl+G on the Monaco
      * overlay when Settings selects Monaco. The wrapper chooses this only from
      * native app runtime markers, not from the setting alone.
+     *
+     * CDXC:PromptEditor 2026-06-09-21:50:
+     * Monaco prompt-editor return focus must prefer the current gxserver S:P:G
+     * ref over stale inherited GHOSTEX_NATIVE_SESSION_ID and send native the
+     * derived P:G id.
      */
     const tempDir = await mkdtemp(path.join(tmpdir(), "ghostex-prompt-editor-macos-"));
     const homeDir = path.join(tempDir, "home");
@@ -523,6 +528,8 @@ printf 'forwarded:%s\\n' "$1"
         env: {
           ...process.env,
           GHOSTEX_HOME: homeDir,
+          GHOSTEX_GLOBAL_SESSION_REF: "S1a:P3a91:G8v20",
+          GHOSTEX_NATIVE_SESSION_ID: "P3a91:G0000",
           GHOSTEX_PROMPT_EDITOR_CLIENT: "macos-app",
           GHOSTEX_PROMPT_EDITOR_BACKEND: "monaco",
           ZMX_SESSION: "",
@@ -534,6 +541,7 @@ printf 'forwarded:%s\\n' "$1"
       expect(receivedMessages[0]).toMatchObject({
         editorKind: "monaco",
         filePath: editFile,
+        originatingSessionId: "P3a91:G8v20",
         type: "openFloatingEditor",
       });
     } finally {

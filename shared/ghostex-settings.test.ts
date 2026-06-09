@@ -273,6 +273,22 @@ describe("normalizeghostexSettings", () => {
     });
   });
 
+  test("hides session command-copy context actions unless explicitly enabled", () => {
+    /**
+     * CDXC:SidebarContextMenu 2026-06-09-23:17:
+     * Copy resume and Copy attach command are advanced context-menu utilities.
+     * Missing settings must keep both hidden by default, while an explicit
+     * Settings opt-in should persist and reveal both actions.
+     */
+    expect(DEFAULT_ghostex_SETTINGS.showSessionCommandCopyActions).toBe(false);
+    expect(normalizeghostexSettings({})).toMatchObject({
+      showSessionCommandCopyActions: false,
+    });
+    expect(normalizeghostexSettings({ showSessionCommandCopyActions: true })).toMatchObject({
+      showSessionCommandCopyActions: true,
+    });
+  });
+
   test("keeps title-bar keep-awake settings English and bounded", () => {
     expect(DEFAULT_ghostex_SETTINGS.keepAwakeDefaultDurationMinutes).toBe(0);
     expect(DEFAULT_ghostex_SETTINGS.hideKeepAwakeTitlebarControl).toBe(false);
@@ -905,6 +921,10 @@ describe("normalizeghostexSettings", () => {
      * Remote machine settings require a display name and SSH host because the
      * sidebar renders each saved machine as its own named section and v1 remote
      * connection support is SSH-only.
+     *
+     * CDXC:RemoteMachines 2026-06-09-18:23:
+     * SSH passwords are Keychain credentials, not settings data. Normalization
+     * preserves only the saved-password marker and drops any raw password value.
      */
     expect(
       normalizeghostexSettings({
@@ -914,6 +934,8 @@ describe("normalizeghostexSettings", () => {
             name: " Main machine ",
             sshHost: " 100.77.81.4 ",
             sshIdentityFile: " ~/.ssh/id_ed25519 ",
+            sshPassword: "never-store-this",
+            sshPasswordSaved: true,
             sshPort: 2222,
             sshUser: " madda ",
           },
@@ -928,6 +950,7 @@ describe("normalizeghostexSettings", () => {
         name: "Main machine",
         sshHost: "100.77.81.4",
         sshIdentityFile: "~/.ssh/id_ed25519",
+        sshPasswordSaved: true,
         sshPort: 2222,
         sshUser: "madda",
       },

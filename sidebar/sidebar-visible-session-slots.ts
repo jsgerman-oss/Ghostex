@@ -158,6 +158,23 @@ export function createRenderedSidebarSessionSlotIds(
   return createRenderedSidebarSessionSlots(elements).map((slot) => slot.sessionId);
 }
 
+export function resolveRenderedSidebarSessionIdsBelow({
+  sessionId,
+  visibleSessionIds,
+}: {
+  sessionId: string;
+  visibleSessionIds: readonly string[];
+}): string[] {
+  /*
+   * CDXC:SidebarContextMenu 2026-06-09-23:32:
+   * Sleep below and Close below are pixel-order actions. Resolve targets from
+   * rendered sidebar rows so cross-group project lists, collapsed sections, and
+   * Show less state match the rows the user can actually see.
+   */
+  const sessionIndex = visibleSessionIds.indexOf(sessionId);
+  return sessionIndex >= 0 ? visibleSessionIds.slice(sessionIndex + 1) : [];
+}
+
 export function resolveAdjacentRenderedSidebarSessionSlotId({
   direction,
   focusedSessionId,

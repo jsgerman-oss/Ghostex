@@ -8,6 +8,8 @@ import type {
   SidebarCommandRunStateClearedMessage,
   SidebarCommandRunStateChangedMessage,
   SidebarDaemonSessionsStateMessage,
+  SidebarGroupsChangedMessage,
+  SidebarHudChangedMessage,
   SidebarHydrateMessage,
   SidebarHudState,
   SidebarOrderSyncResultMessage,
@@ -52,6 +54,8 @@ type SidebarStoreDataState = {
 type SidebarStoreActions = {
   applyCommandRunStateClearedMessage: (message: SidebarCommandRunStateClearedMessage) => void;
   applyCommandRunStateMessage: (message: SidebarCommandRunStateChangedMessage) => void;
+  applyGroupsChangedMessage: (message: SidebarGroupsChangedMessage) => void;
+  applyHudChangedMessage: (message: SidebarHudChangedMessage) => void;
   applyOrderSyncResultMessage: (message: SidebarOrderSyncResultMessage) => void;
   applyLocalFocus: (groupId: string, sessionId: string) => void;
   hideSessionLocally: (sessionId: string) => void;
@@ -156,6 +160,12 @@ export const useSidebarStore = create<SidebarStoreState>((set) => ({
         },
       };
     });
+  },
+  applyGroupsChangedMessage: (message) => {
+    set((state) => applyGroupsChangedMessageState(state, message));
+  },
+  applyHudChangedMessage: (message) => {
+    set((state) => applyHudChangedMessageState(state, message));
   },
   applyOrderSyncResultMessage: (message) => {
     set({
@@ -273,6 +283,175 @@ function applySidebarMessageState(
   };
 }
 
+function applyHudChangedMessageState(
+  state: SidebarStoreState,
+  message: SidebarHudChangedMessage,
+): Partial<SidebarStoreState> | SidebarStoreState {
+  if (message.revision < state.revision) {
+    return state;
+  }
+
+  const nextHud = preserveSidebarHudReferences(state.hud, {
+    ...message.hud,
+    projectSettingsProjects: message.hud.projectSettingsProjects ?? [],
+    recentProjects: message.hud.recentProjects ?? [],
+  });
+  return {
+    commandRunStates: reconcileSidebarCommandRunFeedbackStates(
+      state.commandRunStates,
+      message.hud.commands.map((command) => command.commandId),
+    ),
+    hud: nextHud,
+    revision: message.revision,
+  };
+}
+
+function applyGroupsChangedMessageState(
+  state: SidebarStoreState,
+  message: SidebarGroupsChangedMessage,
+): Partial<SidebarStoreState> | SidebarStoreState {
+  if (message.revision < state.revision) {
+    return state;
+  }
+
+  const removedGroupIds = new Set(message.removedGroupIds ?? []);
+  const removedSessionIds = new Set(message.removedSessionIds ?? []);
+  const localFirstFiltered = filterPatchLocallyHiddenSidebarSessions(
+    message.groups,
+    state,
+    removedSessionIds,
+  );
+  const localSleepApplied = applyPatchLocalSessionSleepingOverrides(
+    localFirstFiltered.groups,
+    state,
+    removedSessionIds,
+  );
+  const patchContainsPendingFocusedSession =
+    state.pendingFocusedSessionId !== undefined &&
+    localSleepApplied.groups.some((group) =>
+      (group.sessions ?? []).some((session) => session.sessionId === state.pendingFocusedSessionId),
+    );
+  const reconciledGroups = patchContainsPendingFocusedSession
+    ? reconcilePendingFocusedSession(localSleepApplied.groups, state.pendingFocusedSessionId)
+    : {
+        groups: localSleepApplied.groups,
+        pendingFocusedSessionId: state.pendingFocusedSessionId,
+      };
+  const normalizedGroups = normalizeSidebarGroups(state, reconciledGroups.groups);
+
+  let groupsById = state.groupsById;
+  let sessionIdsByGroup = state.sessionIdsByGroup;
+  let sessionsById = state.sessionsById;
+  const ensureGroupsById = () => {
+    if (groupsById === state.groupsById) {
+      groupsById = { ...state.groupsById };
+    }
+  };
+  const ensureSessionIdsByGroup = () => {
+    if (sessionIdsByGroup === state.sessionIdsByGroup) {
+      sessionIdsByGroup = { ...state.sessionIdsByGroup };
+    }
+  };
+  const ensureSessionsById = () => {
+    if (sessionsById === state.sessionsById) {
+      sessionsById = { ...state.sessionsById };
+    }
+  };
+
+  /*
+  CDXC:SidebarHydration 2026-06-09-23:01:
+  gxserver live deltas should mutate only the affected sidebar groups. Preserve unchanged group/session object references and local-first close/sleep overlays so add/remove/reorder/project patches behave like full hydrates without replacing the whole React store.
+  */
+  for (const groupId of removedGroupIds) {
+    if (groupsById[groupId]) {
+      ensureGroupsById();
+      delete groupsById[groupId];
+    }
+    const removedSessionIdsForGroup = sessionIdsByGroup[groupId] ?? [];
+    if (sessionIdsByGroup[groupId]) {
+      ensureSessionIdsByGroup();
+      delete sessionIdsByGroup[groupId];
+    }
+    for (const sessionId of removedSessionIdsForGroup) {
+      if (sessionsById[sessionId]) {
+        ensureSessionsById();
+        delete sessionsById[sessionId];
+      }
+    }
+  }
+
+  if (removedSessionIds.size > 0) {
+    for (const sessionId of removedSessionIds) {
+      if (sessionsById[sessionId]) {
+        ensureSessionsById();
+        delete sessionsById[sessionId];
+      }
+    }
+    for (const [groupId, groupSessionIds] of Object.entries(sessionIdsByGroup)) {
+      if (!groupSessionIds.some((sessionId) => removedSessionIds.has(sessionId))) {
+        continue;
+      }
+      ensureSessionIdsByGroup();
+      sessionIdsByGroup[groupId] = groupSessionIds.filter(
+        (sessionId) => !removedSessionIds.has(sessionId),
+      );
+    }
+  }
+
+  for (const group of reconciledGroups.groups) {
+    const groupId = group.groupId;
+    const nextGroup = normalizedGroups.groupsById[groupId];
+    const nextSessionIds = normalizedGroups.sessionIdsByGroup[groupId] ?? [];
+    const nextSessionIdSet = new Set(nextSessionIds);
+    const previousSessionIds = sessionIdsByGroup[groupId] ?? [];
+    for (const sessionId of previousSessionIds) {
+      if (nextSessionIdSet.has(sessionId)) {
+        continue;
+      }
+      if (sessionsById[sessionId]) {
+        ensureSessionsById();
+        delete sessionsById[sessionId];
+      }
+    }
+    if (nextGroup && groupsById[groupId] !== nextGroup) {
+      ensureGroupsById();
+      groupsById[groupId] = nextGroup;
+    }
+    if (sessionIdsByGroup[groupId] !== nextSessionIds) {
+      ensureSessionIdsByGroup();
+      sessionIdsByGroup[groupId] = nextSessionIds;
+    }
+    for (const sessionId of nextSessionIds) {
+      const nextSession = normalizedGroups.sessionsById[sessionId];
+      if (nextSession && sessionsById[sessionId] !== nextSession) {
+        ensureSessionsById();
+        sessionsById[sessionId] = nextSession;
+      }
+    }
+  }
+
+  const nextGroupOrder = haveSameStringArray(state.groupOrder, message.groupOrder)
+    ? state.groupOrder
+    : message.groupOrder;
+  const nextWorkspaceGroupIds = nextGroupOrder.filter((groupId) => {
+    const group = groupsById[groupId];
+    return group !== undefined && group.kind !== "browser";
+  });
+  return {
+    groupOrder: nextGroupOrder,
+    groupsById,
+    localHiddenSessionIds: localFirstFiltered.localHiddenSessionIds,
+    localSessionSleepingOverrides: localSleepApplied.localSessionSleepingOverrides,
+    pendingFocusedSessionId: reconciledGroups.pendingFocusedSessionId,
+    revision: message.revision,
+    sessionIdsByGroup,
+    sessionsById,
+    workspaceGroupIds: haveSameStringArray(state.workspaceGroupIds, nextWorkspaceGroupIds)
+      ? state.workspaceGroupIds
+      : nextWorkspaceGroupIds,
+  };
+}
+
 /**
  * CDXC:AppModals 2026-05-29-19:44:
  * App-level modals keep user drafts in local React state while the sidebar
@@ -340,15 +519,42 @@ function applySessionPresentationMessageState(
   state: SidebarStoreState,
   message: SidebarSessionPresentationChangedMessage,
 ): Partial<SidebarStoreState> | SidebarStoreState {
+  if (message.revision !== undefined && message.revision < state.revision) {
+    return state;
+  }
   const currentSession = state.sessionsById[message.session.sessionId];
-  if (!currentSession || haveSameSidebarSessionItem(currentSession, message.session)) {
+  if (!currentSession) {
+    return state;
+  }
+  let nextLocalSessionSleepingOverrides = state.localSessionSleepingOverrides;
+  let nextSession = message.session;
+  const sleepingOverride = state.localSessionSleepingOverrides[message.session.sessionId];
+  if (sleepingOverride !== undefined) {
+    const hostConfirmedOverride =
+      message.session.isSleeping === sleepingOverride &&
+      message.session.lifecycleState === (sleepingOverride ? "sleeping" : "running");
+    if (hostConfirmedOverride) {
+      nextLocalSessionSleepingOverrides = { ...state.localSessionSleepingOverrides };
+      delete nextLocalSessionSleepingOverrides[message.session.sessionId];
+    } else {
+      nextSession = applyLocalSessionSleepingOverride(message.session, sleepingOverride);
+    }
+  }
+
+  if (
+    haveSameSidebarSessionItem(currentSession, nextSession) &&
+    nextLocalSessionSleepingOverrides === state.localSessionSleepingOverrides &&
+    (message.revision === undefined || message.revision === state.revision)
+  ) {
     return state;
   }
 
   return {
+    localSessionSleepingOverrides: nextLocalSessionSleepingOverrides,
+    revision: message.revision ?? state.revision,
     sessionsById: {
       ...state.sessionsById,
-      [message.session.sessionId]: message.session,
+      [message.session.sessionId]: nextSession,
     },
   };
 }
@@ -483,6 +689,65 @@ function filterLocallyHiddenSidebarSessions(
       };
     }),
     localHiddenSessionIds: nextLocalHiddenSessionIds,
+  };
+}
+
+function filterPatchLocallyHiddenSidebarSessions(
+  groups: readonly SidebarSessionGroup[],
+  state: SidebarStoreState,
+  removedSessionIds: ReadonlySet<string>,
+): {
+  groups: SidebarSessionGroup[];
+  localHiddenSessionIds: Record<string, true>;
+} {
+  const incomingSessionIds = new Set(
+    groups.flatMap((group) => (group.sessions ?? []).map((session) => session.sessionId)),
+  );
+  const filtered = filterLocallyHiddenSidebarSessions(groups, state.localHiddenSessionIds);
+  const nextLocalHiddenSessionIds = { ...state.localHiddenSessionIds };
+  for (const sessionId of incomingSessionIds) {
+    delete nextLocalHiddenSessionIds[sessionId];
+  }
+  for (const sessionId of removedSessionIds) {
+    delete nextLocalHiddenSessionIds[sessionId];
+  }
+  return {
+    groups: filtered.groups,
+    localHiddenSessionIds: {
+      ...nextLocalHiddenSessionIds,
+      ...filtered.localHiddenSessionIds,
+    },
+  };
+}
+
+function applyPatchLocalSessionSleepingOverrides(
+  groups: readonly SidebarSessionGroup[],
+  state: SidebarStoreState,
+  removedSessionIds: ReadonlySet<string>,
+): {
+  groups: SidebarSessionGroup[];
+  localSessionSleepingOverrides: Record<string, boolean>;
+} {
+  const incomingSessionIds = new Set(
+    groups.flatMap((group) => (group.sessions ?? []).map((session) => session.sessionId)),
+  );
+  const localSleepApplied = applyLocalSessionSleepingOverrides(
+    groups,
+    state.localSessionSleepingOverrides,
+  );
+  const nextLocalSessionSleepingOverrides = { ...state.localSessionSleepingOverrides };
+  for (const sessionId of incomingSessionIds) {
+    delete nextLocalSessionSleepingOverrides[sessionId];
+  }
+  for (const sessionId of removedSessionIds) {
+    delete nextLocalSessionSleepingOverrides[sessionId];
+  }
+  return {
+    groups: localSleepApplied.groups,
+    localSessionSleepingOverrides: {
+      ...nextLocalSessionSleepingOverrides,
+      ...localSleepApplied.localSessionSleepingOverrides,
+    },
   };
 }
 

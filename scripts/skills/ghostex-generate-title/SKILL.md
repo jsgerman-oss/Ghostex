@@ -24,9 +24,8 @@ that reaches the same native Enter path used by Delayed Send.
 
 ## Rules
 
-- Keep the title under 47 characters.
+- Keep the title under 60 characters.
 - Summarize the actual work done, not the whole conversation vibe.
-- Prefer 3-8 words.
 - Use plain title case or compact phrase case.
 - Avoid quotes, punctuation, emojis, and extra explanation.
 - Use `GHOSTEX_SESSION_ID` as the self-session selector when it is set. Ghostex

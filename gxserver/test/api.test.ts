@@ -997,6 +997,8 @@ test("session state event API logs passive Codex identity conflicts without raw 
           firstUserMessage: "private prompt text",
           projectId: project.projectId,
           sessionId: session.sessionId,
+          title: "Wrong Codex Thread",
+          titleSource: "terminal-auto",
         },
         protocolVersion: GXSERVER_PROTOCOL_VERSION,
       },
@@ -1005,7 +1007,11 @@ test("session state event API logs passive Codex identity conflicts without raw 
     });
 
     assert.equal(ingested.status, 200);
+    assert.equal(ingested.body.result.changed, false);
+    assert.equal(ingested.body.result.reason, "passive-session-identity-conflict");
     assert.equal(ingested.body.result.session.runtimeSettings.agentSessionId, currentCodexSessionId);
+    assert.equal(ingested.body.result.session.runtimeSettings.firstUserMessage, undefined);
+    assert.equal(ingested.body.result.session.title, "Current Codex Thread");
     const { entry: conflict, text: logs } = await waitForLogEvent(
       paths.logFile,
       "sessionIdentity.updateBlocked",
@@ -1018,9 +1024,121 @@ test("session state event API logs passive Codex identity conflicts without raw 
     assert.equal(conflict.details.currentAgentSessionIdPresent, true);
     assert.equal(typeof conflict.details.currentAgentSessionIdHash, "string");
     assert.equal(typeof conflict.details.incomingAgentSessionIdHash, "string");
+    const { entry: rejected } = await waitForLogEvent(
+      paths.logFile,
+      "sessionIdentity.passiveEventRejected",
+      1_000,
+    );
+    assert.equal(rejected.level, "warn");
+    assert.equal(rejected.details.reason, "passive-agent-session-id-replacement");
+    assert.equal(rejected.details.source, "session-state-event");
+    assert.equal(rejected.details.identitySource, "passive");
+    assert.equal(rejected.details.hasFirstUserMessage, true);
+    assert.equal(rejected.details.hasTitle, true);
     assert.doesNotMatch(logs, new RegExp(currentCodexSessionId, "u"));
     assert.doesNotMatch(logs, new RegExp(incomingCodexSessionId, "u"));
-    assert.doesNotMatch(logs, /private-thread|private prompt text|Current Codex Thread|\/Users\/person/u);
+    assert.doesNotMatch(logs, /private-thread|private prompt text|Current Codex Thread|Wrong Codex Thread|\/Users\/person/u);
+  });
+});
+
+test("agent hook event API rejects wrong Codex thread attention before status changes", async () => {
+  await withApiServer("local", async ({ baseUrl, paths, token }) => {
+    const currentCodexSessionId = "019e7af5-c610-7f62-a129-db7bb510b48d";
+    const incomingCodexSessionId = "019e7c39-7ba7-7ac3-b79c-02757e299516";
+    const project = (
+      await requestJson(baseUrl, "/api/createProject", {
+        body: {
+          params: { name: "Ghostex", path: paths.rootDir },
+          protocolVersion: GXSERVER_PROTOCOL_VERSION,
+        },
+        method: "POST",
+        token,
+      })
+    ).body.result.project;
+    const target = (
+      await requestJson(baseUrl, "/api/createSession", {
+        body: {
+          params: {
+            agentId: "codex",
+            kind: "agent",
+            projectId: project.projectId,
+            runtimeSettings: {
+              agentActivity: { activity: "idle", isAcknowledged: true },
+              agentName: "codex",
+              agentSessionId: currentCodexSessionId,
+              titleSource: "terminal-auto",
+            },
+            title: "Target Codex Thread",
+          },
+          protocolVersion: GXSERVER_PROTOCOL_VERSION,
+        },
+        method: "POST",
+        token,
+      })
+    ).body.result.session;
+    await requestJson(baseUrl, "/api/createSession", {
+      body: {
+        params: {
+          agentId: "codex",
+          kind: "agent",
+          projectId: project.projectId,
+          runtimeSettings: {
+            agentName: "codex",
+            agentSessionId: incomingCodexSessionId,
+            titleSource: "terminal-auto",
+          },
+          title: "Other Codex Thread",
+        },
+        protocolVersion: GXSERVER_PROTOCOL_VERSION,
+      },
+      method: "POST",
+      token,
+    });
+
+    const ingested = await requestJson(baseUrl, "/api/ingestAgentHookEvent", {
+      body: {
+        params: {
+          agentName: "codex",
+          agentSessionId: incomingCodexSessionId,
+          eventName: "Stop",
+          firstUserMessage: "private prompt text",
+          projectId: project.projectId,
+          rawEventName: "Stop",
+          sessionId: target.sessionId,
+          status: "attention",
+          statusUpdatedAt: "2026-06-09T18:08:19.857Z",
+          title: "Wrong Codex Thread",
+        },
+        protocolVersion: GXSERVER_PROTOCOL_VERSION,
+      },
+      method: "POST",
+      token,
+    });
+
+    assert.equal(ingested.status, 200);
+    assert.equal(ingested.body.result.changed, false);
+    assert.equal(ingested.body.result.reason, "passive-session-identity-conflict");
+    assert.equal(ingested.body.result.enteredAttention, false);
+    assert.equal(ingested.body.result.activity.activity, "idle");
+    assert.equal(ingested.body.result.session.runtimeSettings.agentActivity.activity, "idle");
+    assert.equal(ingested.body.result.session.runtimeSettings.agentSessionId, currentCodexSessionId);
+    assert.equal(ingested.body.result.session.runtimeSettings.firstUserMessage, undefined);
+    assert.equal(ingested.body.result.session.title, "Target Codex Thread");
+
+    const { entry: rejected, text: logs } = await waitForLogEvent(
+      paths.logFile,
+      "sessionIdentity.passiveEventRejected",
+      1_000,
+    );
+    assert.equal(rejected.level, "warn");
+    assert.equal(rejected.details.source, "agent-hook-event");
+    assert.equal(rejected.details.activity, "attention");
+    assert.equal(rejected.details.hasExplicitStatus, true);
+    assert.equal(rejected.details.hasFirstUserMessage, true);
+    assert.equal(rejected.details.hasTitle, true);
+    assert.doesNotMatch(logs, new RegExp(currentCodexSessionId, "u"));
+    assert.doesNotMatch(logs, new RegExp(incomingCodexSessionId, "u"));
+    assert.doesNotMatch(logs, /private prompt text|Wrong Codex Thread|Target Codex Thread/u);
   });
 });
 
@@ -2242,6 +2360,148 @@ test("agent hook event API owns working state across suppression and plain termi
         (candidate: { sessionId: string }) => candidate.sessionId === session.sessionId,
       );
       assert.equal(presentationSession?.activity, "attention");
+    },
+    {
+      zmxLifecycle: fakeZmxLifecycle([], () => 0),
+    },
+  );
+});
+
+test("agent hook, session-state, and activity APIs reject cross-agent events for locked launches", async () => {
+  await withApiServer(
+    "local",
+    async ({ baseUrl, paths, token }) => {
+      const project = (
+        await requestJson(baseUrl, "/api/createProject", {
+          body: { params: { name: "Ghostex", path: paths.rootDir }, protocolVersion: GXSERVER_PROTOCOL_VERSION },
+          method: "POST",
+          token,
+        })
+      ).body.result.project;
+      const session = (
+        await requestJson(baseUrl, "/api/createSession", {
+          body: {
+            params: {
+              agentId: "codex",
+              kind: "agent",
+              launchSettings: {
+                agentLaunchPlan: {
+                  agentCommand: "codex",
+                  command: "codex fork 019e7af5-c610-7f62-a129-db7bb510b48d",
+                },
+                forkedFromSessionId: "G4c7u",
+              },
+              projectId: project.projectId,
+              runtimeSettings: {
+                agentActivity: { activity: "idle" },
+                agentCommand: "codex",
+                agentName: "codex",
+                forkedFromSessionId: "G4c7u",
+                launchAgentId: "codex",
+                titleSource: "user",
+              },
+              title: "Locked Codex fork",
+            },
+            protocolVersion: GXSERVER_PROTOCOL_VERSION,
+          },
+          method: "POST",
+          token,
+        })
+      ).body.result.session;
+
+      const cursorHook = await requestJson(baseUrl, "/api/ingestAgentHookEvent", {
+        body: {
+          params: {
+            agentName: "cursor",
+            agentSessionPath: "/Users/person/.cursor/private-session.jsonl",
+            eventName: "beforeSubmitPrompt",
+            firstUserMessage: "private prompt text must not be logged",
+            projectId: project.projectId,
+            rawEventName: "beforeSubmitPrompt",
+            sessionId: session.sessionId,
+            status: "working",
+            statusUpdatedAt: "2026-06-09T16:37:47.476Z",
+          },
+          protocolVersion: GXSERVER_PROTOCOL_VERSION,
+        },
+        method: "POST",
+        token,
+      });
+      assert.equal(cursorHook.status, 200);
+      assert.equal(cursorHook.body.result.reason, "agent-hook-agent-mismatch");
+      assert.equal(cursorHook.body.result.changed, false);
+      assert.equal(cursorHook.body.result.session.agentId, "codex");
+      assert.equal(cursorHook.body.result.session.runtimeSettings.agentName, "codex");
+      assert.equal(cursorHook.body.result.session.runtimeSettings.agentActivity.activity, "idle");
+
+      const mismatchLog = await waitForLogEvent(paths.logFile, "sessionIdentity.launchAgentMismatch", 2_000);
+      assert.equal(mismatchLog.entry.level, "warn");
+      assert.equal(mismatchLog.entry.details.source, "agent-hook-event");
+      assert.equal(mismatchLog.entry.details.lockedAgentId, "codex");
+      assert.equal(mismatchLog.entry.details.incomingAgentId, "cursor");
+      assert.equal(mismatchLog.entry.details.hasAgentSessionPath, true);
+      assert.equal(mismatchLog.text.includes("/Users/person"), false);
+      assert.equal(mismatchLog.text.includes("private prompt text"), false);
+      assert.equal(mismatchLog.text.includes("beforeSubmitPrompt"), false);
+
+      const cursorState = await requestJson(baseUrl, "/api/ingestSessionStateEvent", {
+        body: {
+          params: {
+            agentName: "cursor",
+            agentSessionPath: "/Users/person/.cursor/private-session.jsonl",
+            firstUserMessage: "another private prompt text",
+            projectId: project.projectId,
+            sessionId: session.sessionId,
+          },
+          protocolVersion: GXSERVER_PROTOCOL_VERSION,
+        },
+        method: "POST",
+        token,
+      });
+      assert.equal(cursorState.status, 200);
+      assert.equal(cursorState.body.result.reason, "session-state-agent-mismatch");
+      assert.equal(cursorState.body.result.changed, false);
+      assert.equal(cursorState.body.result.session.agentId, "codex");
+      assert.equal(cursorState.body.result.session.runtimeSettings.agentSessionPath, undefined);
+
+      const cursorActivity = await requestJson(baseUrl, "/api/updateAgentActivity", {
+        body: {
+          params: {
+            activity: "working",
+            agentName: "cursor",
+            projectId: project.projectId,
+            sessionId: session.sessionId,
+          },
+          protocolVersion: GXSERVER_PROTOCOL_VERSION,
+        },
+        method: "POST",
+        token,
+      });
+      assert.equal(cursorActivity.status, 200);
+      assert.equal(cursorActivity.body.result.activity.activity, "idle");
+      assert.equal(cursorActivity.body.result.session.runtimeSettings.agentActivity.activity, "idle");
+
+      const codexHook = await requestJson(baseUrl, "/api/ingestAgentHookEvent", {
+        body: {
+          params: {
+            agentName: "codex",
+            eventName: "UserPromptSubmit",
+            projectId: project.projectId,
+            rawEventName: "UserPromptSubmit",
+            sessionId: session.sessionId,
+            status: "working",
+            statusUpdatedAt: "2026-06-09T16:37:50.000Z",
+          },
+          protocolVersion: GXSERVER_PROTOCOL_VERSION,
+        },
+        method: "POST",
+        token,
+      });
+      assert.equal(codexHook.status, 200);
+      assert.equal(codexHook.body.result.activity.activity, "working");
+      assert.equal(codexHook.body.result.activity.workingSource, "explicit");
+      assert.equal(codexHook.body.result.session.agentId, "codex");
+      assert.equal(codexHook.body.result.session.runtimeSettings.agentActivity.agentName, "codex");
     },
     {
       zmxLifecycle: fakeZmxLifecycle([], () => 0),

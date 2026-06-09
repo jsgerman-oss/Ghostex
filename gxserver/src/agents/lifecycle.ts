@@ -274,6 +274,7 @@ export function createAgentForkSessionParams(
         activity: startupText ? "working" : "idle",
       }),
       agentCommand: normalizeText(plan.baseCommand),
+      launchAgentId: agentId,
       agentName: agentId,
       forkedFromSessionId: sourceSession.sessionId,
       startupText,
@@ -338,6 +339,7 @@ export function createAgentSessionParams(
         activity: launchPlan.startupText ? "working" : "idle",
       }),
       agentCommand: launchPlan.agentCommand,
+      launchAgentId: agentId,
       ...(launchPlan.firstUserMessage ? { firstUserMessage: launchPlan.firstUserMessage } : {}),
     },
   };

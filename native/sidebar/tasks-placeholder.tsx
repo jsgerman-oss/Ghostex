@@ -227,6 +227,16 @@ type BoardRefreshOptions = {
 
 type ProjectSurfaceTab = "triage" | "automations" | "runs" | "board";
 
+/*
+ * CDXC:ProjectBoard 2026-06-09-19:30:
+ * Automations, Runs, and Triage stay visible in the Project header but remain disabled with a Coming soon tooltip until those surfaces are ready for general use.
+ */
+const PROJECT_BOARD_COMING_SOON_TABS = new Set<ProjectSurfaceTab>([
+  "automations",
+  "runs",
+  "triage",
+]);
+
 const AUTOMATION_SCHEDULE_PRESETS = [
   { label: "Every 5 minutes", value: "5m" },
   { label: "Every 15 minutes", value: "15m" },
@@ -448,7 +458,11 @@ function ProjectBoardApp() {
   const newPromptRef = useRef<HTMLTextAreaElement>(null);
   const automationProjectsRef = useRef<ProjectAutomationsBridgeState["projects"]>([]);
   const [conversationAction, setConversationAction] = useState<ConversationActionState>();
-  const [activeSurfaceTab, setActiveSurfaceTab] = useState<ProjectSurfaceTab>("triage");
+  /*
+   * CDXC:ProjectBoard 2026-06-09-19:25:
+   * The Project surface opens on Board by default and shows tabs in Board, Automations, Runs, Triage order so ticket work stays primary while triage remains available at the end.
+   */
+  const [activeSurfaceTab, setActiveSurfaceTab] = useState<ProjectSurfaceTab>("board");
   const [automationState, setAutomationState] = useState<ProjectAutomationsBridgeState>({
     agents: [],
     automations: [],
@@ -1586,7 +1600,6 @@ function ProjectBoardApp() {
     Boolean(conversationAction) ||
     (!detailPrimaryConversationLink && conversationState.agents.length === 0);
   const visibleAutomationRuns = automationState.runs.filter((run) => !run.isArchived);
-  const triageActionRunCount = visibleAutomationRuns.filter(isAutomationRunActionableInTriage).length;
   const triageAutomationRuns = selectAutomationRunsForTriage(visibleAutomationRuns);
   const selectedAutomation =
     automationState.automations.find((automation) => automation.id === selectedAutomationId) ??
@@ -1655,27 +1668,48 @@ function ProjectBoardApp() {
        */}
       <section className="project-board-toolbar">
         <h1 className="project-board-toolbar-title">{projectName}</h1>
-        <div className="project-board-tabs" aria-label="Project views">
-          {[
-            ["triage", "Triage"],
-            ["automations", "Automations"],
-            ["runs", "Runs"],
-            ["board", "Board"],
-          ].map(([value, label]) => (
-            <button
-              className="project-board-tab"
-              data-active={activeSurfaceTab === value}
-              key={value}
-              onClick={() => setActiveSurfaceTab(value as ProjectSurfaceTab)}
-              type="button"
-            >
-              {label}
-              {value === "triage" && triageActionRunCount > 0 ? (
-                <span>{triageActionRunCount}</span>
-              ) : null}
-            </button>
-          ))}
-        </div>
+        <TooltipProvider delayDuration={350}>
+          <div className="project-board-tabs" aria-label="Project views">
+            {[
+              ["board", "Board"],
+              ["automations", "Automations"],
+              ["runs", "Runs"],
+              ["triage", "Triage"],
+            ].map(([value, label]) => {
+              const tabValue = value as ProjectSurfaceTab;
+              const isComingSoon = PROJECT_BOARD_COMING_SOON_TABS.has(tabValue);
+              if (!isComingSoon) {
+                return (
+                  <button
+                    className="project-board-tab"
+                    data-active={activeSurfaceTab === tabValue}
+                    key={value}
+                    onClick={() => setActiveSurfaceTab(tabValue)}
+                    type="button"
+                  >
+                    {label}
+                  </button>
+                );
+              }
+              return (
+                <Tooltip key={value}>
+                  <TooltipTrigger className="project-board-tab-tooltip-trigger" render={<span />}>
+                    <button
+                      className="project-board-tab"
+                      data-active={activeSurfaceTab === tabValue}
+                      data-disabled="true"
+                      disabled
+                      type="button"
+                    >
+                      {label}
+                    </button>
+                  </TooltipTrigger>
+                  <TooltipContent side="bottom">Coming soon!</TooltipContent>
+                </Tooltip>
+              );
+            })}
+          </div>
+        </TooltipProvider>
         <div className="project-board-toolbar-actions">
           <Button
             aria-label="Refresh project"
@@ -4764,6 +4798,22 @@ styleElement.textContent = `
     color: #151617;
   }
 
+  .project-board-tab:disabled,
+  .project-board-tab[data-disabled="true"] {
+    cursor: not-allowed;
+    opacity: 0.42;
+  }
+
+  .project-board-tab:disabled[data-active="true"],
+  .project-board-tab[data-disabled="true"][data-active="true"] {
+    background: rgba(255, 255, 255, 0.055);
+    color: rgba(244, 244, 245, 0.42);
+  }
+
+  .project-board-tab-tooltip-trigger {
+    display: inline-flex;
+  }
+
   .project-board-tab span {
     background: rgba(255, 255, 255, 0.18);
     border-radius: 999px;
@@ -4777,39 +4827,59 @@ styleElement.textContent = `
     background: rgba(0, 0, 0, 0.14);
   }
 
-  .project-automation-split {
-    align-items: stretch;
-    display: grid;
-    flex: 1 1 auto;
-    gap: 12px;
-    grid-template-columns: minmax(280px, 0.9fr) minmax(320px, 1.1fr);
-    min-height: 0;
-  }
-
   /*
+   * CDXC:ProjectAutomations 2026-06-09-18:40:
+   * Automation views use one connected shell: a darker list sidebar on the left and a detail pane on the right with no gutter between them. Both columns share the same height so empty states stay vertically centered together.
+   *
    * CDXC:ProjectAutomations 2026-06-09-15:40:
    * Automation split views need centered empty states with icon, title, helper copy, and optional create action so blank Automations/Triage/Runs panels do not look like misaligned top-left placeholders.
    */
+  .project-automation-split {
+    background: rgba(255, 255, 255, 0.03);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    display: grid;
+    flex: 1 1 auto;
+    gap: 0;
+    grid-template-columns: minmax(280px, 0.9fr) minmax(320px, 1.1fr);
+    grid-template-rows: minmax(0, 1fr);
+    min-height: 0;
+    overflow: hidden;
+  }
+
+  .project-automation-split > * {
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    min-width: 0;
+  }
+
+  .project-automation-split > :first-child {
+    background: rgba(0, 0, 0, 0.16);
+    border-right: 1px solid rgba(255, 255, 255, 0.08);
+  }
+
+  .project-automation-split > :last-child {
+    background: rgba(255, 255, 255, 0.02);
+  }
+
   .project-automation-empty-state {
     align-items: center;
-    align-self: stretch;
-    background: rgba(255, 255, 255, 0.04);
-    border: 1px solid rgba(255, 255, 255, 0.08);
-    border-radius: 8px;
     display: flex;
     flex: 1 1 auto;
     flex-direction: column;
     gap: 10px;
     justify-content: center;
-    min-height: 280px;
+    min-height: 0;
     padding: 36px 28px;
     text-align: center;
   }
 
-  .project-automation-empty-state[data-variant="detail"] {
+  .project-automation-split > .project-automation-empty-state {
     background: transparent;
     border: none;
-    min-height: 0;
+  }
+
+  .project-automation-empty-state[data-variant="detail"] {
     padding: 24px;
   }
 
@@ -4846,11 +4916,24 @@ styleElement.textContent = `
     max-width: 300px;
   }
 
+  .project-automation-split .project-automation-detail {
+    background: transparent;
+    border: none;
+    flex: 1 1 auto;
+    min-height: 0;
+  }
+
+  .project-automation-split .project-automation-detail:not(.project-automation-detail--empty) {
+    overflow: auto;
+    padding: 16px;
+  }
+
   .project-automation-detail--empty {
     align-items: center;
     display: flex;
+    flex: 1 1 auto;
     justify-content: center;
-    min-height: 280px;
+    min-height: 0;
     padding: 0;
   }
 
@@ -4862,7 +4945,7 @@ styleElement.textContent = `
     grid-auto-rows: min-content;
     min-height: 0;
     overflow: auto;
-    padding-right: 4px;
+    padding: 12px;
   }
 
   .project-automation-card,
@@ -5011,15 +5094,14 @@ styleElement.textContent = `
   }
 
   .project-automation-detail {
-    background: rgba(255, 255, 255, 0.04);
-    border: 1px solid rgba(255, 255, 255, 0.08);
-    border-radius: 8px;
     display: grid;
     gap: 14px;
     grid-auto-rows: min-content;
     min-height: 0;
+  }
+
+  .project-automation-detail:not(.project-automation-detail--empty) {
     overflow: auto;
-    padding: 16px;
   }
 
   .project-automation-detail-header {
@@ -5269,6 +5351,12 @@ styleElement.textContent = `
   @media (max-width: 860px) {
     .project-automation-split {
       grid-template-columns: 1fr;
+      grid-template-rows: auto minmax(0, 1fr);
+    }
+
+    .project-automation-split > :first-child {
+      border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+      border-right: none;
     }
 
     .project-automation-form-grid {

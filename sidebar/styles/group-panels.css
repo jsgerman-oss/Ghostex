@@ -1273,6 +1273,17 @@ body[data-sidebar-tooltips-suppressed="true"] [data-slot="tooltip-content"] {
   width: calc(100% - 5px);
 }
 
+.sidebar-reference-layout[data-reference-sidebar="true"]
+  .reference-sidebar-search-field
+  > .session-search-toolbar {
+  /*
+   * CDXC:SidebarSearch 2026-06-09-18:46:
+   * The active sidebar Search field should be 12px narrower from both left and right edges while preserving the existing 5px right-edge trim from the reference layout.
+   */
+  margin-left: 12px;
+  width: calc(100% - 29px);
+}
+
 .sidebar-reference-layout[data-reference-sidebar="true"] .session-search-input-shell {
   width: 100%;
 }
@@ -1456,32 +1467,29 @@ body[data-sidebar-tooltips-suppressed="true"] [data-slot="tooltip-content"] {
 }
 
 .reference-remote-section-list {
-  display: grid;
-  gap: 2px;
-  margin-top: 8px;
-}
-
-.reference-remote-machine-section[data-disconnected="true"] {
-  opacity: 0.48;
-}
-
-.reference-remote-machine-section[data-disconnected="true"]:hover,
-.reference-remote-machine-section[data-disconnected="true"]:focus-within {
-  opacity: 0.68;
+  /*
+   * CDXC:RemoteMachines 2026-06-09-19:02:
+   * Remote machine sections must match Quick/Projects section headers exactly.
+   * Keep this wrapper layout-neutral so the shared section-row margins, chevron,
+   * typography, and hover-action behavior apply without remote-specific offsets.
+   */
+  display: block;
+  margin-top: 0;
 }
 
 .reference-remote-machine-section[data-dragging="true"] {
   opacity: 0.28;
 }
 
-.reference-remote-machine-section .reference-sidebar-section-row {
-  margin-bottom: 0;
-  margin-top: 10px;
-}
-
-.reference-remote-machine-section .reference-sidebar-section-chevron {
-  opacity: 0;
-  visibility: hidden;
+.reference-remote-machine-section > .reference-sidebar-section-row {
+  /*
+   * CDXC:RemoteMachines 2026-06-09-19:08:
+   * The gap before a remote machine section should match the collapsed
+   * Quick-to-Projects section transition. Remote sections are wrapped, so mirror
+   * the top-level adjacent-section margin instead of inheriting the default 48px
+   * section-row top margin.
+   */
+  margin-top: 17px;
 }
 
 .sidebar-reference-layout[data-reference-sidebar="true"]
@@ -1988,10 +1996,13 @@ manual mode visibly selected without adding text to the section row.
    * The Recent Projects search box should be 5px wider on its left side only.
    * Keep the drawer body's right edge and project row geometry unchanged by
    * expanding the shared search shell left with a negative margin.
+   *
+   * CDXC:RecentProjects 2026-06-09-18:46:
+   * The "Search projects" box should now shrink by 17px from its current left side only. Replace the prior 5px left expansion with a 12px left inset and reduce the shell width by the same 12px so the right edge remains fixed.
    */
   justify-self: center;
-  margin-left: -5px;
-  width: calc(100% + 5px);
+  margin-left: 12px;
+  width: calc(100% - 12px);
 }
 
 /*

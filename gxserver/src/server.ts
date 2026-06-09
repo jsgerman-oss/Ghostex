@@ -65,10 +65,14 @@ import {
   searchGxserverPresentation,
   shouldIncludePresentationSession,
   reconcileAgentMetadataTitle,
+  resolveSessionIdentity,
+  resolveSessionLaunchAgentMismatch,
   shouldCheckAgentMetadataTitle,
   type GxserverAgentTitleDebounceDecision,
+  type GxserverLaunchAgentMismatch,
   type GxserverSessionIdentityConflict,
 } from "./session-presentation/index.js";
+import { normalizeAgentActivityState } from "./session-status/index.js";
 import { type GxserverPaths, getGxserverPaths } from "./paths.js";
 import { browseProjectDirectories } from "./project-directory-browser.js";
 import { GxserverProjectPathError, normalizeExistingDirectoryPath, resolveProjectOperationDirectory } from "./project-paths.js";
@@ -169,6 +173,7 @@ import type {
   GxserverReadAgentHookStatusParams,
   GxserverUpdateProjectParams,
   GxserverUpdateAgentActivityParams,
+  GxserverUpdateAgentActivityResult,
   GxserverUpdateSessionOrderParams,
   GxserverUpdateSessionParams,
   GxserverFirstPromptTitleGenerationAgent,
@@ -1180,10 +1185,47 @@ async function dispatchDomainStateEndpoint(
     case "/api/ingestAgentHookEvent": {
       const hookEvent = params as unknown as GxserverIngestAgentHookEventParams;
       const lifecycle = readSessionLifecycleParams(params);
+      const current = repository.getSession(lifecycle.projectId, lifecycle.sessionId);
+      if (!current) {
+        throw new GxserverDomainStateError(
+          "notFound",
+          `Session ${lifecycle.projectId}/${lifecycle.sessionId} does not exist.`,
+        );
+      }
       /*
       CDXC:AgentHooks 2026-06-07-08:51:
       Hook activity is a gxserver-owned state transition, not a macOS sidebar fallback. Ingest provider metadata and explicit hook status together so every client receives the same working/attention/idle projection from gxserver presentation state.
+
+      CDXC:AgentHooks 2026-06-09-21:59:
+      Hook events may come from globally installed agent integrations. Reject cross-agent hook identity before applying passive metadata or explicit activity so a Cursor hook cannot relabel or pin working state on a gxserver-launched Codex fork.
       */
+      const hookActivity = normalizeAgentHookActivity(hookEvent.status, hookEvent.eventName ?? hookEvent.rawEventName);
+      const hookObservedIdentity = resolveSessionIdentity({
+        agentName: hookEvent.agentName,
+        agentSessionId: hookEvent.agentSessionId,
+        agentSessionPath: hookEvent.agentSessionPath,
+      });
+      const hookAgentMismatch = resolveSessionLaunchAgentMismatch(current, hookObservedIdentity.agentId);
+      if (hookAgentMismatch) {
+        logSessionLaunchAgentMismatch(runtime, lifecycle, hookAgentMismatch, "agent-hook-event", {
+          activity: hookActivity,
+          hasAgentSessionId: hookEvent.agentSessionId !== undefined,
+          hasAgentSessionPath: hookEvent.agentSessionPath !== undefined,
+          hasExplicitStatus: hookEvent.status !== undefined,
+          hasFirstUserMessage: hookEvent.firstUserMessage !== undefined,
+          hasHookEventName: hookEvent.eventName !== undefined || hookEvent.rawEventName !== undefined,
+        });
+        const previous = normalizeAgentActivityState(current.runtimeSettings.agentActivity, { activity: "idle" });
+        return {
+          activity: previous,
+          changed: false,
+          enteredAttention: false,
+          previousActivity: previous.activity,
+          projection: projectSessionTitle(current),
+          reason: "agent-hook-agent-mismatch",
+          session: current,
+        } satisfies Record<string, unknown> & GxserverIngestAgentHookEventResult;
+      }
       const metadata = applySessionStateEvent(repository, {
         ...hookEvent,
         identityUpdateSource: "passive",
@@ -1191,8 +1233,28 @@ async function dispatchDomainStateEndpoint(
         projectId: lifecycle.projectId,
         sessionId: lifecycle.sessionId,
       });
+      if (isRejectedPassiveSessionIdentityConflict(metadata.identityConflict)) {
+        logPassiveSessionIdentityEventRejected(runtime, lifecycle, metadata.identityConflict, "agent-hook-event", {
+          activity: hookActivity,
+          hasAgentSessionId: hookEvent.agentSessionId !== undefined,
+          hasAgentSessionPath: hookEvent.agentSessionPath !== undefined,
+          hasExplicitStatus: hookEvent.status !== undefined,
+          hasFirstUserMessage: hookEvent.firstUserMessage !== undefined,
+          hasHookEventName: hookEvent.eventName !== undefined || hookEvent.rawEventName !== undefined,
+          hasTitle: hookEvent.title !== undefined,
+        });
+        const previous = normalizeAgentActivityState(current.runtimeSettings.agentActivity, { activity: "idle" });
+        return {
+          activity: previous,
+          changed: false,
+          enteredAttention: false,
+          previousActivity: previous.activity,
+          projection: projectSessionTitle(current),
+          reason: "passive-session-identity-conflict",
+          session: current,
+        } satisfies Record<string, unknown> & GxserverIngestAgentHookEventResult;
+      }
       let session = metadata.session;
-      const hookActivity = normalizeAgentHookActivity(hookEvent.status, hookEvent.eventName ?? hookEvent.rawEventName);
       const hookActivityNowMs = parseAgentHookActivityTimestamp(hookEvent.statusUpdatedAt) ?? Date.now();
       let activityUpdate: ReturnType<typeof updateSessionActivitySettings> | undefined;
       let activityChanged = false;
@@ -1261,6 +1323,35 @@ async function dispatchDomainStateEndpoint(
     case "/api/ingestSessionStateEvent": {
       const stateEvent = params as unknown as GxserverSessionStateEventParams;
       const lifecycle = readSessionLifecycleParams(params);
+      const current = repository.getSession(lifecycle.projectId, lifecycle.sessionId);
+      if (!current) {
+        throw new GxserverDomainStateError(
+          "notFound",
+          `Session ${lifecycle.projectId}/${lifecycle.sessionId} does not exist.`,
+        );
+      }
+      const stateObservedIdentity = resolveSessionIdentity({
+        agentName: stateEvent.agentName,
+        agentSessionId: stateEvent.agentSessionId,
+        agentSessionPath: stateEvent.agentSessionPath,
+        startupText: stateEvent.startupText,
+      });
+      const stateAgentMismatch = resolveSessionLaunchAgentMismatch(current, stateObservedIdentity.agentId);
+      if (stateAgentMismatch) {
+        logSessionLaunchAgentMismatch(runtime, lifecycle, stateAgentMismatch, "session-state-event", {
+          hasAgentSessionId: stateEvent.agentSessionId !== undefined,
+          hasAgentSessionPath: stateEvent.agentSessionPath !== undefined,
+          hasFirstUserMessage: stateEvent.firstUserMessage !== undefined,
+          hasStartupText: stateEvent.startupText !== undefined,
+          hasTitle: stateEvent.title !== undefined,
+        });
+        return {
+          changed: false,
+          projection: projectSessionTitle(current),
+          reason: "session-state-agent-mismatch",
+          session: current,
+        } satisfies Record<string, unknown> & GxserverSessionStateEventResult;
+      }
       const result = applySessionStateEvent(repository, {
         ...stateEvent,
         identityUpdateSource: "passive",
@@ -1268,6 +1359,18 @@ async function dispatchDomainStateEndpoint(
         projectId: lifecycle.projectId,
         sessionId: lifecycle.sessionId,
       });
+      if (isRejectedPassiveSessionIdentityConflict(result.identityConflict)) {
+        logPassiveSessionIdentityEventRejected(runtime, lifecycle, result.identityConflict, "session-state-event", {
+          hasAgentSessionId: stateEvent.agentSessionId !== undefined,
+          hasAgentSessionPath: stateEvent.agentSessionPath !== undefined,
+          hasFirstUserMessage: stateEvent.firstUserMessage !== undefined,
+          hasStartupText: stateEvent.startupText !== undefined,
+          hasTitle: stateEvent.title !== undefined,
+        });
+        return {
+          ...result,
+        } satisfies Record<string, unknown> & GxserverSessionStateEventResult;
+      }
       const reconciled = scheduleAgentTitleMetadataCheck(runtime, repository, {
         force: true,
         projectId: lifecycle.projectId,
@@ -1438,6 +1541,21 @@ async function dispatchDomainStateEndpoint(
           "notFound",
           `Session ${lifecycle.projectId}/${lifecycle.sessionId} does not exist.`,
         );
+      }
+      const activityAgentMismatch = resolveSessionLaunchAgentMismatch(current, activity.agentName);
+      if (activityAgentMismatch) {
+        logSessionLaunchAgentMismatch(runtime, lifecycle, activityAgentMismatch, "update-agent-activity", {
+          activity: activity.activity,
+          event: activity.event,
+          hasTitle: activity.title !== undefined,
+        });
+        const previous = normalizeAgentActivityState(current.runtimeSettings.agentActivity, { activity: "idle" });
+        return {
+          activity: previous,
+          enteredAttention: false,
+          previousActivity: previous.activity,
+          session: current,
+        } satisfies Record<string, unknown> & GxserverUpdateAgentActivityResult;
       }
       const update = updateSessionActivitySettings(current, activity);
       const session = repository.updateSession({
@@ -2123,6 +2241,36 @@ function getPresentationDeltaCoalescer(runtime: GxserverApiRuntime): GxserverPre
   return runtime.presentationDeltaCoalescer;
 }
 
+function logSessionLaunchAgentMismatch(
+  runtime: GxserverApiRuntime,
+  lifecycle: GxserverSessionLifecycleParams,
+  mismatch: GxserverLaunchAgentMismatch,
+  source: "agent-hook-event" | "session-state-event" | "update-agent-activity",
+  extraDetails: Record<string, unknown>,
+): void {
+  /*
+  CDXC:GxserverSessionIdentity 2026-06-09-21:59:
+  Cross-agent hook rejections need support-bundle evidence without exposing user content. Log enum-like agent ids, source, status/event classes, and shape booleans only; never persist command text, paths, titles, prompts, or raw hook payload fields.
+  */
+  void runtime.logger.log({
+    details: {
+      ...extraDetails,
+      currentAgentId: mismatch.currentAgentId,
+      hasForkSource: mismatch.hasForkSource,
+      hasLaunchAgentId: mismatch.hasLaunchAgentId,
+      hasLaunchPlan: mismatch.hasLaunchPlan,
+      incomingAgentId: mismatch.incomingAgentId,
+      lockedAgentId: mismatch.lockedAgentId,
+      source,
+    },
+    event: "sessionIdentity.launchAgentMismatch",
+    level: "warn",
+    projectId: lifecycle.projectId,
+    serverId: runtime.metadata.serverId,
+    sessionId: lifecycle.sessionId,
+  });
+}
+
 function logSessionIdentityConflict(
   runtime: GxserverApiRuntime,
   projectId: GxserverProjectId,
@@ -2151,6 +2299,45 @@ function logSessionIdentityConflict(
       sessionId,
     });
   };
+}
+
+function isRejectedPassiveSessionIdentityConflict(
+  conflict: GxserverSessionIdentityConflict | undefined,
+): conflict is GxserverSessionIdentityConflict {
+  return conflict?.source === "passive";
+}
+
+function logPassiveSessionIdentityEventRejected(
+  runtime: GxserverApiRuntime,
+  lifecycle: GxserverSessionLifecycleParams,
+  conflict: GxserverSessionIdentityConflict,
+  source: "agent-hook-event" | "session-state-event",
+  extraDetails: Record<string, unknown>,
+): void {
+  /*
+  CDXC:GxserverSessionIdentity 2026-06-09-22:30:
+  Support needs to distinguish "blocked id update" from "entire passive event rejected" when a clicked/surfaced Codex terminal would otherwise inherit another row's done status. Persist only stable IDs, enum fields, booleans, and short hashes; never write thread ids, paths, titles, prompts, or command text.
+  */
+  void runtime.logger.log({
+    details: {
+      ...extraDetails,
+      agentId: conflict.agentId,
+      currentAgentSessionIdHash: hashLogIdentity(conflict.currentAgentSessionId),
+      currentAgentSessionIdPresent: conflict.currentAgentSessionId !== undefined,
+      incomingAgentSessionIdHash: hashLogIdentity(conflict.incomingAgentSessionId),
+      incomingAgentSessionIdPresent: conflict.incomingAgentSessionId !== undefined,
+      identitySource: conflict.source,
+      ownerProjectId: conflict.ownerProjectId,
+      ownerSessionId: conflict.ownerSessionId,
+      reason: conflict.reason,
+      source,
+    },
+    event: "sessionIdentity.passiveEventRejected",
+    level: "warn",
+    projectId: lifecycle.projectId,
+    serverId: runtime.metadata.serverId,
+    sessionId: lifecycle.sessionId,
+  });
 }
 
 function hashLogIdentity(value: string | undefined): string | undefined {

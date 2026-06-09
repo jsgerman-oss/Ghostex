@@ -6,6 +6,7 @@ export {
   resolveSessionIdentity,
   type GxserverResolvedSessionIdentity,
 } from "./identity.js";
+export * from "./launch-identity.js";
 export * from "./service.js";
 export * from "./coalescer.js";
 export * from "./projector.js";

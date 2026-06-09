@@ -2786,12 +2786,13 @@ async function floatingEditorCommand(args) {
   const resolvedCommandArgs = [...commandArgs];
   resolvedCommandArgs[0] = await resolveExecutable(commandArgs[0]);
   await writeFile(wrapperPath, floatingEditorWrapperScript(resolvedCommandArgs, cwd, statusFile, logPath));
+  const originatingSessionId = promptEditorOriginatingSessionIdFromEnvironment();
 
   await appendFloatingEditorLog({
     command: resolvedCommandArgs.join(" "),
     cwd,
     event: "cli.request",
-    originatingSessionId: process.env.GHOSTEX_NATIVE_SESSION_ID ?? "",
+    originatingSessionId: originatingSessionId ?? "",
     port,
     requestId,
     statusFile,
@@ -2807,7 +2808,7 @@ async function floatingEditorCommand(args) {
         command: `/bin/zsh ${shellQuote(wrapperPath)}`,
         cwd,
         env: floatingEditorEnvironment(),
-        originatingSessionId: process.env.GHOSTEX_NATIVE_SESSION_ID || undefined,
+        originatingSessionId,
         requestId,
         statusFile,
         title: "gte",
@@ -2875,6 +2876,7 @@ async function promptEditorCommand(args) {
     clientCapability,
     filePath: resolvedFilePath,
   });
+  const originatingSessionId = promptEditorOriginatingSessionIdFromEnvironment();
 
   await appendFloatingEditorLog({
     backend,
@@ -2884,7 +2886,7 @@ async function promptEditorCommand(args) {
     globalSessionRef: process.env.GHOSTEX_GLOBAL_SESSION_REF ?? "",
     gxserverBaseUrl: process.env.GHOSTEX_GXSERVER_BASE_URL ?? "",
     macosAppClient: isMacosAppPromptEditorClient(clientCapability),
-    originatingSessionId: process.env.GHOSTEX_NATIVE_SESSION_ID ?? "",
+    originatingSessionId: originatingSessionId ?? "",
     promptEditorClientCapability: clientCapability ?? "",
   });
 
@@ -2957,6 +2959,36 @@ function selectPromptEditorCommand({ backend, clientCapability, filePath }) {
   return { commandArgs: ["gte", filePath], kind: "gte" };
 }
 
+function promptEditorOriginatingSessionIdFromEnvironment() {
+  /*
+   * CDXC:PromptEditor 2026-06-09-21:50:
+   * zmx prompt-editor shells can inherit stale GHOSTEX_NATIVE_SESSION_ID from
+   * the app or gxserver launch environment. The current gxserver S:P:G ref is
+   * refreshed per session, so derive the native P:G focus id from it before
+   * falling back to the legacy native env key for older direct terminals.
+   */
+  return nativeFocusSessionIdFromGlobalSessionRef(process.env.GHOSTEX_GLOBAL_SESSION_REF)
+    ?? normalizedEnvironmentString(process.env.GHOSTEX_NATIVE_SESSION_ID);
+}
+
+function nativeFocusSessionIdFromGlobalSessionRef(globalSessionRef) {
+  const parts = String(globalSessionRef ?? "").trim().split(":");
+  if (
+    parts.length === 3 &&
+    /^S[0-9][a-z0-9]$/u.test(parts[0]) &&
+    /^P[0-9][a-z0-9]{3}$/u.test(parts[1]) &&
+    /^G[0-9][a-z0-9]{3}$/u.test(parts[2])
+  ) {
+    return `${parts[1]}:${parts[2]}`;
+  }
+  return undefined;
+}
+
+function normalizedEnvironmentString(value) {
+  const trimmed = String(value ?? "").trim();
+  return trimmed || undefined;
+}
+
 async function floatingMonacoEditorCommand(args) {
   /**
    * CDXC:PromptEditor 2026-05-31-10:24:
@@ -2980,12 +3012,13 @@ async function floatingMonacoEditorCommand(args) {
   const workDir = await mkdtemp(path.join(tmpdir(), "ghostex-floating-monaco-editor-"));
   const statusFile = path.join(workDir, "status");
   const resolvedFilePath = path.resolve(cwd, filePath);
+  const originatingSessionId = promptEditorOriginatingSessionIdFromEnvironment();
 
   await appendFloatingEditorLog({
     cwd,
     event: "cli.monaco_request",
     filePath: resolvedFilePath,
-    originatingSessionId: process.env.GHOSTEX_NATIVE_SESSION_ID ?? "",
+    originatingSessionId: originatingSessionId ?? "",
     port,
     requestId,
     statusFile,
@@ -3002,7 +3035,7 @@ async function floatingMonacoEditorCommand(args) {
         editorKind: "monaco",
         filePath: resolvedFilePath,
         language: "markdown",
-        originatingSessionId: process.env.GHOSTEX_NATIVE_SESSION_ID || undefined,
+        originatingSessionId,
         requestId,
         statusFile,
         title: "Prompt Editor",

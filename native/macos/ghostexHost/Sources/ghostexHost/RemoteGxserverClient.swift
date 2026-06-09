@@ -15,10 +15,16 @@ private struct RemoteProcessResult {
   let stdout: String
 }
 
+private struct RemoteSshAskpassScript {
+  let directory: URL
+  let script: URL
+}
+
 final class RemoteGxserverClient {
   static let shared = RemoteGxserverClient()
 
   private static let keychainService = "com.madda.ghostex.remote-gxserver-token"
+  private static let sshPasswordKeychainService = "com.madda.ghostex.remote-ssh-password"
   private let lock = NSLock()
   private var connections: [String: RemoteGxserverConnection] = [:]
   private var presentationSubscriptions: [String: URLSessionWebSocketTask] = [:]
@@ -36,6 +42,15 @@ final class RemoteGxserverClient {
     await withCheckedContinuation { continuation in
       DispatchQueue.global(qos: .utility).async {
         let event = self.connectSynchronously(command)
+        continuation.resume(returning: event)
+      }
+    }
+  }
+
+  func saveSshPassword(_ command: RemoteSshPasswordSave) async -> HostEvent {
+    await withCheckedContinuation { continuation in
+      DispatchQueue.global(qos: .utility).async {
+        let event = self.saveSshPasswordSynchronously(command)
         continuation.resume(returning: event)
       }
     }
@@ -120,6 +135,55 @@ final class RemoteGxserverClient {
     )
   }
 
+  private func saveSshPasswordSynchronously(_ command: RemoteSshPasswordSave) -> HostEvent {
+    let remoteMachineId = command.remoteMachineId.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !remoteMachineId.isEmpty else {
+      return .remoteSshPasswordSaveResult(
+        remoteMachineId: command.remoteMachineId,
+        requestId: command.requestId,
+        ok: false,
+        hasPassword: false,
+        error: "Remote machine id is missing."
+      )
+    }
+    do {
+      let password = command.password
+      /*
+       CDXC:RemoteMachines 2026-06-09-18:23:
+       User-provided SSH passwords are never written to Remote settings or
+       passed as SSH command arguments. Save non-empty values in macOS Keychain
+       under the remote machine id, and treat an empty save as credential
+       removal so users can clear password auth without editing Keychain.
+       */
+      if password.isEmpty {
+        try deleteSshPasswordFromKeychain(remoteMachineId: remoteMachineId)
+        return .remoteSshPasswordSaveResult(
+          remoteMachineId: remoteMachineId,
+          requestId: command.requestId,
+          ok: true,
+          hasPassword: false,
+          error: nil
+        )
+      }
+      try storeSshPasswordInKeychain(password, remoteMachineId: remoteMachineId)
+      return .remoteSshPasswordSaveResult(
+        remoteMachineId: remoteMachineId,
+        requestId: command.requestId,
+        ok: true,
+        hasPassword: true,
+        error: nil
+      )
+    } catch {
+      return .remoteSshPasswordSaveResult(
+        remoteMachineId: remoteMachineId,
+        requestId: command.requestId,
+        ok: false,
+        hasPassword: keychainHasSshPassword(remoteMachineId: remoteMachineId),
+        error: "macOS Keychain could not save the SSH password."
+      )
+    }
+  }
+
   private func connectSynchronously(_ command: RemoteGxserverConnect) -> HostEvent {
     guard !command.remoteMachineId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
       return statusEvent(command, state: "invalid", ok: false, message: "Remote machine id is missing.")
@@ -132,6 +196,9 @@ final class RemoteGxserverClient {
       host: command.sshHost,
       identityFile: expandedLocalPath(command.identityFile),
       port: command.sshPort,
+      sshPasswordAccount: keychainHasSshPassword(remoteMachineId: command.remoteMachineId)
+        ? command.remoteMachineId
+        : nil,
       user: command.sshUser?.trimmingCharacters(in: .whitespacesAndNewlines)
     )
 
@@ -323,21 +390,28 @@ final class RemoteGxserverClient {
       let localPort = Int.random(in: 42000...58999)
       let process = Process()
       process.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
-      var arguments = [
-        "-N",
-        "-o", "BatchMode=yes",
-        "-o", "UseKeychain=yes",
-        "-o", "AddKeysToAgent=yes",
-        "-o", "ConnectTimeout=8",
+      var arguments = ["-N"]
+      arguments.append(contentsOf: sshClientOptions(target))
+      arguments.append(contentsOf: [
         "-o", "ExitOnForwardFailure=yes",
-        "-o", "StrictHostKeyChecking=accept-new",
         "-L", "\(localPort):127.0.0.1:58744",
-      ]
+      ])
       arguments.append(contentsOf: sshTargetArguments(target))
       process.arguments = arguments
       process.standardInput = FileHandle.nullDevice
       process.standardOutput = Pipe()
       process.standardError = Pipe()
+      let askpass: RemoteSshAskpassScript?
+      do {
+        askpass = try makeSshAskpassScript(target: target)
+      } catch {
+        lastError = error
+        continue
+      }
+      process.environment = sshAskpassEnvironment(askpass)
+      defer {
+        removeSshAskpassScript(askpass)
+      }
 
       do {
         try process.run()
@@ -571,19 +645,86 @@ final class RemoteGxserverClient {
     return try result.get()
   }
 
-  private func runSsh(target: RemoteSshTarget, remoteCommand: String, timeoutSeconds: TimeInterval) -> RemoteProcessResult {
+  private func sshClientOptions(_ target: RemoteSshTarget) -> [String] {
     var arguments = [
-      "-o", "BatchMode=yes",
       "-o", "UseKeychain=yes",
       "-o", "AddKeysToAgent=yes",
       "-o", "ConnectTimeout=8",
       "-o", "StrictHostKeyChecking=accept-new",
     ]
+    if target.sshPasswordAccount?.isEmpty == false {
+      /*
+       CDXC:RemoteMachines 2026-06-09-18:23:
+       Password-backed Remote machines cannot use SSH BatchMode because it
+       suppresses password auth. Enable exactly one askpass prompt and let the
+       helper read the saved credential from Keychain; key-only machines keep
+       BatchMode so missing keys fail quickly without interactive prompts.
+       */
+      arguments.append(contentsOf: [
+        "-o", "BatchMode=no",
+        "-o", "NumberOfPasswordPrompts=1",
+        "-o", "PreferredAuthentications=publickey,password,keyboard-interactive",
+        "-o", "PasswordAuthentication=yes",
+      ])
+    } else {
+      arguments.append(contentsOf: ["-o", "BatchMode=yes"])
+    }
+    return arguments
+  }
+
+  private func makeSshAskpassScript(target: RemoteSshTarget) throws -> RemoteSshAskpassScript? {
+    guard let account = target.sshPasswordAccount, !account.isEmpty else {
+      return nil
+    }
+    let directory = FileManager.default.temporaryDirectory
+      .appendingPathComponent("ghostex-ssh-askpass-\(UUID().uuidString)", isDirectory: true)
+    let script = directory.appendingPathComponent("askpass.sh")
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    let contents = """
+    #!/bin/sh
+    exec /usr/bin/security find-generic-password -s \(shellSingleQuoted(Self.sshPasswordKeychainService)) -a \(shellSingleQuoted(account)) -w
+    """
+    try contents.write(to: script, atomically: true, encoding: .utf8)
+    try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directory.path)
+    try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: script.path)
+    return RemoteSshAskpassScript(directory: directory, script: script)
+  }
+
+  private func sshAskpassEnvironment(_ askpass: RemoteSshAskpassScript?) -> [String: String]? {
+    guard let askpass else {
+      return nil
+    }
+    var environment = ProcessInfo.processInfo.environment
+    environment["DISPLAY"] = environment["DISPLAY"] ?? "localhost:0"
+    environment["SSH_ASKPASS"] = askpass.script.path
+    environment["SSH_ASKPASS_REQUIRE"] = "force"
+    return environment
+  }
+
+  private func removeSshAskpassScript(_ askpass: RemoteSshAskpassScript?) {
+    guard let askpass else {
+      return
+    }
+    try? FileManager.default.removeItem(at: askpass.directory)
+  }
+
+  private func runSsh(target: RemoteSshTarget, remoteCommand: String, timeoutSeconds: TimeInterval) -> RemoteProcessResult {
+    let askpass: RemoteSshAskpassScript?
+    do {
+      askpass = try makeSshAskpassScript(target: target)
+    } catch {
+      return RemoteProcessResult(exitCode: 126, stderr: "Could not prepare SSH password helper.", stdout: "")
+    }
+    defer {
+      removeSshAskpassScript(askpass)
+    }
+    var arguments = sshClientOptions(target)
     arguments.append(contentsOf: sshTargetArguments(target))
     arguments.append(loginShellRemoteCommand(remoteCommand))
     return runProcess(
       executable: "/usr/bin/ssh",
       arguments: arguments,
+      environment: sshAskpassEnvironment(askpass),
       timeoutSeconds: timeoutSeconds
     )
   }
@@ -594,13 +735,16 @@ final class RemoteGxserverClient {
     remotePath: String,
     timeoutSeconds: TimeInterval
   ) -> RemoteProcessResult {
-    var arguments = [
-      "-o", "BatchMode=yes",
-      "-o", "UseKeychain=yes",
-      "-o", "AddKeysToAgent=yes",
-      "-o", "ConnectTimeout=8",
-      "-o", "StrictHostKeyChecking=accept-new",
-    ]
+    let askpass: RemoteSshAskpassScript?
+    do {
+      askpass = try makeSshAskpassScript(target: target)
+    } catch {
+      return RemoteProcessResult(exitCode: 126, stderr: "Could not prepare SSH password helper.", stdout: "")
+    }
+    defer {
+      removeSshAskpassScript(askpass)
+    }
+    var arguments = sshClientOptions(target)
     if let identityFile = target.identityFile, !identityFile.isEmpty {
       arguments.append(contentsOf: ["-i", identityFile])
     }
@@ -612,16 +756,25 @@ final class RemoteGxserverClient {
     return runProcess(
       executable: "/usr/bin/scp",
       arguments: arguments,
+      environment: sshAskpassEnvironment(askpass),
       timeoutSeconds: timeoutSeconds
     )
   }
 
-  private func runProcess(executable: String, arguments: [String], timeoutSeconds: TimeInterval) -> RemoteProcessResult {
+  private func runProcess(
+    executable: String,
+    arguments: [String],
+    environment: [String: String]? = nil,
+    timeoutSeconds: TimeInterval
+  ) -> RemoteProcessResult {
     let process = Process()
     let stdoutPipe = Pipe()
     let stderrPipe = Pipe()
     process.executableURL = URL(fileURLWithPath: executable)
     process.arguments = arguments
+    if let environment {
+      process.environment = environment
+    }
     process.standardInput = FileHandle.nullDevice
     process.standardOutput = stdoutPipe
     process.standardError = stderrPipe
@@ -731,6 +884,43 @@ final class RemoteGxserverClient {
     }
   }
 
+  private func storeSshPasswordInKeychain(_ password: String, remoteMachineId: String) throws {
+    guard let passwordData = password.data(using: .utf8) else {
+      throw NSError(domain: "RemoteSshPasswordKeychain", code: 1)
+    }
+    let query = sshPasswordKeychainQuery(remoteMachineId: remoteMachineId)
+    SecItemDelete(query as CFDictionary)
+    var addQuery = query
+    addQuery[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+    addQuery[kSecValueData as String] = passwordData
+    let status = SecItemAdd(addQuery as CFDictionary, nil)
+    guard status == errSecSuccess else {
+      throw NSError(domain: "RemoteSshPasswordKeychain", code: Int(status))
+    }
+  }
+
+  private func deleteSshPasswordFromKeychain(remoteMachineId: String) throws {
+    let status = SecItemDelete(sshPasswordKeychainQuery(remoteMachineId: remoteMachineId) as CFDictionary)
+    guard status == errSecSuccess || status == errSecItemNotFound else {
+      throw NSError(domain: "RemoteSshPasswordKeychain", code: Int(status))
+    }
+  }
+
+  private func keychainHasSshPassword(remoteMachineId: String) -> Bool {
+    var query = sshPasswordKeychainQuery(remoteMachineId: remoteMachineId)
+    query[kSecReturnData as String] = false
+    query[kSecMatchLimit as String] = kSecMatchLimitOne
+    return SecItemCopyMatching(query as CFDictionary, nil) == errSecSuccess
+  }
+
+  private func sshPasswordKeychainQuery(remoteMachineId: String) -> [String: Any] {
+    [
+      kSecAttrAccount as String: remoteMachineId,
+      kSecAttrService as String: Self.sshPasswordKeychainService,
+      kSecClass as String: kSecClassGenericPassword,
+    ]
+  }
+
   private func statusEvent(
     _ command: RemoteGxserverConnect,
     state: String,
@@ -802,5 +992,6 @@ private struct RemoteSshTarget {
   let host: String
   let identityFile: String?
   let port: Int?
+  let sshPasswordAccount: String?
   let user: String?
 }

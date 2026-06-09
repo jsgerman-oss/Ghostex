@@ -65,6 +65,7 @@ export type RemoteMachineSettings = {
   name: string;
   sshHost: string;
   sshIdentityFile?: string;
+  sshPasswordSaved?: boolean;
   sshPort?: number;
   sshUser?: string;
 };
@@ -179,6 +180,11 @@ export type ghostexSettings = {
   hideBrowserFaviconUntilHover: boolean;
   showCloseButtonOnSessionCards: boolean;
   hideLastActiveTimeOnSessionCards: boolean;
+  /**
+   * CDXC:SidebarContextMenu 2026-06-09-23:17:
+   * Session context menus should hide Copy resume and Copy attach command by default because they expose raw shell-command utilities. Settings owns a single opt-in that reveals both actions for users who intentionally copy commands into external terminals.
+   */
+  showSessionCommandCopyActions: boolean;
   /**
    * CDXC:AutoSleep 2026-05-28-08:06:
    * Auto Sleep is a settings-owned policy for retiring idle VS Code, Git,
@@ -471,6 +477,7 @@ export const DEFAULT_ghostex_SETTINGS: ghostexSettings = {
    */
   hideLastActiveTimeOnSessionCards:
     SIDEBAR_SETTINGS_PRESET_SETTINGS.codex.hideLastActiveTimeOnSessionCards,
+  showSessionCommandCopyActions: false,
   /**
    * CDXC:AutoSleep 2026-05-28-08:06:
    * Background VS Code, Project, and Git panes auto-sleep after fifteen minutes
@@ -1037,6 +1044,11 @@ export function normalizeghostexSettings(candidate: unknown): ghostexSettings {
       "hideLastActiveTimeOnSessionCards",
       DEFAULT_ghostex_SETTINGS.hideLastActiveTimeOnSessionCards,
     ),
+    showSessionCommandCopyActions: readBoolean(
+      source,
+      "showSessionCommandCopyActions",
+      DEFAULT_ghostex_SETTINGS.showSessionCommandCopyActions,
+    ),
     /**
      * CDXC:AutoSleep 2026-05-28-08:06:
      * Normalize Auto Sleep policy independently from keep-awake so Mac power
@@ -1505,6 +1517,13 @@ export function normalizeRemoteMachineSettings(candidate: unknown): RemoteMachin
       id,
       name,
       sshHost,
+      /*
+      CDXC:RemoteMachines 2026-06-09-18:23:
+      Remote SSH passwords are stored only in macOS Keychain. Settings may keep
+      this boolean marker so the UI can show a saved credential state, but raw
+      password fields from drafts/imports must be ignored by normalization.
+      */
+      ...(item.sshPasswordSaved === true ? { sshPasswordSaved: true } : {}),
       ...(sshIdentityFile ? { sshIdentityFile } : {}),
       ...(sshPort ? { sshPort } : {}),
       ...(sshUser ? { sshUser } : {}),

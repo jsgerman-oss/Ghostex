@@ -3152,6 +3152,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
           self?.bridge?.send(event)
         }
       }
+    case .remoteSshPasswordSave(let command):
+      Task { [weak self] in
+        let event = await RemoteGxserverClient.shared.saveSshPassword(command)
+        await MainActor.run {
+          self?.bridge?.send(event)
+        }
+      }
     case .setKeepAwakeLidSleepPrevention(let command):
       LidSleepPrivilegedHelperClient.shared.setEnabled(
         command.enabled,
@@ -5997,13 +6004,16 @@ final class ghostexRootView: NSView {
     guard modalHostView.isHidden && activeAppModalKind == nil else {
       return false
     }
-    guard let restoreSessionId = workspaceView.appModalReturnFocusTerminalSessionId() else {
+    guard let restoreSessionId = workspaceView.passiveSidebarReturnFocusTerminalSessionId() else {
       return false
     }
     let intentAgeMs: Any = sidebarFirstResponderIntentAgeMs(now: now).map { $0 as Any } ?? NSNull()
     /*
      CDXC:NativeTerminalFocus 2026-06-08-09:30:
      gxserver presentation deltas can hydrate the sidebar WKWebView while the user is typing in a terminal. A passive WKWebView first-responder handoff must not take keyboard focus from the selected terminal; allow sidebar focus only after recent user input inside the sidebar, otherwise restore terminal first responder at the native boundary.
+
+     CDXC:NativeTerminalFocus 2026-06-09-23:14:
+     Passive sidebar recovery is not modal return-focus. Use the terminal first-responder target instead of app-modal focus priority so a stale commandsPanelFocusedSessionId cannot steal focus when the user did not click that command panel.
      */
     TerminalFocusDebugLog.append(
       event: "nativeFocusTrace.passiveSidebarFirstResponderRestored",
@@ -6197,12 +6207,13 @@ final class ghostexRootView: NSView {
     }
     let initialText = (try? String(contentsOfFile: filePath, encoding: .utf8)) ?? ""
     let language = "markdown"
+    let originatingSessionId = ghostexNativeFocusSessionId(from: command.originatingSessionId)
     if let activeFloatingPromptEditor {
       writeFloatingPromptEditorStatusFile(activeFloatingPromptEditor.statusFile, status: "cancelled")
     }
     activeFloatingPromptEditor = ActiveFloatingPromptEditor(
       filePath: filePath,
-      originatingSessionId: command.originatingSessionId,
+      originatingSessionId: originatingSessionId,
       requestId: requestId,
       statusFile: command.statusFile
     )
@@ -6218,7 +6229,7 @@ final class ghostexRootView: NSView {
      writing pane. Ignore caller language hints so the modal host consistently
      uses Markdown tokenization and text wrapping for prompt composition.
      */
-    let initialFrame = floatingPromptEditorInitialFrame(originatingSessionId: command.originatingSessionId)
+    let initialFrame = floatingPromptEditorInitialFrame(originatingSessionId: originatingSessionId)
     updateFloatingPromptEditorHitRegion(frame: initialFrame)
     PromptEditorDebugLog.append(
       event: "native.open",
@@ -6227,7 +6238,7 @@ final class ghostexRootView: NSView {
         "initialTextLength": initialText.count,
         "interruptedPrewarm": interruptedPrewarm,
         "modalHostHidden": modalHostView.isHidden,
-        "originatingSessionId": command.originatingSessionId ?? "",
+        "originatingSessionId": originatingSessionId ?? "",
         "requestId": requestId,
         "startupOverlayVisible": startupOverlayView.superview === self && startupOverlayView.alphaValue > 0,
       ]
@@ -6854,11 +6865,17 @@ final class ghostexRootView: NSView {
     }
   }
 
-  private func restoreFloatingPromptEditorReturnFocus(sessionId: String, reason: String) {
+  private func restoreFloatingPromptEditorReturnFocus(sessionId rawSessionId: String, reason: String) {
     /*
      CDXC:PromptEditor 2026-06-09-09:05:
      Saving or closing the Monaco rich prompt editor must return typing focus to the terminal that launched Ctrl+G. Clear the floating modal state first, then restore focus after the current WebKit bridge turn and reinforce once after WebKit close events settle so Ctrl+G, Cmd+S, and Save leave the source terminal ready for input.
+
+     CDXC:PromptEditor 2026-06-09-21:50:
+     Return-focus dispatch accepts gxserver S:P:G refs but native AppKit focus
+     remains keyed by P:G. Normalize once before logging, direct focus, sidebar
+     fallback, and delayed reinforcement.
      */
+    let sessionId = ghostexNativeFocusSessionId(from: rawSessionId) ?? rawSessionId
     floatingPromptEditorReturnFocusRequestId &+= 1
     let focusRequestId = floatingPromptEditorReturnFocusRequestId
     TerminalFocusDebugLog.append(
@@ -6964,13 +6981,14 @@ final class ghostexRootView: NSView {
     reason: String,
     focusRequestId: UInt64
   ) {
-    guard let sessionIdJson = Self.javascriptStringLiteral(sessionId) else {
+    let normalizedSessionId = ghostexNativeFocusSessionId(from: sessionId) ?? sessionId
+    guard let sessionIdJson = Self.javascriptStringLiteral(normalizedSessionId) else {
       TerminalFocusDebugLog.append(
         event: "nativeFocusTrace.floatingPromptEditorReturnFocusSidebarRouteSkipped",
         details: [
           "focusRequestId": focusRequestId,
           "reason": reason,
-          "sessionId": sessionId,
+          "sessionId": normalizedSessionId,
           "skipReason": "sessionIdJsonEncodingFailed",
         ])
       return
@@ -6994,7 +7012,7 @@ final class ghostexRootView: NSView {
           "focusRequestId": focusRequestId,
           "hasError": error != nil,
           "reason": reason,
-          "sessionId": sessionId,
+          "sessionId": normalizedSessionId,
         ])
     }
   }
@@ -7896,6 +7914,13 @@ final class ghostexRootView: NSView {
             }
           }
         }
+        await MainActor.run {
+          self?.postHostEvent(event)
+        }
+      }
+    case .remoteSshPasswordSave(let command):
+      Task { [weak self] in
+        let event = await RemoteGxserverClient.shared.saveSshPassword(command)
         await MainActor.run {
           self?.postHostEvent(event)
         }
@@ -12405,12 +12430,17 @@ final class SidebarScriptBridge: NSObject, WKScriptMessageHandler {
     }
 
     guard JSONSerialization.isValidJSONObject(message.body) else {
-      let bodyDescription = String(String(describing: message.body).prefix(1000))
+      let bodyDescription = sidebarBridgeBodyDescription(message.body)
       /**
        CDXC:EditorPanes 2026-05-08-13:31
        Sidebar-to-native editor commands must fail observably. A malformed
        WebKit bridge payload can otherwise drop createProjectEditorPane before
        focusProjectEditorPane runs, leaving the VS Code button apparently dead.
+
+       CDXC:RemoteMachines 2026-06-09-18:41:
+       The Remote SSH password save command carries a transient credential. Bridge
+       failure diagnostics must redact that field before writing command bodies so
+       malformed payload repro logs cannot capture SSH passwords.
        */
       NativeT3CodePaneReproLog.append("nativeSidebar.bridge.command.invalidJson", [
         "body": bodyDescription,
@@ -12432,7 +12462,7 @@ final class SidebarScriptBridge: NSObject, WKScriptMessageHandler {
       router.onCommand?(command)
     } catch {
       let body = message.body as? [String: Any]
-      let bodyDescription = String(String(describing: message.body).prefix(1000))
+      let bodyDescription = sidebarBridgeBodyDescription(message.body)
       let commandType = body?["type"] as? String ?? "<missing>"
       NativeT3CodePaneReproLog.append("nativeSidebar.bridge.command.decodeFailed", [
         "body": bodyDescription,
@@ -12445,6 +12475,20 @@ final class SidebarScriptBridge: NSObject, WKScriptMessageHandler {
         "Sidebar command decode failed type=\(commandType, privacy: .public) error=\(sanitizedError, privacy: .public)"
       )
     }
+  }
+
+  private func sidebarBridgeBodyDescription(_ body: Any) -> String {
+    if var command = body as? [String: Any],
+       command["type"] as? String == "remoteSshPasswordSave" {
+      command["password"] = "[redacted]"
+      return String(String(describing: command).prefix(1000))
+    }
+    if var command = body as? [String: Any],
+       command["type"] as? String == "saveRemoteMachinePassword" {
+      command["password"] = "[redacted]"
+      return String(String(describing: command).prefix(1000))
+    }
+    return String(String(describing: body).prefix(1000))
   }
 }
 

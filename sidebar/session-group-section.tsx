@@ -687,6 +687,7 @@ export type SessionGroupSectionProps = {
   pinnedSessionDropIndicator?: SidebarSessionDropTarget;
   sessionDropIndicatorGroupId?: string;
   sessionDraggingDisabled?: boolean;
+  projectHeaderActions?: "all" | "terminal-only";
   showHeaderActions?: boolean;
   showSessionDropPositionIndicators?: boolean;
   vscode: WebviewApi;
@@ -768,6 +769,7 @@ export function SessionGroupSection({
   allowPinnedSessionReorder = false,
   enableProjectSessionListToggle = true,
   pinnedSessionDropIndicator,
+  projectHeaderActions = "all",
   sessionDropIndicatorGroupId,
   sessionDraggingDisabled = false,
   showHeaderActions = true,
@@ -1892,30 +1894,34 @@ export function SessionGroupSection({
                        * T3-style review flow for commit/push/PR, and that modal now
                        * owns the optional direct merge-to-main path so the header does
                        * not imply two competing worktree completion flows.
+                       *
+                       * CDXC:RemoteMachines 2026-06-09-19:02:
+                       * Remote project headers must use the exact same project-header
+                       * chrome as local project headers, but only expose the wired
+                       * remote terminal creation action until remote browser/agent and
+                       * worktree actions are implemented.
                       */
                       <>
-                        {projectContext.worktree ? (
-                          <>
-                            <ProjectHeaderActionButton
-                              aria-label={`Create PR for ${group.title}`}
-                              className="group-add-button group-worktree-pr-button"
-                              onClick={(event) => {
-                                event.preventDefault();
-                                event.stopPropagation();
-                                requestCreateWorktreePullRequest();
-                              }}
-                              tooltip="Create PR"
-                              type="button"
-                            >
-                              <IconGitPullRequest
-                                aria-hidden="true"
-                                className="group-add-icon"
-                                size={14}
-                                stroke={2}
-                              />
-                            </ProjectHeaderActionButton>
-                          </>
-                        ) : (
+                        {projectHeaderActions === "all" && projectContext.worktree ? (
+                          <ProjectHeaderActionButton
+                            aria-label={`Create PR for ${group.title}`}
+                            className="group-add-button group-worktree-pr-button"
+                            onClick={(event) => {
+                              event.preventDefault();
+                              event.stopPropagation();
+                              requestCreateWorktreePullRequest();
+                            }}
+                            tooltip="Create PR"
+                            type="button"
+                          >
+                            <IconGitPullRequest
+                              aria-hidden="true"
+                              className="group-add-icon"
+                              size={14}
+                              stroke={2}
+                            />
+                          </ProjectHeaderActionButton>
+                        ) : projectHeaderActions === "all" ? (
                           <ProjectHeaderActionButton
                             aria-label={`Create a worktree from ${group.title}`}
                             className="group-add-button group-worktree-button"
@@ -1934,25 +1940,27 @@ export function SessionGroupSection({
                               stroke={2}
                             />
                           </ProjectHeaderActionButton>
-                        )}
-                        <ProjectHeaderActionButton
-                          aria-label={`Create a browser tab in ${group.title}`}
-                          className="group-add-button group-browser-button"
-                          onClick={(event) => {
-                            event.preventDefault();
-                            event.stopPropagation();
-                            requestCreateBrowserPane();
-                          }}
-                          tooltip="New Browser Tab"
-                          type="button"
-                        >
-                          <IconWorld
-                            aria-hidden="true"
-                            className="group-add-icon"
-                            size={14}
-                            stroke={2}
-                          />
-                        </ProjectHeaderActionButton>
+                        ) : null}
+                        {projectHeaderActions === "all" ? (
+                          <ProjectHeaderActionButton
+                            aria-label={`Create a browser tab in ${group.title}`}
+                            className="group-add-button group-browser-button"
+                            onClick={(event) => {
+                              event.preventDefault();
+                              event.stopPropagation();
+                              requestCreateBrowserPane();
+                            }}
+                            tooltip="New Browser Tab"
+                            type="button"
+                          >
+                            <IconWorld
+                              aria-hidden="true"
+                              className="group-add-icon"
+                              size={14}
+                              stroke={2}
+                            />
+                          </ProjectHeaderActionButton>
+                        ) : null}
                         <ProjectHeaderActionButton
                           aria-label={`Create a terminal in ${group.title}`}
                           className="group-add-button group-project-terminal-button"
@@ -1971,47 +1979,49 @@ export function SessionGroupSection({
                             stroke={2}
                           />
                         </ProjectHeaderActionButton>
-                        <div className="group-control-anchor">
-                          <div
-                            className="group-agent-split-button"
-                            data-open={String(openControlMenu === "project-agent")}
-                          >
-                            <ProjectHeaderActionButton
-                              aria-label={`Create ${primaryProjectAgentLabel} in ${group.title}`}
-                              className="group-agent-main-button"
-                              onClick={(event) => {
-                                event.preventDefault();
-                                event.stopPropagation();
-                                if (!primaryProjectAgent) {
-                                  openConfigureAgentsModal();
-                                  return;
-                                }
-                                requestRunProjectAgent(primaryProjectAgent);
-                              }}
-                              tooltip={`Create ${primaryProjectAgentLabel}`}
-                              type="button"
-                            >
-                              <ProjectAgentLauncherIcon agent={primaryProjectAgent} />
-                            </ProjectHeaderActionButton>
-                            <ProjectHeaderActionButton
-                              aria-expanded={openControlMenu === "project-agent"}
-                              aria-haspopup="menu"
-                              aria-label={`Select agent for ${group.title}`}
-                              className="group-agent-toggle-button"
+                        {projectHeaderActions === "all" ? (
+                          <div className="group-control-anchor">
+                            <div
+                              className="group-agent-split-button"
                               data-open={String(openControlMenu === "project-agent")}
-                              onClick={() => {
-                                setOpenControlMenu((previous) =>
-                                  previous === "project-agent" ? undefined : "project-agent",
-                                );
-                              }}
-                              ref={projectAgentButtonRef}
-                              tooltip="Select Agent"
-                              type="button"
                             >
-                              <IconChevronDown aria-hidden="true" size={13} stroke={2} />
-                            </ProjectHeaderActionButton>
+                              <ProjectHeaderActionButton
+                                aria-label={`Create ${primaryProjectAgentLabel} in ${group.title}`}
+                                className="group-agent-main-button"
+                                onClick={(event) => {
+                                  event.preventDefault();
+                                  event.stopPropagation();
+                                  if (!primaryProjectAgent) {
+                                    openConfigureAgentsModal();
+                                    return;
+                                  }
+                                  requestRunProjectAgent(primaryProjectAgent);
+                                }}
+                                tooltip={`Create ${primaryProjectAgentLabel}`}
+                                type="button"
+                              >
+                                <ProjectAgentLauncherIcon agent={primaryProjectAgent} />
+                              </ProjectHeaderActionButton>
+                              <ProjectHeaderActionButton
+                                aria-expanded={openControlMenu === "project-agent"}
+                                aria-haspopup="menu"
+                                aria-label={`Select agent for ${group.title}`}
+                                className="group-agent-toggle-button"
+                                data-open={String(openControlMenu === "project-agent")}
+                                onClick={() => {
+                                  setOpenControlMenu((previous) =>
+                                    previous === "project-agent" ? undefined : "project-agent",
+                                  );
+                                }}
+                                ref={projectAgentButtonRef}
+                                tooltip="Select Agent"
+                                type="button"
+                              >
+                                <IconChevronDown aria-hidden="true" size={13} stroke={2} />
+                              </ProjectHeaderActionButton>
+                            </div>
                           </div>
-                        </div>
+                        ) : null}
                       </>
                     ) : (
                       <>
