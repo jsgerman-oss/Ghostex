@@ -3801,8 +3801,8 @@ function TitlebarResourcesMenu({
         />
         <div className="titlebar-resources-info-note">
           This app uses native Ghostty terminals as they're lighter on CPU & RAM than electron/web terminals.<br />
-          Long conversations with agents will still take up 100-200mbs each.<br />
-          You can easily sleep all inactive terminals here & configure auto sleep in settings!
+          The RAM use you see here is the lowest possible for the Agent CLI that you're using (each CLI uses more/less RAM based on a lot of factors).<br />
+          You can easily sleep all inactive terminals here, and I highly recommend configuring auto sleep in settings.
         </div>
         {visibleGroupViews.length > 0 ? (
           visibleGroupViews.map((view) => (
