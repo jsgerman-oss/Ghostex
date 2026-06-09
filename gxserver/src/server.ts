@@ -1,6 +1,6 @@
 import http from "node:http";
 import { execFile } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type { Duplex } from "node:stream";
 import { promisify } from "node:util";
 import {
@@ -67,6 +67,7 @@ import {
   reconcileAgentMetadataTitle,
   shouldCheckAgentMetadataTitle,
   type GxserverAgentTitleDebounceDecision,
+  type GxserverSessionIdentityConflict,
 } from "./session-presentation/index.js";
 import { type GxserverPaths, getGxserverPaths } from "./paths.js";
 import { browseProjectDirectories } from "./project-directory-browser.js";
@@ -93,6 +94,7 @@ import {
   buildZmxAttachCommand,
   buildZmxHistoryCommand,
   buildZmxRunCommand,
+  buildZmxShellProviderCommand,
   buildZmxSendCommand,
   decideStartupTextDisposition,
   defaultCwdExists,
@@ -1061,6 +1063,8 @@ async function dispatchDomainStateEndpoint(
         agentName: createParams.agentId,
         agentSessionId: readRuntimeText(createParams.runtimeSettings, "agentSessionId"),
         agentSessionPath: readRuntimeText(createParams.runtimeSettings, "agentSessionPath"),
+        identityUpdateSource: "lifecycle",
+        onIdentityConflict: logSessionIdentityConflict(runtime, createdSession.projectId, createdSession.sessionId),
         projectId: createdSession.projectId,
         sessionId: createdSession.sessionId,
         startupText: readRuntimeText(createParams.runtimeSettings, "startupText") ?? readRuntimeText(createParams.launchSettings, "startupText"),
@@ -1182,6 +1186,8 @@ async function dispatchDomainStateEndpoint(
       */
       const metadata = applySessionStateEvent(repository, {
         ...hookEvent,
+        identityUpdateSource: "passive",
+        onIdentityConflict: logSessionIdentityConflict(runtime, lifecycle.projectId, lifecycle.sessionId),
         projectId: lifecycle.projectId,
         sessionId: lifecycle.sessionId,
       });
@@ -1257,6 +1263,8 @@ async function dispatchDomainStateEndpoint(
       const lifecycle = readSessionLifecycleParams(params);
       const result = applySessionStateEvent(repository, {
         ...stateEvent,
+        identityUpdateSource: "passive",
+        onIdentityConflict: logSessionIdentityConflict(runtime, lifecycle.projectId, lifecycle.sessionId),
         projectId: lifecycle.projectId,
         sessionId: lifecycle.sessionId,
       });
@@ -1315,6 +1323,8 @@ async function dispatchDomainStateEndpoint(
           ? applySessionStateEvent(repository, {
               agentName: titleEvent.agentName,
               agentSessionId: decision.agentSessionId,
+              identityUpdateSource: "terminal-title",
+              onIdentityConflict: logSessionIdentityConflict(runtime, lifecycle.projectId, lifecycle.sessionId),
               projectId: lifecycle.projectId,
               sessionId: lifecycle.sessionId,
             })
@@ -1391,6 +1401,8 @@ async function dispatchDomainStateEndpoint(
           activity: statusUpdate.activity,
           agentName: titleEvent.agentName,
           agentSessionIdCaptured: decision.agentSessionId !== undefined,
+          agentSessionIdCapturedHash: hashLogIdentity(decision.agentSessionId),
+          agentSessionIdUpdateSource: decision.agentSessionId !== undefined ? "terminal-title" : undefined,
           changed: response.changed,
           decisionChanged: decision.changed,
           decisionReason: decision.reason,
@@ -2109,6 +2121,43 @@ function getPresentationLastDeltaJsonBySessionKey(runtime: GxserverApiRuntime): 
 function getPresentationDeltaCoalescer(runtime: GxserverApiRuntime): GxserverPresentationDeltaCoalescer {
   runtime.presentationDeltaCoalescer ??= new GxserverPresentationDeltaCoalescer();
   return runtime.presentationDeltaCoalescer;
+}
+
+function logSessionIdentityConflict(
+  runtime: GxserverApiRuntime,
+  projectId: GxserverProjectId,
+  sessionId: GxserverSessionLifecycleParams["sessionId"],
+): (conflict: GxserverSessionIdentityConflict) => void {
+  return (conflict) => {
+    /*
+    CDXC:GxserverSessionIdentity 2026-06-09-08:55:
+    Debugging Mode needs evidence when gxserver rejects a passive Codex identity swap, but support logs must not persist raw Codex thread ids, transcript paths, terminal titles, or user prompts. Log stable gxserver ids, enum reasons, booleans, and short hashes only.
+    */
+    void runtime.logger.log({
+      details: {
+        agentId: conflict.agentId,
+        currentAgentSessionIdHash: hashLogIdentity(conflict.currentAgentSessionId),
+        currentAgentSessionIdPresent: conflict.currentAgentSessionId !== undefined,
+        incomingAgentSessionIdHash: hashLogIdentity(conflict.incomingAgentSessionId),
+        ownerProjectId: conflict.ownerProjectId,
+        ownerSessionId: conflict.ownerSessionId,
+        reason: conflict.reason,
+        source: conflict.source,
+      },
+      event: "sessionIdentity.updateBlocked",
+      level: "debug",
+      projectId,
+      serverId: runtime.metadata.serverId,
+      sessionId,
+    });
+  };
+}
+
+function hashLogIdentity(value: string | undefined): string | undefined {
+  if (!value) {
+    return undefined;
+  }
+  return createHash("sha256").update(value).digest("hex").slice(0, 16);
 }
 
 function scheduleAgentTitleMetadataCheck(
@@ -3598,7 +3647,16 @@ async function startSessionProvider(
     providerState: probe.lifecycleState,
     startupText,
   });
-  if (startupTextDisposition !== "queueAfterTerminalReady" || !startupText?.trim()) {
+  const shouldStartProviderWithStartupText = startupTextDisposition === "queueAfterTerminalReady" && Boolean(startupText?.trim());
+  /*
+  CDXC:GxserverZmxLifecycle 2026-06-09-09:53:
+  Plain terminal sessions created by TUI/CLI clients have no startup text, but they still need gxserver to materialize the zmx provider before interactive attach. Starting the shell provider here prevents a live zmx session from existing while gxserver presentation still caches providerState=missing and hides the row from macOS.
+  */
+  const shouldStartPlainTerminalProvider =
+    probe.lifecycleState === "missing" &&
+    startupTextDisposition === "none" &&
+    probedSession.kind === "terminal";
+  if (!shouldStartProviderWithStartupText && !shouldStartPlainTerminalProvider) {
     return {
       provider: "zmx",
       providerState: probe,
@@ -3622,20 +3680,31 @@ async function startSessionProvider(
   the gxserver-owned launch/resume startup text, cwd, bundled zmx path, and
   global session identity. Existing providers must not receive replayed startup
   text because that would type a second agent command into a live session.
+
+  CDXC:GxserverZmxLifecycle 2026-06-09-09:53:
+  The same detached provider start path now covers plain terminal shells, with no startup text, so CLI/TUI attach no longer creates a zmx session outside gxserver's persisted lifecycle state.
   */
-  const result = await runZmxInteractionCommand(
-    runtime,
-    buildZmxRunCommand({
-      cwd,
-      globalSessionRef: probedSession.globalRef,
-      gxserverAuthTokenFile: runtime.paths.authTokenFile,
-      gxserverBaseUrl: `http://${GXSERVER_LOCAL_API_HOST}:${GXSERVER_LOCAL_API_PORT}`,
-      gxserverProtocolVersion: GXSERVER_PROTOCOL_VERSION,
-      sessionName: zmxSessionName,
-      startupText,
-      zmxExecutablePath: zmx.executablePath,
-    }),
-  );
+  const providerCommand = shouldStartProviderWithStartupText
+    ? buildZmxRunCommand({
+        cwd,
+        globalSessionRef: probedSession.globalRef,
+        gxserverAuthTokenFile: runtime.paths.authTokenFile,
+        gxserverBaseUrl: `http://${GXSERVER_LOCAL_API_HOST}:${GXSERVER_LOCAL_API_PORT}`,
+        gxserverProtocolVersion: GXSERVER_PROTOCOL_VERSION,
+        sessionName: zmxSessionName,
+        startupText: startupText!,
+        zmxExecutablePath: zmx.executablePath,
+      })
+    : buildZmxShellProviderCommand({
+        cwd,
+        globalSessionRef: probedSession.globalRef,
+        gxserverAuthTokenFile: runtime.paths.authTokenFile,
+        gxserverBaseUrl: `http://${GXSERVER_LOCAL_API_HOST}:${GXSERVER_LOCAL_API_PORT}`,
+        gxserverProtocolVersion: GXSERVER_PROTOCOL_VERSION,
+        sessionName: zmxSessionName,
+        zmxExecutablePath: zmx.executablePath,
+      });
+  const result = await runZmxInteractionCommand(runtime, providerCommand);
   const providerState: GxserverProviderProbeResult = {
     lifecycleState: "exists",
     probedAt: new Date().toISOString(),
@@ -3656,7 +3725,7 @@ async function startSessionProvider(
     sessionId: session.sessionId,
     details: {
       exitCode: result.exitCode,
-      startupTextBytes: Buffer.byteLength(startupText, "utf8"),
+      startupTextBytes: startupText ? Buffer.byteLength(startupText, "utf8") : 0,
       zmxChildEnvironment: summarizeZmxChildEnvironmentSanitization(),
       zmxName: zmxSessionName,
     },

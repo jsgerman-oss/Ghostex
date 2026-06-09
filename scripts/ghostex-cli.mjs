@@ -30,8 +30,13 @@ let gxserverSshTunnelExitHooksInstalled = false;
 /**
  * CDXC:DevAppFlavor 2026-05-11-12:10
  * CLI-side logs, selector caches, and bridge metadata must follow the app
- * variant. `bun start:dev` and the ghostex-dev bundle use ~/.ghostex-dev so CLI
- * commands issued through that dev app do not touch the installed app's data.
+ * variant. Legacy ghostex-dev bundle invocations use ~/.ghostex-dev so CLI
+ * commands issued through that old app do not touch the installed app's data.
+ *
+ * CDXC:LocalStartSingleApp 2026-06-09-09:27
+ * Local dev start and build entry points were removed so agents stop launching
+ * the alternate app by mistake; keep only the legacy variant read here for old
+ * bundles that already exist.
  *
  * CDXC:CliBranding 2026-05-12-07:35
  * Public CLI commands are `ghostex` and the shorter `gx` alias. Internal
@@ -507,14 +512,17 @@ async function installGenerateTitleSkillCommand(args) {
   /**
    * CDXC:GenerateTitleSkill 2026-05-27-07:28:
    * The old `$madda-generate-title` behavior is now a Ghostex skill. Agents must
-   * produce titles shorter than 47 characters, then write `/rename <title>` into
-   * their own Ghostex session with `send-text` and without pressing Enter. The
-   * default install removes the legacy personal skill name so Codex discovers
-   * the Ghostex-named skill instead.
+   * produce titles shorter than 47 characters, then submit `/rename <title>` in
+   * their own Ghostex session.
+   *
+   * CDXC:GenerateTitleSkill 2026-06-09-17:49:
+   * Generated title sessions should not leave `/rename <title>` staged in the
+   * agent CLI. Use `rename-command` so macOS stages the command and sends Enter
+   * through the same native bridge path used by Delayed Send.
    */
   await installGhostexAgentSkill({
     args,
-    command: "ghostex send-text --session-id \"$GHOSTEX_SESSION_ID\" --text \"/rename <title>\"",
+    command: "ghostex rename-command --session-id \"$GHOSTEX_SESSION_ID\" --title \"<title>\"",
     envVars: ["GHOSTEX_GENERATE_TITLE_SKILL_SOURCE"],
     legacySkillNames: GHOSTEX_GENERATE_TITLE_LEGACY_SKILL_NAMES,
     skillName: GHOSTEX_GENERATE_TITLE_SKILL_NAME,
@@ -1921,6 +1929,35 @@ async function fetchAttachMetadataForSession(session, flags = {}) {
     flags,
   );
   return result.attach;
+}
+
+async function startMissingProviderForCliAttach(session, attach, flags = {}) {
+  if (!shouldStartMissingProviderForCliAttach(attach)) {
+    return attach;
+  }
+  /**
+   * CDXC:GxserverCliAttach 2026-06-09-09:53:
+   * CLI, TUI, Android, and SSH attach commands can create a zmx provider before macOS ever sees the row. Start missing providers through gxserver before launching the blocking interactive attach so gxserver persists providerState=exists and publishes the sidebar presentation delta instead of leaving clients split between live zmx and stale daemon state.
+   */
+  await callGxserverRpc(
+    "/api/startSessionProvider",
+    compactObject({
+      projectId: attach.session?.projectId ?? session.projectId ?? projectIdFromGlobalRef(session.globalRef),
+      sessionId: attach.session?.sessionId ?? session.sessionId,
+      startupText: attach.startupText,
+    }),
+    flags,
+  );
+  return fetchAttachMetadataForSession(session, flags);
+}
+
+function shouldStartMissingProviderForCliAttach(attach) {
+  return (
+    attach &&
+    !attach.restoreBlocked &&
+    attach.provider === "zmx" &&
+    attach.providerState?.lifecycleState === "missing"
+  );
 }
 
 function applyAttachMetadataToCliSession(session, attach) {
@@ -3409,7 +3446,8 @@ async function attachResolvedSession(session, flags = {}) {
    * agent resume command for sleeping rows; provider attach remains first for
    * awake rows where the named session is still live.
    */
-  const attachMetadata = await fetchAttachMetadataForSession(session, flags);
+  let attachMetadata = await fetchAttachMetadataForSession(session, flags);
+  attachMetadata = await startMissingProviderForCliAttach(session, attachMetadata, flags);
   const attachableSession = applyAttachMetadataToCliSession(session, attachMetadata);
   const command = buildSessionAttachCommand(attachableSession);
   if (!command) {
@@ -5442,7 +5480,11 @@ function generateTitleUsage() {
    * CDXC:GenerateTitleSkill 2026-05-27-07:28:
    * Help documents only installation because title generation itself happens in
    * the `$ghostex-generate-title` skill. The skill owns the 47-character title
-   * limit and the no-submit `/rename <title>` self-write contract.
+   * limit and the self-session `/rename <title>` contract.
+   *
+   * CDXC:GenerateTitleSkill 2026-06-09-17:49:
+   * Document `rename-command` rather than `send-text` because generated titles
+   * must submit through the macOS native Enter bridge used by Delayed Send.
    */
   return `Ghostex Generate Title - install the agent skill for naming Ghostex sessions
 
@@ -5455,11 +5497,10 @@ Agent skill:
 
 What the skill does:
   Generate one title shorter than 47 characters.
-  Then write /rename <title> into the current Ghostex session with send-text.
-  Do not press Enter for the rename command.
+  Then submit /rename <title> in the current Ghostex session with rename-command.
 
 Self-session command:
-  ghostex send-text --session-id "$GHOSTEX_SESSION_ID" --text "/rename <title>"
+  ghostex rename-command --session-id "$GHOSTEX_SESSION_ID" --title "<title>"
 `;
 }
 

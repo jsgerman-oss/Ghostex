@@ -97,6 +97,270 @@ test("session state events preserve an already trusted current title", () => {
   assert.equal(result.projection.trustedResumeTitle, "Current user title");
 });
 
+test("passive Cursor hooks correct stale Codex session identity", () => {
+  const staleCodexSessionId = "019e7af5-c610-7f62-a129-db7bb510b48d";
+  const cursorSessionId = "866a452b-3a52-4f27-9b26-fd717a2f1c16";
+  const cursorSessionPath =
+    "/Users/person/.cursor/projects/Users-person-dev-active-zmux/agent-transcripts/866a452b-3a52-4f27-9b26-fd717a2f1c16/866a452b-3a52-4f27-9b26-fd717a2f1c16.jsonl";
+  const project = projectFixture({});
+  const session = sessionFixture({
+    agentId: "codex",
+    kind: "agent",
+    runtimeSettings: {
+      agentName: "codex",
+      agentSessionId: staleCodexSessionId,
+      agentSessionPath: "/Users/person/.codex/sessions/private-thread.jsonl",
+      titleSource: "terminal-auto",
+    },
+    title: "macOS icon and search padding",
+  });
+  const repository = new MockPresentationRepository(project, [session]);
+  const conflicts: unknown[] = [];
+
+  const result = applySessionStateEvent(repository, {
+    agentName: "cursor",
+    agentSessionId: cursorSessionId,
+    agentSessionPath: cursorSessionPath,
+    firstPromptTitleGenerationAgent: "codex",
+    identityUpdateSource: "passive",
+    onIdentityConflict: (conflict) => conflicts.push(conflict),
+    projectId: session.projectId,
+    sessionId: session.sessionId,
+  });
+
+  /*
+  CDXC:GxserverSessionIdentity 2026-06-09-09:58:
+  Cursor hook identity must repair stale Codex domain rows in gxserver itself so sidebar, CLI aliases, search, resume, and every other client consume the same Cursor session identity instead of painting over a Codex row in one UI.
+  */
+  assert.equal(result.changed, true);
+  assert.equal(result.session.agentId, "cursor");
+  assert.equal(result.session.runtimeSettings.agentName, "cursor");
+  assert.equal(result.session.runtimeSettings.agentSessionId, cursorSessionId);
+  assert.equal(result.session.runtimeSettings.agentSessionPath, cursorSessionPath);
+  assert.equal(result.session.runtimeSettings.firstPromptTitleGenerationAgent, "codex");
+  assert.deepEqual(conflicts, []);
+
+  const snapshot = projectGxserverPresentationSnapshot({
+    projects: [project],
+    revision: 1 as GxserverPresentationRevision,
+    sessions: [result.session],
+  });
+  assert.equal(snapshot.sessions[0]?.agentId, "cursor");
+  assert.equal(snapshot.sessions[0]?.agentName, "cursor");
+  assert.equal(snapshot.sessions[0]?.agentIcon, "cursor");
+});
+
+test("passive Cursor transcript paths correct stale Codex identity without agent name", () => {
+  const cursorSessionId = "866a452b-3a52-4f27-9b26-fd717a2f1c16";
+  const cursorSessionPath =
+    "/Users/person/.cursor/projects/Users-person-dev-active-zmux/agent-transcripts/866a452b-3a52-4f27-9b26-fd717a2f1c16/866a452b-3a52-4f27-9b26-fd717a2f1c16.jsonl";
+  const project = projectFixture({});
+  const session = sessionFixture({
+    agentId: "codex",
+    kind: "agent",
+    runtimeSettings: {
+      agentName: "codex",
+      agentSessionId: "019e7af5-c610-7f62-a129-db7bb510b48d",
+      titleSource: "terminal-auto",
+    },
+    title: "macOS icon and search padding",
+  });
+  const repository = new MockPresentationRepository(project, [session]);
+
+  const result = applySessionStateEvent(repository, {
+    agentSessionId: cursorSessionId,
+    agentSessionPath: cursorSessionPath,
+    identityUpdateSource: "passive",
+    projectId: session.projectId,
+    sessionId: session.sessionId,
+  });
+
+  assert.equal(result.changed, true);
+  assert.equal(result.session.agentId, "cursor");
+  assert.equal(result.session.runtimeSettings.agentName, "cursor");
+  assert.equal(result.session.runtimeSettings.agentSessionId, cursorSessionId);
+  assert.equal(result.session.runtimeSettings.agentSessionPath, cursorSessionPath);
+});
+
+test("stored Cursor transcript paths repair stale Codex rows on metadata-only events", () => {
+  const cursorSessionId = "866a452b-3a52-4f27-9b26-fd717a2f1c16";
+  const cursorSessionPath =
+    "/Users/person/.cursor/projects/Users-person-dev-active-zmux/agent-transcripts/866a452b-3a52-4f27-9b26-fd717a2f1c16/866a452b-3a52-4f27-9b26-fd717a2f1c16.jsonl";
+  const project = projectFixture({});
+  const session = sessionFixture({
+    agentId: "codex",
+    kind: "agent",
+    runtimeSettings: {
+      agentName: "codex",
+      agentSessionId: cursorSessionId,
+      agentSessionPath: cursorSessionPath,
+      titleSource: "terminal-auto",
+    },
+    title: "macOS icon and search padding",
+  });
+  const repository = new MockPresentationRepository(project, [session]);
+
+  const result = applySessionStateEvent(repository, {
+    identityUpdateSource: "passive",
+    projectId: session.projectId,
+    sessionId: session.sessionId,
+  });
+
+  assert.equal(result.changed, true);
+  assert.equal(result.session.agentId, "cursor");
+  assert.equal(result.session.runtimeSettings.agentName, "cursor");
+  assert.equal(result.session.runtimeSettings.agentSessionId, cursorSessionId);
+  assert.equal(result.session.runtimeSettings.agentSessionPath, cursorSessionPath);
+});
+
+test("cross-agent corrections clear stale Codex session metadata when Cursor has no transcript yet", () => {
+  const project = projectFixture({});
+  const session = sessionFixture({
+    agentId: "codex",
+    kind: "agent",
+    runtimeSettings: {
+      agentName: "codex",
+      agentSessionId: "019e7af5-c610-7f62-a129-db7bb510b48d",
+      agentSessionPath: "/Users/person/.codex/sessions/private-thread.jsonl",
+      titleSource: "terminal-auto",
+    },
+    title: "Manual Cursor start",
+  });
+  const repository = new MockPresentationRepository(project, [session]);
+
+  const result = applySessionStateEvent(repository, {
+    agentName: "cursor",
+    identityUpdateSource: "passive",
+    projectId: session.projectId,
+    sessionId: session.sessionId,
+  });
+
+  assert.equal(result.changed, true);
+  assert.equal(result.session.agentId, "cursor");
+  assert.equal(result.session.runtimeSettings.agentName, "cursor");
+  assert.equal(result.session.runtimeSettings.agentSessionId, undefined);
+  assert.equal(result.session.runtimeSettings.agentSessionPath, undefined);
+});
+
+test("passive session state events cannot replace an existing Codex identity", () => {
+  const currentCodexSessionId = "019e7af5-c610-7f62-a129-db7bb510b48d";
+  const incomingCodexSessionId = "019e7c39-7ba7-7ac3-b79c-02757e299516";
+  const project = projectFixture({});
+  const session = sessionFixture({
+    agentId: "codex",
+    kind: "agent",
+    runtimeSettings: {
+      agentName: "codex",
+      agentSessionId: currentCodexSessionId,
+      titleSource: "terminal-auto",
+    },
+    title: "Current Codex Thread",
+  });
+  const repository = new MockPresentationRepository(project, [session]);
+  const conflicts: unknown[] = [];
+
+  const result = applySessionStateEvent(repository, {
+    agentName: "codex",
+    agentSessionId: incomingCodexSessionId,
+    identityUpdateSource: "passive",
+    onIdentityConflict: (conflict) => conflicts.push(conflict),
+    projectId: session.projectId,
+    sessionId: session.sessionId,
+  });
+
+  /*
+  CDXC:GxserverSessionIdentity 2026-06-09-08:55:
+  Hook and generic session-state events are passive identity evidence. They may fill missing Codex metadata, but replacing an existing thread id would make gxserver reconcile the shared sidebar title, resume target, and search metadata to the wrong Codex transcript.
+  */
+  assert.equal(result.changed, false);
+  assert.equal(result.session.runtimeSettings.agentSessionId, currentCodexSessionId);
+  assert.equal(result.session.title, "Current Codex Thread");
+  assert.deepEqual(conflicts, [
+    {
+      agentId: "codex",
+      currentAgentSessionId: currentCodexSessionId,
+      incomingAgentSessionId: incomingCodexSessionId,
+      reason: "passive-agent-session-id-replacement",
+      source: "passive",
+    },
+  ]);
+});
+
+test("passive session state events cannot claim a Codex identity owned by another active session", () => {
+  const codexSessionId = "019e7c39-7ba7-7ac3-b79c-02757e299516";
+  const project = projectFixture({});
+  const target = sessionFixture({
+    agentId: "codex",
+    kind: "agent",
+    runtimeSettings: { agentName: "codex", titleSource: "terminal-auto" },
+    sessionId: "G1new" as GxserverSessionId,
+    title: "Current Codex Thread",
+  });
+  const owner = sessionFixture({
+    agentId: "codex",
+    kind: "agent",
+    runtimeSettings: {
+      agentName: "codex",
+      agentSessionId: codexSessionId,
+      titleSource: "terminal-auto",
+    },
+    sessionId: "G2own" as GxserverSessionId,
+    title: "Other Live Thread",
+  });
+  const repository = new MockPresentationRepository(project, [target, owner]);
+  const conflicts: unknown[] = [];
+
+  const result = applySessionStateEvent(repository, {
+    agentName: "codex",
+    agentSessionId: codexSessionId,
+    identityUpdateSource: "passive",
+    onIdentityConflict: (conflict) => conflicts.push(conflict),
+    projectId: target.projectId,
+    sessionId: target.sessionId,
+  });
+
+  assert.equal(result.changed, false);
+  assert.equal(result.session.runtimeSettings.agentSessionId, undefined);
+  assert.deepEqual(conflicts, [
+    {
+      agentId: "codex",
+      incomingAgentSessionId: codexSessionId,
+      ownerProjectId: owner.projectId,
+      ownerSessionId: owner.sessionId,
+      reason: "active-agent-session-id-owned",
+      source: "passive",
+    },
+  ]);
+});
+
+test("lifecycle session state events may replace Codex identity", () => {
+  const currentCodexSessionId = "019e7af5-c610-7f62-a129-db7bb510b48d";
+  const incomingCodexSessionId = "019e7c39-7ba7-7ac3-b79c-02757e299516";
+  const project = projectFixture({});
+  const session = sessionFixture({
+    agentId: "codex",
+    runtimeSettings: {
+      agentName: "codex",
+      agentSessionId: currentCodexSessionId,
+      titleSource: "terminal-auto",
+    },
+    title: "Current Codex Thread",
+  });
+  const repository = new MockPresentationRepository(project, [session]);
+
+  const result = applySessionStateEvent(repository, {
+    agentName: "codex",
+    agentSessionId: incomingCodexSessionId,
+    identityUpdateSource: "lifecycle",
+    projectId: session.projectId,
+    sessionId: session.sessionId,
+  });
+
+  assert.equal(result.changed, true);
+  assert.equal(result.session.runtimeSettings.agentSessionId, incomingCodexSessionId);
+  assert.equal(result.session.title, "Current Codex Thread");
+});
+
 test("session state events persist first-prompt title generation settings", () => {
   const project = projectFixture({});
   const session = sessionFixture({

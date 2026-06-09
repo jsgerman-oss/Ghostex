@@ -59,6 +59,36 @@ test("Codex UUID terminal titles update agent session identity without becoming 
   assert.equal(decision.projection.primaryTitle, "Codex Session");
 });
 
+test("Codex UUID terminal titles may replace an existing agent session identity", () => {
+  const session = sessionFixture({
+    agentId: "codex",
+    runtimeSettings: {
+      agentName: "codex",
+      agentSessionId: "019e7af5-c610-7f62-a129-db7bb510b48d",
+      titleSource: "terminal-auto",
+    },
+    title: "Existing Codex Thread",
+  });
+
+  const decision = decideTerminalTitleEvent(session, {
+    agentName: "codex",
+    projectId: session.projectId,
+    rawTitle: "019e7c39-7ba7-7ac3-b79c-02757e299516",
+    sessionId: session.sessionId,
+    sessionPersistenceProvider: "zmx",
+  });
+
+  /*
+  CDXC:GxserverSessionIdentity 2026-06-09-08:55:
+  Users can intentionally move a live terminal from one Codex thread to another. The terminal title is the strong same-PTY signal, so gxserver must still accept a different Codex UUID from the title stream even while passive hook/session-state replacements are guarded.
+  */
+  assert.equal(decision.shouldUpdateSession, true);
+  assert.equal(decision.agentSessionId, "019e7c39-7ba7-7ac3-b79c-02757e299516");
+  assert.equal(decision.runtimeSettings?.agentSessionId, "019e7c39-7ba7-7ac3-b79c-02757e299516");
+  assert.equal(decision.title, undefined);
+  assert.equal(decision.projection.primaryTitle, "Existing Codex Thread");
+});
+
 test("Codex terminal titles may start with Codex without being treated as CLI command noise", () => {
   const session = sessionFixture({
     agentId: "codex",

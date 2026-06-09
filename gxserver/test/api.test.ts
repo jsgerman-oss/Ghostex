@@ -953,6 +953,77 @@ test("session state event API resolves resumed Codex sessions from shared histor
   });
 });
 
+test("session state event API logs passive Codex identity conflicts without raw private data", async () => {
+  await withApiServer("local", async ({ baseUrl, paths, token }) => {
+    await writeNativeSidebarSettings(paths.homeDir, { debuggingMode: true });
+    await delay(1_100);
+    const currentCodexSessionId = "019e7af5-c610-7f62-a129-db7bb510b48d";
+    const incomingCodexSessionId = "019e7c39-7ba7-7ac3-b79c-02757e299516";
+    const createdProject = await requestJson(baseUrl, "/api/createProject", {
+      body: {
+        params: { name: "Ghostex", path: "/repo/ghostex" },
+        protocolVersion: GXSERVER_PROTOCOL_VERSION,
+      },
+      method: "POST",
+      token,
+    });
+    const project = createdProject.body.result.project;
+    const createdSession = await requestJson(baseUrl, "/api/createSession", {
+      body: {
+        params: {
+          agentId: "codex",
+          kind: "agent",
+          projectId: project.projectId,
+          runtimeSettings: {
+            agentName: "codex",
+            agentSessionId: currentCodexSessionId,
+            titleSource: "terminal-auto",
+          },
+          title: "Current Codex Thread",
+        },
+        protocolVersion: GXSERVER_PROTOCOL_VERSION,
+      },
+      method: "POST",
+      token,
+    });
+    const session = createdSession.body.result.session;
+
+    const ingested = await requestJson(baseUrl, "/api/ingestSessionStateEvent", {
+      body: {
+        params: {
+          agentName: "codex",
+          agentSessionId: incomingCodexSessionId,
+          agentSessionPath: "/Users/person/.codex/sessions/private-thread.jsonl",
+          firstUserMessage: "private prompt text",
+          projectId: project.projectId,
+          sessionId: session.sessionId,
+        },
+        protocolVersion: GXSERVER_PROTOCOL_VERSION,
+      },
+      method: "POST",
+      token,
+    });
+
+    assert.equal(ingested.status, 200);
+    assert.equal(ingested.body.result.session.runtimeSettings.agentSessionId, currentCodexSessionId);
+    const { entry: conflict, text: logs } = await waitForLogEvent(
+      paths.logFile,
+      "sessionIdentity.updateBlocked",
+      1_000,
+    );
+    assert.ok(conflict, "identity conflict log exists");
+    assert.equal(conflict.level, "debug");
+    assert.equal(conflict.details.reason, "passive-agent-session-id-replacement");
+    assert.equal(conflict.details.source, "passive");
+    assert.equal(conflict.details.currentAgentSessionIdPresent, true);
+    assert.equal(typeof conflict.details.currentAgentSessionIdHash, "string");
+    assert.equal(typeof conflict.details.incomingAgentSessionIdHash, "string");
+    assert.doesNotMatch(logs, new RegExp(currentCodexSessionId, "u"));
+    assert.doesNotMatch(logs, new RegExp(incomingCodexSessionId, "u"));
+    assert.doesNotMatch(logs, /private-thread|private prompt text|Current Codex Thread|\/Users\/person/u);
+  });
+});
+
 test("session state event API runs first-prompt auto-title through gxserver", async () => {
   const zmxCalls: string[] = [];
   const sendInputs: string[] = [];
@@ -2890,6 +2961,80 @@ test("attach metadata promotes existing client-created providers into the macOS 
   );
 });
 
+test("startSessionProvider promotes missing plain terminal providers into presentation", async () => {
+  const calls: string[] = [];
+  await withApiServer(
+    "local",
+    async ({ baseUrl, paths, token }) => {
+      const project = (
+        await requestJson(baseUrl, "/api/createProject", {
+          body: { params: { name: "Ghostex", path: paths.rootDir }, protocolVersion: GXSERVER_PROTOCOL_VERSION },
+          method: "POST",
+          token,
+        })
+      ).body.result.project;
+      const session = (
+        await requestJson(baseUrl, "/api/createSession", {
+          body: {
+            params: { projectId: project.projectId, title: "TUI Button Labels" },
+            protocolVersion: GXSERVER_PROTOCOL_VERSION,
+          },
+          method: "POST",
+          token,
+        })
+      ).body.result.session;
+
+      const attachBeforeStart = await requestJson(baseUrl, "/api/attachSessionMetadata", {
+        body: {
+          params: { projectId: project.projectId, sessionId: session.sessionId },
+          protocolVersion: GXSERVER_PROTOCOL_VERSION,
+        },
+        method: "POST",
+        token,
+      });
+      assert.equal(attachBeforeStart.status, 200);
+      assert.equal(attachBeforeStart.body.result.attach.providerState.lifecycleState, "missing");
+      assert.equal(attachBeforeStart.body.result.attach.session.lifecycleState, "unknown");
+
+      const start = await requestJson(baseUrl, "/api/startSessionProvider", {
+        body: {
+          params: { projectId: project.projectId, sessionId: session.sessionId },
+          protocolVersion: GXSERVER_PROTOCOL_VERSION,
+        },
+        method: "POST",
+        token,
+      });
+      assert.equal(start.status, 200);
+      assert.equal(start.body.result.started, true);
+      assert.equal(start.body.result.startupTextDisposition, "none");
+      assert.equal(start.body.result.providerState.lifecycleState, "exists");
+      assert.equal(start.body.result.session.lifecycleState, "running");
+      const runScript = calls.find((script) =>
+        script.includes('run "$zmx_session" -d --initial-command /bin/zsh -li')
+      );
+      assert.ok(runScript);
+      assert.equal(calls.some((script) => script.includes("gxserver startSessionProvider requires startup text")), false);
+
+      const presentation = await requestJson(baseUrl, "/api/readPresentationSnapshot", {
+        body: { params: {}, protocolVersion: GXSERVER_PROTOCOL_VERSION },
+        method: "POST",
+        token,
+      });
+      assert.equal(presentation.status, 200);
+      const presentationSession = presentation.body.result.snapshot.sessions.find(
+        (candidate: { sessionId: string }) => candidate.sessionId === session.sessionId,
+      );
+      assert.equal(presentationSession?.lifecycleState, "running");
+      assert.equal(presentationSession?.visibleInSidebarByDefault, true);
+    },
+    {
+      zmxLifecycle: fakeZmxLifecycle(calls, () => 1, {
+        runExitCode: () => 0,
+      }),
+    },
+  );
+});
+
 test("provider probe API caches exists, missing, and unknown separately from native pane state", async () => {
   let probeExitCode = 0;
   await withApiServer(
@@ -3993,6 +4138,33 @@ async function waitForFileText(filePath: string, timeoutMs: number): Promise<str
     }
   }
   throw lastError instanceof Error ? lastError : new Error(`Timed out waiting for ${filePath}.`);
+}
+
+async function waitForLogEvent(
+  filePath: string,
+  event: string,
+  timeoutMs: number,
+): Promise<{ entry: Record<string, any>; text: string }> {
+  const deadline = Date.now() + timeoutMs;
+  let text = "";
+  while (Date.now() < deadline) {
+    try {
+      text = await readFile(filePath, "utf8");
+      const entry = text
+        .trim()
+        .split("\n")
+        .filter(Boolean)
+        .map((line) => JSON.parse(line) as Record<string, any>)
+        .find((candidate) => candidate.event === event);
+      if (entry) {
+        return { entry, text };
+      }
+    } catch {
+      // Keep polling until the asynchronous logger append lands.
+    }
+    await delay(50);
+  }
+  throw new Error(`Timed out waiting for log event ${event} in ${filePath}. Last text length: ${text.length}.`);
 }
 
 async function waitForHealth(

@@ -144,7 +144,14 @@ function inferAgentIdFromIdentityPath(path: string | undefined): string | undefi
     return undefined;
   }
   const lowerPath = path.toLowerCase();
-  if (lowerPath.includes("/cursor") && lowerPath.endsWith(".json")) {
+  /*
+  CDXC:GxserverSessionIdentity 2026-06-09-09:58:
+  Cursor transcript paths are canonical agent identity evidence for late hook/session-state updates. Recognize the current `~/.cursor/.../agent-transcripts/*.jsonl` shape in gxserver so stale Codex rows are corrected before clients project sidebar icons, search rows, aliases, or resume metadata.
+  */
+  if (
+    (lowerPath.includes("/.cursor/") || lowerPath.includes("/cursor/")) &&
+    (lowerPath.endsWith(".json") || lowerPath.endsWith(".jsonl"))
+  ) {
     return "cursor";
   }
   if (lowerPath.includes("/.codex/") || lowerPath.includes("/.codex-profiles/")) {

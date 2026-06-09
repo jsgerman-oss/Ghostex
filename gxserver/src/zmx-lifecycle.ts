@@ -83,6 +83,8 @@ export interface GxserverZmxRunCommandInput {
   zmxExecutablePath: string;
 }
 
+export type GxserverZmxShellProviderCommandInput = Omit<GxserverZmxRunCommandInput, "startupText">;
+
 export interface GxserverZmxStartupTextDecisionInput {
   providerState: GxserverProviderLifecycleState;
   startupText?: string;
@@ -268,6 +270,42 @@ if [ -n "$zmx_gxserver_protocol_version" ]; then
 fi
 cd "$zmx_cwd" || exit
 exec "$zmx_bin" run "$zmx_session" -d --initial-command /bin/zsh -lic "$zmx_startup_command"
+`.trim();
+}
+
+export function buildZmxShellProviderCommand(input: GxserverZmxShellProviderCommandInput): string {
+  /*
+  CDXC:GxserverZmxLifecycle 2026-06-09-09:53:
+  TUI, CLI, and mobile clients can create plain terminal sessions before any macOS renderer exists. A missing blank terminal must still get a real detached zmx provider through gxserver so the daemon can persist providerState=exists, publish the presentation row, and keep every client sidebar in sync before the interactive attach process takes over.
+  */
+  return `
+zmx_session=${shellQuote(input.sessionName)}
+zmx_cwd=${shellQuote(input.cwd)}
+zmx_global_session_ref=${shellQuote(input.globalSessionRef ?? "")}
+zmx_gxserver_auth_token_file=${shellQuote(input.gxserverAuthTokenFile ?? "")}
+zmx_gxserver_base_url=${shellQuote(input.gxserverBaseUrl ?? "")}
+zmx_gxserver_protocol_version=${shellQuote(String(input.gxserverProtocolVersion ?? ""))}
+zmx_bin=${shellQuote(input.zmxExecutablePath)}
+if [ ! -x "$zmx_bin" ]; then
+  printf '%s\\n' 'session persistence is set to zmx, but Ghostex bundled zmx was not found.' >&2
+  exit 127
+fi
+export GHOSTEX_ZMX_BIN="$zmx_bin"
+unset ZMX_SESSION ZMX_SESSION_PREFIX
+if [ -n "$zmx_global_session_ref" ]; then
+  export GHOSTEX_GLOBAL_SESSION_REF="$zmx_global_session_ref"
+fi
+if [ -n "$zmx_gxserver_auth_token_file" ]; then
+  export GHOSTEX_GXSERVER_AUTH_TOKEN_FILE="$zmx_gxserver_auth_token_file"
+fi
+if [ -n "$zmx_gxserver_base_url" ]; then
+  export GHOSTEX_GXSERVER_BASE_URL="$zmx_gxserver_base_url"
+fi
+if [ -n "$zmx_gxserver_protocol_version" ]; then
+  export GHOSTEX_GXSERVER_PROTOCOL_VERSION="$zmx_gxserver_protocol_version"
+fi
+cd "$zmx_cwd" || exit
+exec "$zmx_bin" run "$zmx_session" -d --initial-command /bin/zsh -li
 `.trim();
 }
 
