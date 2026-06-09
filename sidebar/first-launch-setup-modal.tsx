@@ -673,8 +673,12 @@ type FirstLaunchHookStatusGroup = {
  *
  * CDXC:GenerateTitleSkill 2026-05-27-07:28:
  * The bundled skills page installs `$ghostex-generate-title` so every Ghostex
- * agent session can generate a title under 47 characters and stage
- * `/rename <title>` into its own prompt without submitting it.
+ * agent session can generate a title under 47 characters and submit
+ * `/rename <title>` in its own prompt.
+ *
+ * CDXC:GenerateTitleSkill 2026-06-09-17:49:
+ * Generated title skills should submit the staged rename through Ghostex's
+ * native Enter bridge so macOS matches the Delayed Send key path.
  *
  * CDXC:FirstLaunchWelcome 2026-05-27-05:04:
  * First launch should start with a candid product welcome before setup tasks.
@@ -1199,7 +1203,7 @@ function FirstLaunchPreferencesPage({
         />
         <FirstLaunchCheckboxSetting
           checked={settings.agentAcceptAllEnabled}
-          description="Launch supported agents with their permission-bypass flag by default."
+          description="Launch supported agents with their permission-bypass mode by default."
           icon={IconBolt}
           label="Accept All for new agent sessions"
           onChange={(checked) => updateSetting("agentAcceptAllEnabled", checked)}

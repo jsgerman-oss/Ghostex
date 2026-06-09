@@ -460,7 +460,10 @@ export function createNativeSidebarGxserverClient(
   ): GxserverAgentLaunchPlan {
     /*
     CDXC:GxserverAgentCommands 2026-06-01-12:23:
-    Agent launch commands are gxserver policy, including Accept All flag insertion. Native callers that need a command synchronously ask gxserver for the launch plan instead of reconstructing per-agent command rules in React.
+    Agent launch commands are gxserver policy, including Accept All flag insertion or runtime permission config. Native callers that need a command synchronously ask gxserver for the launch plan instead of reconstructing per-agent command rules in React.
+
+    CDXC:GxserverAgentCommands 2026-06-09-14:22:
+    OpenCode Accept All uses OPENCODE_CONFIG_CONTENT instead of a CLI flag, so macOS must consume gxserver launch plans verbatim and never append OpenCode permission arguments locally.
     */
     const { plan } = rpcSync<{ plan: GxserverAgentLaunchPlan }>(
       "/api/readAgentLaunchPlan",
@@ -474,7 +477,7 @@ export function createNativeSidebarGxserverClient(
   ): Promise<GxserverAgentResumePlan> {
     /*
     CDXC:GxserverAgentCommands 2026-06-01-12:23:
-    Copy/restore/resume commands come from gxserver so OpenCode can use a base lookup command while the actual launched command carries runtime Accept All flags.
+    Copy/restore/resume commands come from gxserver so OpenCode can use a base lookup command while the actual launched command carries runtime Accept All config.
     */
     const { plan } = await rpc<{ plan: GxserverAgentResumePlan }>(
       "/api/readAgentResumePlan",

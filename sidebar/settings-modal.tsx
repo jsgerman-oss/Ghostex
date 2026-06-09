@@ -1781,7 +1781,7 @@ export function SettingsModal({
                 {mainSettingVisible(settingsSearch.sidebar, "agentAcceptAllEnabled") ? (
                   <ToggleField
                     checked={draft.agentAcceptAllEnabled}
-                    description="Append each supported agent CLI's permission-bypass flag when launching sessions. Per-agent overrides live in Settings → Agents."
+                    description="Enable each supported agent's permission-bypass mode when launching sessions. Per-agent overrides live in Settings → Agents."
                     label="Accept All"
                     {...getSettingModificationProps("agentAcceptAllEnabled")}
                     onChange={(checked) => updateDraft("agentAcceptAllEnabled", checked)}
@@ -4641,7 +4641,7 @@ function AgentsSettingsTab({
                 Accept All
               </FieldLabel>
               <FieldDescription className="text-xs text-muted-foreground">
-                Append each supported agent CLI&apos;s permission-bypass flag when launching sessions.
+                Enable each supported agent&apos;s permission-bypass mode when launching sessions.
                 Per-agent settings can inherit or override this default.
               </FieldDescription>
             </FieldContent>
@@ -5029,8 +5029,8 @@ function AgentSettingsEditor({
           </FieldLabel>
           <FieldDescription className="text-xs text-muted-foreground">
             {acceptAllSupported
-              ? "Inherit uses the global Agents setting. Accept All appends this CLI's permission-bypass flag at launch without changing the stored command."
-              : "This agent CLI does not expose a supported Accept All flag in Ghostex."}
+              ? "Inherit uses the global Agents setting. Accept All applies this agent's permission-bypass mode at launch without changing the stored command."
+              : "This agent does not expose a supported Accept All mode in Ghostex."}
           </FieldDescription>
         </FieldContent>
         <Select

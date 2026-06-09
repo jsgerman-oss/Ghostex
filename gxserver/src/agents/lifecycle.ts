@@ -72,9 +72,18 @@ type DefaultAgentId =
 type RestorableAgentId = Exclude<DefaultAgentId, "t3">;
 
 interface AgentAcceptAllFlagSpec {
+  kind: "flag";
   aliases: readonly string[];
   canonicalFlag: string;
 }
+
+interface AgentAcceptAllEnvironmentSpec {
+  kind: "environment";
+  assignments: readonly { name: string; value: string }[];
+  legacyFlagAliases: readonly string[];
+}
+
+type AgentAcceptAllSpec = AgentAcceptAllFlagSpec | AgentAcceptAllEnvironmentSpec;
 
 const DEFAULT_AGENT_COMMANDS: Readonly<Record<DefaultAgentId, string>> = {
   amp: "amp",
@@ -114,27 +123,32 @@ const DEFAULT_AGENT_ICON_TO_ID: Readonly<Record<string, DefaultAgentId>> = {
   t3: "t3",
 };
 
-const ACCEPT_ALL_FLAG_SPECS: Readonly<Record<DefaultAgentId, AgentAcceptAllFlagSpec | null>> = {
-  amp: { aliases: ["--dangerously-allow-all"], canonicalFlag: "--dangerously-allow-all" },
+const OPENCODE_ACCEPT_ALL_CONFIG_CONTENT = JSON.stringify({ permission: "allow" });
+
+const ACCEPT_ALL_SPECS: Readonly<Record<DefaultAgentId, AgentAcceptAllSpec | null>> = {
+  amp: { kind: "flag", aliases: ["--dangerously-allow-all"], canonicalFlag: "--dangerously-allow-all" },
   antigravity: {
+    kind: "flag",
     aliases: ["--dangerously-skip-permissions"],
     canonicalFlag: "--dangerously-skip-permissions",
   },
   claude: {
+    kind: "flag",
     aliases: ["--dangerously-skip-permissions"],
     canonicalFlag: "--dangerously-skip-permissions",
   },
-  codex: { aliases: ["--yolo"], canonicalFlag: "--yolo" },
+  codex: { kind: "flag", aliases: ["--yolo"], canonicalFlag: "--yolo" },
   codebuddy: null,
-  copilot: { aliases: ["--allow-all", "--yolo"], canonicalFlag: "--yolo" },
-  cursor: { aliases: ["--force", "--yolo"], canonicalFlag: "--yolo" },
+  copilot: { kind: "flag", aliases: ["--allow-all", "--yolo"], canonicalFlag: "--yolo" },
+  cursor: { kind: "flag", aliases: ["--force", "--yolo"], canonicalFlag: "--yolo" },
   droid: null,
-  gemini: { aliases: ["-y", "--yolo"], canonicalFlag: "--yolo" },
-  grok: { aliases: ["--always-approve"], canonicalFlag: "--always-approve" },
+  gemini: { kind: "flag", aliases: ["-y", "--yolo"], canonicalFlag: "--yolo" },
+  grok: { kind: "flag", aliases: ["--always-approve"], canonicalFlag: "--always-approve" },
   "hermes-agent": null,
   opencode: {
-    aliases: ["--dangerously-skip-permissions", "--yolo"],
-    canonicalFlag: "--dangerously-skip-permissions",
+    kind: "environment",
+    assignments: [{ name: "OPENCODE_CONFIG_CONTENT", value: OPENCODE_ACCEPT_ALL_CONFIG_CONTENT }],
+    legacyFlagAliases: ["--dangerously-skip-permissions", "--yolo"],
   },
   pi: null,
   qoder: null,
@@ -147,13 +161,13 @@ const GROK_BYPASS_PERMISSIONS_VALUE = "bypassPermissions";
 
 /*
 CDXC:GxserverAgentLifecycle 2026-05-30-15:04:
-gxserver owns agent launch/resume decisions for the hard cutover while preserving the current sidebar TypeScript rules. Launch commands get runtime Accept All flags, restore commands keep the raw configured command, startup text is queued after terminalReady, and exact-id resume may use the existing title fallback wrapper instead of replaying into live zmx sessions.
+gxserver owns agent launch/resume decisions for the hard cutover while preserving the current sidebar TypeScript rules. Launch commands get runtime Accept All handling, restore commands keep the raw configured command, startup text is queued after terminalReady, and exact-id resume may use the existing title fallback wrapper instead of replaying into live zmx sessions.
 
 CDXC:GxserverAgentLifecycle 2026-06-01-12:07:
-Resume, wake, and fork-style restored commands must apply the same global/per-agent Accept All policy as launch while leaving the stored base command unchanged. gxserver owns this runtime command shaping so macOS, CLI, TUI, and mobile clients do not each decide whether to append permission-bypass flags.
+Resume, wake, and fork-style restored commands must apply the same global/per-agent Accept All policy as launch while leaving the stored base command unchanged. gxserver owns this runtime command shaping so macOS, CLI, TUI, and mobile clients do not each decide whether to append permission-bypass flags or inject runtime permission config.
 
 CDXC:GxserverAgentLifecycle 2026-06-01-12:23:
-Clients must not rebuild agent launch or resume shell commands locally. gxserver returns launch/resume command plans with separate base, runtime, lookup, display, copy, fallback, and startup-script fields so OpenCode title lookup can use the base command while the final launched command still receives Accept All flags.
+Clients must not rebuild agent launch or resume shell commands locally. gxserver returns launch/resume command plans with separate base, runtime, lookup, display, copy, fallback, and startup-script fields so OpenCode title lookup can use the base command while the final launched command still receives the Accept All runtime permission config.
 
 CDXC:GxserverAgentLifecycle 2026-06-01-12:59:
 Resume plans must resolve exact agent conversation identity before title lookup and must use shared gxserver title trust for any lookup fallback. Placeholder or status-prefixed titles are display-only and must not become Cursor/OpenCode/Codex lookup input.
@@ -166,6 +180,9 @@ gxserver-generated launch, resume, and fork startup text is typed into interacti
 
 CDXC:GxserverAgentLifecycle 2026-06-07-10:01:
 Copy Resume is a clipboard affordance, not the automated restore path. It must copy only the agent-specific exact-id resume invocation while primary/startup commands keep the validation and title-lookup wrappers needed for reliable wake behavior.
+
+CDXC:GxserverAgentLifecycle 2026-06-09-14:22:
+OpenCode TUI Accept All is config-driven, not flag-driven. Launch, resume, and copy commands must use OPENCODE_CONFIG_CONTENT with permission allow while keeping lookup commands on the plain base opencode command so session-list parsing is unaffected.
 */
 export function buildAgentLaunchPlan(input: GxserverAgentLaunchInput): GxserverAgentLaunchPlan {
   const baseCommand = normalizeText(input.command) ?? resolveDefaultAgentCommand(input.agentId) ?? "";
@@ -591,12 +608,12 @@ function resolveAgentLaunchCommand(input: {
 }): string {
   const enabled =
     input.acceptAllMode === "enabled" ? true : input.acceptAllMode === "disabled" ? false : input.globalAcceptAllEnabled;
-  return applyAcceptAllFlag(input.command, input.agentId, enabled, input.icon, {
+  return applyAcceptAllSpec(input.command, input.agentId, enabled, input.icon, {
     stripWhenDisabled: input.acceptAllMode === "disabled",
   });
 }
 
-function applyAcceptAllFlag(
+function applyAcceptAllSpec(
   command: string,
   agentId: string,
   enabled: boolean,
@@ -604,9 +621,13 @@ function applyAcceptAllFlag(
   options: { stripWhenDisabled?: boolean } = {},
 ): string {
   const trimmed = command.trim();
-  const spec = resolveAcceptAllFlagSpec(agentId, icon);
+  const spec = resolveAcceptAllSpec(agentId, icon);
   if (!trimmed || !spec) {
     return trimmed;
+  }
+  if (spec.kind === "environment") {
+    const stripped = stripAcceptAllMarkers(trimmed, spec);
+    return enabled ? `${formatEnvironmentAssignments(spec)} ${stripped}`.trim() : stripped;
   }
   if (!enabled) {
     return options.stripWhenDisabled === true ? stripAcceptAllFlags(trimmed, spec) : trimmed;
@@ -615,15 +636,31 @@ function applyAcceptAllFlag(
   return commandIncludesAcceptAllFlag(deduped, spec) ? deduped : `${deduped} ${spec.canonicalFlag}`.trim();
 }
 
-function resolveAcceptAllFlagSpec(agentId: string, icon?: string): AgentAcceptAllFlagSpec | undefined {
+function resolveAcceptAllSpec(agentId: string, icon?: string): AgentAcceptAllSpec | undefined {
   const normalizedAgentId = normalizeDefaultAgentId(agentId);
-  const specFromId = normalizedAgentId ? ACCEPT_ALL_FLAG_SPECS[normalizedAgentId] : undefined;
+  const specFromId = normalizedAgentId ? ACCEPT_ALL_SPECS[normalizedAgentId] : undefined;
   if (specFromId) {
     return specFromId;
   }
   const iconAgentId = icon ? DEFAULT_AGENT_ICON_TO_ID[icon] : undefined;
-  const specFromIcon = iconAgentId ? ACCEPT_ALL_FLAG_SPECS[iconAgentId] : undefined;
+  const specFromIcon = iconAgentId ? ACCEPT_ALL_SPECS[iconAgentId] : undefined;
   return specFromIcon ?? undefined;
+}
+
+function stripAcceptAllMarkers(command: string, spec: AgentAcceptAllEnvironmentSpec): string {
+  const aliases = new Set(spec.legacyFlagAliases);
+  const assignmentTokens = new Set(spec.assignments.map(formatEnvironmentAssignment));
+  return tokenizeCommand(command)
+    .filter((token) => !assignmentTokens.has(token) && !isAcceptAllFlagToken(token, aliases))
+    .join(" ");
+}
+
+function formatEnvironmentAssignments(spec: AgentAcceptAllEnvironmentSpec): string {
+  return spec.assignments.map(formatEnvironmentAssignment).join(" ");
+}
+
+function formatEnvironmentAssignment(assignment: { name: string; value: string }): string {
+  return `${assignment.name}=${quoteShellArg(assignment.value)}`;
 }
 
 function stripAcceptAllFlags(command: string, spec: AgentAcceptAllFlagSpec): string {

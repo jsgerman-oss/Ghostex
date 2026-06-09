@@ -2,6 +2,7 @@ import { describe, expect, test } from "vitest";
 import {
   normalizeAgentAcceptAllMode,
   resolveAgentAcceptAllFlagSpec,
+  resolveAgentAcceptAllSpec,
   supportsAgentAcceptAll,
 } from "./sidebar-agent-accept-all";
 
@@ -24,5 +25,7 @@ describe("sidebar Accept All support metadata", () => {
     expect(resolveAgentAcceptAllFlagSpec("claude")?.canonicalFlag).toBe(
       "--dangerously-skip-permissions",
     );
+    expect(resolveAgentAcceptAllFlagSpec("opencode")).toBeUndefined();
+    expect(resolveAgentAcceptAllSpec("opencode")?.kind).toBe("runtimeConfig");
   });
 });

@@ -14,9 +14,16 @@ import {
 export type AgentAcceptAllMode = "inherit" | "enabled" | "disabled";
 
 export type AgentAcceptAllFlagSpec = {
+  kind: "flag";
   aliases: readonly string[];
   canonicalFlag: string;
 };
+
+export type AgentAcceptAllRuntimeConfigSpec = {
+  kind: "runtimeConfig";
+};
+
+export type AgentAcceptAllSpec = AgentAcceptAllFlagSpec | AgentAcceptAllRuntimeConfigSpec;
 
 /**
  * CDXC:SidebarAgents 2026-05-19-10:05:
@@ -24,32 +31,41 @@ export type AgentAcceptAllFlagSpec = {
  * CLI (`agy`) uses `--dangerously-skip-permissions` for Accept All. Factory Droid
  * interactive mode has no skip flag; only `droid exec` exposes
  * `--skip-permissions-unsafe`, so the default `droid` launcher stays unsupported.
+ *
+ * CDXC:SidebarAgents 2026-06-09-14:22:
+ * OpenCode TUI does not expose a permission-bypass CLI flag. Keep it supported
+ * through gxserver's runtime permission config path so macOS Settings can show
+ * the same Accept All control without claiming the stored command gets a flag.
  */
-export const AGENT_ACCEPT_ALL_FLAG_SPECS: Readonly<
-  Record<DefaultSidebarAgentId, AgentAcceptAllFlagSpec | null>
-> = {
+export const AGENT_ACCEPT_ALL_SPECS: Readonly<Record<DefaultSidebarAgentId, AgentAcceptAllSpec | null>> = {
   antigravity: {
+    kind: "flag",
     aliases: ["--dangerously-skip-permissions"],
     canonicalFlag: "--dangerously-skip-permissions",
   },
   amp: {
+    kind: "flag",
     aliases: ["--dangerously-allow-all"],
     canonicalFlag: "--dangerously-allow-all",
   },
   claude: {
+    kind: "flag",
     aliases: ["--dangerously-skip-permissions"],
     canonicalFlag: "--dangerously-skip-permissions",
   },
   codex: {
+    kind: "flag",
     aliases: ["--yolo"],
     canonicalFlag: "--yolo",
   },
   codebuddy: null,
   copilot: {
+    kind: "flag",
     aliases: ["--allow-all", "--yolo"],
     canonicalFlag: "--yolo",
   },
   cursor: {
+    kind: "flag",
     aliases: ["--force", "--yolo"],
     canonicalFlag: "--yolo",
   },
@@ -60,18 +76,17 @@ export const AGENT_ACCEPT_ALL_FLAG_SPECS: Readonly<
    */
   droid: null,
   gemini: {
+    kind: "flag",
     aliases: ["-y", "--yolo"],
     canonicalFlag: "--yolo",
   },
   grok: {
+    kind: "flag",
     aliases: ["--always-approve"],
     canonicalFlag: "--always-approve",
   },
   "hermes-agent": null,
-  opencode: {
-    aliases: ["--dangerously-skip-permissions", "--yolo"],
-    canonicalFlag: "--dangerously-skip-permissions",
-  },
+  opencode: { kind: "runtimeConfig" },
   pi: null,
   qoder: null,
   rovodev: null,
@@ -84,13 +99,13 @@ export function normalizeAgentAcceptAllMode(candidate: unknown): AgentAcceptAllM
     : undefined;
 }
 
-export function resolveAgentAcceptAllFlagSpec(
+export function resolveAgentAcceptAllSpec(
   agentId: string,
   icon?: SidebarAgentIcon,
-): AgentAcceptAllFlagSpec | undefined {
+): AgentAcceptAllSpec | undefined {
   const defaultAgent = getDefaultSidebarAgentById(agentId);
   const specFromId = defaultAgent
-    ? AGENT_ACCEPT_ALL_FLAG_SPECS[defaultAgent.agentId]
+    ? AGENT_ACCEPT_ALL_SPECS[defaultAgent.agentId]
     : undefined;
   if (specFromId) {
     return specFromId;
@@ -105,10 +120,18 @@ export function resolveAgentAcceptAllFlagSpec(
     return undefined;
   }
 
-  const spec = AGENT_ACCEPT_ALL_FLAG_SPECS[iconAgentId as DefaultSidebarAgentId];
+  const spec = AGENT_ACCEPT_ALL_SPECS[iconAgentId as DefaultSidebarAgentId];
   return spec ?? undefined;
 }
 
+export function resolveAgentAcceptAllFlagSpec(
+  agentId: string,
+  icon?: SidebarAgentIcon,
+): AgentAcceptAllFlagSpec | undefined {
+  const spec = resolveAgentAcceptAllSpec(agentId, icon);
+  return spec?.kind === "flag" ? spec : undefined;
+}
+
 export function supportsAgentAcceptAll(agentId: string, icon?: SidebarAgentIcon): boolean {
-  return resolveAgentAcceptAllFlagSpec(agentId, icon) !== undefined;
+  return resolveAgentAcceptAllSpec(agentId, icon) !== undefined;
 }

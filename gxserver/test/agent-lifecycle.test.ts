@@ -17,7 +17,9 @@ import {
 } from "../src/agents/lifecycle.js";
 import type { GxserverProjectDomainState, GxserverSessionDomainState } from "../protocol/index.js";
 
-test("agent launch command generation preserves Accept All flags and delayed send metadata", () => {
+const OPENCODE_ACCEPT_ALL_ENV = `OPENCODE_CONFIG_CONTENT='{"permission":"allow"}'`;
+
+test("agent launch command generation preserves Accept All handling and delayed send metadata", () => {
   const codex = buildAgentLaunchPlan({
     acceptAllMode: "inherit",
     agentId: "codex",
@@ -41,6 +43,14 @@ test("agent launch command generation preserves Accept All flags and delayed sen
   });
   assert.equal(antigravity.command, "agy --dangerously-skip-permissions");
 
+  const opencode = buildAgentLaunchPlan({
+    agentId: "opencode",
+    command: "opencode --dangerously-skip-permissions --yolo",
+    globalAcceptAllEnabled: true,
+  });
+  assert.equal(opencode.command, `${OPENCODE_ACCEPT_ALL_ENV} opencode`);
+  assert.equal(opencode.startupText, ` ${OPENCODE_ACCEPT_ALL_ENV} opencode\r`);
+
   const disabled = buildAgentLaunchPlan({
     acceptAllMode: "disabled",
     agentId: "codex",
@@ -48,9 +58,17 @@ test("agent launch command generation preserves Accept All flags and delayed sen
     globalAcceptAllEnabled: true,
   });
   assert.equal(disabled.command, "codex");
+
+  const disabledOpenCode = buildAgentLaunchPlan({
+    acceptAllMode: "disabled",
+    agentId: "opencode",
+    command: `${OPENCODE_ACCEPT_ALL_ENV} opencode --dangerously-skip-permissions`,
+    globalAcceptAllEnabled: true,
+  });
+  assert.equal(disabledOpenCode.command, "opencode");
 });
 
-test("Cursor launch appends resume after runtime Accept All flags when a chat id exists", () => {
+test("Cursor launch appends resume after runtime Accept All handling when a chat id exists", () => {
   const plan = buildAgentLaunchPlan({
     agentId: "cursor",
     agentSessionId: "8B16E7E6-3CE1-4D0B-9F35-78261B7F0767",
@@ -324,14 +342,37 @@ test("resume plan separates OpenCode lookup command from runtime Accept All comm
   });
 
   const plan = buildAgentResumePlan(project, session);
-  assert.equal(plan.runtimeCommand, "opencode --dangerously-skip-permissions");
+  assert.equal(plan.runtimeCommand, `${OPENCODE_ACCEPT_ALL_ENV} opencode`);
   assert.equal(plan.lookupCommand, "opencode");
   assert.match(
     plan.primaryCommand ?? "",
-    /opencode --dangerously-skip-permissions -s "\$\(opencode session list --format json/,
+    /OPENCODE_CONFIG_CONTENT='\{"permission":"allow"\}' opencode -s "\$\(opencode session list --format json/,
   );
-  assert.doesNotMatch(plan.primaryCommand ?? "", /opencode --dangerously-skip-permissions session list/);
+  assert.doesNotMatch(
+    plan.primaryCommand ?? "",
+    /OPENCODE_CONFIG_CONTENT='\{"permission":"allow"\}' opencode session list/,
+  );
   assert.equal(plan.copyCommand, undefined);
+});
+
+test("OpenCode exact resume uses runtime permission config without legacy flags", () => {
+  const project = {
+    ...projectFixture(),
+    launchSettings: { agentAcceptAllEnabled: true },
+  };
+  const session = sessionFixture({
+    agentId: "opencode",
+    runtimeSettings: {
+      agentCommand: "opencode --dangerously-skip-permissions",
+      agentSessionId: "opencode-session-123",
+      titleSource: "user",
+    },
+    title: "Readable thread title",
+  });
+
+  const plan = buildAgentResumePlan(project, session);
+  assert.equal(plan.primaryCommand, `${OPENCODE_ACCEPT_ALL_ENV} opencode --session "opencode-session-123"`);
+  assert.equal(plan.copyCommand, `${OPENCODE_ACCEPT_ALL_ENV} opencode --session "opencode-session-123"`);
 });
 
 test("temporary Search by Text titles are not trusted resume fallbacks", () => {

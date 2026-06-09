@@ -221,8 +221,8 @@ export function AgentConfigModal({ draft, isOpen, onCancel, onSave }: AgentConfi
               </FieldTitle>
               <FieldDescription className="text-xs text-muted-foreground">
                 {acceptAllSupported
-                  ? "Inherit uses the global Agents setting. Accept All appends this CLI's permission-bypass flag at launch without changing the stored command."
-                  : "This agent CLI does not expose a supported Accept All flag in Ghostex."}
+                  ? "Inherit uses the global Agents setting. Accept All applies this agent's permission-bypass mode at launch without changing the stored command."
+                  : "This agent does not expose a supported Accept All mode in Ghostex."}
               </FieldDescription>
             </FieldContent>
             <Select

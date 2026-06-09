@@ -132,7 +132,11 @@ export type ghostexSettings = {
    * CDXC:GxserverAgentSettings 2026-06-02-22:23:
    * This field is the sidebar render cache for gxserver-owned global Accept All
    * settings. Settings UI can display and edit it, but gxserver persists the
-   * canonical value and applies runtime permission-bypass flags.
+   * canonical value and applies each agent's runtime permission-bypass mode.
+   *
+   * CDXC:GxserverAgentSettings 2026-06-09-14:22:
+   * OpenCode Accept All is runtime config rather than a CLI flag, so settings
+   * copy and storage must describe the policy without promising flag insertion.
    */
   agentAcceptAllEnabled: boolean;
   agentManagerZoomPercent: number;
