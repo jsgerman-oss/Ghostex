@@ -1642,7 +1642,13 @@ export function SortableSessionCard({
               style={{
                 left: `${tagSubmenuPosition.x}px`,
                 top: `${tagSubmenuPosition.y}px`,
-                zIndex: 21,
+                /*
+                 * CDXC:SidebarContextMenu 2026-06-09-14:22:
+                 * The Tag as submenu follows the raised sidebar context-menu
+                 * stack so sticky project headers cannot cover the submenu
+                 * while users are choosing a session marker.
+                 */
+                zIndex: "var(--sidebar-context-menu-submenu-z-index, 301)",
               }}
             >
               {/*

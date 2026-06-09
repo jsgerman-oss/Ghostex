@@ -138,10 +138,15 @@ export function CommandIconPicker({
                * Attach a non-passive wheel listener to the Command list so long
                * icon sets remain browseable while the modal background stays
                * locked.
+               *
+               * CDXC:CommandIcons 2026-06-09-09:32:
+               * CommandInput sits inside InputGroup without an inline-start addon,
+               * so add pl-3 here to match other Settings fields; InputGroup only
+               * applies horizontal inset when start/end addons are present.
                */}
               <CommandInput
                 aria-label="Search icons"
-                className="command-icon-picker-search"
+                className="command-icon-picker-search pl-3"
                 clearLabel="Clear icon search"
                 placeholder="Search icons"
                 spellCheck={false}
