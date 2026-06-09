@@ -23,7 +23,7 @@ Ghostex is built for developers who keep multiple agents and terminals alive at 
 The Homebrew cask installs the correct Apple Silicon or Intel Mac build automatically.
 
 ```bash
-brew trust --cask maddada/tap && brew install --cask maddada/tap/ghostex --force
+brew trust maddada/tap && brew install --cask maddada/tap/ghostex --force
 ```
 
 You can also download the latest DMG from GitHub Releases.
