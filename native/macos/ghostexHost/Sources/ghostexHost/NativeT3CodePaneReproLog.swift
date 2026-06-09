@@ -2574,13 +2574,39 @@ enum NativeT3RuntimeSessionBootstrap {
   }
 }
 
+enum NativeT3RuntimeFailureNotice {
+  static let autoStartBackoffInterval: TimeInterval = 60.0
+  static let message =
+    "T3 Code runtime failed to start. Ghostex paused auto-retry; send support logs to report this."
+
+  /**
+   CDXC:T3CodeStartup 2026-06-09-07:07:
+   T3 runtime failure feedback must be short and privacy-safe because it is shown
+   in a user-facing toast and written into pane error state. Keep the retry
+   pause tied to actual launch/auth failures so passive liveness checks do not
+   repaint existing T3 panes every ten seconds while terminal input is active.
+   */
+  static func error(reason: String) -> NSError {
+    NSError(
+      domain: "NativeT3RuntimeFailureNotice",
+      code: 1,
+      userInfo: [NSLocalizedDescriptionKey: message, "reason": reason]
+    )
+  }
+
+  static func shouldNotifyLaunchExit(status: Int32) -> Bool {
+    status != 0 && status != 15 && status != 130 && status != 143
+  }
+}
+
 enum NativeT3RuntimeBrowserAuth {
   private static let authRetryDelay: TimeInterval = 0.5
   private static let authRequestTimeout: TimeInterval = 3
   private static let maxAuthAttempts = 40
   private static let queue = DispatchQueue(label: "com.madda.ghostex.t3-browser-auth")
   private static var isAuthenticating = false
-  private static var pendingCompletions: [(sessionId: String, completion: () -> Void)] = []
+  private static var pendingCompletions:
+    [(sessionId: String, completion: (Result<Void, Error>) -> Void)] = []
 
   /**
    CDXC:T3Code 2026-04-30-09:10
@@ -2595,10 +2621,12 @@ enum NativeT3RuntimeBrowserAuth {
   static func prepareManagedWebSession(
     for url: URL,
     sessionId: String,
-    completion: @escaping () -> Void
+    completion: @escaping (Result<Void, Error>) -> Void
   ) {
     guard NativeT3RuntimeLauncher.isManagedRuntimeURL(url) else {
-      DispatchQueue.main.async(execute: completion)
+      DispatchQueue.main.async {
+        completion(.success(()))
+      }
       return
     }
 
@@ -2618,7 +2646,9 @@ enum NativeT3RuntimeBrowserAuth {
 
   private static func checkSession(origin: URL, attemptsRemaining: Int) {
     guard let sessionURL = endpointURL(origin: origin, path: "/api/auth/session") else {
-      finishPending(reason: "invalidSessionUrl")
+      finishPending(
+        reason: "invalidSessionUrl",
+        result: .failure(NativeT3RuntimeFailureNotice.error(reason: "invalidSessionUrl")))
       return
     }
     var request = URLRequest(url: sessionURL)
@@ -2702,7 +2732,9 @@ enum NativeT3RuntimeBrowserAuth {
     attemptsRemaining: Int
   ) {
     guard let bearerURL = endpointURL(origin: origin, path: "/api/auth/bootstrap/bearer") else {
-      finishPending(reason: "invalidBearerBootstrapUrl")
+      finishPending(
+        reason: "invalidBearerBootstrapUrl",
+        result: .failure(NativeT3RuntimeFailureNotice.error(reason: "invalidBearerBootstrapUrl")))
       return
     }
 
@@ -2796,7 +2828,9 @@ enum NativeT3RuntimeBrowserAuth {
     attemptsRemaining: Int
   ) {
     guard let bootstrapURL = endpointURL(origin: origin, path: "/api/auth/bootstrap") else {
-      finishPending(reason: "invalidBootstrapUrl")
+      finishPending(
+        reason: "invalidBootstrapUrl",
+        result: .failure(NativeT3RuntimeFailureNotice.error(reason: "invalidBootstrapUrl")))
       return
     }
 
@@ -2894,7 +2928,9 @@ enum NativeT3RuntimeBrowserAuth {
     originalReason: String
   ) {
     guard let pairingURL = endpointURL(origin: origin, path: "/api/auth/pairing-token") else {
-      finishPending(reason: "invalidPairingUrl")
+      finishPending(
+        reason: "invalidPairingUrl",
+        result: .failure(NativeT3RuntimeFailureNotice.error(reason: "invalidPairingUrl")))
       return
     }
 
@@ -2962,7 +2998,9 @@ enum NativeT3RuntimeBrowserAuth {
         "reason": reason,
         "url": origin.absoluteString,
       ])
-      finishPending(reason: reason)
+      finishPending(
+        reason: reason,
+        result: .failure(NativeT3RuntimeFailureNotice.error(reason: reason)))
       return
     }
 
@@ -2979,7 +3017,9 @@ enum NativeT3RuntimeBrowserAuth {
   private static func setCookies(_ cookies: [HTTPCookie], reason: String) {
     DispatchQueue.main.async {
       guard !cookies.isEmpty else {
-        finishPending(reason: "\(reason)NoCookies")
+        finishPending(
+          reason: "\(reason)NoCookies",
+          result: .failure(NativeT3RuntimeFailureNotice.error(reason: "\(reason)NoCookies")))
         return
       }
 
@@ -2998,12 +3038,15 @@ enum NativeT3RuntimeBrowserAuth {
         }
       }
       group.notify(queue: .main) {
-        finishPending(reason: reason)
+        finishPending(reason: reason, result: .success(()))
       }
     }
   }
 
-  private static func finishPending(reason: String) {
+  private static func finishPending(
+    reason: String,
+    result: Result<Void, Error> = .success(())
+  ) {
     queue.async {
       let completions = pendingCompletions
       pendingCompletions = []
@@ -3014,7 +3057,7 @@ enum NativeT3RuntimeBrowserAuth {
         "sessionIds": completions.map(\.sessionId),
       ])
       DispatchQueue.main.async {
-        completions.forEach { $0.completion() }
+        completions.forEach { $0.completion(result) }
       }
     }
   }

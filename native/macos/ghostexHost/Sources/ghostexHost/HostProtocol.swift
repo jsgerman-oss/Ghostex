@@ -1254,6 +1254,7 @@ enum HostEvent: Encodable {
   case sessionStatusIndicatorClicked(status: NativeSessionStatusIndicatorStatus)
   case petOverlayActivityClicked(projectId: String, sessionId: String)
   case sessionAttentionNotificationClicked(sessionId: String)
+  case t3RuntimeStartFailed(sessionId: String?, message: String)
   case t3ThreadReady(
     sessionId: String, projectId: String, threadId: String, serverOrigin: String, workspaceRoot: String)
   case t3ThreadChanged(sessionId: String, threadId: String, title: String?)
@@ -1598,6 +1599,16 @@ enum HostEvent: Encodable {
        */
       try container.encode("sessionAttentionNotificationClicked", forKey: .type)
       try container.encode(sessionId, forKey: .sessionId)
+    case .t3RuntimeStartFailed(let sessionId, let message):
+      /**
+       CDXC:T3CodeStartup 2026-06-09-07:07:
+       T3 runtime launch/auth failures need their own native event so React can
+       show a short error toast while the WKWebView switches to a stable failure
+       page instead of continuing the liveness loading loop.
+       */
+      try container.encode("t3RuntimeStartFailed", forKey: .type)
+      try container.encodeIfPresent(sessionId, forKey: .sessionId)
+      try container.encode(message, forKey: .message)
     case .t3ThreadReady(let sessionId, let projectId, let threadId, let serverOrigin, let workspaceRoot):
       try container.encode("t3ThreadReady", forKey: .type)
       try container.encode(sessionId, forKey: .sessionId)

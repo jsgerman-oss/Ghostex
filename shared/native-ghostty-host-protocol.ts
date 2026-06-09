@@ -590,6 +590,16 @@ export type NativeGhosttyHostEvent =
       type: "codeServerRuntimeStartFailed";
     }
   | {
+      /**
+       * CDXC:T3CodeStartup 2026-06-09-07:07:
+       * Native reports managed T3 launch/auth failures separately so the app can
+       * show a short support-ready toast while the pane leaves the loading loop.
+       */
+      message: string;
+      sessionId?: string;
+      type: "t3RuntimeStartFailed";
+    }
+  | {
       projectId: string;
       serverOrigin: string;
       sessionId: string;

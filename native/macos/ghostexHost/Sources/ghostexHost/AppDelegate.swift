@@ -4,6 +4,7 @@ import CoreImage
 import Darwin
 import GhosttyKit
 import OSLog
+import QuartzCore
 import Security
 import Sparkle
 import UniformTypeIdentifiers
@@ -643,6 +644,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
   private var t3CodeRuntimeStartedAt: Date?
   private var t3RuntimeVisibleSessionCwd: String?
   private var t3RuntimeLivenessTimer: Timer?
+  private var t3RuntimeAutoStartBackoffUntil: Date?
   private var codeServerRuntimeProcess: Process?
   private var codeServerRuntimeStartedAt: Date?
   private var pendingOSIntegrationCommands: [(action: String, payloadJson: String)] = []
@@ -3296,11 +3298,43 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
     guard !NativeT3RuntimeLauncher.hasResponsiveManagedRuntimeListener() else {
       return
     }
+    guard !isT3RuntimeAutoStartBackedOff(logPrefix: "nativeHost", reason: reason) else {
+      return
+    }
     NativeT3CodePaneReproLog.append("nativeHost.t3Runtime.runningSessions.autoStart", [
       "cwd": runtimeCwd,
       "reason": reason,
     ])
     startT3CodeRuntime(StartT3CodeRuntime(cwd: runtimeCwd))
+  }
+
+  @MainActor
+  private func isT3RuntimeAutoStartBackedOff(logPrefix: String, reason: String) -> Bool {
+    guard let until = t3RuntimeAutoStartBackoffUntil else {
+      return false
+    }
+    let remainingSeconds = until.timeIntervalSinceNow
+    guard remainingSeconds > 0 else {
+      t3RuntimeAutoStartBackoffUntil = nil
+      return false
+    }
+    NativeT3CodePaneReproLog.append("\(logPrefix).t3Runtime.start.backoffActive", [
+      "reason": reason,
+      "remainingSeconds": remainingSeconds,
+    ])
+    return true
+  }
+
+  @MainActor
+  private func recordT3RuntimeLaunchFailure(logPrefix: String, reason: String) {
+    t3RuntimeAutoStartBackoffUntil = Date().addingTimeInterval(
+      NativeT3RuntimeFailureNotice.autoStartBackoffInterval)
+    NativeT3CodePaneReproLog.append("\(logPrefix).t3Runtime.start.backoffSet", [
+      "backoffSeconds": NativeT3RuntimeFailureNotice.autoStartBackoffInterval,
+      "reason": reason,
+    ])
+    (window?.contentView as? ghostexRootView)?.postHostEvent(
+      .t3RuntimeStartFailed(sessionId: nil, message: NativeT3RuntimeFailureNotice.message))
   }
 
   /**
@@ -3317,7 +3351,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
      sidebar restore loops can request a provider before a T3 card is actually
      running. setT3CodeRuntimeSessionState owns the session heartbeat, and
      createLaunch grants only the startup grace needed for a new provider.
+
+     CDXC:T3CodeStartup 2026-06-09-07:07:
+     Passive retained startup states must not reload managed T3 web panes.
+     Only an actual runtime replacement should repaint the WKWebView; otherwise
+     the ten-second liveness timer can interrupt terminal typing with a spinner.
      */
+    t3RuntimeAutoStartBackoffUntil = nil
     if let process = t3CodeRuntimeProcess, process.isRunning {
       /**
        CDXC:T3Code 2026-05-02-00:48
@@ -3335,7 +3375,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
               "runtimeAgeSeconds": runtimeAgeSeconds,
               "startupGraceSeconds": NativeT3RuntimeLauncher.startupGraceInterval,
             ])
-            workspaceView?.reloadManagedT3WebPanes(reason: "runtimeRetainedDuringStartup")
             return
           }
         }
@@ -3353,7 +3392,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
             "cwd": command.cwd,
             "pid": process.processIdentifier,
           ])
-          workspaceView?.reloadManagedT3WebPanes(reason: "runtimeRetainedDuringStartup")
           return
         }
         NativeT3CodePaneReproLog.append("nativeHost.t3Runtime.start.runningUnhealthy", [
@@ -3401,7 +3439,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
         "launchAgeSeconds": launchAgeSeconds,
         "startupGraceSeconds": NativeT3RuntimeLauncher.startupGraceInterval,
       ])
-      workspaceView?.reloadManagedT3WebPanes(reason: "runtimeRetainedDuringStartup")
       return
     case .claimed(let claimedStartedAt):
       launchStartedAt = claimedStartedAt
@@ -3414,7 +3451,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
         "cwd": command.cwd,
         "port": NativeT3RuntimeLauncher.port,
       ])
-      workspaceView?.reloadManagedT3WebPanes(reason: "runtimeRetainedDuringStartup")
       return
     }
     NativeT3CodePaneReproLog.append("nativeHost.t3Runtime.start.spawn", [
@@ -3435,13 +3471,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
         "startedAt": launchStartedAt.timeIntervalSince1970,
       ])
       workspaceView?.reloadManagedT3WebPanes(reason: "runtimeSpawned")
-      process.terminationHandler = { [outputCapture = launch.outputCapture, launchStartedAt] terminatedProcess in
+      process.terminationHandler = { [weak self, outputCapture = launch.outputCapture, launchStartedAt] terminatedProcess in
         NativeT3RuntimeLauncher.clearLaunchAttempt(startedAt: launchStartedAt)
         var details = outputCapture.finish()
         details["pid"] = terminatedProcess.processIdentifier
         details["reason"] = terminatedProcess.terminationReason.rawValue
         details["status"] = terminatedProcess.terminationStatus
         NativeT3CodePaneReproLog.append("nativeHost.t3Runtime.exit", details)
+        let status = terminatedProcess.terminationStatus
+        guard NativeT3RuntimeFailureNotice.shouldNotifyLaunchExit(status: status) else {
+          return
+        }
+        DispatchQueue.main.async {
+          self?.recordT3RuntimeLaunchFailure(
+            logPrefix: "nativeHost",
+            reason: "processExitStatus\(status)")
+        }
       }
     } catch {
       NativeT3RuntimeLauncher.clearLaunchAttempt(startedAt: launchStartedAt)
@@ -3449,6 +3494,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
         "cwd": command.cwd,
         "error": error.localizedDescription,
       ])
+      recordT3RuntimeLaunchFailure(logPrefix: "nativeHost", reason: "processRunFailed")
       let sanitizedError = NativeLogPrivacy.sanitizeLogLine(error.localizedDescription)
       Self.logger.error("Failed to start T3 Code runtime: \(sanitizedError)")
     }
@@ -5555,6 +5601,7 @@ final class ghostexRootView: NSView {
   private var activeAppModalKind: String?
   private var appModalPresentationPending = false
   private var sidebarWorkspaceFocusRequestId: UInt64 = 0
+  private var floatingPromptEditorReturnFocusRequestId: UInt64 = 0
   private var appModalReturnFocusSessionId: String?
   private var pendingModalHostOpenMessage: [String: Any]?
   private var latestModalHostSidebarState: [String: Any]?
@@ -5562,6 +5609,10 @@ final class ghostexRootView: NSView {
   private var hasPrewarmedFloatingPromptEditor = false
   private var isPrewarmingFloatingPromptEditor = false
   private var floatingPromptEditorPrewarmTempFileURL: URL?
+  private var isFloatingPromptEditorActiveForUserInput: Bool {
+    (activeFloatingPromptEditor != nil && !isPrewarmingFloatingPromptEditor)
+      || activeAppModalKind == "floatingPromptEditor"
+  }
   private var pendingHotkeyPrefix: String?
   private var pendingHotkeyPrefixExpiresAt: Date?
   private var t3CodeRuntimeProcess: Process?
@@ -5570,6 +5621,7 @@ final class ghostexRootView: NSView {
   private var t3RuntimeLivenessTimer: Timer?
   private var pendingT3RuntimeStartWorkItem: DispatchWorkItem?
   private var t3RuntimePaneStateGeneration: UInt64 = 0
+  private var t3RuntimeAutoStartBackoffUntil: Date?
   private var codeServerRuntimeProcess: Process?
   private var codeServerRuntimeStartedAt: Date?
   private var titlebarOutsideClickMonitor: Any?
@@ -5799,7 +5851,7 @@ final class ghostexRootView: NSView {
     sidebarWorkareaBorderView.lineColor = Self.workareaSeparatorColor
     /**
      CDXC:NativeSidebarChrome 2026-06-08-19:58:
-     The visible sidebar/workarea separator must be the same native view that owns resize dragging and the resize cursor. Keep the older standalone border view hidden so the apparent drag bar cannot become a separate default-cursor hover surface.
+     The visible sidebar/workarea separator must be the same native view that owns resize dragging, the resize cursor, and the delayed hover affordance. Keep the older standalone border view hidden so the apparent drag bar cannot become a separate hover surface.
      */
     sidebarWorkareaBorderView.isHidden = true
     workareaTitlebarBorderView.lineColor = Self.workareaSeparatorColor
@@ -6789,11 +6841,218 @@ final class ghostexRootView: NSView {
       ]
     )
     activeFloatingPromptEditor = nil
+    if activeAppModalKind == "floatingPromptEditor" {
+      activeAppModalKind = nil
+    }
+    appModalPresentationPending = false
     modalHostView.setTopLeftHitRegions(nil)
     dispatchModalHostMessage(["type": "close"])
     modalHostView.isHidden = true
+    updateSidebarModalBackdrop()
     if let returnFocusSessionId {
-      workspaceView.focusTerminal(sessionId: returnFocusSessionId, reason: "floatingPromptEditor.\(reason)")
+      restoreFloatingPromptEditorReturnFocus(sessionId: returnFocusSessionId, reason: reason)
+    }
+  }
+
+  private func restoreFloatingPromptEditorReturnFocus(sessionId: String, reason: String) {
+    /*
+     CDXC:PromptEditor 2026-06-09-09:05:
+     Saving or closing the Monaco rich prompt editor must return typing focus to the terminal that launched Ctrl+G. Clear the floating modal state first, then restore focus after the current WebKit bridge turn and reinforce once after WebKit close events settle so Ctrl+G, Cmd+S, and Save leave the source terminal ready for input.
+     */
+    floatingPromptEditorReturnFocusRequestId &+= 1
+    let focusRequestId = floatingPromptEditorReturnFocusRequestId
+    TerminalFocusDebugLog.append(
+      event: "nativeFocusTrace.floatingPromptEditorReturnFocusQueued",
+      details: [
+        "focusRequestId": focusRequestId,
+        "reason": reason,
+        "responderBeforeQueue": responderSnapshot(),
+        "sessionId": sessionId,
+        "webChromeFirstResponder": isWebChromeFirstResponder(),
+        "workspaceSnapshotBeforeQueue": workspaceView.activationDebugSnapshot(),
+      ])
+    DispatchQueue.main.async { [weak self] in
+      guard let self else {
+        return
+      }
+      guard self.floatingPromptEditorReturnFocusRequestId == focusRequestId else {
+        TerminalFocusDebugLog.append(
+          event: "nativeFocusTrace.floatingPromptEditorReturnFocusSkipped",
+          details: [
+            "focusRequestId": focusRequestId,
+            "latestFocusRequestId": self.floatingPromptEditorReturnFocusRequestId,
+            "reason": reason,
+            "sessionId": sessionId,
+            "skipReason": "staleFocusRequest",
+          ])
+        return
+      }
+      guard self.activeFloatingPromptEditor == nil,
+        self.activeAppModalKind == nil,
+        !self.appModalPresentationPending,
+        self.modalHostView.isHidden
+      else {
+        TerminalFocusDebugLog.append(
+          event: "nativeFocusTrace.floatingPromptEditorReturnFocusSkipped",
+          details: [
+            "activeAppModalKind": self.activeAppModalKind ?? "<none>",
+            "appModalPresentationPending": self.appModalPresentationPending,
+            "focusRequestId": focusRequestId,
+            "hasActiveFloatingPromptEditor": self.activeFloatingPromptEditor != nil,
+            "modalHostHidden": self.modalHostView.isHidden,
+            "reason": reason,
+            "sessionId": sessionId,
+            "skipReason": "modalStillActive",
+          ])
+        return
+      }
+      guard self.workspaceView.canDirectlyRestorePromptEditorFocus(sessionId: sessionId) else {
+        /*
+         CDXC:PromptEditor 2026-06-09-11:19:
+         If the terminal that launched the Ctrl+G Monaco prompt editor is hidden or no longer the selected workspace focus target when the editor closes, return through the sidebar's focusTerminal path instead of directly focusing native AppKit views. The sidebar path owns project activation, tab reveal, sleeping-session wake, selection state, and layout sync, matching a user click on that session in the sidebar.
+         */
+        TerminalFocusDebugLog.append(
+          event: "nativeFocusTrace.floatingPromptEditorReturnFocusSidebarRoute",
+          details: [
+            "focusRequestId": focusRequestId,
+            "reason": reason,
+            "responderBeforeRoute": self.responderSnapshot(),
+            "routeReason": "launcherNotDirectlyFocusable",
+            "sessionId": sessionId,
+            "workspaceSnapshotBeforeRoute": self.workspaceView.activationDebugSnapshot(),
+          ])
+        self.requestSidebarFocusForFloatingPromptEditorClose(
+          sessionId: sessionId,
+          reason: reason,
+          focusRequestId: focusRequestId)
+        return
+      }
+      TerminalFocusDebugLog.append(
+        event: "nativeFocusTrace.floatingPromptEditorReturnFocusDispatching",
+        details: [
+          "focusRequestId": focusRequestId,
+          "reason": reason,
+          "responderBeforeDispatch": self.responderSnapshot(),
+          "sessionId": sessionId,
+          "webChromeFirstResponder": self.isWebChromeFirstResponder(),
+          "workspaceSnapshotBeforeDispatch": self.workspaceView.activationDebugSnapshot(),
+        ])
+      self.workspaceView.focusTerminal(sessionId: sessionId, reason: "floatingPromptEditor.\(reason)")
+      let immediateReinforceResult = self.workspaceView.reinforceWorkspaceFocus(
+        sessionId: sessionId,
+        reason: "floatingPromptEditor.immediate.\(reason)")
+      TerminalFocusDebugLog.append(
+        event: "nativeFocusTrace.floatingPromptEditorReturnFocusDispatched",
+        details: [
+          "focusRequestId": focusRequestId,
+          "immediateReinforceResult": immediateReinforceResult,
+          "reason": reason,
+          "responderAfterDispatch": self.responderSnapshot(),
+          "sessionId": sessionId,
+          "webChromeFirstResponder": self.isWebChromeFirstResponder(),
+          "workspaceSnapshotAfterDispatch": self.workspaceView.activationDebugSnapshot(),
+        ])
+      self.scheduleFloatingPromptEditorReturnFocusReinforcement(
+        sessionId: sessionId,
+        reason: reason,
+        focusRequestId: focusRequestId)
+    }
+  }
+
+  private func requestSidebarFocusForFloatingPromptEditorClose(
+    sessionId: String,
+    reason: String,
+    focusRequestId: UInt64
+  ) {
+    guard let sessionIdJson = Self.javascriptStringLiteral(sessionId) else {
+      TerminalFocusDebugLog.append(
+        event: "nativeFocusTrace.floatingPromptEditorReturnFocusSidebarRouteSkipped",
+        details: [
+          "focusRequestId": focusRequestId,
+          "reason": reason,
+          "sessionId": sessionId,
+          "skipReason": "sessionIdJsonEncodingFailed",
+        ])
+      return
+    }
+    sidebarView.evaluateJavaScript(
+      """
+      (() => {
+        const bridge = window.__ghostex_NATIVE_SIDEBAR__;
+        if (!bridge?.focusSessionFromPromptEditorClose) {
+          return false;
+        }
+        bridge.focusSessionFromPromptEditorClose(\(sessionIdJson));
+        return true;
+      })();
+      """
+    ) { result, error in
+      TerminalFocusDebugLog.append(
+        event: "nativeFocusTrace.floatingPromptEditorReturnFocusSidebarRouteCompleted",
+        details: [
+          "bridgeHandled": (result as? Bool) == true,
+          "focusRequestId": focusRequestId,
+          "hasError": error != nil,
+          "reason": reason,
+          "sessionId": sessionId,
+        ])
+    }
+  }
+
+  private func scheduleFloatingPromptEditorReturnFocusReinforcement(
+    sessionId: String,
+    reason: String,
+    focusRequestId: UInt64
+  ) {
+    DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(140)) { [weak self] in
+      guard let self else {
+        return
+      }
+      guard self.floatingPromptEditorReturnFocusRequestId == focusRequestId else {
+        TerminalFocusDebugLog.append(
+          event: "nativeFocusTrace.floatingPromptEditorReturnFocusReinforcementSkipped",
+          details: [
+            "focusRequestId": focusRequestId,
+            "latestFocusRequestId": self.floatingPromptEditorReturnFocusRequestId,
+            "reason": reason,
+            "sessionId": sessionId,
+            "skipReason": "staleFocusRequest",
+          ])
+        return
+      }
+      guard self.activeFloatingPromptEditor == nil,
+        self.activeAppModalKind == nil,
+        !self.appModalPresentationPending,
+        self.modalHostView.isHidden
+      else {
+        TerminalFocusDebugLog.append(
+          event: "nativeFocusTrace.floatingPromptEditorReturnFocusReinforcementSkipped",
+          details: [
+            "activeAppModalKind": self.activeAppModalKind ?? "<none>",
+            "appModalPresentationPending": self.appModalPresentationPending,
+            "focusRequestId": focusRequestId,
+            "hasActiveFloatingPromptEditor": self.activeFloatingPromptEditor != nil,
+            "modalHostHidden": self.modalHostView.isHidden,
+            "reason": reason,
+            "sessionId": sessionId,
+            "skipReason": "modalStillActive",
+          ])
+        return
+      }
+      let reinforceResult = self.workspaceView.reinforceWorkspaceFocus(
+        sessionId: sessionId,
+        reason: "floatingPromptEditor.delayed.\(reason)")
+      TerminalFocusDebugLog.append(
+        event: "nativeFocusTrace.floatingPromptEditorReturnFocusReinforcementCompleted",
+        details: [
+          "focusRequestId": focusRequestId,
+          "reason": reason,
+          "reinforceResult": reinforceResult,
+          "responderAfterReinforcement": self.responderSnapshot(),
+          "sessionId": sessionId,
+          "webChromeFirstResponder": self.isWebChromeFirstResponder(),
+          "workspaceSnapshotAfterReinforcement": self.workspaceView.activationDebugSnapshot(),
+        ])
     }
   }
 
@@ -7529,7 +7788,24 @@ final class ghostexRootView: NSView {
     case .setActiveTerminalSet(let command):
       setAppTitlebarTitle(command.appTitle)
       applyReactTitlebarProjectState(command)
-      workspaceView.setActiveTerminalSet(command)
+      let suppressExplicitWorkspaceFocus = isFloatingPromptEditorActiveForUserInput
+      if suppressExplicitWorkspaceFocus, command.focusRequestId != nil {
+        /*
+         CDXC:PromptEditor 2026-06-09-10:43:
+         Sidebar session clicks are allowed to update the visible workspace behind the Ctrl+G Monaco prompt editor, but they must not turn the layout-sync focus request into AppKit first-responder focus while the editor's launching terminal process is still waiting. Suppress only the native focus side effect; keep the sidebar-owned layout and selection state current so closing the editor can route through the normal sidebar reveal path when needed.
+         */
+        TerminalFocusDebugLog.append(
+          event: "nativeFocusTrace.floatingPromptEditorLayoutFocusSuppressed",
+          details: [
+            "activeAppModalKind": activeAppModalKind ?? "<none>",
+            "focusRequestId": command.focusRequestId ?? 0,
+            "focusedSessionId": command.focusedSessionId ?? "",
+            "hasActiveFloatingPromptEditor": activeFloatingPromptEditor != nil,
+          ])
+      }
+      workspaceView.setActiveTerminalSet(
+        command,
+        suppressExplicitFocus: suppressExplicitWorkspaceFocus)
     case .setSessionPaneChrome(let command):
       workspaceView.setSessionPaneChrome(command)
     case .setSessionStatusIndicators(let command):
@@ -7789,7 +8065,23 @@ final class ghostexRootView: NSView {
      WebKit can still win first responder after the deferred focus command, so
      tag each click with a monotonic request id and run one idempotent
      first-responder reinforcement after the sidebar event has settled.
+
+     CDXC:PromptEditor 2026-06-09-10:43:
+     Sidebar clicks while the Ctrl+G Monaco prompt editor is open may change sidebar selection and native layout behind the editor, but they must not close the editor or move keyboard focus away from it. Skip the explicit native focus command until the editor save/cancel path runs return-focus routing.
      */
+    guard !isFloatingPromptEditorActiveForUserInput else {
+      TerminalFocusDebugLog.append(
+        event: "nativeFocusTrace.sidebarFocusCommandSkipped",
+        details: [
+          "activeAppModalKind": activeAppModalKind ?? "<none>",
+          "focusRequestId": focusRequestId,
+          "hasActiveFloatingPromptEditor": activeFloatingPromptEditor != nil,
+          "kind": kind.debugName,
+          "sessionId": sessionId,
+          "skipReason": "floatingPromptEditorActive",
+        ])
+      return
+    }
     TerminalFocusDebugLog.append(
       event: "nativeFocusTrace.sidebarFocusCommandQueued",
       details: [
@@ -7802,6 +8094,19 @@ final class ghostexRootView: NSView {
       ])
     DispatchQueue.main.async { [weak self] in
       guard let self else {
+        return
+      }
+      guard !self.isFloatingPromptEditorActiveForUserInput else {
+        TerminalFocusDebugLog.append(
+          event: "nativeFocusTrace.sidebarFocusCommandSkipped",
+          details: [
+            "activeAppModalKind": self.activeAppModalKind ?? "<none>",
+            "focusRequestId": focusRequestId,
+            "hasActiveFloatingPromptEditor": self.activeFloatingPromptEditor != nil,
+            "kind": kind.debugName,
+            "sessionId": sessionId,
+            "skipReason": "floatingPromptEditorActiveAfterQueue",
+          ])
         return
       }
       TerminalFocusDebugLog.append(
@@ -7852,6 +8157,19 @@ final class ghostexRootView: NSView {
   ) {
     DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(140)) { [weak self] in
       guard let self else {
+        return
+      }
+      guard !self.isFloatingPromptEditorActiveForUserInput else {
+        TerminalFocusDebugLog.append(
+          event: "nativeFocusTrace.sidebarFocusReinforcementSkipped",
+          details: [
+            "activeAppModalKind": self.activeAppModalKind ?? "<none>",
+            "focusRequestId": focusRequestId,
+            "hasActiveFloatingPromptEditor": self.activeFloatingPromptEditor != nil,
+            "kind": kind.debugName,
+            "sessionId": sessionId,
+            "skipReason": "floatingPromptEditorActive",
+          ])
         return
       }
       guard self.sidebarWorkspaceFocusRequestId == focusRequestId else {
@@ -8018,11 +8336,40 @@ final class ghostexRootView: NSView {
     guard !NativeT3RuntimeLauncher.hasResponsiveManagedRuntimeListener() else {
       return
     }
+    guard !isT3RuntimeAutoStartBackedOff(logPrefix: "nativeSidebar", reason: reason) else {
+      return
+    }
     NativeT3CodePaneReproLog.append("nativeSidebar.t3Runtime.livePanes.autoStart", [
       "cwd": runtimeCwd,
       "reason": reason,
     ])
     startT3CodeRuntime(StartT3CodeRuntime(cwd: runtimeCwd))
+  }
+
+  private func isT3RuntimeAutoStartBackedOff(logPrefix: String, reason: String) -> Bool {
+    guard let until = t3RuntimeAutoStartBackoffUntil else {
+      return false
+    }
+    let remainingSeconds = until.timeIntervalSinceNow
+    guard remainingSeconds > 0 else {
+      t3RuntimeAutoStartBackoffUntil = nil
+      return false
+    }
+    NativeT3CodePaneReproLog.append("\(logPrefix).t3Runtime.start.backoffActive", [
+      "reason": reason,
+      "remainingSeconds": remainingSeconds,
+    ])
+    return true
+  }
+
+  private func recordT3RuntimeLaunchFailure(logPrefix: String, reason: String) {
+    t3RuntimeAutoStartBackoffUntil = Date().addingTimeInterval(
+      NativeT3RuntimeFailureNotice.autoStartBackoffInterval)
+    NativeT3CodePaneReproLog.append("\(logPrefix).t3Runtime.start.backoffSet", [
+      "backoffSeconds": NativeT3RuntimeFailureNotice.autoStartBackoffInterval,
+      "reason": reason,
+    ])
+    sendHostEvent(.t3RuntimeStartFailed(sessionId: nil, message: NativeT3RuntimeFailureNotice.message))
   }
 
   /**
@@ -8053,7 +8400,13 @@ final class ghostexRootView: NSView {
      not refresh the managed provider keepalive here; otherwise a hidden
      background t3code server can burn CPU indefinitely while the visible
      sidebar contains only normal terminals.
+
+     CDXC:T3CodeStartup 2026-06-09-07:07:
+     Liveness checks that retain a booting or already-claimed T3 launch must
+     not repaint managed web panes. Only a spawned replacement runtime reloads
+     the WKWebView, which keeps terminal typing from seeing periodic spinners.
      */
+    t3RuntimeAutoStartBackoffUntil = nil
     if let process = t3CodeRuntimeProcess, process.isRunning {
       /**
        CDXC:T3Code 2026-05-02-00:48
@@ -8071,7 +8424,6 @@ final class ghostexRootView: NSView {
               "runtimeAgeSeconds": runtimeAgeSeconds,
               "startupGraceSeconds": NativeT3RuntimeLauncher.startupGraceInterval,
             ])
-            workspaceView.reloadManagedT3WebPanes(reason: "runtimeRetainedDuringStartup")
             return
           }
         }
@@ -8091,7 +8443,6 @@ final class ghostexRootView: NSView {
               "cwd": command.cwd,
               "pid": process.processIdentifier,
             ])
-          workspaceView.reloadManagedT3WebPanes(reason: "runtimeRetainedDuringStartup")
           return
         }
         NativeT3CodePaneReproLog.append("nativeSidebar.t3Runtime.start.runningUnhealthy", [
@@ -8139,7 +8490,6 @@ final class ghostexRootView: NSView {
         "launchAgeSeconds": launchAgeSeconds,
         "startupGraceSeconds": NativeT3RuntimeLauncher.startupGraceInterval,
       ])
-      workspaceView.reloadManagedT3WebPanes(reason: "runtimeRetainedDuringStartup")
       return
     case .claimed(let claimedStartedAt):
       launchStartedAt = claimedStartedAt
@@ -8154,7 +8504,6 @@ final class ghostexRootView: NSView {
           "cwd": command.cwd,
           "port": NativeT3RuntimeLauncher.port,
         ])
-      workspaceView.reloadManagedT3WebPanes(reason: "runtimeRetainedDuringStartup")
       return
     }
     NativeT3CodePaneReproLog.append("nativeSidebar.t3Runtime.start.spawn", [
@@ -8175,13 +8524,22 @@ final class ghostexRootView: NSView {
         "startedAt": launchStartedAt.timeIntervalSince1970,
       ])
       workspaceView.reloadManagedT3WebPanes(reason: "runtimeSpawned")
-      process.terminationHandler = { [outputCapture = launch.outputCapture, launchStartedAt] terminatedProcess in
+      process.terminationHandler = { [weak self, outputCapture = launch.outputCapture, launchStartedAt] terminatedProcess in
         NativeT3RuntimeLauncher.clearLaunchAttempt(startedAt: launchStartedAt)
         var details = outputCapture.finish()
         details["pid"] = terminatedProcess.processIdentifier
         details["reason"] = terminatedProcess.terminationReason.rawValue
         details["status"] = terminatedProcess.terminationStatus
         NativeT3CodePaneReproLog.append("nativeSidebar.t3Runtime.exit", details)
+        let status = terminatedProcess.terminationStatus
+        guard NativeT3RuntimeFailureNotice.shouldNotifyLaunchExit(status: status) else {
+          return
+        }
+        DispatchQueue.main.async {
+          self?.recordT3RuntimeLaunchFailure(
+            logPrefix: "nativeSidebar",
+            reason: "processExitStatus\(status)")
+        }
       }
     } catch {
       NativeT3RuntimeLauncher.clearLaunchAttempt(startedAt: launchStartedAt)
@@ -8189,6 +8547,7 @@ final class ghostexRootView: NSView {
         "cwd": command.cwd,
         "error": error.localizedDescription,
       ])
+      recordT3RuntimeLaunchFailure(logPrefix: "nativeSidebar", reason: "processRunFailed")
       let sanitizedError = NativeLogPrivacy.sanitizeLogLine(error.localizedDescription)
       ghostexRootView.logger.error("Failed to start T3 Code runtime: \(sanitizedError)")
     }
@@ -8503,6 +8862,20 @@ final class ghostexRootView: NSView {
       event: "nativeBridge.appModal.close.received",
       details: "reason=\(reason) returnFocusSessionId=\(returnFocusSessionId ?? "<none>") wasHidden=\(modalHostView.isHidden)"
     )
+    guard !isFloatingPromptEditorActiveForUserInput else {
+      /*
+       CDXC:PromptEditor 2026-06-09-10:43:
+       The Ctrl+G Monaco prompt editor is coupled to a terminal process waiting on its save/cancel status file. Generic modal close paths such as sidebar backdrop, Escape routing, bridge close echoes, or toast cleanup must not hide that editor; only the prompt-editor save/cancel handlers may finish it and release the launcher.
+       */
+      PromptEditorDebugLog.append(
+        event: "native.genericCloseIgnored",
+        details: [
+          "activeAppModalKind": activeAppModalKind ?? "",
+          "hasActiveFloatingPromptEditor": activeFloatingPromptEditor != nil,
+          "reason": reason,
+        ])
+      return
+    }
     dispatchModalHostMessage(["type": "close"])
     activeAppModalKind = nil
     appModalPresentationPending = false
@@ -9176,6 +9549,7 @@ final class ghostexRootView: NSView {
     divider.frame = frames.divider
     divider.separatorFrame = dividerSeparatorFrame(for: frames)
     window?.invalidateCursorRects(for: self)
+    window?.invalidateCursorRects(for: divider)
     workspaceView.frame = frames.workspace
     workspaceInteractionShieldView.frame = frames.workspace
     terminalPaneDropOverlayView.frame = frames.workspace
@@ -9197,18 +9571,6 @@ final class ghostexRootView: NSView {
       height: startupOverlayIconSize
     )
     titlebarChromeView.titlebarHeight = Self.reactTitlebarHeight
-  }
-
-  override func resetCursorRects() {
-    super.resetCursorRects()
-    guard !divider.frame.isNull, !divider.frame.isEmpty else {
-      return
-    }
-    /**
-     CDXC:NativeSidebarChrome 2026-06-08-19:58:
-     Register the sidebar resize cursor on the root layout boundary as well as the handle itself because full-frame transparent WebKit chrome can publish its own cursor rects over the same window. The root rect follows the actual divider frame, keeping the cursor stable across hover and live sidebar resize.
-     */
-    addCursorRect(divider.frame, cursor: .resizeLeftRight)
   }
 
   private func visualSidebarFrame(for frames: RootLayoutFrames) -> CGRect {
@@ -9261,7 +9623,7 @@ final class ghostexRootView: NSView {
      sidebar's right edge after both shrink and expand drags. The sidebar
      WKWebView now paints under the transparent resize divider, so the native
      resize handle draws the separator inside the same AppKit view that owns
-     the drag gesture and cursor rect.
+     the drag gesture, resize cursor, and delayed hover affordance.
 
      CDXC:NativeSidebarChrome 2026-06-08-19:58:
      Z-order-only cursor fixes were not reliable enough for the macOS sidebar
@@ -9273,6 +9635,18 @@ final class ghostexRootView: NSView {
     addSubview(divider, positioned: .above, relativeTo: sidebarView)
     addSubview(sidebarWorkareaBorderView, positioned: .above, relativeTo: divider)
     addSubview(sidebarModalBackdropView, positioned: .above, relativeTo: divider)
+  }
+
+  override func resetCursorRects() {
+    super.resetCursorRects()
+    /**
+     CDXC:NativeSidebarChrome 2026-06-09-15:32:
+     The sidebar/workarea drag bar should show the native left-right resize cursor again while keeping the delayed hover line. Register the root divider frame with AppKit so the cursor follows the same layout band that hit testing routes to PaneResizeHandleView.
+     */
+    guard !divider.isHidden, !divider.frame.isNull, !divider.frame.isEmpty else {
+      return
+    }
+    addCursorRect(divider.frame, cursor: .resizeLeftRight)
   }
 
   override func hitTest(_ point: NSPoint) -> NSView? {
@@ -9732,6 +10106,22 @@ final class ghostexRootView: NSView {
         details:
           "modal=\(message["modal"] as? String ?? "unknown") ready=\(isModalHostReady) hasLatestState=\(latestModalHostSidebarState != nil) wasHidden=\(modalHostView.isHidden)"
       )
+      if isFloatingPromptEditorActiveForUserInput,
+        (message["modal"] as? String) != "floatingPromptEditor"
+      {
+        /*
+         CDXC:PromptEditor 2026-06-09-10:43:
+         While Ctrl+G Monaco prompt editing is open, other sidebar or titlebar modal requests must wait until the user saves or cancels the editor. Replacing the single modal-host active modal would make the editor disappear while its launcher still waits for a status file.
+         */
+        PromptEditorDebugLog.append(
+          event: "native.genericOpenIgnored",
+          details: [
+            "activeAppModalKind": activeAppModalKind ?? "",
+            "hasActiveFloatingPromptEditor": activeFloatingPromptEditor != nil,
+            "requestedModal": message["modal"] as? String ?? "unknown",
+          ])
+        return
+      }
       rememberAppModalReturnFocusTarget(modal: message["modal"] as? String)
       if !isModalHostReady {
         appModalPresentationPending = true
@@ -10932,6 +11322,221 @@ final class NonInteractiveChromeLineView: NSView {
   }
 }
 
+final class NativeResizeHoverIndicator {
+  enum LineAxis {
+    case horizontal
+    case vertical
+  }
+
+  private static let hoverDelay: TimeInterval = 0.05
+  private static let fadeDuration: TimeInterval = 0.18
+  private static let lineWidth: CGFloat = 3
+  private static let lineColor = NSColor.white.cgColor
+
+  private let lineLayer = CALayer()
+  private var explicitLineFrame: CGRect?
+  private var hoverTimer: Timer?
+  private var isHovering = false
+  private var lineAxis: LineAxis
+  private var trackingArea: NSTrackingArea?
+  private weak var trackingView: NSView?
+
+  init(lineAxis: LineAxis) {
+    self.lineAxis = lineAxis
+    lineLayer.backgroundColor = Self.lineColor
+    lineLayer.opacity = 0
+    lineLayer.isHidden = true
+  }
+
+  deinit {
+    hoverTimer?.invalidate()
+  }
+
+  func configure(lineAxis: LineAxis, explicitLineFrame: CGRect? = nil, in view: NSView) {
+    /**
+     CDXC:ResizeHoverAffordance 2026-06-09-14:34:
+     Every native resize drag line should reveal a 3px hover affordance after a short delay, then fade it in instead of drawing an always-visible rail. Keep the behavior as a visual layer on the native handle so drag delivery stays unchanged.
+
+     CDXC:ResizeHoverAffordance 2026-06-09-14:48:
+     Keep the hover line as supplemental resize feedback without changing resize hit geometry.
+
+     CDXC:ResizeHoverAffordance 2026-06-09-17:10:
+     The resize hover line color should be #fff so the affordance reads clearly against the native dark workspace.
+
+     CDXC:ResizeHoverAffordance 2026-06-09-15:32:
+     The line-only affordance did not look right for native resize rails. Restore the AppKit resize cursor while preserving the delayed hover line.
+
+     CDXC:ResizeHoverAffordance 2026-06-09-15:37:
+     The hover line should reveal quickly after a 50ms delay so resize feedback feels immediate while still fading in.
+     */
+    self.lineAxis = lineAxis
+    self.explicitLineFrame = explicitLineFrame
+    layout(in: view)
+  }
+
+  func updateTrackingArea(in view: NSView) {
+    if let trackingArea, let trackingView {
+      trackingView.removeTrackingArea(trackingArea)
+    }
+    let trackingArea = NSTrackingArea(
+      rect: .zero,
+      options: [.activeAlways, .inVisibleRect, .mouseEnteredAndExited],
+      owner: view,
+      userInfo: nil
+    )
+    self.trackingArea = trackingArea
+    trackingView = view
+    view.addTrackingArea(trackingArea)
+  }
+
+  func layout(in view: NSView) {
+    ensureLayer(in: view)
+    CATransaction.begin()
+    CATransaction.setDisableActions(true)
+    lineLayer.frame = resolvedLineFrame(in: view)
+    CATransaction.commit()
+    refreshHoverState(in: view)
+  }
+
+  func mouseEntered(in view: NSView) {
+    beginHover(in: view)
+  }
+
+  func mouseExited(in view: NSView) {
+    guard !pointerIsInside(view) else {
+      return
+    }
+    cancel(in: view)
+  }
+
+  func cancel(in view: NSView? = nil) {
+    hoverTimer?.invalidate()
+    hoverTimer = nil
+    isHovering = false
+    hideImmediately()
+    if let view {
+      layoutWithoutRefreshingHover(in: view)
+    }
+  }
+
+  private func refreshHoverState(in view: NSView) {
+    guard isHandleVisible(view) else {
+      cancel()
+      return
+    }
+    if pointerIsInside(view) {
+      beginHover(in: view)
+    } else if isHovering {
+      cancel(in: view)
+    }
+  }
+
+  private func beginHover(in view: NSView) {
+    guard isHandleVisible(view) else {
+      cancel()
+      return
+    }
+    ensureLayer(in: view)
+    layoutWithoutRefreshingHover(in: view)
+    guard !isHovering else {
+      return
+    }
+    isHovering = true
+    hoverTimer?.invalidate()
+    let timer = Timer(timeInterval: Self.hoverDelay, repeats: false) { [weak self, weak view] _ in
+      guard let self, let view else {
+        return
+      }
+      self.revealIfStillHovering(in: view)
+    }
+    hoverTimer = timer
+    RunLoop.main.add(timer, forMode: .common)
+  }
+
+  private func revealIfStillHovering(in view: NSView) {
+    hoverTimer = nil
+    guard isHovering, isHandleVisible(view), pointerIsInside(view) else {
+      cancel(in: view)
+      return
+    }
+    layoutWithoutRefreshingHover(in: view)
+    CATransaction.begin()
+    CATransaction.setDisableActions(true)
+    lineLayer.isHidden = false
+    lineLayer.opacity = 0
+    CATransaction.commit()
+
+    CATransaction.begin()
+    CATransaction.setAnimationDuration(Self.fadeDuration)
+    CATransaction.setAnimationTimingFunction(CAMediaTimingFunction(name: .easeOut))
+    lineLayer.opacity = 1
+    CATransaction.commit()
+  }
+
+  private func hideImmediately() {
+    CATransaction.begin()
+    CATransaction.setDisableActions(true)
+    lineLayer.removeAllAnimations()
+    lineLayer.opacity = 0
+    lineLayer.isHidden = true
+    CATransaction.commit()
+  }
+
+  private func ensureLayer(in view: NSView) {
+    view.wantsLayer = true
+    guard let hostLayer = view.layer, lineLayer.superlayer !== hostLayer else {
+      return
+    }
+    lineLayer.removeFromSuperlayer()
+    hostLayer.addSublayer(lineLayer)
+  }
+
+  private func layoutWithoutRefreshingHover(in view: NSView) {
+    CATransaction.begin()
+    CATransaction.setDisableActions(true)
+    lineLayer.frame = resolvedLineFrame(in: view)
+    CATransaction.commit()
+  }
+
+  private func resolvedLineFrame(in view: NSView) -> CGRect {
+    let bounds = view.bounds
+    guard bounds.width > 0, bounds.height > 0 else {
+      return .zero
+    }
+    if let explicitLineFrame {
+      let clamped = explicitLineFrame.intersection(bounds)
+      if !clamped.isNull, !clamped.isEmpty {
+        return clamped
+      }
+    }
+    switch lineAxis {
+    case .horizontal:
+      return CGRect(
+        x: bounds.minX,
+        y: bounds.midY - Self.lineWidth / 2,
+        width: bounds.width,
+        height: Self.lineWidth)
+    case .vertical:
+      return CGRect(
+        x: bounds.midX - Self.lineWidth / 2,
+        y: bounds.minY,
+        width: Self.lineWidth,
+        height: bounds.height)
+    }
+  }
+
+  private func isHandleVisible(_ view: NSView) -> Bool {
+    !view.isHidden && view.alphaValue > 0 && view.bounds.width > 0 && view.bounds.height > 0
+  }
+
+  private func pointerIsInside(_ view: NSView) -> Bool {
+    guard let window = view.window else {
+      return false
+    }
+    return view.bounds.contains(view.convert(window.mouseLocationOutsideOfEventStream, from: nil))
+  }
+}
+
 final class PaneResizeHandleView: NSView {
   var onDrag: ((CGFloat) -> Void)?
   var onDragEnded: (() -> Void)?
@@ -10945,9 +11550,11 @@ final class PaneResizeHandleView: NSView {
     didSet {
       if oldValue != separatorFrame {
         needsDisplay = true
+        updateResizeHoverIndicator()
       }
     }
   }
+  private let resizeHoverIndicator = NativeResizeHoverIndicator(lineAxis: .vertical)
   private var lastDragWindowX: CGFloat = 0
 
   override init(frame frameRect: NSRect) {
@@ -10962,7 +11569,30 @@ final class PaneResizeHandleView: NSView {
     layer?.backgroundColor = NSColor.clear.cgColor
   }
 
+  override func updateTrackingAreas() {
+    super.updateTrackingAreas()
+    resizeHoverIndicator.updateTrackingArea(in: self)
+  }
+
+  override func layout() {
+    super.layout()
+    updateResizeHoverIndicator()
+  }
+
+  override func mouseEntered(with event: NSEvent) {
+    resizeHoverIndicator.mouseEntered(in: self)
+  }
+
+  override func mouseExited(with event: NSEvent) {
+    resizeHoverIndicator.mouseExited(in: self)
+  }
+
   override func resetCursorRects() {
+    super.resetCursorRects()
+    /**
+     CDXC:NativeSidebarChrome 2026-06-09-15:32:
+     Sidebar resize keeps the AppKit left-right resize cursor on the concrete handle view while the hover layer provides the delayed visual line.
+     */
     addCursorRect(bounds, cursor: .resizeLeftRight)
   }
 
@@ -10983,6 +11613,22 @@ final class PaneResizeHandleView: NSView {
     }
     separatorColor.setFill()
     visibleSeparatorFrame.fill()
+  }
+
+  private func updateResizeHoverIndicator() {
+    let lineFrame = resizeHoverLineFrame()
+    resizeHoverIndicator.configure(lineAxis: .vertical, explicitLineFrame: lineFrame, in: self)
+  }
+
+  private func resizeHoverLineFrame() -> CGRect? {
+    guard let separatorFrame else {
+      return nil
+    }
+    return CGRect(
+      x: separatorFrame.midX - 1.5,
+      y: bounds.minY,
+      width: 3,
+      height: bounds.height)
   }
 
   override func mouseDown(with event: NSEvent) {

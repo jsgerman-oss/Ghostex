@@ -875,6 +875,11 @@ type NativeHostEvent =
       projectId?: string;
       type: "codeServerRuntimeStartFailed";
     }
+  | {
+      message: string;
+      sessionId?: string;
+      type: "t3RuntimeStartFailed";
+    }
   | (ProjectBoardBridgeRequest & { type: "projectBoardRequest" })
   | { payloadJson: string; type: "osIntegrationStatus" }
   | {
@@ -3854,6 +3859,29 @@ function createAppToastId(scope: string): string {
 
 const GXSERVER_DAEMON_TOAST_ID = "toast-gxserver-daemon";
 const CODE_SERVER_RUNTIME_TOAST_ID = "toast-code-server-runtime";
+const T3_RUNTIME_TOAST_ID = "toast-t3-runtime";
+const MAX_T3_RUNTIME_TOAST_MESSAGE_LINES = 3;
+const MAX_T3_RUNTIME_TOAST_MESSAGE_LENGTH = 180;
+
+function compactT3RuntimeToastMessage(message: string): string {
+  /*
+  CDXC:T3CodeStartup 2026-06-09-07:07:
+  T3 runtime failure toasts must tell users why loading paused without dumping
+  raw startup output. Cap the toast description to three lines so the modal
+  layer stays readable while still giving support a clear report trigger.
+  */
+  const fallback =
+    "T3 Code runtime failed to start. Ghostex paused auto-retry; send support logs to report this.";
+  const lines = (message || fallback)
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .slice(0, MAX_T3_RUNTIME_TOAST_MESSAGE_LINES);
+  const compact = lines.length > 0 ? lines.join("\n") : fallback;
+  return compact.length <= MAX_T3_RUNTIME_TOAST_MESSAGE_LENGTH
+    ? compact
+    : `${compact.slice(0, MAX_T3_RUNTIME_TOAST_MESSAGE_LENGTH - 3).trimEnd()}...`;
+}
 
 function showGxserverLoadingToast(description = "Checking local daemon status."): void {
   /*
@@ -5677,8 +5705,12 @@ async function installNativeGenerateTitleSkill(showSuccessMessage = true): Promi
   /**
    * CDXC:GenerateTitleSkill 2026-05-27-07:28:
    * Install `$ghostex-generate-title` with the CLI so each Ghostex agent session
-   * can generate a title under 47 characters and stage `/rename <title>` into
-   * its own terminal without pressing Enter.
+   * can generate a title under 47 characters and submit `/rename <title>` in
+   * its own terminal.
+   *
+   * CDXC:GenerateTitleSkill 2026-06-09-17:49:
+   * The installed skill must use `rename-command` so generated title commands
+   * are submitted through the same native Enter bridge as Delayed Send.
    */
   const result = await runNativeProcess(
     "/bin/zsh",
@@ -10824,6 +10856,7 @@ function createDefaultPromptAgentOptions(): ProjectBoardAgentOption[] {
         ? [{
             agentId: agent.agentId,
             command,
+            icon: agent.icon,
             label: agent.name.trim() || agent.agentId,
           }]
         : [];
@@ -13645,6 +13678,22 @@ function sidebarSessionIdForNativeSession(sessionId: string): string {
   }
   const durableReference = parseDurableNativeSessionId(sessionId);
   return durableReference?.sessionId ?? sessionId;
+}
+
+function focusSessionFromPromptEditorClose(nativeSessionId: string): void {
+  /*
+   * CDXC:PromptEditor 2026-06-09-11:19:
+   * When the Ctrl+G Monaco prompt editor closes after the launching terminal has been hidden or deselected by sidebar navigation, native must reuse the sidebar session-focus path rather than directly focusing an AppKit surface. This resolves durable native ids, reveals the tab/project, wakes sleeping sessions if necessary, updates sidebar selection, and publishes the normal native layout focus request just like clicking the session in the sidebar.
+   */
+  const durableReference = parseDurableNativeSessionId(nativeSessionId);
+  const sidebarSessionId = durableReference
+    ? createCombinedProjectSessionId(durableReference.project.projectId, durableReference.sessionId)
+    : sidebarSessionIdForNativeSession(nativeSessionId);
+  appendTerminalFocusDebugLog("nativeFocusTrace.promptEditorSidebarReturnFocus", {
+    nativeSessionId,
+    sidebarSessionId,
+  });
+  focusTerminal(sidebarSessionId);
 }
 
 function parseDurableNativeSessionId(
@@ -19251,7 +19300,10 @@ function readGxserverAgentRuntimeCommandForSession(
   try {
     /*
     CDXC:GxserverAgentCommands 2026-06-02-22:23:
-    Native fork UI still composes provider-specific fork subcommands, but the executable plus runtime Accept All flags come from gxserver's launch plan. Do not use macOS-local settings or shared/sidebar Accept All helpers here, because gxserver owns agent command shaping for all clients.
+    Native fork UI still composes provider-specific fork subcommands, but the executable plus runtime Accept All handling comes from gxserver's launch plan. Do not use macOS-local settings or shared/sidebar Accept All helpers here, because gxserver owns agent command shaping for all clients.
+
+    CDXC:GxserverAgentCommands 2026-06-09-14:22:
+    OpenCode fork/resume command construction must preserve gxserver's runtime config prefix instead of mapping Accept All to an OpenCode CLI argument.
     */
     return gxserverClient.fetchAgentLaunchPlanSync({
       agentId,
@@ -39411,6 +39463,12 @@ window.addEventListener("ghostex-native-host-event", (event) => {
     });
     return;
   }
+  if (hostEvent.type === "t3RuntimeStartFailed") {
+    showAppToast("error", "T3 Code failed", compactT3RuntimeToastMessage(hostEvent.message), {
+      toastId: T3_RUNTIME_TOAST_ID,
+    });
+    return;
+  }
   if (hostEvent.type === "projectEditorLoadState") {
     setProjectEditorLoadState(hostEvent.projectId, hostEvent.status, hostEvent.message);
     return;
@@ -40823,6 +40881,7 @@ window.__ghostex_NATIVE_SIDEBAR__ = {
   openActiveProjectEditorFromTitlebar,
   exitFocusModeFromTitlebar,
   openAgentsModeFromTitlebar,
+  focusSessionFromPromptEditorClose,
   focusResourceSessionFromTitlebar,
   openGitHubProjectFromTitlebar: () => {
     void openGitHubProjectFromTitlebar();

@@ -2712,6 +2712,7 @@ final class TerminalWorkspaceView: NSView {
     let companionFrame: CGRect
     let contentFrame: CGRect
     let editorFrame: CGRect
+    let rightSeparatorFrame: CGRect
     let resizeHandleFrame: CGRect
     let sessionId: String
   }
@@ -2850,7 +2851,7 @@ final class TerminalWorkspaceView: NSView {
   /**
    CDXC:NativePaneResize 2026-05-11-10:40
    Pane split resizing must match native model: only the actual split rail owns
-   cursor and drag events. Do not use a window-local resize monitor, because it
+   hover feedback and drag events. Do not use a window-local resize monitor, because it
    can compete with the sidebar resize handle.
    CDXC:NativePaneResize 2026-05-11-17:53
    Split rails must be real AppKit divider siblings that own divider width, not
@@ -2929,8 +2930,10 @@ final class TerminalWorkspaceView: NSView {
   private var projectEditorCompanionWidthRatio = TerminalWorkspaceView.defaultProjectEditorCompanionWidthRatio
   private var projectEditorCompanionResizeDrag: ProjectEditorCompanionResizeDrag?
   private var projectEditorCompanionResizeWorkspaceBounds: CGRect = .zero
+  private let projectEditorCompanionRightSeparatorView = WorkspacePaneSeparatorView()
   private let projectEditorCompanionResizeHandleView = TerminalWorkspacePaneResizeHandleView()
   private let persistProjectEditorCompanionWidthRatio: (CGFloat) -> Void
+  private var workspacePaneSeparatorViews: [WorkspacePaneSeparatorView] = []
   private var paneResizeHandleViews: [TerminalWorkspacePaneResizeHandleView] = []
   private var paneHeaderDrag: PaneHeaderDrag?
   private var paneTabDragCaptureEventMonitor: Any?
@@ -3033,6 +3036,7 @@ final class TerminalWorkspaceView: NSView {
     commandsPanelCollapsedRightMarginView.layer?.backgroundColor = NSColor.black.cgColor
     commandsPanelCollapsedRightMarginView.isHidden = true
     commandsPanelTopSeparatorView.isHidden = true
+    projectEditorCompanionRightSeparatorView.isHidden = true
     commandsPanelResizeHandleView.configure(direction: .vertical, cursor: .resizeUpDown)
     commandsPanelResizeHandleView.onMouseDown = { [weak self] event in
       _ = self?.beginCommandsPanelResize(with: event)
@@ -6485,8 +6489,12 @@ final class TerminalWorkspaceView: NSView {
     updateTerminalBorder(for: sessionId)
   }
 
-  func setActiveTerminalSet(_ command: SetActiveTerminalSet) {
+  func setActiveTerminalSet(
+    _ command: SetActiveTerminalSet,
+    suppressExplicitFocus: Bool = false
+  ) {
     let responderBefore = responderSnapshot()
+    let effectiveFocusRequestId = suppressExplicitFocus ? nil : command.focusRequestId
     let nextActiveSessionIds = Set(command.activeSessionIds)
     let nextCommandsPanelActiveSessionIds = Set(command.commandsPanelActiveSessionIds ?? [])
     let nextActiveProjectEditorId = command.activeProjectEditorId
@@ -6567,6 +6575,7 @@ final class TerminalWorkspaceView: NSView {
           "responderSessionIdBefore": nullableString(responderSessionIdBefore),
           "paneOwnerSelectionChanged": command.paneOwnerSelectionChanged == true,
           "shouldRelayout": shouldRelayout,
+          "suppressExplicitFocus": suppressExplicitFocus,
         ])
     }
     activeSessionIds = nextActiveSessionIds
@@ -6858,19 +6867,23 @@ final class TerminalWorkspaceView: NSView {
         didSurface: true,
         reason: "setActiveTerminalSet.commandPanelVisible")
     }
-    guard let focusRequestId = command.focusRequestId else {
+    guard let focusRequestId = effectiveFocusRequestId else {
       /**
        CDXC:NativeTerminalFocus 2026-05-04-16:02
        Passive status/layout sync can mark a side pane done/green while the
        user is typing in another terminal. Do not translate focusedSessionId
        into AppKit first-responder focus unless native-sidebar attached a fresh
        explicit focus request id.
+
+       CDXC:PromptEditor 2026-06-09-10:43:
+       AppDelegate can suppress an explicit sidebar layout focus request while the Ctrl+G Monaco prompt editor remains open. The layout and selected session still update behind the editor, but AppKit first-responder focus waits for the prompt-editor save/cancel return-focus path.
        */
       TerminalFocusDebugLog.append(
         event: "nativeWorkspace.setActiveTerminalSet.focusSkipped",
         details: [
           "focusedSessionId": nullableString(command.focusedSessionId),
-          "reason": "missingFocusRequestId",
+          "focusRequestId": command.focusRequestId ?? 0,
+          "reason": suppressExplicitFocus ? "suppressedExplicitFocus" : "missingFocusRequestId",
           "responder": responderSnapshot(),
         ])
       return
@@ -7126,6 +7139,7 @@ final class TerminalWorkspaceView: NSView {
         "workspaceBounds": describeFrame(bounds),
       ])
       hideSplitSessionSurfacesForActiveEditor()
+      hideWorkspacePaneSeparatorViews()
       let companionLayout = projectEditorCompanionLayout(in: workspaceBounds)
       projectEditorCompanionResizeWorkspaceBounds = workspaceBounds
       setProjectEditorTabHostVisibility(editorSession, isActive: true)
@@ -7162,6 +7176,7 @@ final class TerminalWorkspaceView: NSView {
     guard !visibleSessionIds.isEmpty || shouldShowCommandsPanel else {
       hideCommandsPanelResizeHandle()
       hidePaneResizeHandleViews()
+      hideWorkspacePaneSeparatorViews()
       discardCursorRects()
       return
     }
@@ -7174,6 +7189,9 @@ final class TerminalWorkspaceView: NSView {
       } else {
         layoutGrid(visibleSessionIds, in: layoutBounds(forVisibleCount: visibleSessionIds.count, in: workspaceBounds))
       }
+      syncWorkspacePaneSeparatorViews()
+    } else {
+      hideWorkspacePaneSeparatorViews()
     }
     if shouldShowCommandsPanel {
       syncCommandsPanelChrome(
@@ -7191,20 +7209,80 @@ final class TerminalWorkspaceView: NSView {
     }
     updateOuterBottomPaneBorderCorner()
     syncPaneResizeHandleViews()
-    window?.invalidateCursorRects(for: self)
   }
 
   private func hidePaneResizeHandleViews() {
     for handleView in paneResizeHandleViews {
+      handleView.cancelResizeHoverIndicator()
       handleView.isHidden = true
       handleView.frame = .zero
+      window?.invalidateCursorRects(for: handleView)
+    }
+  }
+
+  private func hideWorkspacePaneSeparatorViews() {
+    for separatorView in workspacePaneSeparatorViews {
+      separatorView.isHidden = true
+      separatorView.frame = .zero
+    }
+  }
+
+  private func syncWorkspacePaneSeparatorViews() {
+    /**
+     CDXC:WorkspacePaneSeparators 2026-06-09-17:46:
+     Normal workspace split panes need a 1px #1e1e1e visual divider between pane surfaces. Derive separator geometry from paneResizeHits so the line stays centered in the same reserved AppKit divider rail that owns resizing, without widening hit targets or overlapping pane content.
+     */
+    while workspacePaneSeparatorViews.count < paneResizeHits.count {
+      let separatorView = WorkspacePaneSeparatorView()
+      workspacePaneSeparatorViews.append(separatorView)
+    }
+    for (index, separatorView) in workspacePaneSeparatorViews.enumerated() {
+      guard index < paneResizeHits.count else {
+        separatorView.isHidden = true
+        separatorView.frame = .zero
+        continue
+      }
+      let frame = workspacePaneSeparatorFrame(for: paneResizeHits[index])
+      guard !frame.isNull, !frame.isEmpty else {
+        separatorView.isHidden = true
+        separatorView.frame = .zero
+        continue
+      }
+      separatorView.frame = frame
+      separatorView.isHidden = false
+      separatorView.layer?.zPosition = 9_900
+      addSubview(separatorView, positioned: .above, relativeTo: nil)
+    }
+  }
+
+  private func workspacePaneSeparatorFrame(for hit: PaneResizeHit) -> CGRect {
+    let separatorWidth: CGFloat = 1
+    let dividerRect = hit.rect.intersection(bounds)
+    guard !dividerRect.isNull, !dividerRect.isEmpty else {
+      return .zero
+    }
+    switch hit.direction {
+    case .horizontal:
+      return CGRect(
+        x: dividerRect.midX - separatorWidth / 2,
+        y: dividerRect.minY,
+        width: separatorWidth,
+        height: dividerRect.height)
+    case .vertical:
+      return CGRect(
+        x: dividerRect.minX,
+        y: dividerRect.midY - separatorWidth / 2,
+        width: dividerRect.width,
+        height: separatorWidth)
     }
   }
 
   private func hideCommandsPanelResizeHandle() {
     commandsPanelResizeDrag = nil
+    commandsPanelResizeHandleView.cancelResizeHoverIndicator()
     commandsPanelResizeHandleView.isHidden = true
     commandsPanelResizeHandleView.frame = .zero
+    window?.invalidateCursorRects(for: commandsPanelResizeHandleView)
   }
 
   private func hideCommandsPanelChrome() {
@@ -7246,9 +7324,12 @@ final class TerminalWorkspaceView: NSView {
   private func syncCommandsPanelTopSeparator(in commandPanelBounds: CGRect) {
     /*
      CDXC:CommandsPanel 2026-05-30-07:35:
-     The command pane tabs bar needs the same 1px #252525 separator treatment
+     The command pane tabs bar needs the same 1px separator treatment
      as the main workarea chrome. Draw it as native non-interactive chrome at
      the command panel's top edge so it stays outside tab button layout.
+
+     CDXC:WorkspacePaneSeparators 2026-06-09-17:59:
+     Pane boundary lines should use #1e1e1e across normal workspace splits and command-panel boundaries so resize surfaces have a consistent one-pixel divider without changing the resize rail hit target.
      */
     guard commandPanelBounds.width > 0, commandPanelBounds.height > 0 else {
       commandsPanelTopSeparatorView.isHidden = true
@@ -7332,17 +7413,17 @@ final class TerminalWorkspaceView: NSView {
      AppKit layout must not remove and re-add resize handle views, so layout
      only resizes persistent handles and hides unused ones.
      CDXC:NativePaneResize 2026-05-11-08:41
-     Cursor and drag must share one owner. Bind each handle's mouse-down to the
+     Hover affordance and drag must share one owner. Bind each handle's mouse-down to the
      exact split hit it represents instead of re-hit-testing the workspace point
-     after the cursor has already advertised resize.
+     after the visible rail has already advertised resize.
      CDXC:NativePaneResize 2026-05-11-10:40
      Match native divider behavior in AppKit: every split boundary gets one
-     real rail view, and that rail alone owns cursor, mouseDown, mouseDragged,
+     real rail view, and that rail alone owns mouseDown, mouseDragged,
      and mouseUp for resizing.
      CDXC:NativePaneResize 2026-05-13-07:23
      Pane split rails now follow the stable sidebar divider model: each split
      reserves one real five-pixel AppKit rail between pane containers, and that
-     rail alone owns cursor rects plus direct mouse drag delivery.
+     rail alone owns delayed hover feedback plus direct mouse drag delivery.
      */
     while paneResizeHandleViews.count < paneResizeHits.count {
       let handleView = TerminalWorkspacePaneResizeHandleView()
@@ -7366,10 +7447,7 @@ final class TerminalWorkspaceView: NSView {
         _ = self?.beginPaneResize(hit: hit, event: event)
       }
       handleView.frame = paneResizeHandleFrame(for: hit)
-      handleView.configure(
-        direction: hit.direction,
-        cursor: paneResizeCursor(for: hit.direction)
-      )
+      handleView.configure(direction: hit.direction, cursor: paneResizeCursor(for: hit.direction))
       handleView.isHidden = false
       handleView.layer?.zPosition = 10_000
       handleView.layer?.backgroundColor = NSColor.clear.cgColor
@@ -7984,16 +8062,6 @@ final class TerminalWorkspaceView: NSView {
       y: workspaceBounds.minY,
       width: companionWidth,
       height: workspaceBounds.height)
-    let resizeHandleFrame = CGRect(
-      x: companionFrame.maxX,
-      y: workspaceBounds.minY,
-      width: railWidth,
-      height: workspaceBounds.height)
-    let editorFrame = CGRect(
-      x: resizeHandleFrame.maxX,
-      y: workspaceBounds.minY,
-      width: max(0, workspaceBounds.maxX - resizeHandleFrame.maxX),
-      height: workspaceBounds.height)
     /**
      CDXC:ProjectEditorCompanion 2026-05-14-09:47:
      Companion controls belong in the existing session titlebar
@@ -8004,12 +8072,38 @@ final class TerminalWorkspaceView: NSView {
      CDXC:ProjectEditorCompanion 2026-05-15-15:29:
      The companion titlebar control group contains Close only; the former Back
      to Agents View button is not reserved in the code/git companion layout.
-     */
+
+     CDXC:ProjectEditorCompanion 2026-06-09-09:09:
+     Source, GitHub, and Kanban companion panes should not reserve a visible
+     blank divider between the terminal and editor surface. Keep the existing
+     five-point resize target as a transparent overlay centered on the shared
+     boundary so dragging remains forgiving without narrowing the terminal.
+    */
+    let boundaryX = companionFrame.maxX
+    let companionRightSeparatorFrame = CGRect(
+      x: max(companionFrame.minX, boundaryX - 1),
+      y: companionFrame.minY,
+      width: min(CGFloat(1), companionFrame.width),
+      height: companionFrame.height)
+    let resizeHandleX = min(
+      max(boundaryX - railWidth / 2, workspaceBounds.minX),
+      max(workspaceBounds.maxX - railWidth, workspaceBounds.minX))
+    let resizeHandleFrame = CGRect(
+      x: resizeHandleX,
+      y: workspaceBounds.minY,
+      width: railWidth,
+      height: workspaceBounds.height)
+    let editorFrame = CGRect(
+      x: boundaryX,
+      y: workspaceBounds.minY,
+      width: max(0, workspaceBounds.maxX - boundaryX),
+      height: workspaceBounds.height)
     let contentFrame = companionFrame
     return ProjectEditorCompanionLayout(
       companionFrame: companionFrame,
       contentFrame: contentFrame,
       editorFrame: editorFrame,
+      rightSeparatorFrame: companionRightSeparatorFrame,
       resizeHandleFrame: resizeHandleFrame,
       sessionId: sessionId)
   }
@@ -8023,12 +8117,30 @@ final class TerminalWorkspaceView: NSView {
     setPaneTabs([], activeSessionId: layout.sessionId, on: layout.sessionId)
     setFrame(layout.contentFrame, for: layout.sessionId, webPaneMode: .projectEditorCompanion)
 
+    syncProjectEditorCompanionRightSeparator(frame: layout.rightSeparatorFrame)
+
     projectEditorCompanionResizeHandleView.frame = layout.resizeHandleFrame
     projectEditorCompanionResizeHandleView.configure(direction: .horizontal, cursor: .resizeLeftRight)
     projectEditorCompanionResizeHandleView.isHidden = false
     projectEditorCompanionResizeHandleView.layer?.zPosition = 10_600
     addSubview(projectEditorCompanionResizeHandleView, positioned: .above, relativeTo: nil)
     window?.invalidateCursorRects(for: projectEditorCompanionResizeHandleView)
+  }
+
+  private func syncProjectEditorCompanionRightSeparator(frame: CGRect) {
+    /**
+     CDXC:ProjectEditorCompanion 2026-06-09-17:46:
+     Source, GitHub, and Kanban companion panes need a 1px #1e1e1e line on the companion pane's right edge. Draw it as a native, non-interactive separator below the resize handle so the visual boundary does not change resize hit geometry.
+     */
+    guard !frame.isNull, !frame.isEmpty else {
+      projectEditorCompanionRightSeparatorView.isHidden = true
+      projectEditorCompanionRightSeparatorView.frame = .zero
+      return
+    }
+    projectEditorCompanionRightSeparatorView.frame = frame
+    projectEditorCompanionRightSeparatorView.isHidden = false
+    projectEditorCompanionRightSeparatorView.layer?.zPosition = 10_550
+    addSubview(projectEditorCompanionRightSeparatorView, positioned: .above, relativeTo: nil)
   }
 
   private func syncProjectEditorCompanionTitleBarControls(activeSessionId: String?) {
@@ -8077,8 +8189,12 @@ final class TerminalWorkspaceView: NSView {
   private func hideProjectEditorCompanionChrome() {
     projectEditorCompanionResizeDrag = nil
     syncProjectEditorCompanionTitleBarControls(activeSessionId: nil)
+    projectEditorCompanionRightSeparatorView.isHidden = true
+    projectEditorCompanionRightSeparatorView.frame = .zero
+    projectEditorCompanionResizeHandleView.cancelResizeHoverIndicator()
     projectEditorCompanionResizeHandleView.isHidden = true
     projectEditorCompanionResizeHandleView.frame = .zero
+    window?.invalidateCursorRects(for: projectEditorCompanionResizeHandleView)
   }
 
   private func clampedProjectEditorCompanionWidth(_ value: CGFloat, in workspaceBounds: CGRect) -> CGFloat {
@@ -8154,10 +8270,10 @@ final class TerminalWorkspaceView: NSView {
       in: drag.workspaceBounds)
     projectEditorCompanionWidthRatio = Self.normalizedProjectEditorCompanionWidthRatio(
       nextWidth / max(drag.workspaceBounds.width, 1))
-    NSCursor.resizeLeftRight.set()
     needsLayout = true
     layoutSubtreeIfNeeded()
     scheduleZmxPersistenceTerminalRefreshAfterResize(reason: "projectEditorCompanionResizeDrag")
+    NSCursor.resizeLeftRight.set()
     return true
   }
 
@@ -8169,8 +8285,8 @@ final class TerminalWorkspaceView: NSView {
     _ = continueProjectEditorCompanionResize(with: event)
     projectEditorCompanionResizeDrag = nil
     persistProjectEditorCompanionWidthRatio(projectEditorCompanionWidthRatio)
-    NSCursor.resizeLeftRight.set()
     scheduleZmxPersistenceTerminalRefreshAfterResize(reason: "projectEditorCompanionResizeEnd")
+    NSCursor.resizeLeftRight.set()
     return true
   }
 
@@ -8666,9 +8782,7 @@ final class TerminalWorkspaceView: NSView {
     Return plain text only.
     Rules:
     - keep it specific and scannable
-    - prefer 2 to 4 words when possible
-    - must be fewer than 40 characters
-    - do not abbreviate with ellipses
+    - must be fewer than 60 characters
     - do not use quotes, markdown, or commentary
     - do not end with punctuation
     - focus on the task, bug, feature, or topic
@@ -9332,7 +9446,7 @@ final class TerminalWorkspaceView: NSView {
        CDXC:NativePaneResize 2026-05-13-07:23
        Match the stable sidebar divider shape for internal pane dividers:
        children are separated by a real five-pixel AppKit rail. The rail is the
-       native cursor and drag owner, so terminal/browser/titlebar views never
+       native hover-affordance and drag owner, so terminal/browser/titlebar views never
        compete for the same hover strip.
        */
       let gap = splitDividerWidth(forChildCount: visibleChildren.count)
@@ -9596,7 +9710,7 @@ final class TerminalWorkspaceView: NSView {
      Grid layouts no longer add configurable Pane Gap spacing between
      independent panes. Structured split layouts still use
      splitDividerWidth(forChildCount:) so internal rails keep one real
-     five-pixel AppKit cursor/drag owner.
+     five-pixel AppKit hover-affordance/drag owner.
      */
     childCount <= 1 ? 0 : paneGap
   }
@@ -9608,7 +9722,7 @@ final class TerminalWorkspaceView: NSView {
   /**
    CDXC:NativePaneResize 2026-05-02-16:44
    Native Ghostty and WKWebView panes sit above the React workspace DOM, so
-   split resizing must be owned by AppKit. The workspace view records cursor
+   split resizing must be owned by AppKit. The workspace view records hover
    and mouse bands around split boundaries and clamps panes to terminal-usable
    dimensions.
 
@@ -9851,24 +9965,13 @@ final class TerminalWorkspaceView: NSView {
     return clamped
   }
 
-  private func paneResizeCursor(at point: CGPoint) -> NSCursor? {
-    guard let hit = paneResizeHit(at: point) else {
-      return nil
-    }
-    return paneResizeCursor(for: hit.direction)
-  }
-
-  private func paneResizeCursor(for direction: NativeTerminalLayout.SplitDirection) -> NSCursor {
-    direction == .horizontal ? .resizeLeftRight : .resizeUpDown
-  }
-
   private func paneResizeHandleFrame(for hit: PaneResizeHit) -> CGRect {
     /**
      CDXC:NativePaneResize 2026-05-13-07:23
      Pane split rails use the same ownership shape as the sidebar resize rail:
-     the real reserved divider rect is the complete native hit target and cursor
-     rect. Do not expand this frame over neighboring terminal/browser/titlebar
-     views, because overlap lets those views compete for cursor settling.
+     the real reserved divider rect is the complete native hit target and hover
+     affordance surface. Do not expand this frame over neighboring terminal/browser/titlebar
+     views, because overlap lets those views compete for hover and drag ownership.
      */
     return hit.rect.intersection(bounds)
   }
@@ -9879,7 +9982,7 @@ final class TerminalWorkspaceView: NSView {
      The sidebar/workspace boundary has one AppKit resize owner: ghostexRootView's
      root divider. Expose the workspace edge gap width so the root divider can
      cover that visible gap without TerminalWorkspaceView installing a second
-     cursor or drag target beside split panes.
+     hover affordance or drag target beside split panes.
      */
     guard paneGap > 0, !orderedVisibleSessionIds().isEmpty else {
       return 0
@@ -9953,7 +10056,7 @@ final class TerminalWorkspaceView: NSView {
    Pane resize rails are real AppKit divider siblings between pane containers.
    This workspace has custom titlebar/content hit routing, so check the rail
    view before pane chrome. Without this explicit native handoff, titlebar
-   routing can bypass the rail and make pane resize cursors/drags disappear.
+   routing can bypass the rail and make pane resize hover/drag delivery disappear.
 
    CDXC:CommandsPanel 2026-05-14-09:31:
    The command pane remains interactive while the embedded VS Code CEF editor is
@@ -11088,6 +11191,17 @@ final class TerminalWorkspaceView: NSView {
     return true
   }
 
+  private func paneResizeCursor(at point: CGPoint) -> NSCursor? {
+    guard let hit = paneResizeHit(at: point) else {
+      return nil
+    }
+    return paneResizeCursor(for: hit.direction)
+  }
+
+  private func paneResizeCursor(for direction: NativeTerminalLayout.SplitDirection) -> NSCursor {
+    direction == .horizontal ? .resizeLeftRight : .resizeUpDown
+  }
+
   override func mouseUp(with event: NSEvent) {
     guard !isProjectEditorInteractionSurfaceActive else {
       super.mouseUp(with: event)
@@ -11143,10 +11257,10 @@ final class TerminalWorkspaceView: NSView {
     let point = convert(event.locationInWindow, from: nil)
     let nextHeight = clampedCommandsPanelHeight(drag.startHeight + point.y - drag.startY)
     commandsPanelHeightRatio = Self.clampedCommandsPanelHeightRatio(Double(nextHeight / max(bounds.height, 1)))
-    NSCursor.resizeUpDown.set()
     needsLayout = true
     layoutSubtreeIfNeeded()
     scheduleZmxPersistenceTerminalRefreshAfterResize(reason: "commandsPanelResizeDrag")
+    NSCursor.resizeUpDown.set()
     return true
   }
 
@@ -12967,6 +13081,7 @@ final class TerminalWorkspaceView: NSView {
       commandsPanelActiveSessionIds.contains(sessionId) ? .commands : .workspace
     session.titleBarView.setChromeRole(chromeRole)
     session.borderView.setChromeRole(chromeRole)
+    session.borderView.setSuppressesFocusedBorder(webPaneMode == .projectEditorCompanion)
     if chromeRole == .commands {
       session.titleBarView.setActions(
         sessionTitleBarActions[sessionId] ?? commandPanelTitleBarActions())
@@ -13078,12 +13193,20 @@ final class TerminalWorkspaceView: NSView {
     guard !labelView.isHidden, terminalRect.width > 48, terminalRect.height > 32 else {
       return .zero
     }
+    /*
+     CDXC:DelayedSend 2026-06-09-14:38:
+     Active Delayed Send timers should sit at the visual center of the terminal pane instead of the previous top-right corner, so the pending-send state is obvious even when the user is scanning terminal output.
+     */
     let labelSize = labelView.fittingSize
     let labelWidth = min(ceil(labelSize.width), max(terminalRect.width - 32, 0))
     let labelHeight = min(max(ceil(labelSize.height), 52), max(terminalRect.height - 24, 0))
     return CGRect(
-      x: max(12, terminalRect.maxX - labelWidth - 12),
-      y: max(8, terminalRect.maxY - labelHeight - 8),
+      x: min(
+        max(terminalRect.midX - labelWidth / 2, terminalRect.minX),
+        terminalRect.maxX - labelWidth),
+      y: min(
+        max(terminalRect.midY - labelHeight / 2, terminalRect.minY),
+        terminalRect.maxY - labelHeight),
       width: labelWidth,
       height: labelHeight
     )
@@ -13244,6 +13367,7 @@ final class TerminalWorkspaceView: NSView {
       commandsPanelActiveSessionIds.contains(session.sessionId) ? .commands : .workspace
     session.titleBarView.setChromeRole(chromeRole)
     session.borderView.setChromeRole(chromeRole)
+    session.borderView.setSuppressesFocusedBorder(mode == .projectEditorCompanion)
     let titleBarHeight = min(titleBarHeight(for: session.sessionId), max(paneRect.height, 0))
     mountWebPaneContainer(for: session)
     session.containerView.frame = paneRect
@@ -13453,11 +13577,21 @@ final class TerminalWorkspaceView: NSView {
     }
     pendingAuthenticatedWebPaneLoadSessionIds.insert(sessionId)
     NativeT3RuntimeBrowserAuth.prepareManagedWebSession(for: url, sessionId: sessionId) {
-      [weak self] in
+      [weak self] authResult in
       guard let self, let session = self.webPaneSessions[sessionId] else {
         return
       }
       self.pendingAuthenticatedWebPaneLoadSessionIds.remove(sessionId)
+      switch authResult {
+      case .success:
+        break
+      case .failure(let error):
+        self.handleT3WebPaneRuntimeFailure(
+          session: session,
+          message: error.localizedDescription,
+          reason: reason)
+        return
+      }
       self.completedWebPaneLoadSessionIds.remove(sessionId)
       NativeT3RuntimeSessionBootstrap.prepareThreadRoute(
         origin: url,
@@ -13506,7 +13640,10 @@ final class TerminalWorkspaceView: NSView {
           ) {
             return
           }
-          self.loadWebPaneError(session: session, message: error.localizedDescription)
+          self.handleT3WebPaneRuntimeFailure(
+            session: session,
+            message: error.localizedDescription,
+            reason: reason)
         }
       }
     }
@@ -13624,6 +13761,25 @@ final class TerminalWorkspaceView: NSView {
       || message.contains("returned 404")
       || message.contains("returned 503")
       || message.contains("owner bearer is not ready")
+  }
+
+  private func handleT3WebPaneRuntimeFailure(session: WebPaneSession, message: String, reason: String) {
+    /*
+     CDXC:T3CodeStartup 2026-06-09-07:07:
+     When managed T3 auth or route startup is exhausted, stop the loading loop
+     and send one short support-ready toast. The pane should show a stable
+     failure state instead of re-entering the ten-second liveness spinner that
+     interrupts terminal typing.
+     */
+    let notice = NativeT3RuntimeFailureNotice.message
+    NativeT3CodePaneReproLog.append("nativeWorkspace.t3WebPane.load.runtimeFailed", [
+      "error": message,
+      "notice": notice,
+      "reason": reason,
+      "sessionId": session.sessionId,
+    ])
+    sendEvent(.t3RuntimeStartFailed(sessionId: session.sessionId, message: notice))
+    loadWebPaneError(session: session, message: notice)
   }
 
   private func loadWebPaneStatus(
@@ -15022,14 +15178,44 @@ final class TerminalWorkspaceView: NSView {
 
   @discardableResult
   func reinforceSidebarWorkspaceFocus(sessionId: String, reason: String) -> Bool {
+    reinforceWorkspaceFocus(
+      sessionId: sessionId,
+      reason: reason,
+      logEventPrefix: "nativeFocusTrace.sidebarFocusReinforce")
+  }
+
+  func canDirectlyRestorePromptEditorFocus(sessionId: String) -> Bool {
+    /*
+     CDXC:PromptEditor 2026-06-09-11:19:
+     Closing the Ctrl+G Monaco prompt editor can directly focus the launching terminal only when that native session is already the selected, visible workspace target. Logs around 2026-06-09 11:15 showed a visible launcher that was no longer selected could be overwritten by sidebar focus state after close, so hidden or deselected launchers must return through the sidebar click-equivalent focus path.
+     */
+    let focusTarget = workspaceFocusTarget(sessionId: sessionId)
+    guard focusTarget.isExpectedSelection else {
+      return false
+    }
+    guard let targetView = focusTarget.view, targetView.window != nil else {
+      return false
+    }
+    return !isViewHiddenFromWindow(targetView) && !targetView.bounds.isEmpty
+  }
+
+  @discardableResult
+  func reinforceWorkspaceFocus(
+    sessionId: String,
+    reason: String,
+    logEventPrefix: String = "nativeFocusTrace.workspaceFocusReinforce"
+  ) -> Bool {
     /*
      CDXC:SidebarSessionFocus 2026-06-05-22:12:
      A sidebar session click must leave the clicked session ready for keyboard input. The sidebar WebKit view can regain first responder after the normal focus command, so this method performs a narrow, idempotent first-responder repair only when the requested session is still the selected visible workspace target.
+
+     CDXC:PromptEditor 2026-06-09-09:05:
+     Monaco rich prompt editor dismissal uses the same validated first-responder repair after the modal WKWebView closes. Keep the helper generic so focus restoration can target the selected visible terminal without emitting sidebar-specific diagnostics for prompt-editor saves.
      */
-    let focusTarget = sidebarWorkspaceFocusTarget(sessionId: sessionId)
+    let focusTarget = workspaceFocusTarget(sessionId: sessionId)
     guard focusTarget.isExpectedSelection else {
       TerminalFocusDebugLog.append(
-        event: "nativeFocusTrace.sidebarFocusReinforceSkipped",
+        event: "\(logEventPrefix)Skipped",
         details: [
           "activeProjectEditorId": nullableString(activeProjectEditorId),
           "commandsPanelFocusedSessionId": nullableString(commandsPanelFocusedSessionId),
@@ -15044,7 +15230,7 @@ final class TerminalWorkspaceView: NSView {
     }
     guard let targetView = focusTarget.view, let targetWindow = targetView.window else {
       TerminalFocusDebugLog.append(
-        event: "nativeFocusTrace.sidebarFocusReinforceSkipped",
+        event: "\(logEventPrefix)Skipped",
         details: [
           "reason": reason,
           "requestedSessionId": sessionId,
@@ -15056,7 +15242,7 @@ final class TerminalWorkspaceView: NSView {
     }
     guard !isViewHiddenFromWindow(targetView), !targetView.bounds.isEmpty else {
       TerminalFocusDebugLog.append(
-        event: "nativeFocusTrace.sidebarFocusReinforceSkipped",
+        event: "\(logEventPrefix)Skipped",
         details: [
           "boundsHeight": targetView.bounds.height,
           "boundsWidth": targetView.bounds.width,
@@ -15072,7 +15258,7 @@ final class TerminalWorkspaceView: NSView {
     let responderBefore = targetWindow.firstResponder
     if responder(responderBefore, isInside: targetView) {
       TerminalFocusDebugLog.append(
-        event: "nativeFocusTrace.sidebarFocusReinforceAlreadyFocused",
+        event: "\(logEventPrefix)AlreadyFocused",
         details: [
           "reason": reason,
           "requestedSessionId": sessionId,
@@ -15086,7 +15272,7 @@ final class TerminalWorkspaceView: NSView {
     let didFocus = targetWindow.makeFirstResponder(targetView)
     programmaticFocusDepth -= 1
     TerminalFocusDebugLog.append(
-      event: "nativeFocusTrace.sidebarFocusReinforceApplied",
+      event: "\(logEventPrefix)Applied",
       details: [
         "didFocus": didFocus,
         "reason": reason,
@@ -15100,7 +15286,7 @@ final class TerminalWorkspaceView: NSView {
     return didFocus
   }
 
-  private func sidebarWorkspaceFocusTarget(
+  private func workspaceFocusTarget(
     sessionId: String
   ) -> (view: NSView?, role: String, isExpectedSelection: Bool, skipReason: String?) {
     if activeProjectEditorId != nil,
@@ -16811,6 +16997,11 @@ private final class FloatingEditorResizeHandleView: NSView {
   }
 
   override func resetCursorRects() {
+    super.resetCursorRects()
+    /**
+     CDXC:PromptEditor 2026-06-09-15:32:
+     The floating prompt editor resize grip should keep the native resize cursor again. Restore the previous AppKit cursor rect while leaving the visual grip drawing unchanged.
+     */
     addCursorRect(bounds, cursor: .resizeLeftRight)
   }
 }
@@ -16924,10 +17115,9 @@ final class GhostexGhosttySurfaceView: NSView {
    of advertising a text-selection I-beam at all times. Keep this scoped to
    ghostex's SurfaceView subclass so Ghostty.app cursor behavior is unchanged.
    CDXC:NativePaneResize 2026-05-13-07:23
-   Pane split rails are real AppKit divider bands with their own cursor rects.
-   Do not register a full terminal-surface arrow cursor rect, because AppKit can
-   re-apply that child cursor over a neighboring divider and make the pointer
-   settle back to default on split lines.
+   Pane split rails are real AppKit divider bands with their own hover
+   affordance and resize cursor rects. Do not register a full terminal-surface
+   arrow cursor rect, because that can overwrite the adjacent rail's resize cursor.
    */
   override func resetCursorRects() {
     super.resetCursorRects()
@@ -21588,10 +21778,9 @@ private final class TerminalSessionTitleBarView: NSView {
   private func updateCursor(for event: NSEvent) {
     /**
      CDXC:NativePaneResize 2026-05-13-07:23
-     Pane title bars should not participate in split cursor arbitration. Split
-     rails are now real AppKit divider bands with their own cursor rects; avoid
-     explicitly setting the arrow from titlebar hover tracking so titlebars
-     cannot override the adjacent rail's resize cursor.
+     Pane title bars should not participate in split resize affordances. Split
+     rails are real AppKit divider bands with their own delayed hover line and
+     cursor rect; titlebar hover tracking should not publish a competing cursor.
      */
   }
 
@@ -24520,13 +24709,26 @@ private final class PoppedOutTerminalPaneContentView: NSView {
       y: 0,
       width: bounds.width,
       height: max(bounds.height - titleHeight, 1))
-    delayedSendLabelView.frame = delayedSendLabelView.isHidden
-      ? .zero
-      : CGRect(
-        x: max(12, terminalRect.maxX - min(delayedSendLabelView.fittingSize.width, max(terminalRect.width - 32, 0)) - 12),
-        y: max(8, terminalRect.maxY - min(max(delayedSendLabelView.fittingSize.height, 52), max(terminalRect.height - 24, 0)) - 8),
-        width: min(delayedSendLabelView.fittingSize.width, max(terminalRect.width - 32, 0)),
-        height: min(max(delayedSendLabelView.fittingSize.height, 52), max(terminalRect.height - 24, 0)))
+    if delayedSendLabelView.isHidden {
+      delayedSendLabelView.frame = .zero
+    } else {
+      let delayedSendLabelSize = delayedSendLabelView.fittingSize
+      let delayedSendLabelWidth = min(
+        ceil(delayedSendLabelSize.width),
+        max(terminalRect.width - 32, 0))
+      let delayedSendLabelHeight = min(
+        max(ceil(delayedSendLabelSize.height), 52),
+        max(terminalRect.height - 24, 0))
+      delayedSendLabelView.frame = CGRect(
+        x: min(
+          max(terminalRect.midX - delayedSendLabelWidth / 2, terminalRect.minX),
+          terminalRect.maxX - delayedSendLabelWidth),
+        y: min(
+          max(terminalRect.midY - delayedSendLabelHeight / 2, terminalRect.minY),
+          terminalRect.maxY - delayedSendLabelHeight),
+        width: delayedSendLabelWidth,
+        height: delayedSendLabelHeight)
+    }
     firstPromptTitleOverlayView.frame = firstPromptTitleOverlayView.isHidden ? .zero : terminalRect
   }
 
@@ -24985,6 +25187,12 @@ private final class TerminalPanePersistenceLabelView: NSTextField {
 
 private final class TerminalPaneDelayedSendLabelView: NSTextField {
   private static let labelFont = NSFont.monospacedDigitSystemFont(ofSize: 23, weight: .bold)
+  /*
+   CDXC:DelayedSend 2026-06-09-14:38:
+   The centered terminal-pane Delayed Send badge needs 3px more background padding on every side, so expand the fitted badge by 6px horizontally and vertically without changing the timer typography.
+   */
+  private static let labelHorizontalPadding: CGFloat = 60
+  private static let labelHeight: CGFloat = 58
   private static let backgroundColor = NSColor(calibratedWhite: 0.05, alpha: 0.78)
   private static let borderColor = NSColor(calibratedWhite: 1.0, alpha: 0.12)
   private static let labelColor = NSColor(
@@ -24999,7 +25207,7 @@ private final class TerminalPaneDelayedSendLabelView: NSTextField {
       return .zero
     }
     let size = (stringValue as NSString).size(withAttributes: [.font: Self.labelFont])
-    return NSSize(width: ceil(size.width) + 54, height: 52)
+    return NSSize(width: ceil(size.width) + Self.labelHorizontalPadding, height: Self.labelHeight)
   }
 
   override init(frame frameRect: NSRect) {
@@ -25193,9 +25401,31 @@ private final class CommandsPanelChromeView: NSView {
 
 private final class CommandsPanelSeparatorView: NSView {
   private static let separatorColor = NSColor(
-    srgbRed: 37.0 / 255.0,
-    green: 37.0 / 255.0,
-    blue: 37.0 / 255.0,
+    srgbRed: 0x1E / 255.0,
+    green: 0x1E / 255.0,
+    blue: 0x1E / 255.0,
+    alpha: 1.0)
+
+  override init(frame frameRect: NSRect) {
+    super.init(frame: frameRect)
+    wantsLayer = true
+    layer?.backgroundColor = Self.separatorColor.cgColor
+  }
+
+  required init?(coder: NSCoder) {
+    fatalError("init(coder:) is not supported")
+  }
+
+  override func hitTest(_ point: NSPoint) -> NSView? {
+    nil
+  }
+}
+
+private final class WorkspacePaneSeparatorView: NSView {
+  private static let separatorColor = NSColor(
+    srgbRed: 0x1E / 255.0,
+    green: 0x1E / 255.0,
+    blue: 0x1E / 255.0,
     alpha: 1.0)
 
   override init(frame frameRect: NSRect) {
@@ -25219,6 +25449,7 @@ private final class TerminalWorkspacePaneResizeHandleView: NSView {
   var onMouseUp: ((NSEvent) -> Void)?
   private var cursor: NSCursor = .arrow
   private var splitDirection = ""
+  private let resizeHoverIndicator = NativeResizeHoverIndicator(lineAxis: .vertical)
 
   override var isOpaque: Bool {
     false
@@ -25244,28 +25475,39 @@ private final class TerminalWorkspacePaneResizeHandleView: NSView {
   ) {
     /**
      CDXC:NativePaneResize 2026-05-11-09:39
-     The splitter rail owns cursor and drag for horizontal and vertical layout
+     The splitter rail owns cursor, hover feedback, and drag for horizontal and vertical layout
      branches. It remains visually transparent so focused pane borders provide
      the only visible separation.
      CDXC:NativePaneResize 2026-05-11-10:40
-     Native hover ownership on the rail view itself. This keeps cursor
-     ownership on the same native object that can drag, and avoids a
+     Native hover ownership lives on the rail view itself. This keeps hover
+     feedback and cursor ownership on the same native object that can drag, and avoids a
      window-local resize monitor competing with sidebar resize.
      CDXC:NativePaneResize 2026-05-11-14:17
      The rail must be visually transparent in production. Native-style resizing
      is represented by the real divider width; this view only owns native hit
-     testing, cursor setting, and drag delivery.
+     testing, cursor setting, delayed hover feedback, and drag delivery.
      CDXC:NativePaneResize 2026-05-13-07:23
-     Match the stable sidebar divider implementation for pane splits. Cursor
-     feedback comes from one AppKit cursor rect on this real five-pixel rail;
-     avoid hover tracking and NSCursor push/pop stacks, which can be unbalanced
-     by neighboring terminal/browser/titlebar views.
+     Match the stable sidebar divider implementation for pane splits: the real
+     five-pixel rail owns drag delivery without overlapping neighboring pane
+     content.
+
+     CDXC:ResizeHoverAffordance 2026-06-09-14:34:
+     Pane, command, and project-editor companion resize rails share this native
+     handle. Add only the delayed visual affordance here so the 3px hover line
+     appears consistently without changing resize hit geometry.
+
+     CDXC:ResizeHoverAffordance 2026-06-09-15:32:
+     Drag rails publish the native resize cursor again because the line-only
+     affordance did not look right. Keep the delayed hover line as supplemental feedback.
      */
     splitDirection = direction.rawValue
     layer?.backgroundColor = NSColor.clear.cgColor
     if self.cursor !== cursor {
       self.cursor = cursor
     }
+    resizeHoverIndicator.configure(
+      lineAxis: direction == .horizontal ? .vertical : .horizontal,
+      in: self)
   }
 
   override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
@@ -25276,14 +25518,35 @@ private final class TerminalWorkspacePaneResizeHandleView: NSView {
     bounds.contains(point) ? self : nil
   }
 
+  override func updateTrackingAreas() {
+    super.updateTrackingAreas()
+    resizeHoverIndicator.updateTrackingArea(in: self)
+  }
+
+  override func layout() {
+    super.layout()
+    resizeHoverIndicator.layout(in: self)
+  }
+
+  override func mouseEntered(with event: NSEvent) {
+    resizeHoverIndicator.mouseEntered(in: self)
+  }
+
+  override func mouseExited(with event: NSEvent) {
+    resizeHoverIndicator.mouseExited(in: self)
+  }
+
   override func resetCursorRects() {
     super.resetCursorRects()
     /**
-     CDXC:NativePaneResize 2026-05-13-07:23
-     Keep pane split cursor ownership as simple as the sidebar divider:
-     registering the rail bounds with AppKit is the complete hover behavior.
+     CDXC:ResizeHoverAffordance 2026-06-09-15:32:
+     Pane, command, and companion resize rails should show the native resize cursor again while keeping the delayed hover line. Register the full rail bounds with AppKit so cursor feedback matches the drag hit target.
      */
     addCursorRect(bounds, cursor: cursor)
+  }
+
+  func cancelResizeHoverIndicator() {
+    resizeHoverIndicator.cancel(in: self)
   }
 
   override func draw(_ dirtyRect: NSRect) {
@@ -25352,6 +25615,7 @@ final class TerminalPaneBorderView: NSView {
   private var hidesInactiveCommandBorder = false
   private var roundedBottomCorner: TerminalPaneRoundedBottomCorner = .none
   private var state: BorderState = .none
+  private var suppressesFocusedBorder = false
 
   override init(frame frameRect: NSRect) {
     super.init(frame: frameRect)
@@ -25411,14 +25675,7 @@ final class TerminalPaneBorderView: NSView {
       return
     }
     chromeRole = role
-    switch state {
-    case .attention:
-      layer?.shadowColor = Self.attentionBorderColor
-    case .focused:
-      layer?.shadowColor = Self.focusedBorderColor
-    case .none:
-      layer?.shadowColor = nil
-    }
+    applyShadow(for: state)
     needsDisplay = true
   }
 
@@ -25427,6 +25684,19 @@ final class TerminalPaneBorderView: NSView {
       return
     }
     hidesInactiveCommandBorder = hides
+    needsDisplay = true
+  }
+
+  fileprivate func setSuppressesFocusedBorder(_ suppresses: Bool) {
+    /*
+     CDXC:ProjectEditorCompanion 2026-06-09-17:46:
+     Source, GitHub, and Kanban companion panes keep real focus for keyboard routing, but should not show the focused pane outline. Suppress only the focused border/shadow on the companion border view so attention borders and normal pane focus chrome continue to work elsewhere.
+     */
+    guard suppressesFocusedBorder != suppresses else {
+      return
+    }
+    suppressesFocusedBorder = suppresses
+    applyShadow(for: state)
     needsDisplay = true
   }
 
@@ -25442,17 +25712,7 @@ final class TerminalPaneBorderView: NSView {
       return
     }
     state = nextState
-    switch nextState {
-    case .attention:
-      layer?.shadowColor = Self.attentionBorderColor
-      layer?.shadowOpacity = 0.28
-    case .focused:
-      layer?.shadowColor = Self.focusedBorderColor
-      layer?.shadowOpacity = 0.18
-    case .none:
-      layer?.shadowColor = nil
-      layer?.shadowOpacity = 0
-    }
+    applyShadow(for: nextState)
     needsDisplay = true
   }
 
@@ -25461,6 +25721,9 @@ final class TerminalPaneBorderView: NSView {
     case .attention:
       return NSColor(cgColor: Self.attentionBorderColor)
     case .focused:
+      if suppressesFocusedBorder {
+        return nil
+      }
       return NSColor(cgColor: Self.focusedBorderColor)
     case .none:
       if hidesInactiveCommandBorder {
@@ -25470,6 +25733,25 @@ final class TerminalPaneBorderView: NSView {
         return NSColor(cgColor: Self.commandBorderColor)
       }
       return nil
+    }
+  }
+
+  private func applyShadow(for state: BorderState) {
+    switch state {
+    case .attention:
+      layer?.shadowColor = Self.attentionBorderColor
+      layer?.shadowOpacity = 0.28
+    case .focused:
+      if suppressesFocusedBorder {
+        layer?.shadowColor = nil
+        layer?.shadowOpacity = 0
+      } else {
+        layer?.shadowColor = Self.focusedBorderColor
+        layer?.shadowOpacity = 0.18
+      }
+    case .none:
+      layer?.shadowColor = nil
+      layer?.shadowOpacity = 0
     }
   }
 
