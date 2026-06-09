@@ -31,9 +31,14 @@ enum GhostexAppStorage {
    Bundle metadata owns the diagnostic and workflow directory names so
    LaunchServices launches get the same storage split as shell-launched builds.
    CDXC:DevAppFlavor 2026-05-11-12:10
-   `bun start:dev` must not share settings, projects, sessions, hooks, browser
-   profiles, or runtime files with the installed app. ghostex-dev therefore points
-   both diagnostics and shared workflow state at ~/.ghostex-dev.
+   Legacy ghostex-dev bundle metadata must not share settings, projects,
+   sessions, hooks, browser profiles, or runtime files with the installed app.
+   ghostex-dev therefore points both diagnostics and shared workflow state at
+   ~/.ghostex-dev.
+   CDXC:LocalStartSingleApp 2026-06-09-09:27
+   Local dev start and build entry points were removed so agents stop launching
+   the alternate app by mistake; keep bundle-derived storage names only for old
+   bundles that already exist.
    */
   static var diagnosticsHomeDirectoryName: String {
     let candidate = Bundle.main.object(forInfoDictionaryKey: "GHOSTEXHomeDirectoryName") as? String

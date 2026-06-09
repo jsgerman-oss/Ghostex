@@ -5,33 +5,44 @@ import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { validateMacosAppBundle } from "./validate-macos-app-bundle.mjs";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const hostScriptDir = path.join(repoRoot, "native", "macos", "ghostexHost");
 const projectPath = path.join(hostScriptDir, "ghostex.xcodeproj");
 const installDir = process.env.INSTALL_DIR || "/Applications";
-const configuration = process.env.CONFIGURATION || "Debug";
 const protocolVersion = 1;
 const gxserverBaseUrl = "http://127.0.0.1:58744";
 const startEnvironment = withoutColorDisablingEnvironment(process.env);
 
-const variant = parseVariant(process.argv.slice(2), process.env.GHOSTEX_APP_VARIANT);
+validateStartArguments(process.argv.slice(2), process.env.GHOSTEX_APP_VARIANT);
+/*
+CDXC:LocalStartReleaseParity 2026-06-09-09:07:
+Default production local starts must exercise the same Release configuration that ships to users while preserving explicit CONFIGURATION overrides. This keeps `bun run start` useful for release-parity T3/code-server testing without forcing notarization or DMG packaging.
+*/
+const configuration = resolveLocalStartConfiguration(process.env.CONFIGURATION);
 /*
 CDXC:LocalStartArchitecture 2026-06-08-08:42:
 Apple Silicon local starts must build and launch Apple-native bundled tools even when the invoking shell, Bun, or Terminal is running under Rosetta. Default the architecture from the physical Mac capability and reserve Intel builds for explicit GHOSTEX_MACOS_ARCH=x86_64 requests.
 */
 const arch = resolveLocalMacosArch(process.env.GHOSTEX_MACOS_ARCH);
+/*
+CDXC:LocalStartSingleApp 2026-06-09-09:27:
+Ghostex-dev local starts were removed because agents were launching the alternate app by mistake. Local starts install only Ghostex with the production bundle identity; explicit dev args, GHOSTEX_APP_VARIANT=dev, and inherited dev app metadata fail before build.
+*/
+const appName = "Ghostex";
+const bundleId = "com.madda.ghostex.host";
 const buildEnv = {
   ...startEnvironment,
-  GHOSTEX_APP_VARIANT: variant,
+  CONFIGURATION: configuration,
+  GHOSTEX_APP_NAME: appName,
+  GHOSTEX_APP_DISPLAY_NAME: appName,
+  GHOSTEX_APP_VARIANT: "prod",
+  GHOSTEX_BUNDLE_ID: bundleId,
+  GHOSTEX_HOME_DIRECTORY_NAME: ".ghostex",
   GHOSTEX_MACOS_ARCH: arch,
+  GHOSTEX_SHARED_HOME_DIRECTORY_NAME: ".ghostex",
 };
-/*
-CDXC:DevAppFlavor 2026-05-31-15:52:
-The unified local start command preserves the existing production/dev split: default starts install Ghostex with production storage, while the `dev` argument installs Ghostex-dev with the dev bundle id and bundle metadata that points workflow state at ~/.ghostex-dev.
-*/
-const appName = variant === "dev" ? "Ghostex-dev" : "Ghostex";
-const bundleId = variant === "dev" ? "com.madda.ghostex-dev.host" : "com.madda.ghostex.host";
 /*
 CDXC:LocalStart 2026-05-31-15:52:
 Local starts must launch the architecture-specific app product that build-ghostex-host.sh just produced. Keep the DerivedData default aligned with the native build script so arm64 and Intel verification do not copy an older app from another architecture.
@@ -46,7 +57,7 @@ ensureCodeServerDevelopmentRuntime();
 
 /*
 CDXC:LocalStartGxserver 2026-05-31-15:52:
-Local start commands must share one orchestrator so `bun run start`, `bun run start dev`, and `bun run start:dev` all build the matching app bundle, close the visible app first, restart gxserver only while the app is closed, then launch the newly installed app.
+Local start commands must share one orchestrator so `bun run start` builds the matching app bundle, closes the visible app first, restarts gxserver only while the app is closed, then launches the newly installed app.
 
 CDXC:LocalStartGxserver 2026-05-31-15:52:
 gxserver implementation changes are detected through the packaged daemon build identity generated from the staged gxserver folder contents. The macOS client protocol version changes only when the HTTP contract changes, while same-protocol gxserver code rebuilds still force a daemon restart before the sidebar connects.
@@ -70,20 +81,37 @@ if (!existsSync(builtApp)) {
 
 await closeInstalledApp();
 await stopRunningGxserverControlPlaneBeforeLaunch(builtApp);
-installAndOpenApp(builtApp);
+await installAndOpenApp(builtApp);
 
-function parseVariant(args, envVariant) {
-  let selected = envVariant === "dev" ? "dev" : "prod";
+function validateStartArguments(args, envVariant) {
+  const normalizedEnvVariant = envVariant?.trim();
+  if (normalizedEnvVariant === "dev") {
+    throw removedDevStartError();
+  }
+  if (normalizedEnvVariant && normalizedEnvVariant !== "prod") {
+    throw new Error(`Unsupported GHOSTEX_APP_VARIANT: ${normalizedEnvVariant}. Use "prod" or unset it.`);
+  }
   for (const arg of args) {
     if (arg === "dev" || arg === "--dev") {
-      selected = "dev";
+      throw removedDevStartError();
     } else if (arg === "prod" || arg === "--prod") {
-      selected = "prod";
+      continue;
     } else {
-      throw new Error(`Unknown start argument: ${arg}. Use "dev" for Ghostex-dev or omit it for Ghostex.`);
+      throw new Error(`Unknown start argument: ${arg}. Use "bun run start".`);
     }
   }
-  return selected;
+}
+
+function removedDevStartError() {
+  return new Error("Ghostex-dev local starts were removed. Use `bun run start`.");
+}
+
+function resolveLocalStartConfiguration(explicitConfiguration) {
+  const normalized = explicitConfiguration?.trim();
+  if (normalized) {
+    return normalized;
+  }
+  return "Release";
 }
 
 function normalizeMacosArch(value) {
@@ -120,7 +148,7 @@ function isAppleSiliconMac() {
 function ensureCodeServerDevelopmentRuntime() {
   /*
   CDXC:EditorPanes 2026-06-08-09:08:
-  Local macOS starts publish the root code-server checkout to LaunchServices, so they must also prove the nested VS Code dev payload exists before the app opens. Initialize the reviewed submodule automatically, then stop on missing server-main.js with the exact working build commands instead of letting the Source tab render code-server's raw 500 page.
+  Local macOS starts package the root code-server checkout into the app, and dev-env starts can still publish that checkout to LaunchServices. Prove the nested VS Code dev payload exists before the app opens so Source tabs do not render code-server's raw 500 page.
   */
   const codeServerRoot = path.join(repoRoot, "code-server");
   const codeServerEntrypoint = path.join(codeServerRoot, "out", "node", "entry.js");
@@ -395,7 +423,7 @@ async function fetchGxserverJson(pathname, { method, token, timeoutMs = 1000 }) 
   }
 }
 
-function installAndOpenApp(appPath) {
+async function installAndOpenApp(appPath) {
   /*
   CDXC:MacOSPermissions 2026-05-31-15:52:
   Install local builds to the stable /Applications app path before launching so macOS Accessibility permission remains attached to the same signed app identity across rebuilds.
@@ -404,10 +432,13 @@ function installAndOpenApp(appPath) {
   A local start must prove the installed, signed gxserver bundle can load its native database module with the same Node runtime the macOS app will resolve. Run that preflight after codesign and before `open` so a bad native module signature or Node ABI stops the launch instead of letting the sidebar emit misleading health and Git API failures.
 
   CDXC:CodeServerSubmodule 2026-06-07-11:20:
-  Local starts launch Ghostex through LaunchServices from /Applications, which gives the app cwd `/` and drops the invoking shell environment. Publish the repo root and root code-server submodule path through launchd before `open` so the native Source tab resolves the reviewed in-repo code-server checkout instead of probing maintainer-local paths.
+  Dev local starts launch Ghostex through LaunchServices from /Applications, which gives the app cwd `/` and drops the invoking shell environment. Publish the repo root and root code-server submodule path through launchd only for dev-env starts so production `bun run start` stays release-shaped and uses bundled app resources.
 
   CDXC:T3CodeSubmodule 2026-06-07-13:00:
-  Publish the root `t3code` submodule path through launchd with the same local-start environment handoff, so native T3 source fallbacks and diagnostics resolve the parent-pinned fork branch instead of the old sibling t3code-embed checkout.
+  Publish the root `t3code` submodule path through launchd with the same dev local-start environment handoff, so native T3 source fallbacks and diagnostics resolve the parent-pinned fork branch instead of the old sibling t3code-embed checkout.
+
+  CDXC:LocalStartReleaseParity 2026-06-09-09:07:
+  Production `bun run start` should open a release-shaped app bundle without stale LaunchServices development overrides. Validate the installed app's bundled resources before `open` and clear dev env handoffs unless the caller opted into GHOSTEX_START_DEV_ENV.
 
   CDXC:LocalStartFast 2026-06-07-16:23:
   Local starts should mirror the already signed build product into /Applications incrementally and verify the copied signature before signing. Re-sign only when verification fails so unchanged CEF, gxserver node_modules, and app resources do not get re-copied and re-signed on every relaunch.
@@ -418,7 +449,8 @@ function installAndOpenApp(appPath) {
   syncInstalledAppBundle(appPath);
   ensureInstalledAppCodeSignature(installedApp);
   preflightInstalledGxserverBundle(installedApp);
-  publishLaunchServicesDevelopmentEnvironment();
+  await validateMacosAppBundle({ appName, appPath: installedApp, arch });
+  prepareLaunchServicesEnvironment();
   run("open", [installedApp]);
 }
 
@@ -491,6 +523,30 @@ function publishLaunchServicesDevelopmentEnvironment() {
   run("launchctl", ["setenv", "VSMUX_T3CODE_REPO_ROOT", path.join(repoRoot, "t3code")], {
     stdio: "ignore",
   });
+}
+
+function prepareLaunchServicesEnvironment() {
+  if (shouldPublishLaunchServicesDevelopmentEnvironment()) {
+    publishLaunchServicesDevelopmentEnvironment();
+    return;
+  }
+  clearLaunchServicesDevelopmentEnvironment();
+}
+
+function shouldPublishLaunchServicesDevelopmentEnvironment() {
+  const explicit = process.env.GHOSTEX_START_DEV_ENV?.trim().toLowerCase();
+  return explicit === "1" || explicit === "true" || explicit === "yes";
+}
+
+function clearLaunchServicesDevelopmentEnvironment() {
+  for (const key of [
+    "ghostex_REPO_ROOT",
+    "GHOSTEX_CODE_SERVER_ROOT",
+    "VSMUX_T3CODE_REPO_ROOT",
+    "ghostex_T3CODE_REPO_ROOT",
+  ]) {
+    run("launchctl", ["unsetenv", key], { allowFailure: true, stdio: "ignore" });
+  }
 }
 
 function preflightInstalledGxserverBundle(appPath) {

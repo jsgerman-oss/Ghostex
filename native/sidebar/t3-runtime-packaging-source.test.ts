@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { describe, expect, test } from "vitest";
 
 const nativeT3LogSource = readFileSync(
@@ -9,6 +9,39 @@ const appDelegateSource = readFileSync(
   new URL("../macos/ghostexHost/Sources/ghostexHost/AppDelegate.swift", import.meta.url),
   "utf8",
 );
+const terminalWorkspaceSource = readFileSync(
+  new URL("../macos/ghostexHost/Sources/ghostexHost/TerminalWorkspaceView.swift", import.meta.url),
+  "utf8",
+);
+const hostProtocolSource = readFileSync(
+  new URL("../macos/ghostexHost/Sources/ghostexHost/HostProtocol.swift", import.meta.url),
+  "utf8",
+);
+const nativeSidebarSource = readFileSync(new URL("./native-sidebar.tsx", import.meta.url), "utf8");
+const buildGhostexHostSource = readFileSync(
+  new URL("../macos/ghostexHost/build-ghostex-host.sh", import.meta.url),
+  "utf8",
+);
+const codeServerBuildVscodeSource = readFileSync(
+  new URL("../../code-server/ci/build/build-vscode.sh", import.meta.url),
+  "utf8",
+);
+const runGhostexHostSource = readFileSync(
+  new URL("../macos/ghostexHost/run-ghostex-host.sh", import.meta.url),
+  "utf8",
+);
+const startGhostexSource = readFileSync(new URL("../../scripts/start-ghostex.mjs", import.meta.url), "utf8");
+const releaseGhostexSource = readFileSync(new URL("../../scripts/release-ghostex.mjs", import.meta.url), "utf8");
+const bundleValidatorSource = readFileSync(new URL("../../scripts/validate-macos-app-bundle.mjs", import.meta.url), "utf8");
+const packageJsonSource = readFileSync(new URL("../../package.json", import.meta.url), "utf8");
+const automationVerifierSource = readFileSync(
+  new URL("../../scripts/verify-automations-runtime.mjs", import.meta.url),
+  "utf8",
+);
+const projectOverviewSource = readFileSync(new URL("../../docs/product/PROJECT-OVERVIEW.md", import.meta.url), "utf8");
+const removedDevScriptName = `start-${"ghostex"}-${"dev"}.mjs`;
+const removedDevPackageScriptName = `start${":dev"}`;
+const devStartWrapperUrl = new URL(`../../scripts/${removedDevScriptName}`, import.meta.url);
 
 function sourceBetween(source: string, start: string, end: string): string {
   const startIndex = source.indexOf(start);
@@ -54,9 +87,113 @@ describe("T3 runtime packaging", () => {
     expect(appDelegateSource.match(/NativeT3RuntimeLauncher\.claimLaunchStart\(\)/g)).toHaveLength(2);
     expect(appDelegateSource.match(/t3Runtime\.start\.launchInProgressRetained/g)).toHaveLength(2);
     expect(appDelegateSource.match(/t3CodeRuntimeStartedAt = launchStartedAt/g)).toHaveLength(2);
+    expect(appDelegateSource).not.toContain('reloadManagedT3WebPanes(reason: "runtimeRetainedDuringStartup")');
+    expect(appDelegateSource.match(/reloadManagedT3WebPanes\(reason: "runtimeSpawned"\)/g)).toHaveLength(2);
+    expect(appDelegateSource.match(/t3Runtime\.start\.backoffActive/g)).toHaveLength(2);
+    expect(appDelegateSource.match(/NativeT3RuntimeFailureNotice\.shouldNotifyLaunchExit/g)).toHaveLength(2);
     expect(
       appDelegateSource.match(/NativeT3RuntimeLauncher\.clearLaunchAttempt\(startedAt: launchStartedAt\)/g)
         ?.length,
     ).toBeGreaterThanOrEqual(4);
+  });
+
+  test("native runtime auth failures stop the loading loop and show a capped toast", () => {
+    /*
+    CDXC:T3CodeStartup 2026-06-09-07:07:
+    Failed managed T3 startup must not keep entering the auth/thread-route retry loop or repaint existing panes every liveness tick. Native should emit a dedicated failure event, render a stable pane error, and let React show a short capped toast.
+    */
+    const browserAuth = sourceBetween(
+      nativeT3LogSource,
+      "enum NativeT3RuntimeBrowserAuth",
+      "fileprivate static func readOwnerBearerTokenForManagedRuntime",
+    );
+    expect(browserAuth).toContain("completion: @escaping (Result<Void, Error>) -> Void");
+    expect(browserAuth).toContain("nativeT3Runtime.browserAuth.retry.exhausted");
+    expect(browserAuth).toContain("result: .failure(NativeT3RuntimeFailureNotice.error(reason: reason))");
+
+    const webPaneLoader = sourceBetween(
+      terminalWorkspaceSource,
+      "private func loadWebPane(sessionId: String, url: URL, reason: String)",
+      "func reloadManagedT3WebPanes(reason: String)",
+    );
+    expect(webPaneLoader).toContain("authResult");
+    expect(webPaneLoader).toContain("handleT3WebPaneRuntimeFailure");
+
+    const failureHandler = sourceBetween(
+      terminalWorkspaceSource,
+      "private func handleT3WebPaneRuntimeFailure",
+      "private func loadWebPaneStatus",
+    );
+    expect(failureHandler).toContain(".t3RuntimeStartFailed(sessionId: session.sessionId, message: notice)");
+    expect(failureHandler).toContain("loadWebPaneError(session: session, message: notice)");
+
+    expect(hostProtocolSource).toContain("case t3RuntimeStartFailed(sessionId: String?, message: String)");
+    expect(hostProtocolSource).toContain('try container.encode("t3RuntimeStartFailed", forKey: .type)');
+    expect(nativeSidebarSource).toContain('type: "t3RuntimeStartFailed"');
+    expect(nativeSidebarSource).toContain("const MAX_T3_RUNTIME_TOAST_MESSAGE_LINES = 3");
+    expect(nativeSidebarSource).toContain("compactT3RuntimeToastMessage(hostEvent.message)");
+    expect(nativeSidebarSource).toContain("toastId: T3_RUNTIME_TOAST_ID");
+  });
+
+  test("local starts validate the same packaged T3 architecture shape as release", () => {
+    /*
+    CDXC:LocalStartReleaseParity 2026-06-09-09:07:
+    Production `bun run start` should test a Release-shaped bundled app without notarization. The local start path must clear stale dev LaunchServices overrides, run the shared release bundle validator, and reject cross-architecture T3 node-pty staging before opening Ghostex.
+
+    CDXC:LocalStartSingleApp 2026-06-09-09:27:
+    Ghostex-dev local start and build entry points were removed because agents were invoking the alternate app by mistake. Source-level tests should keep package scripts, docs, verifier instructions, and native build gates aligned on the single Ghostex app path.
+    */
+    const configurationResolver = sourceBetween(
+      startGhostexSource,
+      "function resolveLocalStartConfiguration",
+      "function normalizeMacosArch",
+    );
+    expect(startGhostexSource).toContain("import { validateMacosAppBundle } from \"./validate-macos-app-bundle.mjs\"");
+    expect(startGhostexSource).toContain("CONFIGURATION: configuration");
+    expect(configurationResolver).toContain('return "Release"');
+    expect(startGhostexSource).toContain("await validateMacosAppBundle({ appName, appPath: installedApp, arch })");
+    expect(startGhostexSource).toContain("clearLaunchServicesDevelopmentEnvironment");
+    expect(startGhostexSource).toContain('"VSMUX_T3CODE_REPO_ROOT"');
+    expect(startGhostexSource).toContain("validateStartArguments(process.argv.slice(2), process.env.GHOSTEX_APP_VARIANT)");
+    expect(startGhostexSource).toContain('GHOSTEX_APP_VARIANT: "prod"');
+    expect(startGhostexSource).toContain("GHOSTEX_APP_NAME: appName");
+    expect(startGhostexSource).toContain("GHOSTEX_BUNDLE_ID: bundleId");
+    expect(startGhostexSource).toContain("Ghostex-dev local starts were removed");
+    expect(startGhostexSource).not.toContain('const appName = variant === "dev"');
+    expect(packageJsonSource).not.toContain(`"${removedDevPackageScriptName}"`);
+    expect(packageJsonSource).not.toContain('"build:dev"');
+    expect(existsSync(devStartWrapperUrl)).toBe(false);
+    expect(buildGhostexHostSource).toContain("Ghostex-dev builds were removed");
+    expect(buildGhostexHostSource).toContain("uses_removed_dev_app_value");
+    expect(runGhostexHostSource).toContain("Ghostex-dev local starts were removed");
+    expect(automationVerifierSource).toContain('"  bun run start"');
+    expect(automationVerifierSource).not.toContain(removedDevPackageScriptName);
+    expect(projectOverviewSource).not.toContain(removedDevPackageScriptName);
+
+    const t3Package = sourceBetween(
+      buildGhostexHostSource,
+      "package_t3code_server()",
+      "build_zmx_if_needed",
+    );
+    expect(buildGhostexHostSource).toContain("node_pty_prebuilds_match_arch()");
+    expect(buildGhostexHostSource).toContain("code_server_vscode_payload_digest()");
+    expect(buildGhostexHostSource).toContain("code_server_vscode_ripgrep_bin()");
+    expect(buildGhostexHostSource).toContain("code-server-vscode-payload-$GHOSTEX_MACOS_ARCH");
+    expect(buildGhostexHostSource).toContain("$target_dir/lib/vscode/node_modules/@vscode/ripgrep/bin/rg");
+    expect(codeServerBuildVscodeSource).toContain("ensure-vscode-ripgrep-platform()");
+    expect(codeServerBuildVscodeSource).toContain('env npm_config_arch="$(vscode-ripgrep-node-arch)"');
+    expect(codeServerBuildVscodeSource).toContain("ensure-github-token-for-vscode-build");
+    expect(codeServerBuildVscodeSource).toContain("gh auth token -h github.com");
+    expect(t3Package).toContain("expected_node_pty_prebuild");
+    expect(t3Package).toContain("node_modules/node-pty/prebuilds/$(node_pty_prebuild_platform_dir)/pty.node");
+    expect(t3Package).toContain('node_pty_prebuilds_match_arch "$target_dir"');
+
+    expect(releaseGhostexSource).toContain("import { validateMacosAppBundle } from \"./validate-macos-app-bundle.mjs\"");
+    expect(releaseGhostexSource).toContain("await validateMacosAppBundle({ appName: config.appName, appPath: entry.appPath, arch: entry.arch })");
+    expect(bundleValidatorSource).toContain("T3 Code --help smoke test");
+    expect(bundleValidatorSource).toContain("T3 Code node-pty");
+    expect(bundleValidatorSource).toContain('path.join(codeServerRoot, "lib", "vscode", "node_modules", "@vscode", "ripgrep", "bin", "rg")');
+    expect(bundleValidatorSource).toContain("VS Code ripgrep --version smoke test");
+    expect(bundleValidatorSource).toContain("Expected only");
   });
 });

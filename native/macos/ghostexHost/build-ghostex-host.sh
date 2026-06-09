@@ -20,6 +20,20 @@ fi
 CODE_SERVER_APP_NODE_VERSION="${CODE_SERVER_APP_NODE_VERSION:-22.22.1}"
 CODE_SERVER_APP_NODE_MAJOR="${CODE_SERVER_APP_NODE_VERSION%%.*}"
 CODE_SERVER_NODE_DOWNLOAD_BASE_URL="https://nodejs.org/dist/v$CODE_SERVER_APP_NODE_VERSION"
+GHOSTEX_APP_VARIANT="${GHOSTEX_APP_VARIANT:-prod}"
+case "$GHOSTEX_APP_VARIANT" in
+	prod)
+		;;
+	dev)
+		# CDXC:LocalStartSingleApp 2026-06-09-09:27: Ghostex-dev builds were removed because agents were invoking the dev app path by mistake. Fail before toolchain checks or Xcode generation so direct build commands cannot create Ghostex-dev outside `bun run start`.
+		echo "Ghostex-dev builds were removed. Use GHOSTEX_APP_VARIANT=prod or unset it." >&2
+		exit 1
+		;;
+	*)
+		echo "Unsupported GHOSTEX_APP_VARIANT: $GHOSTEX_APP_VARIANT" >&2
+		exit 1
+		;;
+esac
 
 # CDXC:LocalStartArchitecture 2026-06-08-08:42: Apple Silicon local builds must produce Apple-native app resources even when the caller's shell is translated by Rosetta and `uname -m` reports x86_64. Use the physical arm64 capability as the default and keep GHOSTEX_MACOS_ARCH=x86_64 as the explicit Intel build path.
 default_macos_arch() {
@@ -121,6 +135,26 @@ prune_node_pty_prebuilds() {
 			fi
 		done < <(find "$prebuilds_dir" -mindepth 1 -maxdepth 1 -type d -print0)
 	done < <(find "$root" -path '*/node_modules/node-pty/prebuilds' -type d -print0)
+}
+
+node_pty_prebuilds_match_arch() {
+	local root="$1"
+	local keep_platform prebuilds_dir platform_dir
+	keep_platform="$(node_pty_prebuild_platform_dir)"
+	if [[ ! -d "$root" ]]; then
+		return 1
+	fi
+	while IFS= read -r -d '' prebuilds_dir; do
+		if [[ ! -d "$prebuilds_dir/$keep_platform" ]]; then
+			return 1
+		fi
+		while IFS= read -r -d '' platform_dir; do
+			if [[ "$(basename "$platform_dir")" != "$keep_platform" ]]; then
+				return 1
+			fi
+		done < <(find "$prebuilds_dir" -mindepth 1 -maxdepth 1 -type d -print0)
+	done < <(find "$root" -path '*/node_modules/node-pty/prebuilds' -type d -print0)
+	return 0
 }
 
 remove_t3code_source_maps() {
@@ -321,6 +355,39 @@ code_server_vscode_target() {
 	esac
 }
 
+code_server_vscode_ripgrep_bin() {
+	local vscode_root="$1"
+	printf '%s/node_modules/@vscode/ripgrep/bin/rg\n' "$vscode_root"
+}
+
+code_server_vscode_payload_digest() {
+	local vscode_target="$1"
+	local node_identity="$2"
+	local npm_version="$3"
+	local package_version="$4"
+	local commit="$5"
+	fingerprint_inputs \
+		--value "code-server-vscode-payload-v1" \
+		--value "arch=$GHOSTEX_MACOS_ARCH" \
+		--value "target=$vscode_target" \
+		--value "node=$node_identity" \
+		--value "npm=$npm_version" \
+		--value "version=$package_version" \
+		--value "commit=$commit" \
+		--path "$CODE_SERVER_ROOT/ci/build/build-vscode.sh" \
+		--path "$CODE_SERVER_ROOT/patches" \
+		--path "$CODE_SERVER_ROOT/package.json" \
+		--path "$CODE_SERVER_ROOT/package-lock.json" \
+		--path "$CODE_SERVER_ROOT/.node-version" \
+		--path "$CODE_SERVER_ROOT/lib/vscode/package.json" \
+		--path "$CODE_SERVER_ROOT/lib/vscode/package-lock.json" \
+		--path "$CODE_SERVER_ROOT/lib/vscode/product.json" \
+		--path "$CODE_SERVER_ROOT/lib/vscode/build/gulpfile.reh.ts" \
+		--path "$CODE_SERVER_ROOT/lib/vscode/build/lib/copilot.ts" \
+		--path "$CODE_SERVER_ROOT/lib/vscode/remote/package.json" \
+		--path "$CODE_SERVER_ROOT/lib/vscode/remote/package-lock.json"
+}
+
 code_server_release_version() {
 	"$CODE_SERVER_NODE_BIN" -e "const fs=require('fs'); const pkg=JSON.parse(fs.readFileSync(process.argv[1], 'utf8')); process.stdout.write(String(pkg.version || '0.0.0'));" "$CODE_SERVER_ROOT/package.json"
 }
@@ -328,6 +395,7 @@ code_server_release_version() {
 ensure_code_server_payload() {
 	local vscode_target="$1"
 	local vscode_release_root="$CODE_SERVER_ROOT/lib/vscode-reh-web-$vscode_target"
+	local vscode_ripgrep_bin payload_digest payload_cache_key node_identity npm_version package_version commit
 	if [[ ! -f "$CODE_SERVER_ROOT/package.json" ]]; then
 		echo "code-server source is missing: $CODE_SERVER_ROOT" >&2
 		echo "Initialize the code-server submodule before building Ghostex." >&2
@@ -351,8 +419,16 @@ ensure_code_server_payload() {
 		echo "code-server VS Code node_modules are missing. Run: npm --prefix code-server/lib/vscode install" >&2
 		exit 1
 	fi
-	if [[ ! -f "$vscode_release_root/out/server-main.js" ]]; then
-		# CDXC:CodeServerRuntime 2026-06-08-12:17: Release and installed app builds must bundle code-server itself, not depend on a source checkout published through LaunchServices. Build code-server's upstream darwin VS Code web-server payload per architecture when it is absent, then stage it under Web/code-server.
+	vscode_ripgrep_bin="$(code_server_vscode_ripgrep_bin "$vscode_release_root")"
+	node_identity="$("$CODE_SERVER_NODE_BIN" -p 'process.version + ":" + process.versions.modules')"
+	npm_version="$("$CODE_SERVER_NPM_BIN" --version 2>/dev/null || true)"
+	package_version="$(code_server_release_version)"
+	commit="$(git -C "$CODE_SERVER_ROOT" rev-parse HEAD 2>/dev/null || printf 'development')"
+	payload_digest="$(code_server_vscode_payload_digest "$vscode_target" "$node_identity" "$npm_version" "$package_version" "$commit")"
+	payload_cache_key="code-server-vscode-payload-$GHOSTEX_MACOS_ARCH"
+	# CDXC:CodeServerRuntime 2026-06-09-17:06: Embedded VS Code search depends on @vscode/ripgrep/bin/rg. Rebuild the generated REH web payload when code-server packaging inputs change, server-main.js is missing, or ripgrep is missing/wrong-arch so `bun run start` and release builds cannot reuse a stale payload that opens but fails search.
+	if ! cache_matches "$payload_cache_key" "$payload_digest" "$vscode_release_root/out/server-main.js" "$vscode_ripgrep_bin" ||
+		! binary_supports_macos_arch "$vscode_ripgrep_bin" "$GHOSTEX_MACOS_ARCH"; then
 		(
 			cd "$CODE_SERVER_ROOT"
 			env \
@@ -368,6 +444,15 @@ ensure_code_server_payload() {
 		echo "code-server VS Code release payload is missing: $vscode_release_root/out/server-main.js" >&2
 		exit 1
 	fi
+	if [[ ! -f "$vscode_ripgrep_bin" ]]; then
+		echo "code-server VS Code release payload is missing ripgrep: $vscode_ripgrep_bin" >&2
+		exit 1
+	fi
+	if ! binary_supports_macos_arch "$vscode_ripgrep_bin" "$GHOSTEX_MACOS_ARCH"; then
+		echo "code-server VS Code ripgrep binary does not contain $GHOSTEX_MACOS_ARCH: $vscode_ripgrep_bin" >&2
+		exit 1
+	fi
+	write_cache_stamp "$payload_cache_key" "$payload_digest"
 }
 
 package_code_server_if_needed() {
@@ -389,13 +474,17 @@ package_code_server_if_needed() {
 		--value "commit=$commit" \
 		--value "entry=$(path_identity "$CODE_SERVER_ROOT/out/node/entry.js")" \
 		--value "vscode=$(path_identity "$vscode_release_root/out/server-main.js")" \
+		--value "ripgrep=$(path_identity "$(code_server_vscode_ripgrep_bin "$vscode_release_root")")" \
+		--path "$CODE_SERVER_ROOT/ci/build/build-vscode.sh" \
+		--path "$CODE_SERVER_ROOT/patches" \
 		--path "$CODE_SERVER_ROOT/package.json" \
 		--path "$CODE_SERVER_ROOT/package-lock.json" \
 		--path "$CODE_SERVER_ROOT/.node-version" \
 		--path "$CODE_SERVER_ROOT/src/browser")"
 	# CDXC:CodeServerRuntime 2026-06-08-12:17: The app bundle must contain a self-contained code-server runtime at Web/code-server and the single shared Node executable at Web/code-server/lib/node. gxserver rebuilds better-sqlite3 against this same Node, so missing code-server resources are build failures instead of installed-user Node prompts.
-	if cache_matches "code-server-package-$GHOSTEX_MACOS_ARCH" "$package_digest" "$target_dir/out/node/entry.js" "$target_dir/lib/vscode/out/server-main.js" "$target_dir/lib/node" "$target_dir/node_modules" &&
-		binary_supports_macos_arch "$target_dir/lib/node" "$GHOSTEX_MACOS_ARCH"; then
+	if cache_matches "code-server-package-$GHOSTEX_MACOS_ARCH" "$package_digest" "$target_dir/out/node/entry.js" "$target_dir/lib/vscode/out/server-main.js" "$target_dir/lib/vscode/node_modules/@vscode/ripgrep/bin/rg" "$target_dir/lib/node" "$target_dir/node_modules" &&
+		binary_supports_macos_arch "$target_dir/lib/node" "$GHOSTEX_MACOS_ARCH" &&
+		binary_supports_macos_arch "$target_dir/lib/vscode/node_modules/@vscode/ripgrep/bin/rg" "$GHOSTEX_MACOS_ARCH"; then
 		# CDXC:CodeServerRuntime 2026-06-08-16:23: Web/code-server is a shared staging directory reused by arm64 and x86_64 release passes. A per-arch cache stamp is only valid when the staged Node executable still contains the requested CPU slice; otherwise restage the package so app validation and gxserver native modules use the matching runtime.
 		echo "code-server package is current; skipping package rebuild."
 		return 0
@@ -473,13 +562,16 @@ package_t3code_server() {
 	local node_bin="$2"
 	local npm_bin="$3"
 	local target_dir="$WEB_DIR/t3code-server"
-	local node_identity npm_version package_digest
+	local node_identity npm_version package_digest expected_node_pty_prebuild
 
 	# CDXC:T3CodePackaging 2026-06-06-05:50: T3 Code is a core advertised pane type, so release builds must ship the managed server runtime under Web/t3code-server instead of letting installed apps fall through to a developer-only source checkout and fail with a network-looking pane error.
 	#
 	# CDXC:LocalStartFast 2026-06-07-16:23: `bun run start` already treats T3 Code as a packaged runtime, so the build should not run the T3 monorepo build and production npm install on every app relaunch. Reuse the package when the T3 source tree, packager script, and selected Node/npm runtime are unchanged.
+	#
+	# CDXC:LocalStartReleaseParity 2026-06-09-09:07: Web/t3code-server is a shared staging directory reused by arm64 and x86_64 release/local-start passes. A per-arch cache stamp is valid only when the staged node-pty prebuild still matches GHOSTEX_MACOS_ARCH; otherwise rebuild so `bun run start` cannot copy Intel T3 native modules into an arm64 app.
 	node_identity="$("$node_bin" -p 'process.version + ":" + process.versions.modules')"
 	npm_version="$("$npm_bin" --version 2>/dev/null || true)"
+	expected_node_pty_prebuild="$target_dir/node_modules/node-pty/prebuilds/$(node_pty_prebuild_platform_dir)/pty.node"
 	package_digest="$(fingerprint_inputs \
 		--value "t3code-package-v2" \
 		--value "arch=$GHOSTEX_MACOS_ARCH" \
@@ -488,7 +580,8 @@ package_t3code_server() {
 		--path "$t3_root" \
 		--path "$REPO_ROOT/scripts/build-t3code-if-needed.mjs" \
 		--path "$REPO_ROOT/scripts/package-t3code-server.mjs")"
-	if cache_matches "t3code-server-package-$GHOSTEX_MACOS_ARCH" "$package_digest" "$target_dir/dist/bin.mjs" "$target_dir/package.json" "$target_dir/node_modules"; then
+	if cache_matches "t3code-server-package-$GHOSTEX_MACOS_ARCH" "$package_digest" "$target_dir/dist/bin.mjs" "$target_dir/package.json" "$target_dir/node_modules" "$expected_node_pty_prebuild" &&
+		node_pty_prebuilds_match_arch "$target_dir"; then
 		echo "T3 Code package is current; skipping package rebuild."
 		return 0
 	fi
@@ -843,33 +936,27 @@ export ZIG="$ZIG_BIN"
 DERIVED_DATA="${DERIVED_DATA:-$REPO_ROOT/build/$GHOSTEX_MACOS_ARCH}"
 # CDXC:NativeBuild 2026-05-23-13:29: `bun run start` should not rely on Xcode's first matching macOS destination when both arm64 and x86_64 host destinations are present. Pin the destination to the requested build architecture so warning output stays actionable.
 XCODE_DESTINATION="platform=macOS,arch=$GHOSTEX_MACOS_ARCH"
-GHOSTEX_APP_VARIANT="${GHOSTEX_APP_VARIANT:-prod}"
-if [[ "$GHOSTEX_APP_VARIANT" == "dev" ]]; then
-	# CDXC:DevAppFlavor 2026-04-28-02:01: The dev build must generate a
-	# distinct macOS app with its own bundle id.
-	# CDXC:DevAppFlavor 2026-05-11-12:10: `bun start:dev` must not share
-	# settings, projects, sessions, hooks, browser profiles, or runtime state
-	# with the installed app, so both diagnostic and workflow homes use
-	# ~/.ghostex-dev.
-	GHOSTEX_APP_NAME="${GHOSTEX_APP_NAME:-Ghostex-dev}"
-	GHOSTEX_APP_DISPLAY_NAME="${GHOSTEX_APP_DISPLAY_NAME:-Ghostex Dev}"
-	GHOSTEX_BUNDLE_ID="${GHOSTEX_BUNDLE_ID:-com.madda.ghostex-dev.host}"
-	GHOSTEX_HOME_DIRECTORY_NAME="${GHOSTEX_HOME_DIRECTORY_NAME:-.ghostex-dev}"
-	GHOSTEX_SHARED_HOME_DIRECTORY_NAME="${GHOSTEX_SHARED_HOME_DIRECTORY_NAME:-.ghostex-dev}"
-	GHOSTEX_SPARKLE_FEED_URL="${GHOSTEX_SPARKLE_FEED_URL:-https://raw.githubusercontent.com/maddada/Ghostex/main/appcast.xml}"
-	GHOSTEX_SPARKLE_PUBLIC_ED_KEY="${GHOSTEX_SPARKLE_PUBLIC_ED_KEY:-AGWDPeMqfhmbjt8Pbk+VTC9fDfXAYq+cZoLGCYuGn70=}"
-else
-	GHOSTEX_APP_NAME="${GHOSTEX_APP_NAME:-Ghostex}"
-	GHOSTEX_APP_DISPLAY_NAME="${GHOSTEX_APP_DISPLAY_NAME:-Ghostex}"
-	GHOSTEX_BUNDLE_ID="${GHOSTEX_BUNDLE_ID:-com.madda.ghostex.host}"
-	GHOSTEX_HOME_DIRECTORY_NAME="${GHOSTEX_HOME_DIRECTORY_NAME:-.ghostex}"
-	GHOSTEX_SHARED_HOME_DIRECTORY_NAME="${GHOSTEX_SHARED_HOME_DIRECTORY_NAME:-.ghostex}"
-	# CDXC:Distribution 2026-05-14-19:06: Ghostex is the public app name.
-	# Release builds should publish and self-update from the Ghostex GitHub
-	# repository while old ghostex repository URLs can continue to redirect.
-	GHOSTEX_SPARKLE_FEED_URL="${GHOSTEX_SPARKLE_FEED_URL:-https://raw.githubusercontent.com/maddada/Ghostex/main/appcast.xml}"
-	GHOSTEX_SPARKLE_PUBLIC_ED_KEY="${GHOSTEX_SPARKLE_PUBLIC_ED_KEY:-AGWDPeMqfhmbjt8Pbk+VTC9fDfXAYq+cZoLGCYuGn70=}"
+GHOSTEX_APP_NAME="${GHOSTEX_APP_NAME:-Ghostex}"
+GHOSTEX_APP_DISPLAY_NAME="${GHOSTEX_APP_DISPLAY_NAME:-Ghostex}"
+GHOSTEX_BUNDLE_ID="${GHOSTEX_BUNDLE_ID:-com.madda.ghostex.host}"
+GHOSTEX_HOME_DIRECTORY_NAME="${GHOSTEX_HOME_DIRECTORY_NAME:-.ghostex}"
+GHOSTEX_SHARED_HOME_DIRECTORY_NAME="${GHOSTEX_SHARED_HOME_DIRECTORY_NAME:-.ghostex}"
+uses_removed_dev_app_value=false
+case "$GHOSTEX_APP_NAME:$GHOSTEX_APP_DISPLAY_NAME:$GHOSTEX_BUNDLE_ID:$GHOSTEX_HOME_DIRECTORY_NAME:$GHOSTEX_SHARED_HOME_DIRECTORY_NAME" in
+	*Ghostex-dev* | *"Ghostex Dev"* | *com.madda.ghostex-dev* | *.ghostex-dev*)
+		uses_removed_dev_app_value=true
+		;;
+esac
+if [[ "$uses_removed_dev_app_value" == "true" ]]; then
+	# CDXC:LocalStartSingleApp 2026-06-09-09:27: Ghostex-dev app metadata overrides were removed with the dev start/build entry points. Refuse old names, bundle ids, and storage homes so direct build commands cannot recreate the alternate app under another flag.
+	echo "Ghostex-dev builds were removed. Use the production Ghostex app metadata." >&2
+	exit 1
 fi
+# CDXC:Distribution 2026-05-14-19:06: Ghostex is the public app name.
+# Release builds should publish and self-update from the Ghostex GitHub
+# repository while old ghostex repository URLs can continue to redirect.
+GHOSTEX_SPARKLE_FEED_URL="${GHOSTEX_SPARKLE_FEED_URL:-https://raw.githubusercontent.com/maddada/Ghostex/main/appcast.xml}"
+GHOSTEX_SPARKLE_PUBLIC_ED_KEY="${GHOSTEX_SPARKLE_PUBLIC_ED_KEY:-AGWDPeMqfhmbjt8Pbk+VTC9fDfXAYq+cZoLGCYuGn70=}"
 GHOSTEX_LID_SLEEP_HELPER_LABEL="${GHOSTEX_LID_SLEEP_HELPER_LABEL:-$GHOSTEX_BUNDLE_ID.LidSleepHelper}"
 
 # CDXC:AutoUpdate 2026-05-02-06:51: Sparkle update checks need an appcast URL

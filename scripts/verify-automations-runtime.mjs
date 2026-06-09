@@ -25,10 +25,10 @@ const keepArtifacts = args.has("--keep");
 if (!shouldRun) {
   console.error(
     [
-      "This verifier mutates the Ghostex dev app state by adding temporary projects and a verifier agent.",
-      "Start Ghostex dev first, then rerun with GHOSTEX_VERIFY_AUTOMATIONS=1 or --yes.",
+      "This verifier mutates the Ghostex app state by adding temporary projects and a verifier agent.",
+      "Start Ghostex first, then rerun with GHOSTEX_VERIFY_AUTOMATIONS=1 or --yes.",
       "Example:",
-      "  bun run start:dev",
+      "  bun run start",
       "  GHOSTEX_VERIFY_AUTOMATIONS=1 node scripts/verify-automations-runtime.mjs",
     ].join("\n"),
   );
@@ -99,7 +99,7 @@ async function assertDevBridgeReady() {
     await cli(["state", "--timeout", "3000"]);
   } catch (error) {
     throw new Error(
-      `Ghostex dev bridge is not reachable. Start it with "bun run start:dev" before running this verifier.\n${error.message}`,
+      `Ghostex bridge is not reachable. Start it with "bun run start" before running this verifier.\n${error.message}`,
     );
   }
 }
@@ -356,7 +356,7 @@ async function cli(cliArgs) {
     cwd: REPO_ROOT,
     env: {
       ...process.env,
-      GHOSTEX_APP_VARIANT: "dev",
+      GHOSTEX_APP_VARIANT: "prod",
     },
     maxBuffer: 20 * 1024 * 1024,
     timeout: 120_000,

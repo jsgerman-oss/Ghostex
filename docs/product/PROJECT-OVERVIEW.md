@@ -62,7 +62,6 @@ The `ghostex` and `gx` commands expose session management outside the UI. They a
 Common commands are defined in `package.json`:
 
 - `bun run start` starts the native Ghostex host.
-- `bun run start:dev` starts the development workflow.
 - `bun run build` builds the macOS host.
 - `bun run typecheck` runs TypeScript checking.
 - `bun run test` runs the Vitest suite.
