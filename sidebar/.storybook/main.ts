@@ -13,13 +13,11 @@ const config: StorybookConfig = {
    * Storybook now covers the native/shared sidebar UI only. The old VS Code
    * workspace webview was removed with the unused extension terminal backend.
    *
-   * CDXC:RepoOrganization 2026-06-04-01:42
-   * Storybook config lives under config/storybook so root stays focused on
-   * apps, subrepos, release metadata, and top-level package entry points.
-   * Paths must resolve from the config directory because package scripts pass
-   * `-c config/storybook` instead of relying on the default .storybook folder.
+   * CDXC:RepoOrganization 2026-06-09-09:31
+   * Storybook config lives under sidebar/.storybook so the repo root has fewer folders while config ownership stays with the sidebar UI surface.
+   * Paths must resolve from this config directory because package scripts pass `-c sidebar/.storybook` instead of relying on the default root .storybook folder.
    */
-  stories: ["../../sidebar/**/*.stories.@(ts|tsx)"],
+  stories: ["../**/*.stories.@(ts|tsx)"],
   viteFinal: async (config) => {
     const existingPlugins = config.plugins ?? [];
     config.resolve = {
