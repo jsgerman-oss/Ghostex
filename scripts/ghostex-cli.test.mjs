@@ -935,8 +935,12 @@ printf '%s\\n' "$@" > ${JSON.stringify(markerFile)}
     /**
      * CDXC:GenerateTitleSkill 2026-05-27-07:28:
      * `$ghostex-generate-title` replaces the personal title skill with a
-     * Ghostex workflow: title under 47 characters, then stage `/rename <title>`
-     * into the current session with `send-text` and no Enter.
+     * Ghostex workflow: title under 47 characters, then submit `/rename <title>`
+     * in the current session.
+     *
+     * CDXC:GenerateTitleSkill 2026-06-09-17:49:
+     * The installed skill must use `rename-command` so generated titles submit
+     * through the native Enter bridge used by Delayed Send.
      */
     const tempDir = await mkdtemp(path.join(tmpdir(), "ghostex-generate-title-skill-"));
     try {
@@ -957,11 +961,12 @@ printf '%s\\n' "$@" > ${JSON.stringify(markerFile)}
         skill: "ghostex-generate-title",
         targetDir,
       });
-      expect(payload.command).toContain("ghostex send-text");
+      expect(payload.command).toContain("ghostex rename-command");
       expect(skillMarkdown).toContain("# ghostex-generate-title");
       expect(skillMarkdown).toContain("under 47 characters");
-      expect(skillMarkdown).toContain('ghostex send-text --session-id "$GHOSTEX_SESSION_ID" --text "/rename <generated title>"');
-      expect(skillMarkdown).toContain("Do not press Enter");
+      expect(skillMarkdown).toContain('ghostex rename-command --session-id "$GHOSTEX_SESSION_ID" --title "<generated title>"');
+      expect(skillMarkdown).toContain("same native Enter path used by Delayed Send");
+      expect(skillMarkdown).not.toContain("Do not press Enter");
     } finally {
       await rm(tempDir, { force: true, recursive: true });
     }
@@ -1064,7 +1069,8 @@ printf '%s\\n' "$@" > ${JSON.stringify(markerFile)}
     expect(help).toContain("gx generate-title install-skill");
     expect(help).toContain("$ghostex-generate-title");
     expect(help).toContain("shorter than 47 characters");
-    expect(help).toContain("Do not press Enter");
+    expect(help).toContain("ghostex rename-command");
+    expect(help).not.toContain("Do not press Enter");
   });
 
   test("documents Ghostex Manage Beads under gx manage-beads help", async () => {

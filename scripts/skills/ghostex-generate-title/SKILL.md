@@ -4,23 +4,23 @@ description: >-
   Generate a concise Ghostex session title for the current thread or
   conversation. Use when the user asks for a thread name, chat title, session
   title, resume title, or any concise label summarizing what was worked on; then
-  write `/rename <title>` into the current Ghostex session without pressing
-  Enter.
+  submit `/rename <title>` in the current Ghostex session.
 ---
 
 # ghostex-generate-title
 
 Generate one title only.
 
-After generating the title, write the rename command into this same Ghostex
-session without submitting it:
+After generating the title, submit the rename command in this same Ghostex
+session:
 
 ```bash
-ghostex send-text --session-id "$GHOSTEX_SESSION_ID" --text "/rename <generated title>"
+ghostex rename-command --session-id "$GHOSTEX_SESSION_ID" --title "<generated title>"
 ```
 
-Do not press Enter for this rename command. The user or calling workflow can
-submit it.
+Use `rename-command` instead of `send-text` alone. It stages `/rename <title>`
+and submits Enter through Ghostex's supported session bridge; in the macOS app,
+that reaches the same native Enter path used by Delayed Send.
 
 ## Rules
 
@@ -34,5 +34,5 @@ submit it.
   resolves that id directly.
 - If `GHOSTEX_SESSION_ID` is missing, return the title only and do not guess a
   session.
-- If `send-text` fails with no matching session, return the title only. Do not
-  retry with a different selector.
+- If `rename-command` fails with no matching session, return the title only. Do
+  not retry with a different selector.
