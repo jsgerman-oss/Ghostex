@@ -121,6 +121,12 @@ import {
   type ProjectAutomationAgentOption,
   type ProjectAutomationsBridgeState,
 } from "../../shared/automations";
+import { AGENT_LOGO_COLORS, AGENT_LOGOS } from "../../sidebar/agent-logos";
+import {
+  createSidebarAgentSelectItems,
+  getSidebarAgentIconById,
+  type SidebarAgentIcon,
+} from "../../shared/sidebar-agents";
 import "../../sidebar/styles/shadcn.generated.css";
 
 type LoadState = "idle" | "loading" | "ready" | "error";
@@ -221,6 +227,40 @@ type BoardRefreshOptions = {
 
 type ProjectSurfaceTab = "triage" | "automations" | "runs" | "board";
 
+const AUTOMATION_SCHEDULE_PRESETS = [
+  { label: "Every 5 minutes", value: "5m" },
+  { label: "Every 15 minutes", value: "15m" },
+  { label: "Every 30 minutes", value: "30m" },
+  { label: "Hourly", value: "hourly" },
+  { label: "Every 6 hours", value: "6h" },
+  { label: "Every 12 hours", value: "12h" },
+  { label: "Daily", value: "daily" },
+  { label: "Weekdays", value: "weekdays" },
+  { label: "Weekly", value: "weekly" },
+  { label: "Custom cron", value: "cron" },
+] as const;
+
+type AutomationSchedulePreset = (typeof AUTOMATION_SCHEDULE_PRESETS)[number]["value"];
+
+const AUTOMATION_INTERVAL_MS_BY_PRESET: Partial<Record<AutomationSchedulePreset, number>> = {
+  "5m": 5 * 60 * 1000,
+  "15m": 15 * 60 * 1000,
+  "30m": 30 * 60 * 1000,
+  hourly: 60 * 60 * 1000,
+  "6h": 6 * 60 * 60 * 1000,
+  "12h": 12 * 60 * 60 * 1000,
+};
+
+const AUTOMATION_WEEKDAY_OPTIONS = [
+  "Sunday",
+  "Monday",
+  "Tuesday",
+  "Wednesday",
+  "Thursday",
+  "Friday",
+  "Saturday",
+] as const;
+
 type AutomationDraft = {
   agentId: string;
   cronExpression: string;
@@ -231,7 +271,7 @@ type AutomationDraft = {
   name: string;
   prompt: string;
   projectId: string;
-  schedulePreset: "15m" | "hourly" | "daily" | "weekly" | "cron";
+  schedulePreset: AutomationSchedulePreset;
   scheduleTime: string;
   setupCommand: string;
   threadSessionId: string;
@@ -396,6 +436,10 @@ function ProjectBoardApp() {
    * CDXC:ProjectBoard 2026-05-30-09:45:
    * Create & Start should hand the created bead to native session launch as soon as the bead id is available.
    * Board refresh, lane hydration, labels, dependencies, and generated title updates are secondary work and must not sit in front of terminal creation.
+   *
+   * CDXC:ProjectBoardForms 2026-06-09-15:36:
+   * Typing in New automation, edit-ticket, or new-ticket fields must never blank the Project/Kanban page.
+   * Snapshot input values before functional state updates because React clears event currentTarget after dispatch and delayed updaters cannot safely read from the event object.
    */
   const isRefreshingRef = useRef(false);
   const issuesSignatureRef = useRef("");
@@ -1301,15 +1345,17 @@ function ProjectBoardApp() {
   };
 
   const openEditAutomationDialog = (automation: AutomationDefinition) => {
-    void loadAutomationConversationState(automation.projectIds[0] ?? automationState.projectId);
-    setAutomationDraft(createAutomationDraftFromDefinition(automation));
+    void loadAutomationConversationState(automationState.projectId);
+    setAutomationDraft(
+      createAutomationDraftFromDefinition(automation, automationState.projectId || projectId),
+    );
     setAutomationDialogOpen(true);
   };
 
   const saveAutomation = async () => {
     const definition = createAutomationDefinitionFromDraft(automationDraft, {
       fallbackAgentId: automationState.defaultAgentId || automationState.agents[0]?.agentId || "",
-      projectId: automationDraft.projectId || automationState.projectId || projectId,
+      projectId: automationState.projectId || projectId,
     });
     if (!definition) {
       setErrorMessage("Name, agent, prompt, and schedule are required.");
@@ -1325,7 +1371,7 @@ function ProjectBoardApp() {
         action: "automationSave",
         payloadJson: JSON.stringify(definition),
         projectId: definition.projectIds[0] ?? projectId,
-        projectPath: automationDraftProject?.path ?? projectPath,
+        projectPath: automationState.projectPath || projectPath,
         ...(remoteMachineId ? { remoteMachineId } : {}),
       });
       if (!response.ok) {
@@ -1549,13 +1595,47 @@ function ProjectBoardApp() {
     triageAutomationRuns.find((run) => run.id === selectedAutomationRunId) ?? triageAutomationRuns[0];
   const selectedVisibleRun =
     visibleAutomationRuns.find((run) => run.id === selectedAutomationRunId) ?? visibleAutomationRuns[0];
-  const automationDraftProject =
-    automationState.projects.find((candidate) => candidate.projectId === automationDraft.projectId) ??
-    automationState.projects.find((candidate) => candidate.projectId === automationState.projectId);
-  const automationDraftCanUseWorktrees =
-    automationDraftProject?.canUseWorktrees ?? automationState.projectCanUseWorktrees;
-  const automationDraftWorktreeUnavailableReason =
-    automationDraftProject?.worktreeUnavailableReason ?? automationState.worktreeUnavailableReason;
+  const automationDraftCanUseWorktrees = automationState.projectCanUseWorktrees;
+  const automationDraftWorktreeUnavailableReason = automationState.worktreeUnavailableReason;
+  /*
+   * CDXC:ProjectAutomations 2026-06-09-15:38:
+   * Automation agents come from the Project Board bridge as label/icon options, while shared select metadata expects sidebar-agent names.
+   * Adapt only the root select items so the automation bridge contract stays focused on user-facing labels.
+   */
+  const automationAgentSelectItems = useMemo(
+    () =>
+      createSidebarAgentSelectItems(
+        automationState.agents.map((agent) => ({
+          agentId: agent.agentId,
+          name: agent.label,
+        })),
+      ),
+    [automationState.agents],
+  );
+  const selectedAutomationAgent = useMemo(
+    () => automationState.agents.find((agent) => agent.agentId === automationDraft.agentId),
+    [automationDraft.agentId, automationState.agents],
+  );
+  const automationScheduleSelectItems = useMemo(
+    () => AUTOMATION_SCHEDULE_PRESETS.map((option) => ({ label: option.label, value: option.value })),
+    [],
+  );
+  const automationWeekdaySelectItems = useMemo(
+    () =>
+      AUTOMATION_WEEKDAY_OPTIONS.map((day, index) => ({
+        label: day,
+        value: String(index),
+      })),
+    [],
+  );
+  const automationSessionSelectItems = useMemo(
+    () =>
+      automationConversationState.sessions.map((session) => ({
+        label: session.label,
+        value: session.sessionId,
+      })),
+    [automationConversationState.sessions],
+  );
 
   useEffect(() => {
     if (!newTicketOpen) {
@@ -1569,10 +1649,32 @@ function ProjectBoardApp() {
 
   return (
     <main className="project-board-shell">
+      {/*
+       * CDXC:ProjectBoard 2026-06-09-14:35:
+       * The Project surface header is one row: project name, centered equal-width view tabs, then refresh and create actions. Drop the eyebrow plus generic "Project" title so the board opens directly on the active project name.
+       */}
       <section className="project-board-toolbar">
-        <div>
-          <p className="project-board-eyebrow">{projectName}</p>
-          <h1>Project</h1>
+        <h1 className="project-board-toolbar-title">{projectName}</h1>
+        <div className="project-board-tabs" aria-label="Project views">
+          {[
+            ["triage", "Triage"],
+            ["automations", "Automations"],
+            ["runs", "Runs"],
+            ["board", "Board"],
+          ].map(([value, label]) => (
+            <button
+              className="project-board-tab"
+              data-active={activeSurfaceTab === value}
+              key={value}
+              onClick={() => setActiveSurfaceTab(value as ProjectSurfaceTab)}
+              type="button"
+            >
+              {label}
+              {value === "triage" && triageActionRunCount > 0 ? (
+                <span>{triageActionRunCount}</span>
+              ) : null}
+            </button>
+          ))}
         </div>
         <div className="project-board-toolbar-actions">
           <Button
@@ -1600,28 +1702,6 @@ function ProjectBoardApp() {
             </Button>
           )}
         </div>
-      </section>
-
-      <section className="project-board-tabs" aria-label="Project views">
-        {[
-          ["triage", "Triage"],
-          ["automations", "Automations"],
-          ["runs", "Runs"],
-          ["board", "Board"],
-        ].map(([value, label]) => (
-          <button
-            className="project-board-tab"
-            data-active={activeSurfaceTab === value}
-            key={value}
-            onClick={() => setActiveSurfaceTab(value as ProjectSurfaceTab)}
-            type="button"
-          >
-            {label}
-            {value === "triage" && triageActionRunCount > 0 ? (
-              <span>{triageActionRunCount}</span>
-            ) : null}
-          </button>
-        ))}
       </section>
 
       {activeSurfaceTab === "board" ? (
@@ -1737,6 +1817,7 @@ function ProjectBoardApp() {
             actionId={automationActionId}
             agents={automationState.agents}
             automations={automationState.automations}
+            onCreate={openNewAutomationDialog}
             onDelete={deleteAutomation}
             onEdit={openEditAutomationDialog}
             onRunNow={runAutomationNow}
@@ -1819,155 +1900,131 @@ function ProjectBoardApp() {
             <DialogDescription>{projectName}</DialogDescription>
           </DialogHeader>
           <div className="project-automation-form">
-            <label>
+            {/*
+             * CDXC:ProjectAutomations 2026-06-09-10:30:
+             * Automation setup is scoped to the Project board's current project, so the create/edit dialog drops project switching and keeps dropdown widths aligned at 250px for agent, schedule, weekday, and thread-session fields.
+             */}
+            <label className="project-automation-field-full">
               <span>Name</span>
               <Input
-                onChange={(event) =>
-                  setAutomationDraft((current) => ({ ...current, name: event.currentTarget.value }))
-                }
+                onChange={(event) => {
+                  const name = event.currentTarget.value;
+                  setAutomationDraft((current) => ({ ...current, name }));
+                }}
                 value={automationDraft.name}
               />
             </label>
-            <label>
-              <span>Agent</span>
-              <Select
-                onValueChange={(value) =>
-                  setAutomationDraft((current) => ({ ...current, agentId: value }))
-                }
-                value={automationDraft.agentId}
-              >
-                <SelectTrigger>
-                  <SelectValue placeholder="Choose agent" />
-                </SelectTrigger>
-                <SelectContent>
-                  {automationState.agents.map((agent) => (
-                    <SelectItem key={agent.agentId} value={agent.agentId}>
-                      {agent.label}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </label>
-            <label>
-              <span>Project</span>
-              <Select
-                onValueChange={(value) => {
-                  const targetProject = automationState.projects.find((candidate) => candidate.projectId === value);
-                  setAutomationTargetProjectId(value);
-                  setAutomationDraft((current) => ({
-                    ...current,
-                    executionKind:
-                      current.executionKind === "worktree" && targetProject?.canUseWorktrees === false
-                        ? "local"
-                        : current.executionKind,
-                    projectId: value,
-                    threadSessionId: current.projectId === value ? current.threadSessionId : "",
-                  }));
-                  void loadAutomationState(value);
-                  void loadAutomationConversationState(value);
-                }}
-                value={automationDraft.projectId || automationState.projectId}
-              >
-                <SelectTrigger>
-                  <SelectValue placeholder="Choose project" />
-                </SelectTrigger>
-                <SelectContent>
-                  {(automationState.projects.length > 0
-                    ? automationState.projects
-                    : [
-                        {
-                          canUseWorktrees: automationState.projectCanUseWorktrees,
-                          label: automationState.projectName || projectName,
-                          path: automationState.projectPath || projectPath,
-                          projectId: automationState.projectId || projectId,
-                          worktreeUnavailableReason: automationState.worktreeUnavailableReason,
-                        },
-                      ]
-                  ).map((targetProject) => (
-                    <SelectItem key={targetProject.projectId} value={targetProject.projectId}>
-                      {targetProject.label}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </label>
-            <label>
-              <span>Schedule</span>
-              <Select
-                onValueChange={(value) =>
-                  setAutomationDraft((current) => ({
-                    ...current,
-                    schedulePreset: value as AutomationDraft["schedulePreset"],
-                  }))
-                }
-                value={automationDraft.schedulePreset}
-              >
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="15m">Every 15 minutes</SelectItem>
-                  <SelectItem value="hourly">Hourly</SelectItem>
-                  <SelectItem value="daily">Daily</SelectItem>
-                  <SelectItem value="weekly">Weekly</SelectItem>
-                  <SelectItem value="cron">Custom cron</SelectItem>
-                </SelectContent>
-              </Select>
-            </label>
-            {automationDraft.schedulePreset === "cron" ? (
+            <div className="project-automation-form-grid">
               <label>
-                <span>Cron</span>
-                <Input
-                  onChange={(event) =>
+                <span>Agent</span>
+                <Select
+                  items={automationAgentSelectItems}
+                  onValueChange={(value) =>
+                    setAutomationDraft((current) => ({ ...current, agentId: value }))
+                  }
+                  value={automationDraft.agentId}
+                >
+                  <SelectTrigger className="project-automation-select">
+                    <SelectValue placeholder="Choose agent">
+                      {selectedAutomationAgent ? (
+                        <AutomationAgentOptionLabel agent={selectedAutomationAgent} />
+                      ) : null}
+                    </SelectValue>
+                  </SelectTrigger>
+                  <SelectContent>
+                    {automationState.agents.map((agent) => (
+                      <SelectItem key={agent.agentId} value={agent.agentId}>
+                        <AutomationAgentOptionLabel agent={agent} />
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </label>
+              <label>
+                <span>Schedule</span>
+                <Select
+                  items={automationScheduleSelectItems}
+                  onValueChange={(value) =>
                     setAutomationDraft((current) => ({
                       ...current,
-                      cronExpression: event.currentTarget.value,
+                      schedulePreset: value as AutomationDraft["schedulePreset"],
                     }))
                   }
+                  value={automationDraft.schedulePreset}
+                >
+                  <SelectTrigger className="project-automation-select">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {AUTOMATION_SCHEDULE_PRESETS.map((option) => (
+                      <SelectItem key={option.value} value={option.value}>
+                        {option.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </label>
+              {automationDraft.schedulePreset === "weekly" ? (
+                <label>
+                  <span>Day</span>
+                  <Select
+                    items={automationWeekdaySelectItems}
+                    onValueChange={(value) =>
+                      setAutomationDraft((current) => ({ ...current, weeklyDay: value }))
+                    }
+                    value={automationDraft.weeklyDay}
+                  >
+                    <SelectTrigger className="project-automation-select">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {AUTOMATION_WEEKDAY_OPTIONS.map((day, index) => (
+                        <SelectItem key={day} value={String(index)}>
+                          {day}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </label>
+              ) : null}
+              {automationDraft.schedulePreset === "daily" ||
+              automationDraft.schedulePreset === "weekly" ||
+              automationDraft.schedulePreset === "weekdays" ? (
+                <label>
+                  <span>Time</span>
+                  <Input
+                    className="project-automation-select"
+                    onChange={(event) => {
+                      const scheduleTime = event.currentTarget.value;
+                      setAutomationDraft((current) => ({
+                        ...current,
+                        scheduleTime,
+                      }));
+                    }}
+                    type="time"
+                    value={automationDraft.scheduleTime}
+                  />
+                </label>
+              ) : null}
+            </div>
+            {automationDraft.schedulePreset === "cron" ? (
+              <label className="project-automation-field-full">
+                <span>Cron</span>
+                <Input
+                  onChange={(event) => {
+                    const cronExpression = event.currentTarget.value;
+                    setAutomationDraft((current) => ({
+                      ...current,
+                      cronExpression,
+                    }));
+                  }}
                   placeholder="*/15 * * * *"
                   value={automationDraft.cronExpression}
                 />
               </label>
             ) : null}
-            {automationDraft.schedulePreset === "daily" || automationDraft.schedulePreset === "weekly" ? (
-              <label>
-                <span>Time</span>
-                <Input
-                  onChange={(event) =>
-                    setAutomationDraft((current) => ({
-                      ...current,
-                      scheduleTime: event.currentTarget.value,
-                    }))
-                  }
-                  type="time"
-                  value={automationDraft.scheduleTime}
-                />
-              </label>
-            ) : null}
-            {automationDraft.schedulePreset === "weekly" ? (
-              <label>
-                <span>Day</span>
-                <Select
-                  onValueChange={(value) =>
-                    setAutomationDraft((current) => ({ ...current, weeklyDay: value }))
-                  }
-                  value={automationDraft.weeklyDay}
-                >
-                  <SelectTrigger>
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"].map(
-                      (day, index) => (
-                        <SelectItem key={day} value={String(index)}>
-                          {day}
-                        </SelectItem>
-                      ),
-                    )}
-                  </SelectContent>
-                </Select>
-              </label>
-            ) : null}
+            <div className="project-automation-form-section">
+              <div className="project-automation-form-section-title">Execution</div>
             <div className="project-automation-segmented" role="group" aria-label="Execution mode">
               {[
                 ["worktree", "Worktree"],
@@ -2001,28 +2058,30 @@ function ProjectBoardApp() {
               <label>
                 <span>Setup command</span>
                 <Input
-                  onChange={(event) =>
+                  onChange={(event) => {
+                    const setupCommand = event.currentTarget.value;
                     setAutomationDraft((current) => ({
                       ...current,
-                      setupCommand: event.currentTarget.value,
-                    }))
-                  }
+                      setupCommand,
+                    }));
+                  }}
                   placeholder="Use project worktree command"
                   value={automationDraft.setupCommand}
                 />
               </label>
             ) : null}
             {automationDraft.executionKind === "thread" ? (
-              <>
+              <div className="project-automation-form-grid">
                 <label>
                   <span>Session</span>
                   <Select
+                    items={automationSessionSelectItems}
                     onValueChange={(value) =>
                       setAutomationDraft((current) => ({ ...current, threadSessionId: value }))
                     }
                     value={automationDraft.threadSessionId}
                   >
-                    <SelectTrigger>
+                    <SelectTrigger className="project-automation-select">
                       <SelectValue placeholder="Choose session" />
                     </SelectTrigger>
                     <SelectContent>
@@ -2037,33 +2096,38 @@ function ProjectBoardApp() {
                 <label>
                   <span>Expires</span>
                   <Input
-                    onChange={(event) =>
+                    className="project-automation-select"
+                    onChange={(event) => {
+                      const expiresAt = event.currentTarget.value;
                       setAutomationDraft((current) => ({
                         ...current,
-                        expiresAt: event.currentTarget.value,
-                      }))
-                    }
+                        expiresAt,
+                      }));
+                    }}
                     type="datetime-local"
                     value={automationDraft.expiresAt}
                   />
                 </label>
-              </>
+              </div>
             ) : null}
+            </div>
             <label className="project-automation-prompt-field">
               <span>Prompt</span>
               <Textarea
-                onChange={(event) =>
-                  setAutomationDraft((current) => ({ ...current, prompt: event.currentTarget.value }))
-                }
+                onChange={(event) => {
+                  const prompt = event.currentTarget.value;
+                  setAutomationDraft((current) => ({ ...current, prompt }));
+                }}
                 value={automationDraft.prompt}
               />
             </label>
             <label className="project-automation-enabled">
               <input
                 checked={automationDraft.enabled}
-                onChange={(event) =>
-                  setAutomationDraft((current) => ({ ...current, enabled: event.currentTarget.checked }))
-                }
+                onChange={(event) => {
+                  const enabled = event.currentTarget.checked;
+                  setAutomationDraft((current) => ({ ...current, enabled }));
+                }}
                 type="checkbox"
               />
               <span>Enabled</span>
@@ -2124,9 +2188,10 @@ function ProjectBoardApp() {
               <span>Title</span>
               <Textarea
                 className="project-ticket-title-input"
-                onChange={(event) =>
-                  setDetail((current) => ({ ...current, title: event.target.value }))
-                }
+                onChange={(event) => {
+                  const title = event.currentTarget.value;
+                  setDetail((current) => ({ ...current, title }));
+                }}
                 value={detail.title}
               />
             </label>
@@ -2134,12 +2199,13 @@ function ProjectBoardApp() {
               <span>Prompt</span>
               <Textarea
                 className="project-ticket-prompt-input"
-                onChange={(event) =>
+                onChange={(event) => {
+                  const description = event.currentTarget.value;
                   setDetail((current) => ({
                     ...current,
-                    description: event.target.value,
-                  }))
-                }
+                    description,
+                  }));
+                }}
                 onPaste={(event) => {
                   if (!hasProjectBoardImagePastePayload(event.clipboardData)) {
                     return;
@@ -2242,9 +2308,10 @@ function ProjectBoardApp() {
             <label className="project-ticket-field">
               <span>Add comment</span>
               <Textarea
-                onChange={(event) =>
-                  setDetail((current) => ({ ...current, comment: event.target.value }))
-                }
+                onChange={(event) => {
+                  const comment = event.currentTarget.value;
+                  setDetail((current) => ({ ...current, comment }));
+                }}
                 placeholder="Add a note for the team."
                 value={detail.comment}
               />
@@ -2346,7 +2413,10 @@ function ProjectBoardApp() {
               <span>Title</span>
               <Textarea
                 className="project-ticket-title-input"
-                onChange={(event) => setNewTicket((current) => ({ ...current, title: event.target.value }))}
+                onChange={(event) => {
+                  const title = event.currentTarget.value;
+                  setNewTicket((current) => ({ ...current, title }));
+                }}
                 placeholder="Auto-generated from prompt when left empty"
                 value={newTicket.title}
               />
@@ -2355,12 +2425,13 @@ function ProjectBoardApp() {
               <span>Prompt</span>
               <Textarea
                 className="project-ticket-prompt-input"
-                onChange={(event) =>
+                onChange={(event) => {
+                  const description = event.currentTarget.value;
                   setNewTicket((current) => ({
                     ...current,
-                    description: event.target.value,
-                  }))
-                }
+                    description,
+                  }));
+                }}
                 onPaste={(event) => {
                   if (!hasProjectBoardImagePastePayload(event.clipboardData)) {
                     return;
@@ -3310,10 +3381,51 @@ function TicketCard({
   );
 }
 
+function AutomationEmptyState({
+  action,
+  description,
+  icon: Icon,
+  title,
+  variant = "panel",
+}: {
+  action?: { label: string; onClick: () => void };
+  description: string;
+  icon: typeof IconCalendarTime;
+  title: string;
+  variant?: "detail" | "panel";
+}) {
+  return (
+    <section
+      className="project-automation-empty-state"
+      data-variant={variant}
+      {...(variant === "detail" ? { "aria-label": title } : {})}
+    >
+      <div className="project-automation-empty-state-icon">
+        <Icon aria-hidden="true" />
+      </div>
+      <strong>{title}</strong>
+      <p>{description}</p>
+      {action ? (
+        <Button onClick={action.onClick} size="sm" type="button" variant="secondary">
+          {action.label}
+        </Button>
+      ) : null}
+    </section>
+  );
+}
+
+function automationRunEmptyDescription(emptyTitle: string): string {
+  if (emptyTitle.toLowerCase().includes("triage")) {
+    return "When an automation reports findings or needs attention, the result appears here for review.";
+  }
+  return "Runs appear here after automations execute on their schedule or when you run them manually.";
+}
+
 function AutomationDefinitionList({
   actionId,
   agents,
   automations,
+  onCreate,
   onDelete,
   onEdit,
   onRunNow,
@@ -3325,6 +3437,7 @@ function AutomationDefinitionList({
   actionId: string;
   agents: ProjectAutomationAgentOption[];
   automations: AutomationDefinition[];
+  onCreate: () => void;
   onDelete: (automation: AutomationDefinition) => void;
   onEdit: (automation: AutomationDefinition) => void;
   onRunNow: (automation: AutomationDefinition) => void;
@@ -3335,12 +3448,12 @@ function AutomationDefinitionList({
 }) {
   if (automations.length === 0) {
     return (
-      <Card className="project-automation-empty" size="sm">
-        <CardContent>
-          <IconCalendarTime aria-hidden="true" />
-          <strong>No automations yet</strong>
-        </CardContent>
-      </Card>
+      <AutomationEmptyState
+        action={{ label: "Create automation", onClick: onCreate }}
+        description="Schedule agents to run recurring checks, reviews, or maintenance for this project."
+        icon={IconCalendarTime}
+        title="No automations yet"
+      />
     );
   }
   return (
@@ -3350,7 +3463,8 @@ function AutomationDefinitionList({
         const unreadCount = runs.filter(
           (run) => run.automationId === automation.id && run.isUnread && !run.isArchived,
         ).length;
-        const agentLabel = automationAgentLabel(agents, automation.agentId);
+        const agent = agents.find((candidate) => candidate.agentId === automation.agentId);
+        const agentLabel = agent?.label ?? automation.agentId;
         const isBusy = actionId === automation.id;
         return (
           <Card
@@ -3369,13 +3483,21 @@ function AutomationDefinitionList({
                     <span data-enabled={automation.enabled}>{automation.enabled ? "Enabled" : "Paused"}</span>
                     <strong>{automation.name}</strong>
                   </div>
-                  <p>{describeAutomationSchedule(automation.schedule)}</p>
-                  <p>{agentLabel} - {describeAutomationMode(automation.executionMode)}</p>
+                  <div className="project-automation-card-tags">
+                    <span>{describeAutomationSchedule(automation.schedule)}</span>
+                    <span>{describeAutomationMode(automation.executionMode)}</span>
+                  </div>
+                  <div className="project-automation-card-agent">
+                    {agent && resolveAutomationAgentIcon(agent) ? (
+                      <AutomationAgentIcon icon={resolveAutomationAgentIcon(agent)!} />
+                    ) : null}
+                    <span>{agentLabel}</span>
+                  </div>
                 </div>
                 <div className="project-automation-card-meta">
                   <span>{automation.nextRunAt ? formatShortDate(automation.nextRunAt) : "No next run"}</span>
                   <span>{lastRun ? automationRunStatusLabel(lastRun.status) : "Never run"}</span>
-                  {unreadCount > 0 ? <span>{unreadCount} unread</span> : null}
+                  {unreadCount > 0 ? <span data-unread="true">{unreadCount} unread</span> : null}
                 </div>
               </div>
               <div className="project-automation-card-actions">
@@ -3466,12 +3588,11 @@ function AutomationRunList({
 }) {
   if (runs.length === 0) {
     return (
-      <Card className="project-automation-empty" size="sm">
-        <CardContent>
-          <IconBell aria-hidden="true" />
-          <strong>{emptyTitle}</strong>
-        </CardContent>
-      </Card>
+      <AutomationEmptyState
+        description={automationRunEmptyDescription(emptyTitle)}
+        icon={IconBell}
+        title={emptyTitle}
+      />
     );
   }
   return (
@@ -3595,18 +3716,22 @@ function AutomationDefinitionDetail({
 }) {
   if (!automation) {
     return (
-      <section className="project-automation-detail" aria-label="Automation details">
-        <div className="project-automation-detail-empty">
-          <IconCalendarTime aria-hidden="true" />
-          <strong>No automation selected</strong>
-        </div>
+      <section className="project-automation-detail project-automation-detail--empty" aria-label="Automation details">
+        <AutomationEmptyState
+          description="Select an automation from the list to see its schedule, prompt, and recent runs."
+          icon={IconCalendarTime}
+          title="No automation selected"
+          variant="detail"
+        />
       </section>
     );
   }
   const automationRuns = runs
     .filter((run) => run.automationId === automation.id)
     .slice(0, 5);
-  const agentLabel = automationAgentLabel(agents, automation.agentId);
+  const agent = agents.find((candidate) => candidate.agentId === automation.agentId);
+  const agentLabel = agent?.label ?? automation.agentId;
+  const agentIcon = agent ? resolveAutomationAgentIcon(agent) : undefined;
   const isBusy = actionId === automation.id;
   return (
     <section className="project-automation-detail" aria-label="Automation details">
@@ -3661,7 +3786,10 @@ function AutomationDefinitionDetail({
         </div>
         <div>
           <dt>Agent</dt>
-          <dd>{agentLabel}</dd>
+          <dd>
+            {agentIcon ? <AutomationAgentIcon icon={agentIcon} /> : null}
+            <span>{agentLabel}</span>
+          </dd>
         </div>
         <div>
           <dt>Mode</dt>
@@ -3733,15 +3861,19 @@ function AutomationRunDetail({
 }) {
   if (!run) {
     return (
-      <section className="project-automation-detail" aria-label="Automation run details">
-        <div className="project-automation-detail-empty">
-          <IconBell aria-hidden="true" />
-          <strong>No run selected</strong>
-        </div>
+      <section className="project-automation-detail project-automation-detail--empty" aria-label="Automation run details">
+        <AutomationEmptyState
+          description="Select a run from the list to review its status, summary, and linked session."
+          icon={IconBell}
+          title="No run selected"
+          variant="detail"
+        />
       </section>
     );
   }
-  const agentLabel = automation ? automationAgentLabel(agents, automation.agentId) : "Unknown agent";
+  const agent = automation ? agents.find((candidate) => candidate.agentId === automation.agentId) : undefined;
+  const agentLabel = agent?.label ?? (automation ? automation.agentId : "Unknown agent");
+  const agentIcon = agent ? resolveAutomationAgentIcon(agent) : undefined;
   const isBusy = actionId === run.id;
   const isActiveRun = isAutomationRunActive(run);
   return (
@@ -3800,7 +3932,10 @@ function AutomationRunDetail({
         </div>
         <div>
           <dt>Agent</dt>
-          <dd>{agentLabel}</dd>
+          <dd>
+            {agentIcon ? <AutomationAgentIcon icon={agentIcon} /> : null}
+            <span>{agentLabel}</span>
+          </dd>
         </div>
         <div>
           <dt>Created</dt>
@@ -3966,36 +4101,58 @@ function createAutomationDraft(input: Partial<AutomationDraft> = {}): Automation
   };
 }
 
-function createAutomationDraftFromDefinition(definition: AutomationDefinition): AutomationDraft {
+function createAutomationDraftFromDefinition(
+  definition: AutomationDefinition,
+  projectId: string,
+): AutomationDraft {
+  const schedulePreset = resolveAutomationSchedulePreset(definition.schedule);
   const schedule = definition.schedule;
-  if (schedule.kind === "interval" && schedule.everyMs === 15 * 60 * 1000) {
-    return createAutomationDraftFromDefinitionSchedule(definition, "15m");
-  }
-  if (schedule.kind === "interval") {
-    return createAutomationDraftFromDefinitionSchedule(definition, "hourly");
-  }
   if (schedule.kind === "weekly") {
-    return createAutomationDraftFromDefinitionSchedule(definition, "weekly", {
+    return createAutomationDraftFromDefinitionSchedule(definition, schedulePreset, projectId, {
       scheduleTime: schedule.time,
       weeklyDay: String(schedule.days[0] ?? 1),
     });
   }
   if (schedule.kind === "daily") {
-    return createAutomationDraftFromDefinitionSchedule(definition, "daily", {
+    return createAutomationDraftFromDefinitionSchedule(definition, schedulePreset, projectId, {
       scheduleTime: schedule.time,
     });
   }
   if (schedule.kind === "cron") {
-    return createAutomationDraftFromDefinitionSchedule(definition, "cron", {
+    return createAutomationDraftFromDefinitionSchedule(definition, schedulePreset, projectId, {
       cronExpression: schedule.expression,
     });
   }
-  return createAutomationDraftFromDefinitionSchedule(definition, "15m");
+  return createAutomationDraftFromDefinitionSchedule(definition, schedulePreset, projectId);
+}
+
+function resolveAutomationSchedulePreset(schedule: AutomationSchedule): AutomationSchedulePreset {
+  if (schedule.kind === "interval") {
+    const matchedPreset = Object.entries(AUTOMATION_INTERVAL_MS_BY_PRESET).find(
+      ([, everyMs]) => everyMs === schedule.everyMs,
+    );
+    return (matchedPreset?.[0] as AutomationSchedulePreset | undefined) ?? "hourly";
+  }
+  if (schedule.kind === "weekly") {
+    const weekdayPreset = [1, 2, 3, 4, 5];
+    if (
+      schedule.days.length === weekdayPreset.length &&
+      weekdayPreset.every((day) => schedule.days.includes(day))
+    ) {
+      return "weekdays";
+    }
+    return "weekly";
+  }
+  if (schedule.kind === "daily") {
+    return "daily";
+  }
+  return "cron";
 }
 
 function createAutomationDraftFromDefinitionSchedule(
   definition: AutomationDefinition,
   schedulePreset: AutomationDraft["schedulePreset"],
+  projectId: string,
   input: Partial<AutomationDraft> = {},
 ): AutomationDraft {
   return createAutomationDraft({
@@ -4010,7 +4167,7 @@ function createAutomationDraftFromDefinitionSchedule(
     id: definition.id,
     name: definition.name,
     prompt: definition.prompt,
-    projectId: definition.projectIds[0] ?? "",
+    projectId,
     schedulePreset,
     setupCommand:
       definition.executionMode.kind === "worktree"
@@ -4066,17 +4223,16 @@ function createAutomationDefinitionFromDraft(
 
 function createAutomationScheduleFromDraft(draft: AutomationDraft): AutomationSchedule | undefined {
   const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone || "local";
+  const intervalMs = AUTOMATION_INTERVAL_MS_BY_PRESET[draft.schedulePreset];
   const schedule =
-    draft.schedulePreset === "15m"
-      ? { everyMs: 15 * 60 * 1000, kind: "interval" }
-      : draft.schedulePreset === "hourly"
-        ? { everyMs: 60 * 60 * 1000, kind: "interval" }
-        : draft.schedulePreset === "cron"
-          ? {
-              expression: draft.cronExpression,
-              kind: "cron",
-              timezone,
-            }
+    intervalMs !== undefined
+      ? { everyMs: intervalMs, kind: "interval" }
+      : draft.schedulePreset === "cron"
+        ? {
+            expression: draft.cronExpression,
+            kind: "cron",
+            timezone,
+          }
         : draft.schedulePreset === "weekly"
           ? {
               days: [Number(draft.weeklyDay)],
@@ -4084,26 +4240,48 @@ function createAutomationScheduleFromDraft(draft: AutomationDraft): AutomationSc
               time: draft.scheduleTime,
               timezone,
             }
-          : {
-              kind: "daily",
-              time: draft.scheduleTime,
-              timezone,
-            };
+          : draft.schedulePreset === "weekdays"
+            ? {
+                days: [1, 2, 3, 4, 5],
+                kind: "weekly",
+                time: draft.scheduleTime,
+                timezone,
+              }
+            : {
+                kind: "daily",
+                time: draft.scheduleTime,
+                timezone,
+              };
   return normalizeAutomationSchedule(schedule);
 }
 
 function describeAutomationSchedule(schedule: AutomationSchedule): string {
   switch (schedule.kind) {
-    case "interval":
-      return schedule.everyMs === 15 * 60 * 1000
-        ? "Every 15 minutes"
-        : schedule.everyMs === 60 * 60 * 1000
-          ? "Hourly"
-          : `Every ${Math.round(schedule.everyMs / 60_000)} minutes`;
+    case "interval": {
+      const preset = Object.entries(AUTOMATION_INTERVAL_MS_BY_PRESET).find(
+        ([, everyMs]) => everyMs === schedule.everyMs,
+      );
+      if (preset) {
+        return AUTOMATION_SCHEDULE_PRESETS.find((option) => option.value === preset[0])?.label ?? preset[0];
+      }
+      if (schedule.everyMs % (60 * 60 * 1000) === 0) {
+        const hours = schedule.everyMs / (60 * 60 * 1000);
+        return hours === 1 ? "Hourly" : `Every ${hours} hours`;
+      }
+      return `Every ${Math.round(schedule.everyMs / 60_000)} minutes`;
+    }
     case "daily":
       return `Daily at ${schedule.time}`;
-    case "weekly":
+    case "weekly": {
+      const weekdayPreset = [1, 2, 3, 4, 5];
+      if (
+        schedule.days.length === weekdayPreset.length &&
+        weekdayPreset.every((day) => schedule.days.includes(day))
+      ) {
+        return `Weekdays at ${schedule.time}`;
+      }
       return `Weekly ${weekdayLabel(schedule.days[0] ?? 0)} at ${schedule.time}`;
+    }
     case "cron":
       return schedule.expression;
   }
@@ -4137,6 +4315,37 @@ function isAutomationRunActive(run: Pick<AutomationRun, "status">): boolean {
 
 function automationAgentLabel(agents: ProjectAutomationAgentOption[], agentId: string): string {
   return agents.find((agent) => agent.agentId === agentId)?.label ?? agentId;
+}
+
+function resolveAutomationAgentIcon(
+  agent: Pick<ProjectAutomationAgentOption, "agentId" | "icon">,
+): SidebarAgentIcon | undefined {
+  return agent.icon ?? getSidebarAgentIconById(agent.agentId);
+}
+
+function AutomationAgentOptionLabel({ agent }: { agent: ProjectAutomationAgentOption }) {
+  const icon = resolveAutomationAgentIcon(agent);
+  return (
+    <span className="project-automation-agent-option">
+      {icon ? <AutomationAgentIcon icon={icon} /> : null}
+      <span>{agent.label}</span>
+    </span>
+  );
+}
+
+function AutomationAgentIcon({ icon }: { icon: SidebarAgentIcon }) {
+  return (
+    <span
+      aria-hidden="true"
+      className="project-automation-agent-icon"
+      data-agent-icon={icon}
+      style={{
+        backgroundColor: AGENT_LOGO_COLORS[icon],
+        maskImage: `url("${AGENT_LOGOS[icon]}")`,
+        WebkitMaskImage: `url("${AGENT_LOGOS[icon]}")`,
+      }}
+    />
+  );
 }
 
 function weekdayLabel(day: number): string {
@@ -4496,31 +4705,31 @@ styleElement.textContent = `
 
   .project-board-toolbar {
     align-items: center;
-    display: flex;
+    display: grid;
     flex: 0 0 auto;
-    gap: 20px;
-    justify-content: space-between;
-    min-height: 44px;
+    gap: 12px;
+    grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+    min-height: 40px;
   }
 
-  .project-board-toolbar h1 {
+  .project-board-toolbar-title {
     color: rgba(250, 250, 250, 0.96);
     font-size: 21px;
     font-weight: 650;
-    margin: 2px 0 0;
-  }
-
-  .project-board-eyebrow {
-    color: rgba(244, 244, 245, 0.48);
-    font-size: 12px;
-    font-weight: 600;
+    justify-self: start;
+    line-height: 1.15;
     margin: 0;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .project-board-toolbar-actions {
     align-items: center;
     display: flex;
     gap: 8px;
+    justify-self: end;
   }
 
   .project-board-tabs {
@@ -4528,6 +4737,7 @@ styleElement.textContent = `
     display: flex;
     flex: 0 0 auto;
     gap: 6px;
+    justify-self: center;
   }
 
   .project-board-tab {
@@ -4535,6 +4745,7 @@ styleElement.textContent = `
     background: rgba(255, 255, 255, 0.055);
     border: 1px solid rgba(255, 255, 255, 0.08);
     border-radius: 7px;
+    box-sizing: border-box;
     color: rgba(244, 244, 245, 0.72);
     display: inline-flex;
     font: inherit;
@@ -4542,7 +4753,10 @@ styleElement.textContent = `
     font-weight: 650;
     gap: 7px;
     height: 30px;
+    justify-content: center;
+    min-width: 96px;
     padding: 0 10px;
+    width: 96px;
   }
 
   .project-board-tab[data-active="true"] {
@@ -4564,11 +4778,80 @@ styleElement.textContent = `
   }
 
   .project-automation-split {
+    align-items: stretch;
     display: grid;
     flex: 1 1 auto;
     gap: 12px;
     grid-template-columns: minmax(280px, 0.9fr) minmax(320px, 1.1fr);
     min-height: 0;
+  }
+
+  /*
+   * CDXC:ProjectAutomations 2026-06-09-15:40:
+   * Automation split views need centered empty states with icon, title, helper copy, and optional create action so blank Automations/Triage/Runs panels do not look like misaligned top-left placeholders.
+   */
+  .project-automation-empty-state {
+    align-items: center;
+    align-self: stretch;
+    background: rgba(255, 255, 255, 0.04);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 8px;
+    display: flex;
+    flex: 1 1 auto;
+    flex-direction: column;
+    gap: 10px;
+    justify-content: center;
+    min-height: 280px;
+    padding: 36px 28px;
+    text-align: center;
+  }
+
+  .project-automation-empty-state[data-variant="detail"] {
+    background: transparent;
+    border: none;
+    min-height: 0;
+    padding: 24px;
+  }
+
+  .project-automation-empty-state-icon {
+    align-items: center;
+    background: rgba(255, 255, 255, 0.06);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 12px;
+    color: rgba(244, 244, 245, 0.46);
+    display: flex;
+    height: 52px;
+    justify-content: center;
+    margin-bottom: 4px;
+    width: 52px;
+  }
+
+  .project-automation-empty-state-icon svg {
+    height: 26px;
+    width: 26px;
+  }
+
+  .project-automation-empty-state strong {
+    color: rgba(250, 250, 250, 0.94);
+    font-size: 15px;
+    font-weight: 650;
+    line-height: 1.25;
+  }
+
+  .project-automation-empty-state p {
+    color: rgba(244, 244, 245, 0.54);
+    font-size: 13px;
+    line-height: 1.5;
+    margin: 0;
+    max-width: 300px;
+  }
+
+  .project-automation-detail--empty {
+    align-items: center;
+    display: flex;
+    justify-content: center;
+    min-height: 280px;
+    padding: 0;
   }
 
   .project-automation-list,
@@ -4583,8 +4866,7 @@ styleElement.textContent = `
   }
 
   .project-automation-card,
-  .project-automation-run-card,
-  .project-automation-empty {
+  .project-automation-run-card {
     background: rgba(255, 255, 255, 0.055);
     border-color: rgba(255, 255, 255, 0.09);
     border-radius: 8px;
@@ -4598,10 +4880,10 @@ styleElement.textContent = `
 
   .project-automation-card [data-slot="card-content"],
   .project-automation-run-card [data-slot="card-content"] {
-    align-items: center;
+    align-items: flex-start;
     display: flex;
+    flex-direction: column;
     gap: 12px;
-    justify-content: space-between;
     padding: 14px;
   }
 
@@ -4610,6 +4892,7 @@ styleElement.textContent = `
     display: grid;
     gap: 6px;
     min-width: 0;
+    width: 100%;
   }
 
   .project-automation-card-title,
@@ -4663,25 +4946,68 @@ styleElement.textContent = `
     margin: 0;
   }
 
+  .project-automation-card-tags {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-top: 2px;
+  }
+
+  .project-automation-card-tags span,
+  .project-automation-card-meta span,
+  .project-automation-run-meta span {
+    background: rgba(255, 255, 255, 0.06);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 999px;
+    color: rgba(244, 244, 245, 0.68);
+    font-size: 11px;
+    font-weight: 600;
+    padding: 2px 8px;
+  }
+
+  .project-automation-card-meta span[data-unread="true"] {
+    background: rgba(111, 207, 151, 0.14);
+    border-color: rgba(111, 207, 151, 0.24);
+    color: #8ee4ad;
+  }
+
+  .project-automation-card-agent {
+    align-items: center;
+    color: rgba(244, 244, 245, 0.72);
+    display: inline-flex;
+    font-size: 12px;
+    gap: 6px;
+    margin-top: 4px;
+  }
+
   .project-automation-card-meta,
   .project-automation-run-meta {
     display: flex;
     flex-wrap: wrap;
     gap: 8px;
+    margin-top: 4px;
   }
 
   .project-automation-card-actions {
     align-items: center;
+    border-top: 1px solid rgba(255, 255, 255, 0.08);
     display: flex;
     flex: 0 0 auto;
     gap: 6px;
+    justify-content: flex-end;
+    padding-top: 10px;
+    width: 100%;
   }
 
   .project-automation-run-actions {
     align-items: center;
+    border-top: 1px solid rgba(255, 255, 255, 0.08);
     display: flex;
     flex: 0 0 auto;
     gap: 6px;
+    justify-content: flex-end;
+    padding-top: 10px;
+    width: 100%;
   }
 
   .project-automation-detail {
@@ -4694,14 +5020,6 @@ styleElement.textContent = `
     min-height: 0;
     overflow: auto;
     padding: 16px;
-  }
-
-  .project-automation-detail-empty {
-    align-items: center;
-    color: rgba(244, 244, 245, 0.68);
-    display: flex;
-    gap: 10px;
-    min-height: 120px;
   }
 
   .project-automation-detail-header {
@@ -4831,36 +5149,69 @@ styleElement.textContent = `
     padding: 8px 10px;
   }
 
-  .project-automation-empty [data-slot="card-content"] {
-    align-items: center;
-    color: rgba(244, 244, 245, 0.68);
-    display: flex;
-    gap: 10px;
-    min-height: 96px;
-    padding: 18px;
-  }
-
-  .project-automation-empty svg {
-    color: rgba(244, 244, 245, 0.42);
-    height: 18px;
-    width: 18px;
-  }
-
   .project-automation-dialog {
     max-width: 640px;
   }
 
   .project-automation-form {
     display: grid;
-    gap: 12px;
+    gap: 14px;
   }
 
-  .project-automation-form label {
+  .project-automation-form label,
+  .project-automation-field-full {
     color: rgba(244, 244, 245, 0.72);
     display: grid;
     font-size: 12px;
     font-weight: 650;
     gap: 6px;
+  }
+
+  .project-automation-field-full {
+    grid-column: 1 / -1;
+  }
+
+  .project-automation-form-grid {
+    display: grid;
+    gap: 12px;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .project-automation-form-section {
+    display: grid;
+    gap: 10px;
+  }
+
+  .project-automation-form-section-title {
+    color: rgba(244, 244, 245, 0.52);
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+  }
+
+  .project-automation-select {
+    width: 250px;
+  }
+
+  .project-automation-agent-option {
+    align-items: center;
+    display: inline-flex;
+    gap: 8px;
+    min-width: 0;
+  }
+
+  .project-automation-agent-icon {
+    display: block;
+    flex: 0 0 auto;
+    height: 14px;
+    mask-position: center;
+    mask-repeat: no-repeat;
+    mask-size: contain;
+    width: 14px;
+    -webkit-mask-position: center;
+    -webkit-mask-repeat: no-repeat;
+    -webkit-mask-size: contain;
   }
 
   .project-automation-prompt-field textarea {
@@ -4918,6 +5269,14 @@ styleElement.textContent = `
   @media (max-width: 860px) {
     .project-automation-split {
       grid-template-columns: 1fr;
+    }
+
+    .project-automation-form-grid {
+      grid-template-columns: 1fr;
+    }
+
+    .project-automation-select {
+      width: 100%;
     }
   }
 

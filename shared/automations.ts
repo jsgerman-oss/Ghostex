@@ -1,4 +1,5 @@
 import { CronExpressionParser } from "cron-parser";
+import type { SidebarAgentIcon } from "./sidebar-agents";
 
 export type AutomationSchedule =
   | { kind: "interval"; everyMs: number }
@@ -62,6 +63,7 @@ export type AutomationState = {
 export type ProjectAutomationAgentOption = {
   agentId: string;
   command?: string;
+  icon?: SidebarAgentIcon;
   label: string;
 };
 

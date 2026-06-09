@@ -6,6 +6,8 @@
  * polluting comments/labels with app-routing metadata.
  */
 
+import type { SidebarAgentIcon } from "./sidebar-agents";
+
 export type BeadConversationLinkStatus = "active" | "archived";
 
 export type BeadConversationLink = {
@@ -39,6 +41,7 @@ export type ProjectBoardAgentOption = {
    * Shared conversation-link types must not describe Beads execution as native-owned. The board bridge carries UI request data; gxserver owns Beads command construction and execution.
    */
   command?: string;
+  icon?: SidebarAgentIcon;
   label: string;
 };
 
