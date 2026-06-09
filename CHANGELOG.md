@@ -12,6 +12,19 @@
 <!-- CDXC:Distribution 2026-06-08-10:02: Release notes for 4.0.1 must cover the post-4.0.0 nightly merge as user-facing upgrade recovery, terminal focus stability, Git review polish, Source tab startup validation, update UI persistence, and local Apple Silicon startup correctness. -->
 <!-- CDXC:Distribution 2026-06-08-14:24: Release notes for 4.0.2 must cover packaged Beads/code-server runtime fixes, terminal image paste controls, gxserver-backed attention side effects, command completion sound reliability, T3 runtime startup stability, Git workflow toast cleanup, and Android scrollback behavior. -->
 <!-- CDXC:Distribution 2026-06-08-20:20: Release notes for 4.0.3 must cover remote attach terminals, remote setup feedback, Quick agent launching, titlebar mode guards, Sparkle update UI behavior, bundled editor defaults, sidebar resize polish, and smaller macOS app bundles while keeping internal release validation details out of public notes. -->
+<!-- CDXC:Distribution 2026-06-09-23:55: Release notes for 4.1.0 must cover the reused public version, new Android APK link, remote SSH password auth, session identity protections, prompt-editor focus repair, sidebar live-update stability, TUI refresh, and packaged editor runtime fixes without exposing implementation-only release details. -->
+
+## 4.1.0 - 2026-06-09
+
+- Remote machines can now save SSH passwords in macOS Keychain, use them for SSH/SCP/tunnel connections without storing raw passwords in settings, and show clearer saved-password state and authentication guidance.
+- Agent hook and session-state updates now reject cross-wired agent identities, reducing cases where one agent terminal could inherit another row's title, status, completion state, or resume identity.
+- Ctrl+G prompt editing and Monaco prompt-editor dismissal return focus to the correct terminal more reliably, including sessions launched through gxserver global references.
+- Sidebar presentation updates apply smaller live patches for session groups and HUD chrome, reducing sidebar refresh churn and terminal focus steals while sessions are added, removed, reordered, or updated.
+- Session context menus are safer and cleaner: Copy Resume and Copy Attach Command are hidden by default behind an explicit setting, and Sleep Below / Close Below now target the rendered rows beneath the clicked card across project groups.
+- Remote sections, Recent Projects search, active sidebar search, titlebar resource copy, command icons, tag menus, drag handles, and sidebar panel spacing received visual polish for denser daily use.
+- The Ghostex TUI now uses a neutral gray-blue default theme, clearer Help/Hotkeys and Quit Ghostex labels, and broader built-in agent labels so restored desktop sessions are easier to recognize from the terminal switcher.
+- Embedded code-server packaging is more reliable across Apple Silicon and Intel builds, including target-architecture ripgrep materialization and authenticated GitHub artifact fetches during release builds.
+- The Android download badge now points at the 4.1.0 release APK.
 
 ## 4.0.3 - 2026-06-08
 

@@ -1,6 +1,16 @@
 
 ## All features:
 
+- 4.1.0 adds Keychain-backed Remote SSH passwords, safer cross-agent session identity handling, more reliable Ctrl+G prompt-editor focus return, lower-churn sidebar live updates, safer session context menus, refreshed TUI styling and agent labels, stronger packaged editor runtime builds, and an updated Android APK download.
+- Remote machine SSH passwords can be saved in macOS Keychain and used for SSH, SCP, and tunnel connections without storing raw passwords in Ghostex settings.
+- Agent hook and session-state updates reject mismatched launch identities so one agent terminal does not inherit another row's status, title, completion event, or resume identity.
+- Ctrl+G prompt editing can return focus from gxserver-backed global session references to the correct native terminal pane.
+- Sidebar session groups and HUD chrome can update from live gxserver presentation patches instead of broad hydrates, reducing visible churn while preserving terminal keyboard focus.
+- Session context menus hide command-copy utilities by default, with a Settings opt-in for Copy Resume and Copy Attach Command.
+- Sleep Below and Close Below target the rendered rows beneath the clicked session across project groups.
+- The Ghostex TUI uses a neutral gray-blue default theme, clearer Help/Hotkeys and Quit Ghostex labels, and broader built-in agent labels for restored sessions.
+- Embedded code-server packaging materializes target-architecture ripgrep binaries and uses authenticated GitHub artifact fetches during local release builds.
+- Android APK downloads point at the current 4.1.0 release package.
 - 4.0.3 improves Remote machine sessions with click-to-open SSH attach terminals, clearer remote setup failures, compact Remote settings, Quick section agent launching, safer titlebar mode availability, bundled editor defaults, quieter Sparkle update checks, stable sidebar resize chrome, and smaller installed macOS bundles.
 - Remote session and group clicks can open a local Ghostty terminal that SSH-attaches with the stable `ghostex attach --session-id --project-id` command while explicit copy actions still copy the same SSH command for external terminals.
 - Remote attach carrier terminals are hidden from the local Quick section so remote focus remains visually owned by the remote machine.
