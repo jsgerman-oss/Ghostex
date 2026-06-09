@@ -971,7 +971,7 @@ printf '%s\\n' "$@" > ${JSON.stringify(markerFile)}
       });
       expect(payload.command).toContain("ghostex rename-command");
       expect(skillMarkdown).toContain("# ghostex-generate-title");
-      expect(skillMarkdown).toContain("under 47 characters");
+      expect(skillMarkdown).toContain("under 60 characters");
       expect(skillMarkdown).toContain('ghostex rename-command --session-id "$GHOSTEX_SESSION_ID" --title "<generated title>"');
       expect(skillMarkdown).toContain("same native Enter path used by Delayed Send");
       expect(skillMarkdown).not.toContain("Do not press Enter");
