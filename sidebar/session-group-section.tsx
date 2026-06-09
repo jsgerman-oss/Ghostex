@@ -115,6 +115,8 @@ const DISABLED_GROUP_DND_AX_ATTRIBUTES = [
 ] as const;
 const NESTED_CONTEXT_MENU_INTERACTIVE_SELECTOR =
   "button, input, textarea, select, a[href], [role='button'], [role='menuitem'], [contenteditable='true'], .group-header-actions";
+const GROUP_DRAG_BLOCKED_ACTIVATION_SELECTOR =
+  "input, textarea, select, [contenteditable='true'], .group-header-actions";
 
 function isNestedInteractiveContextMenuTarget(event: ReactMouseEvent<HTMLElement>): boolean {
   const target = event.target;
@@ -128,6 +130,32 @@ function isNestedInteractiveContextMenuTarget(event: ReactMouseEvent<HTMLElement
     interactiveTarget !== event.currentTarget &&
     event.currentTarget.contains(interactiveTarget)
   );
+}
+
+/**
+ * CDXC:ProjectReorder 2026-06-09-17:15:
+ * Project headers should reorder from any non-control header surface, not only
+ * the project-name text. Keep nested action buttons and title-edit inputs out
+ * of drag activation so their clicks and editing behavior stay deterministic.
+ */
+export function shouldPreventGroupDragActivation(
+  target: EventTarget | null,
+  dragSurface: Element | null | undefined,
+): boolean {
+  if (!isElementTarget(target)) {
+    return false;
+  }
+
+  if (dragSurface && !dragSurface.contains(target)) {
+    return false;
+  }
+
+  const blockedTarget = target.closest(GROUP_DRAG_BLOCKED_ACTIVATION_SELECTOR);
+  return blockedTarget instanceof Element && (!dragSurface || dragSurface.contains(blockedTarget));
+}
+
+function isElementTarget(target: EventTarget | null): target is Element {
+  return typeof Element !== "undefined" && target instanceof Element;
 }
 /**
  * CDXC:ProjectDiffStats 2026-05-27-10:44:
@@ -208,6 +236,9 @@ const groupSensors = [
           value: GROUP_DRAG_HOLD_DELAY_MS,
         }),
       ];
+    },
+    preventActivation(event, source) {
+      return shouldPreventGroupDragActivation(event.target, source.handle ?? source.element);
     },
   }),
   KeyboardSensor,
@@ -1647,6 +1678,7 @@ export function SessionGroupSection({
           data-collapsible="true"
           onClick={handleGroupHeaderClick}
           onMouseEnter={refreshProjectDiffStats}
+          ref={projectContext && !isChatCollection ? sortable.handleRef : undefined}
           style={groupHeaderStyle}
         >
           <div className="group-title-wrap">
@@ -1735,7 +1767,7 @@ export function SessionGroupSection({
                 <div
                   className="group-title-handle"
                   data-draggable={String(!isChatCollection)}
-                  ref={isChatCollection ? undefined : sortable.handleRef}
+                  ref={!projectContext && !isChatCollection ? sortable.handleRef : undefined}
                 >
                   {shouldSuppressProjectCollapseTooltip ? (
                     <AppTooltip

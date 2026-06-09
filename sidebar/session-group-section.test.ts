@@ -1,13 +1,107 @@
-import { describe, expect, test } from "vitest";
+import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import {
   formatProjectEditorDiffStatsLabel,
   getGroupContextMenuItemCount,
   getPinnedSessionDropGapKey,
   PINNED_SESSION_DROP_GAP_AFTER_LAST,
+  shouldPreventGroupDragActivation,
   shouldTreatProjectAsEmptySessionGroup,
   shouldShowOpenProjectFolderIcon,
   shouldShowProjectEditorDiffStats,
 } from "./session-group-section";
+
+const originalElement = globalThis.Element;
+const hadOriginalElement = "Element" in globalThis;
+
+class FakeElement extends EventTarget {
+  public readonly children: FakeElement[] = [];
+  public readonly attributes = new Map<string, string>();
+  public readonly classNames = new Set<string>();
+  public parentElement: FakeElement | undefined;
+
+  constructor(public readonly tagName: string) {
+    super();
+  }
+
+  public append(...children: FakeElement[]): void {
+    for (const child of children) {
+      child.parentElement = this;
+      this.children.push(child);
+    }
+  }
+
+  public addClass(className: string): void {
+    this.classNames.add(className);
+  }
+
+  public setAttribute(name: string, value: string): void {
+    this.attributes.set(name, value);
+  }
+
+  public contains(target: FakeElement | null): boolean {
+    let current = target;
+    while (current) {
+      if (current === this) {
+        return true;
+      }
+      current = current.parentElement ?? null;
+    }
+    return false;
+  }
+
+  public closest(selector: string): FakeElement | null {
+    let current: FakeElement | undefined = this;
+    while (current) {
+      if (matchesGroupDragSelector(current, selector)) {
+        return current;
+      }
+      current = current.parentElement;
+    }
+    return null;
+  }
+}
+
+beforeAll(() => {
+  Object.defineProperty(globalThis, "Element", {
+    configurable: true,
+    value: FakeElement,
+  });
+});
+
+afterAll(() => {
+  if (!hadOriginalElement) {
+    delete (globalThis as { Element?: typeof Element }).Element;
+    return;
+  }
+
+  Object.defineProperty(globalThis, "Element", {
+    configurable: true,
+    value: originalElement,
+  });
+});
+
+function createFakeElement(tagName: string, className?: string): FakeElement {
+  const element = new FakeElement(tagName);
+  if (className) {
+    element.addClass(className);
+  }
+  return element;
+}
+
+function matchesGroupDragSelector(element: FakeElement, selector: string): boolean {
+  return selector
+    .split(",")
+    .map((part) => part.trim())
+    .some((part) => {
+      if (part.startsWith(".")) {
+        return element.classNames.has(part.slice(1));
+      }
+      if (part === "[contenteditable='true']") {
+        return element.attributes.get("contenteditable") === "true";
+      }
+      return element.tagName.toLowerCase() === part;
+    });
+}
 
 describe("shouldTreatProjectAsEmptySessionGroup", () => {
   test("identifies an empty project group so expanding it can create a first terminal", () => {
@@ -166,6 +260,66 @@ describe("getGroupContextMenuItemCount", () => {
         isWorktreeProject: false,
       }),
     ).toBe(3);
+  });
+});
+
+describe("shouldPreventGroupDragActivation", () => {
+  test("allows drag activation from the project header surface and title", () => {
+    const header = createFakeElement("div", "group-head");
+    const titleButton = createFakeElement("button", "group-title-button");
+    const titleText = createFakeElement("span", "group-title");
+    const spacer = createFakeElement("div", "group-title-spacer");
+    titleButton.append(titleText);
+    header.append(titleButton, spacer);
+
+    expect(
+      shouldPreventGroupDragActivation(
+        titleText as unknown as EventTarget,
+        header as unknown as Element,
+      ),
+    ).toBe(false);
+    expect(
+      shouldPreventGroupDragActivation(
+        spacer as unknown as EventTarget,
+        header as unknown as Element,
+      ),
+    ).toBe(false);
+  });
+
+  test("keeps project header controls out of drag activation", () => {
+    const header = createFakeElement("div", "group-head");
+    const actionCluster = createFakeElement("div", "group-header-actions");
+    const actionButton = createFakeElement("button", "group-add-button");
+    const titleInput = createFakeElement("input", "group-title-input");
+    actionCluster.append(actionButton);
+    header.append(actionCluster, titleInput);
+
+    expect(
+      shouldPreventGroupDragActivation(
+        actionButton as unknown as EventTarget,
+        header as unknown as Element,
+      ),
+    ).toBe(true);
+    expect(
+      shouldPreventGroupDragActivation(
+        titleInput as unknown as EventTarget,
+        header as unknown as Element,
+      ),
+    ).toBe(true);
+  });
+
+  test("ignores blocked-looking targets outside the drag surface", () => {
+    const header = createFakeElement("div", "group-head");
+    const externalActionCluster = createFakeElement("div", "group-header-actions");
+    const externalActionButton = createFakeElement("button", "group-add-button");
+    externalActionCluster.append(externalActionButton);
+
+    expect(
+      shouldPreventGroupDragActivation(
+        externalActionButton as unknown as EventTarget,
+        header as unknown as Element,
+      ),
+    ).toBe(false);
   });
 });
 

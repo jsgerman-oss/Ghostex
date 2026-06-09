@@ -518,6 +518,16 @@
   white-space: nowrap;
 }
 
+.group[data-project-group="true"][data-active="true"] .group-project-diff-stats {
+  /*
+   * CDXC:ProjectDiffStats 2026-06-09-17:10:
+   * The active project's header git stats must read brighter than non-active
+   * project stats, because active project names are brighter and the git
+   * numbers should not become the dimmest part of the active row.
+   */
+  opacity: 0.72;
+}
+
 .group-title-row:has(.group-project-diff-stats)
   .group-header-actions:not([data-open="true"]) {
   display: none;

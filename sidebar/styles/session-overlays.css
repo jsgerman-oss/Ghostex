@@ -6,11 +6,23 @@
  * CDXC:SidebarContextMenu 2026-05-20-13:05:
  * Clicks on terminal/titlebar and other native surfaces dismiss through a native
  * monitor; this backdrop only covers the sidebar webview.
+ *
+ * CDXC:SidebarContextMenu 2026-06-09-14:22:
+ * Right-click menus for project and session rows must paint above sticky
+ * project headers, including remote machine project headers. Keep the backdrop
+ * above those headers too so outside clicks dismiss the open menu instead of
+ * activating header buttons through it.
  */
+:root {
+  --sidebar-context-menu-backdrop-z-index: 299;
+  --sidebar-context-menu-z-index: 300;
+  --sidebar-context-menu-submenu-z-index: 301;
+}
+
 .sidebar-context-menu-backdrop {
   position: fixed;
   inset: 0;
-  z-index: 19;
+  z-index: var(--sidebar-context-menu-backdrop-z-index);
   margin: 0;
   padding: 0;
   border: 0;
@@ -20,7 +32,7 @@
 
 .session-context-menu {
   position: fixed;
-  z-index: 20;
+  z-index: var(--sidebar-context-menu-z-index);
   min-width: 156px;
   /*
    * CDXC:SidebarContextMenu 2026-05-27-06:19:

@@ -9,6 +9,7 @@ import {
   shouldShowTerminalSessionIcon,
 } from "./session-card-content";
 import { getSessionHistoryCardTitle } from "./session-history-card-title";
+import { getEffectiveSessionTag } from "./session-tag-ui";
 
 export type SessionHistoryCardProps = {
   isSearchSelected?: boolean;
@@ -42,11 +43,25 @@ export function SessionHistoryCard({
     showSessionDetails: true,
   });
   const projectLabel = getSessionHistoryProjectLabel(session);
+  const effectiveSessionTag = getEffectiveSessionTag(session);
+  const showTerminalSessionIcon = shouldShowTerminalSessionIcon(session);
+  const hasSessionCardIcon =
+    session.isPinned === true ||
+    Boolean(effectiveSessionTag) ||
+    Boolean(session.agentIcon) ||
+    showTerminalSessionIcon ||
+    session.isReloading === true;
   /**
    * CDXC:PreviousSessions 2026-05-13-16:11:
    * Previous Sessions rows place project metadata on the right, directly
    * before Last Active, so the title column stays dedicated to the session
    * title while project context remains visible during scanning.
+   *
+   * CDXC:PreviousSessions 2026-06-09-09:41:
+   * Tagged Previous Sessions rows must advertise the same leading identity
+   * state as live sidebar rows. The tag glyph is visible at rest, and hover or
+   * keyboard focus reveals the session's agent/terminal icon in that same
+   * slot.
    */
 
   return (
@@ -59,9 +74,12 @@ export function SessionHistoryCard({
       <div
         className="session-frame session-history-frame"
         data-focused="false"
+        data-has-agent-icon={String(hasSessionCardIcon)}
         data-has-project-label={String(Boolean(projectLabel))}
+        data-pinned={String(session.isPinned === true)}
         data-running="false"
         data-restorable={String(session.isRestorable)}
+        data-tagged={String(Boolean(effectiveSessionTag))}
         data-visible="false"
       >
         {/**
@@ -80,15 +98,15 @@ export function SessionHistoryCard({
           aria-pressed="false"
           aria-label={session.isRestorable ? `Restore ${displayTitle}` : displayTitle}
           className="session session-history-card"
-          data-has-agent-icon={String(
-            Boolean(session.agentIcon) || shouldShowTerminalSessionIcon(session),
-          )}
+          data-has-agent-icon={String(hasSessionCardIcon)}
           data-dragging="false"
           data-focused="false"
+          data-pinned={String(session.isPinned === true)}
           data-running="false"
           data-search-selected={String(isSearchSelected)}
           data-sidebar-history-id={session.historyId}
           data-restorable={String(session.isRestorable)}
+          data-tagged={String(Boolean(effectiveSessionTag))}
           data-visible="false"
           onAuxClick={(event) => {
             if (event.button !== 1) {
@@ -139,7 +157,7 @@ export function SessionHistoryCard({
             sessionTag={session.sessionTag}
             sessionPersistenceName={session.sessionPersistenceName}
             sessionPersistenceProvider={session.sessionPersistenceProvider}
-            showTerminalIcon={shouldShowTerminalSessionIcon(session)}
+            showTerminalIcon={showTerminalSessionIcon}
           />
           <button
             aria-label={`Delete ${displayTitle} from previous sessions`}

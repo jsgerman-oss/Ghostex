@@ -529,6 +529,24 @@
   opacity: 1;
 }
 
+.session-history-frame:is([data-tagged="true"], [data-pinned="true"]):not(:hover):not(
+    :has(.session:hover)
+  ):not(:has(.session:focus-visible)):not(:has(.session:focus-within))
+  .session-floating-agent-icon,
+.session-history-frame:is([data-tagged="true"], [data-pinned="true"]):not(:hover):not(
+    :has(.session:hover)
+  ):not(:has(.session:focus-visible)):not(:has(.session:focus-within))
+  .session-floating-agent-tabler-icon[data-agent-icon] {
+  /*
+   * CDXC:PreviousSessions 2026-06-09-09:41:
+   * Previous Sessions uses the same tagged-session identity slot as the live
+   * macOS sidebar. Keep the tag/pin glyph clean at rest by hiding the
+   * underlying agent decoration, then let the normal hover/focus rules reveal
+   * that agent icon in the same slot.
+   */
+  opacity: 0;
+}
+
 .previous-session-delete-button {
   align-items: center;
   background: transparent;
