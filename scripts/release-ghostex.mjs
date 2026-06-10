@@ -22,7 +22,6 @@ const config = {
   notaryProfile: "notarytool-profile",
   sparklePublicKey: "AGWDPeMqfhmbjt8Pbk+VTC9fDfXAYq+cZoLGCYuGn70=",
   armFeed: "appcast.xml",
-  intelFeed: "appcast-x86_64.xml",
   installCommand: "brew install --cask maddada/tap/ghostex",
 };
 
@@ -42,18 +41,20 @@ const releaseTimeouts = {
   heartbeatMs: 60 * 1000,
 };
 
-const architectures = [
+/*
+ CDXC:MacRelease 2026-06-10-09:47:
+ Future Ghostex macOS releases are Apple Silicon only. Keep the arm64 build,
+ signing, notarization, Sparkle, GitHub, and Homebrew path intact, but stop
+ generating new Intel DMGs or appcast entries. Existing v4.1.0 and older Intel
+ tags, GitHub assets, appcast history, and Homebrew git history must remain
+ untouched.
+ */
+const releaseArchitectures = [
   {
     arch: "arm64",
     brewArch: "arm",
     feed: config.armFeed,
     feedUrl: "https://raw.githubusercontent.com/maddada/Ghostex/main/appcast.xml",
-  },
-  {
-    arch: "x86_64",
-    brewArch: "intel",
-    feed: config.intelFeed,
-    feedUrl: "https://raw.githubusercontent.com/maddada/Ghostex/main/appcast-x86_64.xml",
   },
 ];
 
@@ -90,8 +91,8 @@ Expected state:
 
 Timeouts and progress:
   Build steps log heartbeat updates about every minute.
-  Per-arch build timeout: 50 minutes.
-  Per-arch notarization timeout: 45 minutes.
+  arm64 build timeout: 50 minutes.
+  arm64 notarization timeout: 45 minutes.
   Overall release timeout: 150 minutes.
 `;
 }
@@ -837,23 +838,22 @@ async function ensureReleaseMissing(version) {
 
 async function latestSparkleVersion() {
   let maxVersion = 0;
-  for (const feed of [config.armFeed, config.intelFeed]) {
-    const xml = await readFile(path.join(repoRoot, feed), "utf8");
-    for (const match of xml.matchAll(/<sparkle:version>(\d+)<\/sparkle:version>/g)) {
-      maxVersion = Math.max(maxVersion, Number.parseInt(match[1], 10));
-    }
+  const xml = await readFile(path.join(repoRoot, config.armFeed), "utf8");
+  for (const match of xml.matchAll(/<sparkle:version>(\d+)<\/sparkle:version>/g)) {
+    maxVersion = Math.max(maxVersion, Number.parseInt(match[1], 10));
   }
   return maxVersion;
 }
 
 async function findSparkleBinDir() {
   /*
-   CDXC:ReleaseAutomation 2026-06-08-16:33:
-   Dual-architecture release builds use per-arch derived data under build/arm64 and build/x86_64. Locate Sparkle's tools in those SwiftPM artifact folders before falling back to older shared and DerivedData paths, otherwise a fully notarized release can stop before appcast generation.
+   CDXC:ReleaseAutomation 2026-06-10-09:47:
+   New macOS releases are arm64-only, so Sparkle appcast generation should first
+   use the arm64 SwiftPM artifact directory. Keep older fallback paths only so
+   already-cached local tooling can still be found without rebuilding.
    */
   const searchRoots = [
     path.join(repoRoot, "build/arm64/SourcePackages/artifacts/sparkle"),
-    path.join(repoRoot, "build/x86_64/SourcePackages/artifacts/sparkle"),
     path.join(repoRoot, "build/SourcePackages/artifacts/sparkle"),
     "/tmp/ghostex-xcodebuild/SourcePackages/artifacts/sparkle",
     path.join(process.env.HOME ?? "", "Library/Developer/Xcode/DerivedData"),
@@ -956,8 +956,8 @@ async function updateProjectYml(version, buildVersion, options) {
       ]
     : [
         "# publish a notarized Developer ID Ghostex app whose bundle metadata",
-        "# matches both GitHub release assets, Sparkle appcasts, and the",
-        "# architecture-aware Ghostex update feed.",
+        "# matches the GitHub arm64 release asset, Sparkle appcast, and the",
+        "# Apple Silicon Ghostex update feed.",
       ];
   const distributionContinuation = distributionContinuationLines.join("\n    ");
 
@@ -989,9 +989,6 @@ async function buildArch(version, entry) {
     GHOSTEX_CODE_SIGN_IDENTITY: releaseSigningIdentity(),
     GHOSTEX_CODE_SIGN_TIMESTAMP_FLAG: "--timestamp",
   };
-  if (entry.arch === "x86_64") {
-    env.GHOSTEX_SPARKLE_FEED_URL = entry.feedUrl;
-  }
 
   logStep(`Build ${entry.arch}`);
   await run("/bin/bash native/macos/ghostexHost/build-ghostex-host.sh", {
@@ -1165,15 +1162,15 @@ async function validateMountedDmg(version, buildVersion, entry) {
 }
 
 async function buildAndPackage(version, buildVersion) {
-  logStep("Build both architectures");
+  logStep("Build arm64 release app");
   /*
-   CDXC:ReleaseAutomation 2026-05-23-14:02:
-   Both architecture builds regenerate the shared native Web asset directory.
-   Build sequentially so monaco/native web asset cleanup cannot race, while
-   keeping package and notarization parallel after independent app bundles exist.
+   CDXC:MacRelease 2026-06-10-09:47:
+   Release automation intentionally builds only the Apple Silicon app. Do not
+   add Intel release legs back here; old Intel artifacts remain available from
+   their existing GitHub releases and appcast-x86_64.xml history.
    */
   const built = [];
-  for (const entry of architectures) {
+  for (const entry of releaseArchitectures) {
     built.push(await buildArch(version, entry));
   }
 
@@ -1185,18 +1182,18 @@ async function buildAndPackage(version, buildVersion) {
   console.log(`Artifact directory: ${artifactDir}`);
 
   /*
-   CDXC:ReleaseAutomation 2026-05-30-14:12:
-   Create DMGs sequentially because parallel `hdiutil create` calls can fail
-   with Resource busy on the same host. Keep Apple notarization parallel after
-   both unsigned DMGs exist.
+   CDXC:ReleaseAutomation 2026-06-10-09:47:
+   The public macOS release artifact set contains one arm64 DMG. Keep the same
+   signing, packaging, notarization, stapling, and mounted-DMG validation steps
+   for that artifact so Apple Silicon update safety stays unchanged.
    */
-  logStep("Package both architectures sequentially");
+  logStep("Package arm64 DMG");
   const packagedDmgs = [];
   for (const entry of built) {
     packagedDmgs.push(await packageReleaseDmg(version, artifactDir, entry));
   }
 
-  logStep("Notarize both architectures in parallel");
+  logStep("Notarize arm64 DMG");
   const packaged = await Promise.all(
     packagedDmgs.map((entry) => notarizeReleaseDmg(version, artifactDir, entry)),
   );
@@ -1301,7 +1298,7 @@ async function commitReleaseMetadata(version, options) {
   logStep("Commit release metadata");
   const metadataFiles = ["package.json", "native/macos/ghostexHost/project.yml"];
   if (!options.skipSparkle) {
-    metadataFiles.push(config.armFeed, config.intelFeed);
+    metadataFiles.push(config.armFeed);
   }
   await run(`git add ${metadataFiles.map(shellQuote).join(" ")}`);
   await run(`git commit -m ${shellQuote(`chore: release ${version}`)}`);
@@ -1346,7 +1343,9 @@ async function createGithubRelease(version, artifacts, options) {
   const notesPath = path.join(await mkdtemp(path.join(tmpdir(), `ghostex-${version}-notes-`)), "notes.md");
   const changelogNotes = await extractChangelogSection(version);
   const arm = artifacts.find((entry) => entry.arch === "arm64");
-  const intel = artifacts.find((entry) => entry.arch === "x86_64");
+  if (!arm) {
+    throw new ReleaseError("arm64 release artifact is required.");
+  }
   const notes = [
     "## Changes",
     "",
@@ -1356,8 +1355,6 @@ async function createGithubRelease(version, artifacts, options) {
     "",
     `- Apple Silicon: ${path.basename(arm.finalDmg)}`,
     `  SHA256: ${arm.sha256}`,
-    `- Intel: ${path.basename(intel.finalDmg)}`,
-    `  SHA256: ${intel.sha256}`,
     "",
     "## Install",
     "",
@@ -1388,8 +1385,8 @@ async function createGithubRelease(version, artifacts, options) {
 }
 
 async function validateLiveSparkleAndAssets(version, buildVersion, sparkleBinDir) {
-  logStep("Validate live Sparkle feeds and GitHub assets");
-  for (const entry of architectures) {
+  logStep("Validate live Sparkle feed and GitHub asset");
+  for (const entry of releaseArchitectures) {
     const output = path.join(tmpdir(), `ghostex-live-${version}-${entry.feed}`);
     await run(`curl -fsSL ${shellQuote(entry.feedUrl)} -o ${shellQuote(output)}`);
     await run(`xmllint --noout ${shellQuote(output)}`);
@@ -1420,16 +1417,23 @@ async function updateHomebrew(version, artifacts, options) {
   const caskFile = path.join(tapDir, config.caskPath);
   let cask = await readFile(caskFile, "utf8");
   const arm = artifacts.find((entry) => entry.arch === "arm64");
-  const intel = artifacts.find((entry) => entry.arch === "x86_64");
+  if (!arm) {
+    throw new ReleaseError("arm64 release artifact is required for the Homebrew cask.");
+  }
 
   cask = normalizeGhostexCliCask(cask)
     .replace(/version\s+"[^"]+"/, `version "${version}"`)
+    .replace(/^  arch arm: "arm64", intel: "x86_64"\n\n/m, "")
+    .replace(/sha256 arm:\s+"[0-9a-f]+",\s*\n\s*intel:\s+"[0-9a-f]+"/, `sha256 "${arm.sha256}"`)
+    .replace(/sha256\s+"[0-9a-f]+"/, `sha256 "${arm.sha256}"`)
     .replace(
-      /sha256 arm:\s+"[0-9a-f]+",\s*\n\s*intel:\s+"[0-9a-f]+"/,
-      `sha256 arm:   "${arm.sha256}",\n         intel: "${intel.sha256}"`,
+      /url "https:\/\/github\.com\/maddada\/Ghostex\/releases\/download\/v#\{version\}\/ghostex-#\{version\}-(?:#\{arch\}|arm64)\.dmg"/,
+      'url "https://github.com/maddada/Ghostex/releases/download/v#{version}/ghostex-#{version}-arm64.dmg"',
     );
 
-  if (!cask.includes(`version "${version}"`) || !cask.includes(arm.sha256) || !cask.includes(intel.sha256)) {
+  cask = normalizeArm64OnlyCask(cask);
+
+  if (!cask.includes(`version "${version}"`) || !cask.includes(arm.sha256) || cask.includes("x86_64")) {
     throw new ReleaseError("Failed to update Homebrew cask version or checksums.");
   }
 
@@ -1444,12 +1448,21 @@ async function updateHomebrew(version, artifacts, options) {
    CDXC:ReleaseAutomation 2026-05-29-20:59:
    Preserve explicit `depends_on macos: ">= :ventura"` syntax for older
    Homebrew clients that can treat the symbol shorthand as exact Ventura.
+
+   CDXC:HomebrewRelease 2026-06-10-09:47:
+   Homebrew's API install path can fail on macOS beta host identifiers before it
+   reads the freshly pushed tap cask. Disable install-from-API for style/info/fetch
+   validation and treat unrelated brew update failures as non-blocking once the
+   Ghostex cask validates directly.
    */
-  await run(`brew style --fix --except-cops Homebrew/OSDependsOn ${shellQuote(config.caskPath)}`, { cwd: tapDir });
-  await run(`brew style --except-cops Homebrew/OSDependsOn ${shellQuote(config.caskPath)}`, { cwd: tapDir });
+  await run(`HOMEBREW_NO_INSTALL_FROM_API=1 brew style --fix --except-cops Homebrew/OSDependsOn ${shellQuote(config.caskPath)}`, { cwd: tapDir });
+  await run(`HOMEBREW_NO_INSTALL_FROM_API=1 brew style --except-cops Homebrew/OSDependsOn ${shellQuote(config.caskPath)}`, { cwd: tapDir });
   cask = await readFile(caskFile, "utf8");
   if (!cask.includes('depends_on macos: ">= :ventura"')) {
     throw new ReleaseError("Ghostex cask must require macOS Ventura or newer with explicit >= syntax.");
+  }
+  if (!cask.includes("depends_on arch: :arm64")) {
+    throw new ReleaseError("Ghostex cask must be arm64-only for future macOS releases.");
   }
   await run(`git diff -- ${shellQuote(config.caskPath)}`, { cwd: tapDir });
   await run(`git add ${shellQuote(config.caskPath)}`, { cwd: tapDir });
@@ -1458,12 +1471,34 @@ async function updateHomebrew(version, artifacts, options) {
   const tapCommit = await capture("git rev-parse HEAD", { cwd: tapDir });
 
   if (!options.skipBrewFetch) {
-    await run("brew update --force", { timeoutMs: releaseTimeouts.brewFetchMs });
-    await run("brew info --cask maddada/tap/ghostex", { timeoutMs: releaseTimeouts.brewFetchMs });
-    await run("brew fetch --force --cask --arch=arm maddada/tap/ghostex", {
+    try {
+      await run("HOMEBREW_NO_INSTALL_FROM_API=1 brew update --force", { timeoutMs: releaseTimeouts.brewFetchMs });
+    } catch (error) {
+      console.warn(
+        `Warning: brew update failed; continuing with direct Ghostex cask validation.\n${String(error.message ?? error)}`,
+      );
+    }
+    await run("HOMEBREW_NO_INSTALL_FROM_API=1 brew info --cask maddada/tap/ghostex", {
       timeoutMs: releaseTimeouts.brewFetchMs,
     });
-    await run("brew fetch --force --cask --arch=intel maddada/tap/ghostex", {
+    const liveCask = await capture("HOMEBREW_NO_INSTALL_FROM_API=1 brew cat --cask maddada/tap/ghostex", {
+      timeoutMs: releaseTimeouts.brewFetchMs,
+    });
+    for (const required of [
+      `version "${version}"`,
+      `sha256 "${arm.sha256}"`,
+      'url "https://github.com/maddada/Ghostex/releases/download/v#{version}/ghostex-#{version}-arm64.dmg"',
+      "depends_on arch: :arm64",
+      'depends_on macos: ">= :ventura"',
+    ]) {
+      if (!liveCask.includes(required)) {
+        throw new ReleaseError(`Live Homebrew cask is missing required stanza: ${required}`);
+      }
+    }
+    if (liveCask.includes("x86_64") || liveCask.includes("#{arch}") || liveCask.includes("intel:")) {
+      throw new ReleaseError("Live Homebrew cask still contains Intel release distribution stanzas.");
+    }
+    await run("HOMEBREW_NO_INSTALL_FROM_API=1 brew fetch --force --cask --arch=arm maddada/tap/ghostex", {
       timeoutMs: releaseTimeouts.brewFetchMs,
     });
   }
@@ -1487,12 +1522,18 @@ async function updateHomebrew(version, artifacts, options) {
  * CLI resources now live under Contents/Resources/CLI. Normalize both old
  * Web/cli casks and already-updated CLI casks before inserting the current
  * ghostex/gx binary stanzas so the release script remains idempotent.
+ *
+ * CDXC:MacRelease 2026-06-10-09:47:
+ * Homebrew must stop publishing new Intel release URLs. Normalize the current
+ * cask to one arm64 DMG URL and one SHA while preserving the git history that
+ * still contains v4.1.0 and older Intel cask revisions.
  */
 function normalizeGhostexCliCask(cask) {
   const ghostexBinary = '  binary "#{appdir}/ghostex.app/Contents/Resources/CLI/ghostex"';
   const gxBinary = '  binary "#{appdir}/ghostex.app/Contents/Resources/CLI/gx"';
   const cliPreflight = `  # CDXC:CliBranding 2026-05-26-15:11: Install gx only when another tool does not already own that command name.
-  # CDXC:CliInstall 2026-06-07-13:53: Homebrew links the app-owned CLI from Contents/Resources/CLI, matching direct DMG auto-linking.
+  # CDXC:CliInstall 2026-06-07-13:53: Homebrew links the app-owned CLI from
+  # Contents/Resources/CLI, matching direct DMG auto-linking.
   preflight do
     gx_candidates = [HOMEBREW_PREFIX/"bin/gx"]
     ENV.fetch("PATH", "").split(File::PATH_SEPARATOR).each do |entry|
@@ -1512,7 +1553,7 @@ function normalizeGhostexCliCask(cask) {
 
   let next = cask
     .replace(
-      /\n  # CDXC:CliBranding 2026-05-26-15:11: Install gx only when another tool does not already own that command name\.\n(?:  # CDXC:CliInstall 2026-06-07-13:53: Homebrew links the app-owned CLI from Contents\/Resources\/CLI, matching direct DMG auto-linking\.\n)?  preflight do[\s\S]*?\n  end(?=\n\n  zap trash:|\n  binary "#\{appdir\}\/ghostex\.app\/Contents\/Resources\/(?:Web\/cli|CLI)\/gx")/g,
+      /\n  # CDXC:CliBranding 2026-05-26-15:11: Install gx only when another tool does not already own that command name\.\n(?:  # CDXC:CliInstall 2026-06-07-13:53: Homebrew links the app-owned CLI from(?: Contents\/Resources\/CLI, matching direct DMG auto-linking\.|(?:\n  # Contents\/Resources\/CLI, matching direct DMG auto-linking\.))\n)?  preflight do[\s\S]*?\n  end(?=\n\n  zap trash:|\n  binary "#\{appdir\}\/ghostex\.app\/Contents\/Resources\/(?:Web\/cli|CLI)\/gx")/g,
       "",
     )
     .replace(/^  depends_on macos: :ventura$/m, '  depends_on macos: ">= :ventura"')
@@ -1541,6 +1582,28 @@ function normalizeGhostexCliCask(cask) {
   if (!next.includes('depends_on macos: ">= :ventura"')) {
     throw new ReleaseError("Ghostex cask must require macOS Ventura or newer with explicit >= syntax.");
   }
+  return next;
+}
+
+function normalizeArm64OnlyCask(cask) {
+  let next = cask
+    .replace(/^  depends_on arch: (?::arm64|\[:intel, :arm64\])\n/gm, "")
+    .replace(/^  depends_on arch: :intel\n/gm, "");
+
+  if (!next.includes("  depends_on arch: :arm64\n")) {
+    next = next.replace(
+      /^  depends_on macos: ">= :ventura"\n/m,
+      '  depends_on arch: :arm64\n  depends_on macos: ">= :ventura"\n',
+    );
+  }
+
+  if (!next.includes("  depends_on arch: :arm64\n")) {
+    throw new ReleaseError("Failed to add arm64-only Homebrew cask dependency.");
+  }
+  if (next.includes('arch arm: "arm64", intel: "x86_64"') || next.includes("#{arch}") || next.includes("intel:")) {
+    throw new ReleaseError("Ghostex cask still contains Intel release distribution stanzas.");
+  }
+
   return next;
 }
 
