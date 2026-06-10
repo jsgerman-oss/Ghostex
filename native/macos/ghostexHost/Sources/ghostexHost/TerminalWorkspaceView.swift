@@ -8703,10 +8703,16 @@ final class TerminalWorkspaceView: NSView {
     var params: [String: Any] = [
       "action": try projectBeadsGxserverAction(for: request.action),
     ]
+    /*
+    CDXC:ProjectBoardRouting 2026-06-10-20:27:
+    Local Beads CRUD must send both projectId and projectPath so gxserver can reject stale WK URL/id mismatches instead of silently resolving the wrong project.
+    */
+    let normalizedProjectPath = projectPath.trimmingCharacters(in: .whitespacesAndNewlines)
+    if !normalizedProjectPath.isEmpty {
+      params["projectPath"] = normalizedProjectPath
+    }
     if let projectId = request.projectId?.trimmingCharacters(in: .whitespacesAndNewlines), !projectId.isEmpty {
       params["projectId"] = projectId
-    } else {
-      params["projectPath"] = projectPath
     }
     if let comment = request.comment { params["comment"] = comment }
     if let dependsOnId = request.dependsOnId { params["dependsOnId"] = dependsOnId }
@@ -8731,7 +8737,6 @@ final class TerminalWorkspaceView: NSView {
     case "configGet": return "configGet"
     case "configGetIssuePrefix": return "configGetIssuePrefix"
     case "configSet": return "configSet"
-    case "configSetIssuePrefix": return "configSetIssuePrefix"
     case "create": return "create"
     case "delete": return "delete"
     case "depAdd": return "depAdd"
@@ -8739,6 +8744,7 @@ final class TerminalWorkspaceView: NSView {
     case "list": return "list"
     case "listIssues": return "board"
     case "listAllLabels": return "listAllLabels"
+    case "renamePrefix": return "renamePrefix"
     case "removeLabel": return "removeLabel"
     case "search": return "search"
     case "setLabels": return "setLabels"

@@ -15,23 +15,29 @@ describe("Native Agents Hub catalog source", () => {
   test("classifies discrete hook files under Hooks instead of Configs", () => {
     /**
      * CDXC:AgentsHub 2026-06-04-19:45:
-     * The macOS app builds Agents Hub through an embedded Python catalog, not Electron main.
+     * The macOS app builds Agents Hub through an embedded bundled-Node catalog, not Electron main.
      * Hook-specific files should appear in the Hooks tab because Agents Hub search and browsing are tab-scoped.
+     *
+     * CDXC:AgentsHub 2026-06-10-18:17:
+     * The catalog source must stay Node-based so Agents Hub does not depend on Python being installed on the user's machine.
      */
-    const hookGroups = sourceBetween('add_group("hooks", "hooks-codex-main"', 'add_group("hooks", "hooks-pi-agent"');
+    const hookGroups = sourceBetween('addGroup("hooks", "hooks-codex-main"', 'addGroup("hooks", "hooks-pi-agent"');
     expect(hookGroups).toContain('p(".codex", "hooks.json")');
     expect(hookGroups).toContain('p(".cursor", "hooks.json")');
     expect(hookGroups).toContain('p(".gemini", "config", "hooks.json")');
     expect(hookGroups).toContain('p(".grok", "hooks", "ghostex-session.json")');
 
-    const codexMainConfigGroup = sourceBetween('add_group("configs", "config-codex-main"', "for item in [profile_item");
+    const codexMainConfigGroup = sourceBetween(
+      'addGroup("configs", "config-codex-main"',
+      'for (const item of profiles.filter((profileItem) => profileItem.agentIcon === "codex"',
+    );
     expect(codexMainConfigGroup).toContain('p(".codex", "config.toml")');
     expect(codexMainConfigGroup).not.toContain('p(".codex", "hooks.json")');
 
     const codexProfileConfigGroup = sourceBetween(
-      'files = existing([root / "config.toml"',
-      'add_group("configs", "config-opencode"',
+      'const files = existing([path.join(root, "config.toml")',
+      'addGroup("configs", "config-opencode"',
     );
-    expect(codexProfileConfigGroup).not.toContain('root / "hooks.json"');
+    expect(codexProfileConfigGroup).not.toContain('path.join(root, "hooks.json")');
   });
 });

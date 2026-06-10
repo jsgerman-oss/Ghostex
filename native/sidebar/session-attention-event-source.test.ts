@@ -159,28 +159,31 @@ describe("native sidebar attention event side effects", () => {
       "function getNativeSidebarCommandStatusStampText",
       "function createNativeSidebarCommandRunId",
     );
-    expect(commandStatusScript).toContain("import os");
-    expect(commandStatusScript).toContain("state_path.with_name(f'{state_path.name}.{os.getpid()}.command.tmp')");
+    expect(commandStatusScript).toContain('require("node:fs")');
+    expect(commandStatusScript).toContain('process.pid + ".command.tmp"');
   });
 
   test("uses per-process temp files for session-state writes", () => {
     /*
     CDXC:SessionAttention 2026-06-07-03:40:
     Multiple acknowledgement paths can write the same session-state file at
-    once, so the Python helpers must not share a fixed `.tmp` filename.
+    once, so the Node helpers must not share a fixed `.tmp` filename.
+
+    CDXC:NativeCommandBridge 2026-06-10-18:17:
+    Native session-state helper tests should assert bundled-Node scripts because the app must not depend on Python being installed.
     */
     const stampScript = sourceBetween(
       "function getStampNativeSessionSemanticActivityScript",
       "function getAcknowledgeNativeSessionAttentionScript",
     );
-    expect(stampScript).toContain("import os");
-    expect(stampScript).toContain('state_path.with_name(f"{state_path.name}.{os.getpid()}.tmp")');
+    expect(stampScript).toContain('require("node:fs")');
+    expect(stampScript).toContain('process.pid + ".tmp"');
 
     const acknowledgeScript = sourceBetween(
       "function getAcknowledgeNativeSessionAttentionScript",
       "function parseNativePersistedSessionState",
     );
-    expect(acknowledgeScript).toContain("import os");
-    expect(acknowledgeScript).toContain('state_path.with_name(f"{state_path.name}.{os.getpid()}.tmp")');
+    expect(acknowledgeScript).toContain('require("node:fs")');
+    expect(acknowledgeScript).toContain('process.pid + ".tmp"');
   });
 });

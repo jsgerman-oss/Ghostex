@@ -62,7 +62,6 @@ export type BeadsBridgeAction =
   | "configGet"
   | "configGetIssuePrefix"
   | "configSet"
-  | "configSetIssuePrefix"
   | "create"
   | "delete"
   | "depAdd"
@@ -71,6 +70,7 @@ export type BeadsBridgeAction =
   | "list"
   | "listIssues"
   | "listAllLabels"
+  | "renamePrefix"
   | "removeLabel"
   | "search"
   | "setLabels"
@@ -205,6 +205,23 @@ export function normalizeIssuePrefix(value: string | undefined): string {
   return /^[a-z]/u.test(normalized) ? normalized : `p-${normalized}`;
 }
 
+export async function ensureIssuePrefix(
+  runBeads: (request: Omit<BeadsBridgeRequest, "cwd" | "requestId">) => Promise<unknown>,
+  desiredPrefix: string,
+): Promise<void> {
+  /*
+   * CDXC:ProjectBoardBeads 2026-06-10-20:27:
+   * Project-board ticket creation must use the active project's Beads issue prefix, not a stale repository YAML/default prefix such as gxserver.
+   * Reconcile issue_prefix through Beads rename-prefix before board mutations so the real Beads ids and the visible project board scope stay aligned.
+   */
+  const normalizedDesiredPrefix = normalizeIssuePrefix(desiredPrefix);
+  const payload = await runBeads({ action: "configGetIssuePrefix" });
+  const currentValue = normalizeBeadsConfigString(payload);
+  if (normalizeIssuePrefix(currentValue) !== normalizedDesiredPrefix) {
+    await runBeads({ action: "renamePrefix", value: beadsRenamePrefixValue(normalizedDesiredPrefix) });
+  }
+}
+
 export function normalizeDisplayIssueKey(value: string | undefined): string {
   const normalized = (value ?? "")
     .trim()
@@ -286,6 +303,21 @@ export function normalizeBeadsPayload<T>(payload: unknown, fallback: T): T {
     return payload.data as T;
   }
   return (payload ?? fallback) as T;
+}
+
+function normalizeBeadsConfigString(payload: unknown): string {
+  const normalized = normalizeBeadsPayload<unknown>(payload, undefined);
+  if (typeof normalized === "string") {
+    return normalized;
+  }
+  if (isRecord(normalized) && typeof normalized.value === "string") {
+    return normalized.value;
+  }
+  return "";
+}
+
+function beadsRenamePrefixValue(value: string): string {
+  return `${normalizeIssuePrefix(value)}-`;
 }
 
 export function isRecord(value: unknown): value is Record<string, unknown> {

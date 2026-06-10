@@ -15,7 +15,9 @@ import {
   type NativeGxserverResponseEvent,
 } from "./gxserver-client";
 import {
+  didGxserverProviderTransitionCommit,
   hasGxserverPresentationZmxRuntime,
+  shouldSkipNativeSleepRequest,
   shouldUseGxserverProviderTransition,
 } from "./gxserver-provider-transition";
 import {
@@ -1143,7 +1145,6 @@ const NATIVE_PERSISTED_WORKING_STALE_MS = 30 * 60 * 1_000;
 const NATIVE_MIN_ATTENTION_VISIBLE_MS = 1_500;
 const ghostex_AGENT_NOTIFY_HOOK_PATH = `${nativeGhostexHomeDirectory()}/hooks/agent-shell-notify.sh`;
 const GHOSTEX_AGENT_HOOK_STATE_DIR = `${nativeHomeDirectory()}/.ghostexterm`;
-const NATIVE_PI_EXTENSION_PATH = `${nativeHomeDirectory()}/.pi/agent/extensions/ghostex.ts`;
 const DEFAULT_PROMPT_AGENT_ID = "codex";
 const AGENT_PROMPT_READY_DELAY_MS = 4_000;
 const AGENT_PROMPT_STEP_DELAY_MS = 1_000;
@@ -1497,6 +1498,13 @@ type RemoteAttachCarrierProjectCandidate = {
   title?: string;
 };
 
+type ProjectSettingsVisibilityCandidate = RemoteAttachCarrierProjectCandidate & {
+  isChat?: boolean;
+  isQuick?: boolean;
+  isRecentProject?: boolean;
+  worktree?: unknown;
+};
+
 function remoteAttachCarrierProjectPath(): string {
   return `${nativeGhostexHomeDirectory().replace(/\/+$/u, "")}/remote-attach-carriers`;
 }
@@ -1522,6 +1530,33 @@ function isRemoteAttachCarrierProject(project: RemoteAttachCarrierProjectCandida
    * after app restart when the local-only marker has already been dropped.
    */
   return project.projectId === createProjectId("remote-attach-carrier") && title === "Remote Attach";
+}
+
+function shouldHideProjectFromSettingsProjectList(
+  project: ProjectSettingsVisibilityCandidate,
+  localProject?: ProjectSettingsVisibilityCandidate,
+): boolean {
+  const projectPath = textValue(project.path) ?? textValue(localProject?.path);
+  if (!projectPath) {
+    return true;
+  }
+  /*
+   * CDXC:ProjectSettings 2026-06-10-14:04:
+   * The Settings Projects tab manages user-owned main projects only. Hide generated chat-session folders and remote attach carrier projects by canonical path/type detection, even when gxserver snapshots no longer have the legacy local quick-project markers.
+   */
+  return (
+    project.isRecentProject === true ||
+    localProject?.isRecentProject === true ||
+    project.isChat === true ||
+    localProject?.isChat === true ||
+    project.isQuick === true ||
+    localProject?.isQuick === true ||
+    isNativeChatProjectPath(projectPath) ||
+    isRemoteAttachCarrierProject(project) ||
+    (localProject ? isRemoteAttachCarrierProject(localProject) : false) ||
+    normalizeNativeProjectWorktreeMetadata(project.worktree) !== undefined ||
+    normalizeNativeProjectWorktreeMetadata(localProject?.worktree) !== undefined
+  );
 }
 
 function quickKindForProject(
@@ -5517,17 +5552,13 @@ async function ensureNativeGhostexCliSymlinks(showSuccessMessage = false): Promi
   }
 
   nativeGhostexCliSymlinkEnsurePromise = (async () => {
-    const result = await runNativeProcess(
-      "/usr/bin/python3",
-      ["-c", getNativeGhostexCliSymlinkInstallPythonScript()],
-      {
-        env: {
-          GHOSTEX_BUNDLE_IDENTIFIER: window.__ghostex_NATIVE_HOST__?.bundleIdentifier ?? "",
-          GHOSTEX_CLI_RESOURCE_DIR: cliResourceDirectory,
-        },
-        timeoutMs: 15_000,
+    const result = await runNativeNodeScript(getNativeGhostexCliSymlinkInstallNodeScript(), [], {
+      env: {
+        GHOSTEX_BUNDLE_IDENTIFIER: window.__ghostex_NATIVE_HOST__?.bundleIdentifier ?? "",
+        GHOSTEX_CLI_RESOURCE_DIR: cliResourceDirectory,
       },
-    );
+      timeoutMs: 15_000,
+    });
     if (result.exitCode === 0) {
       if (showSuccessMessage) {
         showAppToast("success", "Ghostex CLI linked", "ghostex and gx now point at this app build where available.");
@@ -5556,116 +5587,195 @@ async function repairNativeGhostexCliSymlinksFromSettings(): Promise<void> {
   await requestNativeGhostexCliStatus();
 }
 
-function getNativeGhostexCliSymlinkInstallPythonScript(): string {
+function getNativeGhostexCliSymlinkInstallNodeScript(): string {
   return String.raw`
-import json
-import os
-import shutil
-import sys
+const fs = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
 
-cli_dir = os.environ.get("GHOSTEX_CLI_RESOURCE_DIR", "").strip()
-bundle_identifier = os.environ.get("GHOSTEX_BUNDLE_IDENTIFIER", "").strip()
-commands = ("ghostex", "gx")
-home = os.path.expanduser("~")
-user_bin = os.path.join(home, ".local", "bin")
+const cliDir = String(process.env.GHOSTEX_CLI_RESOURCE_DIR || "").trim();
+const bundleIdentifier = String(process.env.GHOSTEX_BUNDLE_IDENTIFIER || "").trim();
+const commands = ["ghostex", "gx"];
+const home = os.homedir();
+const userBin = path.join(home, ".local", "bin");
 
-if bundle_identifier.startswith("com.madda.ghostex-dev"):
-    print(json.dumps({"skipped": True, "reason": "dev-bundle"}))
-    sys.exit(0)
+if (bundleIdentifier.startsWith("com.madda.ghostex-dev")) {
+  console.log(JSON.stringify({ skipped: true, reason: "dev-bundle" }));
+  process.exit(0);
+}
 
-if not cli_dir or not os.path.isdir(cli_dir):
-    print("Bundled Ghostex CLI resources were not found.", file=sys.stderr)
-    sys.exit(1)
+if (!cliDir || !isDirectory(cliDir)) {
+  console.error("Bundled Ghostex CLI resources were not found.");
+  process.exit(1);
+}
 
-targets = {name: os.path.join(cli_dir, name) for name in commands}
-for name, target in targets.items():
-    if not os.path.isfile(target):
-        print("Bundled Ghostex CLI launcher is missing.", file=sys.stderr)
-        sys.exit(1)
-    try:
-        os.chmod(target, 0o755)
-    except OSError:
-        pass
+const targets = Object.fromEntries(commands.map((name) => [name, path.join(cliDir, name)]));
+for (const [name, target] of Object.entries(targets)) {
+  if (!isFile(target)) {
+    console.error("Bundled Ghostex CLI launcher is missing.");
+    process.exit(1);
+  }
+  try {
+    fs.chmodSync(target, 0o755);
+  } catch {}
+}
 
-def unique_paths(values):
-    result = []
-    seen = set()
-    for value in values:
-        normalized = os.path.normpath(os.path.expanduser(value.strip())) if value else ""
-        if normalized and normalized not in seen:
-            seen.add(normalized)
-            result.append(normalized)
-    return result
+function expandHome(value) {
+  const text = String(value || "").trim();
+  if (text === "~") {
+    return home;
+  }
+  return text.startsWith("~/") ? path.join(home, text.slice(2)) : text;
+}
 
-path_entries = unique_paths(os.environ.get("PATH", "").split(os.pathsep))
-common_dirs = unique_paths([
-    "/opt/homebrew/bin",
-    "/usr/local/bin",
-    user_bin,
-])
+function uniquePaths(values) {
+  const result = [];
+  const seen = new Set();
+  for (const value of values) {
+    const normalized = value ? path.normalize(expandHome(value)) : "";
+    if (normalized && !seen.has(normalized)) {
+      seen.add(normalized);
+      result.push(normalized);
+    }
+  }
+  return result;
+}
 
-def is_ghostex_owned_path(command, path):
-    real = os.path.realpath(path)
-    target_real = os.path.realpath(targets[command])
-    if real == target_real:
-        return True
-    normalized = real.lower()
-    return (
-        f"/ghostex.app/contents/resources/cli/{command}" in normalized
-        or f"/ghostex.app/contents/resources/web/cli/{command}" in normalized
-        or (command == "ghostex" and "/ghostex.app/contents/macos/ghostex" in normalized)
-    )
+function isDirectory(filePath) {
+  try {
+    return fs.statSync(filePath).isDirectory();
+  } catch {
+    return false;
+  }
+}
 
-def is_broken_symlink(path):
-    return os.path.islink(path) and not os.path.exists(path)
+function isFile(filePath) {
+  try {
+    return fs.statSync(filePath).isFile();
+  } catch {
+    return false;
+  }
+}
 
-def can_replace_existing_command(command, path):
-    return is_ghostex_owned_path(command, path) or is_broken_symlink(path)
+function pathExistsOrIsSymlink(filePath) {
+  try {
+    fs.lstatSync(filePath);
+    return true;
+  } catch {
+    return false;
+  }
+}
 
-def command_path_candidates(command):
-    candidates = []
-    for directory in path_entries + common_dirs:
-        candidates.append(os.path.join(directory, command))
-    found = shutil.which(command)
-    if found:
-        candidates.insert(0, found)
-    return unique_paths(candidates)
+function realpathOrSelf(filePath) {
+  try {
+    return fs.realpathSync(filePath);
+  } catch {
+    return filePath;
+  }
+}
 
-owned_dirs = []
-for command in commands:
-    for candidate in command_path_candidates(command):
-        if os.path.lexists(candidate) and is_ghostex_owned_path(command, candidate):
-            owned_dirs.append(os.path.dirname(candidate))
+function which(command) {
+  for (const directory of uniquePaths(String(process.env.PATH || "").split(path.delimiter))) {
+    const candidate = path.join(directory, command);
+    try {
+      fs.accessSync(candidate, fs.constants.X_OK);
+      return candidate;
+    } catch {}
+  }
+  return "";
+}
 
-install_dirs = unique_paths(owned_dirs + path_entries + common_dirs)
+const pathEntries = uniquePaths(String(process.env.PATH || "").split(path.delimiter));
+const commonDirs = uniquePaths(["/opt/homebrew/bin", "/usr/local/bin", userBin]);
 
-def ensure_directory_writable(directory):
-    if directory == user_bin:
-        os.makedirs(directory, exist_ok=True)
-    return os.path.isdir(directory) and os.access(directory, os.W_OK)
+function isGhostexOwnedPath(command, filePath) {
+  const real = realpathOrSelf(filePath);
+  const targetReal = realpathOrSelf(targets[command]);
+  if (real === targetReal) {
+    return true;
+  }
+  const normalized = real.toLowerCase();
+  return normalized.includes("/ghostex.app/contents/resources/cli/" + command)
+    || normalized.includes("/ghostex.app/contents/resources/web/cli/" + command)
+    || (command === "ghostex" && normalized.includes("/ghostex.app/contents/macos/ghostex"));
+}
 
-def install_command(command):
-    target = targets[command]
-    for directory in install_dirs:
-        if not ensure_directory_writable(directory):
-            continue
-        link_path = os.path.join(directory, command)
-        if os.path.lexists(link_path):
-            if not can_replace_existing_command(command, link_path):
-                return {"blocked": True, "changed": False, "path": None}
-            if os.path.realpath(link_path) == os.path.realpath(target) and os.path.islink(link_path):
-                return {"blocked": False, "changed": False, "path": link_path}
-            os.unlink(link_path)
-        os.symlink(target, link_path)
-        return {"blocked": False, "changed": True, "path": link_path}
-    return {"blocked": False, "changed": False, "path": None}
+function isBrokenSymlink(filePath) {
+  try {
+    return fs.lstatSync(filePath).isSymbolicLink() && !fs.existsSync(filePath);
+  } catch {
+    return false;
+  }
+}
 
-results = {command: install_command(command) for command in commands}
-if not results["ghostex"]["path"]:
-    print("Ghostex could not create a writable PATH symlink for the ghostex command.", file=sys.stderr)
-    sys.exit(1)
+function canReplaceExistingCommand(command, filePath) {
+  return isGhostexOwnedPath(command, filePath) || isBrokenSymlink(filePath);
+}
 
-print(json.dumps({"commands": results, "skipped": False}))
+function commandPathCandidates(command) {
+  const candidates = [];
+  for (const directory of pathEntries.concat(commonDirs)) {
+    candidates.push(path.join(directory, command));
+  }
+  const found = which(command);
+  if (found) {
+    candidates.unshift(found);
+  }
+  return uniquePaths(candidates);
+}
+
+const ownedDirs = [];
+for (const command of commands) {
+  for (const candidate of commandPathCandidates(command)) {
+    if (pathExistsOrIsSymlink(candidate) && isGhostexOwnedPath(command, candidate)) {
+      ownedDirs.push(path.dirname(candidate));
+    }
+  }
+}
+
+const installDirs = uniquePaths(ownedDirs.concat(pathEntries, commonDirs));
+
+function ensureDirectoryWritable(directory) {
+  if (directory === userBin) {
+    fs.mkdirSync(directory, { recursive: true });
+  }
+  try {
+    fs.accessSync(directory, fs.constants.W_OK);
+    return isDirectory(directory);
+  } catch {
+    return false;
+  }
+}
+
+function installCommand(command) {
+  const target = targets[command];
+  for (const directory of installDirs) {
+    if (!ensureDirectoryWritable(directory)) {
+      continue;
+    }
+    const linkPath = path.join(directory, command);
+    if (pathExistsOrIsSymlink(linkPath)) {
+      if (!canReplaceExistingCommand(command, linkPath)) {
+        return { blocked: true, changed: false, path: null };
+      }
+      if (realpathOrSelf(linkPath) === realpathOrSelf(target) && fs.lstatSync(linkPath).isSymbolicLink()) {
+        return { blocked: false, changed: false, path: linkPath };
+      }
+      fs.unlinkSync(linkPath);
+    }
+    fs.symlinkSync(target, linkPath);
+    return { blocked: false, changed: true, path: linkPath };
+  }
+  return { blocked: false, changed: false, path: null };
+}
+
+const results = Object.fromEntries(commands.map((command) => [command, installCommand(command)]));
+if (!results.ghostex.path) {
+  console.error("Ghostex could not create a writable PATH symlink for the ghostex command.");
+  process.exit(1);
+}
+
+console.log(JSON.stringify({ commands: results, skipped: false }));
 `;
 }
 
@@ -5873,6 +5983,64 @@ function runNativeProcess(
     }, options.timeoutMs ?? 30_000);
     pendingProcessResults.set(requestId, { reject, resolve, timeout });
   });
+}
+
+function nativeSidebarNodePath(): string | undefined {
+  const statusNodePath = currentGxserverStatus.nodePath?.trim();
+  if (statusNodePath) {
+    return statusNodePath;
+  }
+  try {
+    const webResourceDirectory = nativeSidebarWebResourceDirectory();
+    return webResourceDirectory
+      ? decodeURIComponent(new URL("../code-server/lib/node", new URL(`file://${webResourceDirectory}`)).pathname)
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function nativeNodeUnavailableResult(): NativeProcessResult {
+  return {
+    exitCode: 1,
+    requestId: `missing-node-${Date.now().toString(36)}`,
+    stderr: "Ghostex bundled Node runtime is unavailable.",
+    stdout: "",
+    type: "processResult",
+  };
+}
+
+function runNativeNodeScript(
+  script: string,
+  args: string[] = [],
+  options: { cwd?: string; env?: Record<string, string>; requestId?: string; timeoutMs?: number } = {},
+): Promise<NativeProcessResult> {
+  /*
+  CDXC:NativeCommandBridge 2026-06-10-18:17:
+  Native sidebar helpers must use Ghostex's bundled code-server Node runtime rather than `/usr/bin/python3` or user-installed interpreters. Prefer gxserver's reported Node path and fall back to the app's Web/code-server/lib/node path for early startup probes before daemon status has arrived.
+  */
+  const nodePath = nativeSidebarNodePath();
+  if (!nodePath) {
+    return Promise.resolve(nativeNodeUnavailableResult());
+  }
+  return runNativeProcess(nodePath, ["--no-warnings", "-e", script, "--", ...args], options);
+}
+
+type NativeNodeShellArgument = string | { raw: string };
+
+function nativeNodeEvalShellCommand(script: string, args: readonly NativeNodeShellArgument[] = []): string {
+  const nodePath = nativeSidebarNodePath();
+  if (!nodePath) {
+    return "false";
+  }
+  return [
+    quoteNativeShellArg(nodePath),
+    "--no-warnings",
+    "-e",
+    quoteNativeShellArg(script),
+    "--",
+    ...args.map((arg) => typeof arg === "string" ? quoteNativeShellArg(arg) : arg.raw),
+  ].join(" ");
 }
 
 function requestGxserver<TResult extends Record<string, unknown>>(
@@ -6992,13 +7160,11 @@ async function persistNativeSessionSemanticActivityAt(
   sessionId: string,
   source: string,
 ): Promise<void> {
-  const command = [
-    `/usr/bin/python3 - ${quoteNativeShellArg(sessionStateFilePath)} ${quoteNativeShellArg(timestamp)} ${quoteNativeShellArg(activity)} <<'GHOSTEX_STAMP_ACTIVITY'`,
-    getStampNativeSessionSemanticActivityScript(),
-    "GHOSTEX_STAMP_ACTIVITY",
-  ].join("\n");
   try {
-    const result = await runNativeProcess("/bin/zsh", ["-lc", command]);
+    const result = await runNativeNodeScript(
+      getStampNativeSessionSemanticActivityScript(),
+      [sessionStateFilePath, timestamp, activity],
+    );
     if (result.exitCode !== 0) {
       appendAgentDetectionDebugLog("nativeSidebar.semanticActivityPersistFailed", {
         activity,
@@ -14684,16 +14850,7 @@ function createSidebarProjectSettingsProjects() {
           return [];
         }
         const localProject = findLocalProjectForGxserverProject(project);
-        if (
-          localProject?.isRecentProject === true ||
-          localProject?.isChat === true ||
-          localProject?.isRemoteAttachCarrier === true ||
-          (localProject ? isQuickProject(localProject) : false)
-        ) {
-          return [];
-        }
-        const worktree = normalizeNativeProjectWorktreeMetadata(project.worktree);
-        if (worktree) {
+        if (shouldHideProjectFromSettingsProjectList(project, localProject)) {
           return [];
         }
         return [
@@ -14718,13 +14875,7 @@ function createSidebarProjectSettingsProjects() {
       });
   }
   return orderNativeProjectsForSidebar(projects)
-    .filter(
-      (project) =>
-        !isQuickProject(project) &&
-        !isRemoteAttachCarrierProject(project) &&
-        project.isRecentProject !== true &&
-        project.worktree === undefined,
-    )
+    .filter((project) => !shouldHideProjectFromSettingsProjectList(project))
     .map((project) => ({
       beadsDisplayKey: project.beadsDisplayKey,
       name: project.name,
@@ -17566,48 +17717,6 @@ function sanitizeNativePathPart(value: string): string {
   return value.replace(/[^a-z0-9._-]+/giu, "-").replace(/^-+|-+$/g, "") || "session";
 }
 
-async function ensureNativeAgentFirstPromptHooks(): Promise<void> {
-  /**
-   * CDXC:SessionTitleSync 2026-04-26-09:23
-   * The native app is outside VS Code, so it cannot rely on extension activation
-   * to install agent UserPromptSubmit hooks. Install a small ghostex-owned hook
-   * beside existing Codex and Claude hooks; it writes the first prompt into the
-   * session state file that the native sidebar polls before sending Codex
-   * `/rename <title>` or Claude's bare `/rename`.
-   *
-   * CDXC:SessionTitleSync 2026-05-05-04:27
-   * Codex terminals launched from ghostex can run with CODEX_HOME pointed at a
-   * profile directory such as ~/.codex-profiles/personal. Install the native
-   * first-prompt hook into every existing Codex profile as well as ~/.codex so
-   * prompt capture follows the Codex home that the terminal actually uses.
-   *
-   * CDXC:PiAgent 2026-05-08-09:42
-   * Pi can be launched manually in a blank terminal, so ghostex installs its Pi
-   * extension into Pi's global auto-discovery directory instead of relying only
-   * on ghostex-created launch commands to pass an extension flag.
-   */
-  const command = buildEnsureNativeAgentHooksCommand();
-  const result = await runNativeProcess("/bin/zsh", ["-lc", command]);
-  if (result.exitCode !== 0) {
-    throw new Error(result.stderr.trim() || result.stdout.trim() || "Agent hook install failed.");
-  }
-  const installedCodexHooksPaths = result.stdout
-    .split(/\r?\n/g)
-    .map((line) => line.trim())
-    .filter((line) => line.startsWith("codexHooksPath="))
-    .map((line) => line.slice("codexHooksPath=".length))
-    .filter(Boolean);
-  appendSessionTitleDebugLog("nativeSidebar.firstPromptAutoRename.hooksInstalled", {
-    claudeSettingsPath: `${nativeHomeDirectory()}/.claude/settings.json`,
-    codexHooksPaths: installedCodexHooksPaths.length
-      ? installedCodexHooksPaths
-      : [`${nativeHomeDirectory()}/.codex/hooks.json`],
-    hookStateDirectory: GHOSTEX_AGENT_HOOK_STATE_DIR,
-    notifyHookPath: ghostex_AGENT_NOTIFY_HOOK_PATH,
-    piExtensionPath: NATIVE_PI_EXTENSION_PATH,
-  });
-}
-
 async function installNativeAgentHooksFromSettings(): Promise<void> {
   try {
     /*
@@ -17637,8 +17746,8 @@ async function requestNativeAgentHookStatus(): Promise<void> {
 	  /**
 	   * CDXC:AgentHooks 2026-06-07-08:51:
 	   * Agent hook status is gxserver-owned. Settings, first launch, and Tips &
-	   * Tricks render this daemon status directly instead of mixing native Python
-	   * filesystem probes with server-owned provider rows.
+	   * Tricks render this daemon status directly instead of mixing native probes
+	   * with server-owned provider rows.
 	   *
 	   * CDXC:AgentHooks 2026-06-07-13:05:
 	   * A status request may auto-upgrade existing Ghostex-owned hooks, but it must
@@ -17732,183 +17841,11 @@ async function requestNativeGhostexCliStatus(): Promise<void> {
    * as already installed with the app instead of offering install/refresh buttons.
    */
   await ensureNativeGhostexCliSymlinks(false);
-  const result = await runNativeProcess(
-    "/usr/bin/python3",
-    [
-      "-c",
-      String.raw`
-import json
-import os
-import re
-import shutil
-import subprocess
-from datetime import datetime, timezone
-
-ghostex_path = shutil.which("ghostex")
-gx_path = shutil.which("gx")
-ghostex_realpath = os.path.realpath(ghostex_path) if ghostex_path else None
-gx_realpath = os.path.realpath(gx_path) if gx_path else None
-def is_ghostex_command_realpath(path, command):
-    if not path:
-        return False
-    normalized = path.lower()
-    return (
-        f"/ghostex.app/contents/resources/cli/{command}" in normalized
-        or f"/ghostex.app/contents/resources/web/cli/{command}" in normalized
-        or (command == "ghostex" and "/ghostex.app/contents/macos/ghostex" in normalized)
-    )
-
-ghostex_usable = is_ghostex_command_realpath(ghostex_realpath, "ghostex")
-gx_usable = is_ghostex_command_realpath(gx_realpath, "gx")
-gx_blocked = bool(gx_path and not gx_usable)
-browser_skill_path = os.path.join(os.path.expanduser("~"), "agents", "skills", "ghostex-browser-use", "SKILL.md")
-browser_skill_installed = os.path.isfile(browser_skill_path)
-computer_use_skill_path = os.path.join(os.path.expanduser("~"), "agents", "skills", "ghostex-computer-use", "SKILL.md")
-computer_use_skill_installed = os.path.isfile(computer_use_skill_path)
-agent_orchestration_skill_path = os.path.join(os.path.expanduser("~"), "agents", "skills", "ghostex-agent-orchestration", "SKILL.md")
-agent_orchestration_skill_installed = os.path.isfile(agent_orchestration_skill_path)
-generate_title_skill_path = os.path.join(os.path.expanduser("~"), "agents", "skills", "ghostex-generate-title", "SKILL.md")
-generate_title_skill_installed = os.path.isfile(generate_title_skill_path)
-web_resource_dir = os.environ.get("GHOSTEX_WEB_RESOURCE_DIR", "")
-t3_bundled_entrypoint = os.path.join(web_resource_dir, "t3code-server", "dist", "bin.mjs") if web_resource_dir else ""
-t3_configured_root = os.environ.get("VSMUX_T3CODE_REPO_ROOT") or os.environ.get("ghostex_T3CODE_REPO_ROOT") or ""
-t3_configured_entrypoint = os.path.join(t3_configured_root, "apps", "server", "src", "bin.ts") if t3_configured_root else ""
-t3_bundled_installed = bool(t3_bundled_entrypoint and os.path.isfile(t3_bundled_entrypoint))
-t3_development_installed = bool(t3_configured_entrypoint and os.path.isfile(t3_configured_entrypoint))
-t3_runtime_installed = bool(t3_bundled_installed or t3_development_installed)
-t3_runtime_source = "bundled" if t3_bundled_installed else "development" if t3_development_installed else "missing"
-t3_runtime_detail = (
-    "T3 Code runtime is bundled with this app."
-    if t3_bundled_installed
-    else "T3 Code is using an explicit development checkout."
-    if t3_development_installed
-    else "T3 Code runtime is missing from this app build. Reinstall Ghostex or rebuild so Web/t3code-server is packaged."
-)
-cua_driver_path = shutil.which("cua-driver")
-cua_app_installed = os.path.isdir("/Applications/CuaDriver.app")
-cua_driver_installed = bool(cua_driver_path or cua_app_installed)
-desktop_control_installed = bool(cua_driver_installed and computer_use_skill_installed)
-cua_driver_accessibility_permission_granted = None
-cua_driver_screen_recording_permission_granted = None
-cua_driver_permission_detail = None
-
-def parse_cua_permission(output, label):
-    match = re.search(label + r"\s*:\s*([^\n.]+)", output, re.IGNORECASE)
-    if not match:
-        return None
-    value = match.group(1).strip().lower()
-    if "granted" in value and "not granted" not in value:
-        return True
-    if "not granted" in value or "denied" in value or "missing" in value:
-        return False
-    return None
-
-if cua_driver_path:
-    try:
-        permission_result = subprocess.run(
-            [cua_driver_path, "check_permissions"],
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-        permission_output = (permission_result.stdout + "\n" + permission_result.stderr).strip()
-        cua_driver_permission_detail = permission_output or None
-        cua_driver_accessibility_permission_granted = parse_cua_permission(
-            permission_output,
-            "Accessibility",
-        )
-        cua_driver_screen_recording_permission_granted = parse_cua_permission(
-            permission_output,
-            "Screen Recording",
-        )
-    except Exception as error:
-        cua_driver_permission_detail = f"Unable to check Cua Driver permissions: {error}"
-
-if ghostex_usable:
-    if gx_usable:
-        detail = "Ghostex CLI is installed automatically with the app. Use ghostex for the full command or gx for the short alias."
-    elif gx_blocked:
-        detail = "Ghostex CLI is installed automatically with the app. gx already belongs to another command, so Ghostex will keep using ghostex."
-    else:
-        detail = "Ghostex CLI is installed automatically with the app. ghostex is available, and gx will be linked when that command name is safe to claim."
-else:
-    detail = "Ghostex CLI auto-install did not find a usable ghostex command on PATH."
-
-if ghostex_usable:
-    if browser_skill_installed:
-        detail = detail + " Ghostex Browser Use skill is installed for agents."
-    else:
-        detail = detail + " Ghostex Browser Use skill is not installed yet."
-
-if ghostex_usable:
-    if computer_use_skill_installed:
-        detail = detail + " Ghostex Computer Use skill is installed for agents."
-    else:
-        detail = detail + " Ghostex Computer Use skill is not installed yet."
-
-if ghostex_usable:
-    if agent_orchestration_skill_installed:
-        detail = detail + " Ghostex Agent Orchestration skill is installed for agents."
-    else:
-        detail = detail + " Ghostex Agent Orchestration skill is not installed yet."
-
-if ghostex_usable:
-    if generate_title_skill_installed:
-        detail = detail + " Ghostex Generate Title skill is installed for agents."
-    else:
-        detail = detail + " Ghostex Generate Title skill is not installed yet."
-
-if desktop_control_installed:
-    detail = detail + " Desktop Control is installed."
-else:
-    detail = detail + " Desktop Control is not installed yet."
-
-if cua_driver_permission_detail:
-    if (
-        cua_driver_accessibility_permission_granted is True
-        and cua_driver_screen_recording_permission_granted is True
-    ):
-        detail = detail + " Cua Driver reports Accessibility and Screen Recording permissions are granted."
-    else:
-        detail = detail + " Cua Driver permissions need attention."
-
-detail = detail + " " + t3_runtime_detail
-
-print(json.dumps({
-    "browserSkillInstalled": browser_skill_installed,
-    "browserSkillPath": browser_skill_path if browser_skill_installed else None,
-    "computerUseSkillInstalled": computer_use_skill_installed,
-    "computerUseSkillPath": computer_use_skill_path if computer_use_skill_installed else None,
-    "agentOrchestrationSkillInstalled": agent_orchestration_skill_installed,
-    "agentOrchestrationSkillPath": agent_orchestration_skill_path if agent_orchestration_skill_installed else None,
-    "generateTitleSkillInstalled": generate_title_skill_installed,
-    "generateTitleSkillPath": generate_title_skill_path if generate_title_skill_installed else None,
-    "cuaAppInstalled": cua_app_installed,
-    "cuaDriverAccessibilityPermissionGranted": cua_driver_accessibility_permission_granted,
-    "cuaDriverInstalled": cua_driver_installed,
-    "cuaDriverPermissionDetail": cua_driver_permission_detail,
-    "cuaDriverPath": cua_driver_path,
-    "cuaDriverScreenRecordingPermissionGranted": cua_driver_screen_recording_permission_granted,
-    "detail": detail,
-    "generatedAt": datetime.now(timezone.utc).isoformat(),
-    "ghostexPath": ghostex_path,
-    "gxBlockedByExistingCommand": gx_blocked,
-    "gxPath": gx_path,
-    "gxUsable": gx_usable,
-    "installed": bool(ghostex_usable),
-    "t3RuntimeDetail": t3_runtime_detail,
-    "t3RuntimeInstalled": t3_runtime_installed,
-    "t3RuntimeSource": t3_runtime_source,
-    "type": "ghostexCliStatus",
-}))
-`,
-    ],
-    {
-      env: {
-        GHOSTEX_WEB_RESOURCE_DIR: nativeSidebarWebResourceDirectory() ?? "",
-      },
+  const result = await runNativeNodeScript(getNativeGhostexCliStatusNodeScript(), [], {
+    env: {
+      GHOSTEX_WEB_RESOURCE_DIR: nativeSidebarWebResourceDirectory() ?? "",
     },
-  );
+  });
 
   if (result.exitCode !== 0) {
     const errorMessage =
@@ -17956,6 +17893,191 @@ print(json.dumps({
   }
 }
 
+function getNativeGhostexCliStatusNodeScript(): string {
+  return String.raw`
+const fs = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
+const { execFileSync } = require("node:child_process");
+
+function isFile(filePath) {
+  try {
+    return fs.statSync(filePath).isFile();
+  } catch {
+    return false;
+  }
+}
+
+function isDirectory(filePath) {
+  try {
+    return fs.statSync(filePath).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+function which(command) {
+  for (const directory of String(process.env.PATH || "").split(path.delimiter)) {
+    if (!directory) {
+      continue;
+    }
+    const candidate = path.join(directory, command);
+    try {
+      fs.accessSync(candidate, fs.constants.X_OK);
+      return candidate;
+    } catch {}
+  }
+  return null;
+}
+
+function realpathOrNull(filePath) {
+  if (!filePath) {
+    return null;
+  }
+  try {
+    return fs.realpathSync(filePath);
+  } catch {
+    return filePath;
+  }
+}
+
+function isGhostexCommandRealpath(filePath, command) {
+  if (!filePath) {
+    return false;
+  }
+  const normalized = filePath.toLowerCase();
+  return normalized.includes("/ghostex.app/contents/resources/cli/" + command)
+    || normalized.includes("/ghostex.app/contents/resources/web/cli/" + command)
+    || (command === "ghostex" && normalized.includes("/ghostex.app/contents/macos/ghostex"));
+}
+
+function parseCuaPermission(output, label) {
+  const match = output.match(new RegExp(label + "\\\\s*:\\\\s*([^\\\\n.]+)", "i"));
+  if (!match) {
+    return null;
+  }
+  const value = match[1].trim().toLowerCase();
+  if (value.includes("granted") && !value.includes("not granted")) {
+    return true;
+  }
+  if (value.includes("not granted") || value.includes("denied") || value.includes("missing")) {
+    return false;
+  }
+  return null;
+}
+
+const home = os.homedir();
+const ghostexPath = which("ghostex");
+const gxPath = which("gx");
+const ghostexRealpath = realpathOrNull(ghostexPath);
+const gxRealpath = realpathOrNull(gxPath);
+const ghostexUsable = isGhostexCommandRealpath(ghostexRealpath, "ghostex");
+const gxUsable = isGhostexCommandRealpath(gxRealpath, "gx");
+const gxBlocked = Boolean(gxPath && !gxUsable);
+const browserSkillPath = path.join(home, "agents", "skills", "ghostex-browser-use", "SKILL.md");
+const browserSkillInstalled = isFile(browserSkillPath);
+const computerUseSkillPath = path.join(home, "agents", "skills", "ghostex-computer-use", "SKILL.md");
+const computerUseSkillInstalled = isFile(computerUseSkillPath);
+const agentOrchestrationSkillPath = path.join(home, "agents", "skills", "ghostex-agent-orchestration", "SKILL.md");
+const agentOrchestrationSkillInstalled = isFile(agentOrchestrationSkillPath);
+const generateTitleSkillPath = path.join(home, "agents", "skills", "ghostex-generate-title", "SKILL.md");
+const generateTitleSkillInstalled = isFile(generateTitleSkillPath);
+const webResourceDir = String(process.env.GHOSTEX_WEB_RESOURCE_DIR || "");
+const t3BundledEntrypoint = webResourceDir ? path.join(webResourceDir, "t3code-server", "dist", "bin.mjs") : "";
+const t3ConfiguredRoot = process.env.VSMUX_T3CODE_REPO_ROOT || process.env.ghostex_T3CODE_REPO_ROOT || "";
+const t3ConfiguredEntrypoint = t3ConfiguredRoot ? path.join(t3ConfiguredRoot, "apps", "server", "src", "bin.ts") : "";
+const t3BundledInstalled = Boolean(t3BundledEntrypoint && isFile(t3BundledEntrypoint));
+const t3DevelopmentInstalled = Boolean(t3ConfiguredEntrypoint && isFile(t3ConfiguredEntrypoint));
+const t3RuntimeInstalled = Boolean(t3BundledInstalled || t3DevelopmentInstalled);
+const t3RuntimeSource = t3BundledInstalled ? "bundled" : t3DevelopmentInstalled ? "development" : "missing";
+const t3RuntimeDetail = t3BundledInstalled
+  ? "T3 Code runtime is bundled with this app."
+  : t3DevelopmentInstalled
+    ? "T3 Code is using an explicit development checkout."
+    : "T3 Code runtime is missing from this app build. Reinstall Ghostex or rebuild so Web/t3code-server is packaged.";
+const cuaDriverPath = which("cua-driver");
+const cuaAppInstalled = isDirectory("/Applications/CuaDriver.app");
+const cuaDriverInstalled = Boolean(cuaDriverPath || cuaAppInstalled);
+const desktopControlInstalled = Boolean(cuaDriverInstalled && computerUseSkillInstalled);
+let cuaDriverAccessibilityPermissionGranted = null;
+let cuaDriverScreenRecordingPermissionGranted = null;
+let cuaDriverPermissionDetail = null;
+
+if (cuaDriverPath) {
+  try {
+    const permissionOutput = execFileSync(cuaDriverPath, ["check_permissions"], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+      timeout: 5000,
+    }).trim();
+    cuaDriverPermissionDetail = permissionOutput || null;
+    cuaDriverAccessibilityPermissionGranted = parseCuaPermission(permissionOutput, "Accessibility");
+    cuaDriverScreenRecordingPermissionGranted = parseCuaPermission(permissionOutput, "Screen Recording");
+  } catch (error) {
+    const output = String(error?.stdout || "") + "\\n" + String(error?.stderr || "");
+    cuaDriverPermissionDetail = output.trim() || ("Unable to check Cua Driver permissions: " + (error?.message || String(error)));
+    cuaDriverAccessibilityPermissionGranted = parseCuaPermission(cuaDriverPermissionDetail, "Accessibility");
+    cuaDriverScreenRecordingPermissionGranted = parseCuaPermission(cuaDriverPermissionDetail, "Screen Recording");
+  }
+}
+
+let detail;
+if (ghostexUsable) {
+  if (gxUsable) {
+    detail = "Ghostex CLI is installed automatically with the app. Use ghostex for the full command or gx for the short alias.";
+  } else if (gxBlocked) {
+    detail = "Ghostex CLI is installed automatically with the app. gx already belongs to another command, so Ghostex will keep using ghostex.";
+  } else {
+    detail = "Ghostex CLI is installed automatically with the app. ghostex is available, and gx will be linked when that command name is safe to claim.";
+  }
+} else {
+  detail = "Ghostex CLI auto-install did not find a usable ghostex command on PATH.";
+}
+
+if (ghostexUsable) {
+  detail += browserSkillInstalled ? " Ghostex Browser Use skill is installed for agents." : " Ghostex Browser Use skill is not installed yet.";
+  detail += computerUseSkillInstalled ? " Ghostex Computer Use skill is installed for agents." : " Ghostex Computer Use skill is not installed yet.";
+  detail += agentOrchestrationSkillInstalled ? " Ghostex Agent Orchestration skill is installed for agents." : " Ghostex Agent Orchestration skill is not installed yet.";
+  detail += generateTitleSkillInstalled ? " Ghostex Generate Title skill is installed for agents." : " Ghostex Generate Title skill is not installed yet.";
+}
+detail += desktopControlInstalled ? " Desktop Control is installed." : " Desktop Control is not installed yet.";
+if (cuaDriverPermissionDetail) {
+  detail += cuaDriverAccessibilityPermissionGranted === true && cuaDriverScreenRecordingPermissionGranted === true
+    ? " Cua Driver reports Accessibility and Screen Recording permissions are granted."
+    : " Cua Driver permissions need attention.";
+}
+detail += " " + t3RuntimeDetail;
+
+console.log(JSON.stringify({
+  browserSkillInstalled,
+  browserSkillPath: browserSkillInstalled ? browserSkillPath : null,
+  computerUseSkillInstalled,
+  computerUseSkillPath: computerUseSkillInstalled ? computerUseSkillPath : null,
+  agentOrchestrationSkillInstalled,
+  agentOrchestrationSkillPath: agentOrchestrationSkillInstalled ? agentOrchestrationSkillPath : null,
+  generateTitleSkillInstalled,
+  generateTitleSkillPath: generateTitleSkillInstalled ? generateTitleSkillPath : null,
+  cuaAppInstalled,
+  cuaDriverAccessibilityPermissionGranted,
+  cuaDriverInstalled,
+  cuaDriverPermissionDetail,
+  cuaDriverPath,
+  cuaDriverScreenRecordingPermissionGranted,
+  detail,
+  generatedAt: new Date().toISOString(),
+  ghostexPath,
+  gxBlockedByExistingCommand: gxBlocked,
+  gxPath,
+  gxUsable,
+  installed: Boolean(ghostexUsable),
+  t3RuntimeDetail,
+  t3RuntimeInstalled,
+  t3RuntimeSource,
+  type: "ghostexCliStatus",
+}));
+`;
+}
+
 function createNativeAgentHookStatusErrorMessage(
   errorMessage: string,
 ): SidebarAgentHookStatusMessage {
@@ -17967,1101 +18089,6 @@ function createNativeAgentHookStatusErrorMessage(
     notifyHookPath: ghostex_AGENT_NOTIFY_HOOK_PATH,
     type: "agentHookStatus",
   };
-}
-
-function getNativeAgentHookStatusPythonScript(): string {
-  return String.raw`
-import json
-import os
-import pathlib
-import shutil
-import sys
-from datetime import datetime, timezone
-
-home = pathlib.Path(sys.argv[1])
-notify_hook_path = pathlib.Path(sys.argv[2])
-hook_state_dir = pathlib.Path(sys.argv[3])
-pi_extension_path = pathlib.Path(sys.argv[4])
-
-agents = [
-    {"agentId": "codex", "cli": "codex", "kind": "json", "paths": [home / ".codex" / "hooks.json"], "commandAgent": None},
-    {"agentId": "claude", "cli": "claude", "kind": "json", "paths": [home / ".claude" / "settings.json"], "commandAgent": None},
-    {"agentId": "cursor", "cli": "cursor-agent", "kind": "json", "paths": [home / ".cursor" / "hooks.json"], "commandAgent": "cursor"},
-    {"agentId": "pi", "cli": "pi", "kind": "pi", "paths": [pi_extension_path], "commandAgent": "pi"},
-    {"agentId": "gemini", "cli": "gemini", "kind": "json", "paths": [home / ".gemini" / "settings.json"], "commandAgent": "gemini"},
-    {"agentId": "copilot", "cli": "copilot", "kind": "json", "paths": [home / ".copilot" / "config.json"], "commandAgent": "copilot"},
-    {"agentId": "droid", "cli": "droid", "kind": "json", "paths": [home / ".factory" / "settings.json"], "commandAgent": "droid"},
-    {"agentId": "grok", "cli": "grok", "kind": "json", "paths": [home / ".grok" / "hooks" / "ghostex-session.json"], "commandAgent": "grok"},
-    {"agentId": "antigravity", "cli": "agy", "kind": "antigravity", "paths": [home / ".gemini" / "config" / "hooks.json"], "commandAgent": "antigravity"},
-    {"agentId": "amp", "cli": "amp", "kind": "amp", "paths": [home / ".config" / "amp" / "plugins" / "ghostex-session.ts"], "commandAgent": "amp"},
-    {"agentId": "rovodev", "cli": "acli", "kind": "marked-yaml", "paths": [home / ".rovodev" / "config.yml"], "commandAgent": "rovodev", "marker": "ghostex hooks rovodev begin"},
-    {"agentId": "hermes-agent", "cli": "hermes", "kind": "marked-yaml", "paths": [home / ".hermes" / "config.yaml"], "commandAgent": "hermes-agent", "marker": "ghostex hooks hermes-agent begin"},
-    {"agentId": "codebuddy", "cli": "codebuddy", "kind": "json", "paths": [home / ".codebuddy" / "settings.json"], "commandAgent": "codebuddy"},
-    {"agentId": "qoder", "cli": "qodercli", "kind": "json", "paths": [home / ".qoder" / "settings.json"], "commandAgent": "qoder"},
-]
-
-profiles_path = home / ".codex-profiles"
-if profiles_path.is_dir():
-    codex = agents[0]
-    for profile_path in sorted(profiles_path.iterdir()):
-        if profile_path.is_dir():
-            codex["paths"].append(profile_path / "hooks.json")
-
-def load_json(path):
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
-        return None
-    return data if isinstance(data, dict) else None
-
-def recursive_strings(value):
-    if isinstance(value, str):
-        yield value
-    elif isinstance(value, list):
-        for item in value:
-            yield from recursive_strings(item)
-    elif isinstance(value, dict):
-        for item in value.values():
-            yield from recursive_strings(item)
-
-def has_notify_command_in_json(path, command_agent):
-    data = load_json(path)
-    if data is None:
-        return False
-    notify = str(notify_hook_path)
-    expected_agent = f"GHOSTEX_AGENT={command_agent} " if command_agent else ""
-    for value in recursive_strings(data):
-        if command_agent:
-            if notify in value and expected_agent in value:
-                return True
-        elif value.strip() == notify:
-            return True
-    return False
-
-def text(path):
-    try:
-        return path.read_text(encoding="utf-8")
-    except Exception:
-        return ""
-
-def is_installed(agent):
-    paths = agent["paths"]
-    kind = agent["kind"]
-    if kind == "json":
-        existing_paths = [path for path in paths if path.exists()]
-        if agent["agentId"] == "codex" and existing_paths:
-            return all(has_notify_command_in_json(path, None) for path in existing_paths)
-        return any(has_notify_command_in_json(path, agent.get("commandAgent")) for path in paths)
-    if kind == "antigravity":
-        return any("ghostex" in (load_json(path) or {}) for path in paths)
-    if kind == "amp":
-        return any("ghostex-amp-session-extension-marker" in text(path) for path in paths)
-    if kind == "pi":
-        return any("syncSessionState" in text(path) and "agentSessionId" in text(path) for path in paths)
-    if kind == "marked-yaml":
-        marker = agent.get("marker", "")
-        return any(marker in text(path) and str(notify_hook_path) in text(path) for path in paths)
-    return False
-
-def display_path(path):
-    try:
-        return "~/" + str(path.relative_to(home))
-    except ValueError:
-        return str(path)
-
-rows = []
-for agent in agents:
-    cli_installed = shutil.which(agent["cli"]) is not None
-    hook_installed = is_installed(agent)
-    if not cli_installed:
-        status = "cliMissing"
-        detail = f"{agent['cli']} was not found on PATH."
-    elif hook_installed:
-        status = "installed"
-        installed_paths = [display_path(path) for path in agent["paths"] if path.exists()]
-        detail = "Installed in " + (", ".join(installed_paths[:2]) if installed_paths else display_path(agent["paths"][0]))
-    else:
-        status = "missing"
-        detail = "Run Install Hooks to write " + display_path(agent["paths"][0])
-    rows.append({
-        "agentId": agent["agentId"],
-        "cliCommand": agent["cli"],
-        "cliInstalled": cli_installed,
-        "detail": detail,
-        "hookInstalled": hook_installed,
-        "paths": [str(path) for path in agent["paths"]],
-        "status": status,
-    })
-
-print(json.dumps({
-    "agents": rows,
-    "generatedAt": datetime.now(timezone.utc).isoformat(),
-    "hookStateDirectory": str(hook_state_dir),
-    "notifyHookPath": str(notify_hook_path),
-    "type": "agentHookStatus",
-}))
-`;
-}
-
-function buildEnsureNativeAgentHooksCommand(): string {
-  const notifyHookPath = ghostex_AGENT_NOTIFY_HOOK_PATH;
-  const piExtensionPath = NATIVE_PI_EXTENSION_PATH;
-  const homeDirectory = nativeHomeDirectory();
-  const claudeSettingsPath = `${nativeHomeDirectory()}/.claude/settings.json`;
-  const hookStateDirectory = GHOSTEX_AGENT_HOOK_STATE_DIR;
-  return [
-    "set -e",
-    `mkdir -p ${quoteNativeShellArg(dirnameNativePath(notifyHookPath))} ${quoteNativeShellArg(dirnameNativePath(claudeSettingsPath))} ${quoteNativeShellArg(dirnameNativePath(piExtensionPath))} ${quoteNativeShellArg(hookStateDirectory)}`,
-    `cat > ${quoteNativeShellArg(notifyHookPath)} <<'ghostex_NOTIFY_HOOK'`,
-    getNativeCodexNotifyHookScript(),
-    "ghostex_NOTIFY_HOOK",
-    `chmod 755 ${quoteNativeShellArg(notifyHookPath)}`,
-    `cat > ${quoteNativeShellArg(piExtensionPath)} <<'ghostex_PI_EXTENSION'`,
-    getNativePiExtensionScript(),
-    "ghostex_PI_EXTENSION",
-    `/usr/bin/python3 - ${quoteNativeShellArg(notifyHookPath)} ${quoteNativeShellArg(homeDirectory)} <<'ghostex_GENERIC_AGENT_HOOK_MERGE'`,
-    getNativeGenericAgentHookMergeScript(),
-    "ghostex_GENERIC_AGENT_HOOK_MERGE",
-    `/usr/bin/python3 - ${quoteNativeShellArg(notifyHookPath)} ${quoteNativeShellArg(homeDirectory)} <<'ghostex_AMP_PLUGIN_INSTALL'`,
-    getNativeAmpPluginInstallScript(),
-    "ghostex_AMP_PLUGIN_INSTALL",
-    `/usr/bin/python3 - ${quoteNativeShellArg(notifyHookPath)} ${quoteNativeShellArg(homeDirectory)} <<'ghostex_CODEX_HOOK_MERGE_ALL'`,
-    getNativeCodexHookMergeAllScript(),
-    "ghostex_CODEX_HOOK_MERGE_ALL",
-    `/usr/bin/python3 - ${quoteNativeShellArg(claudeSettingsPath)} ${quoteNativeShellArg(notifyHookPath)} claude <<'ghostex_CLAUDE_HOOK_MERGE'`,
-    getNativeAgentHookMergeScript(),
-    "ghostex_CLAUDE_HOOK_MERGE",
-  ].join("\n");
-}
-
-function getNativeCodexNotifyHookScript(): string {
-  /*
-   * CDXC:SessionRestore 2026-05-22-23:33:
-   * Ghostex must capture native agent session ids from hook payloads.
-   * Resume commands should prefer that exact id, while the existing title-based
-   * restore path remains the backup when a hook did not capture an id.
-   *
-   * CDXC:SessionRestore 2026-06-07-01:57:
-   * Ghostex-owned prompt generation is not a user session. The notify hook must
-   * ignore internal generation markers so Codex exec jobs for titles or commit
-   * messages cannot overwrite the restorable agent identity of the terminal that
-   * launched them.
-   */
-  return `#!/bin/bash
-if [ -n "$1" ]; then
-  INPUT="$1"
-else
-  INPUT="$(cat)"
-fi
-
-SESSION_STATE_FILE="\${VSMUX_SESSION_STATE_FILE:-\${GHOSTEX_SESSION_STATE_FILE:-$ghostex_SESSION_STATE_FILE}}"
-HOOK_STATE_DIR=${quoteNativeShellArg(GHOSTEX_AGENT_HOOK_STATE_DIR)}
-GHOSTEX_DIRECT_SESSION_REF="\${GHOSTEX_GLOBAL_SESSION_REF:-}"
-GHOSTEX_DIRECT_BASE_URL="\${GHOSTEX_GXSERVER_BASE_URL:-}"
-GHOSTEX_DIRECT_TOKEN_FILE="\${GHOSTEX_GXSERVER_AUTH_TOKEN_FILE:-}"
-if [ "\${GHOSTEX_INTERNAL_PROMPT_GENERATION:-}" = "1" ] || [ "\${GHOSTEX_INTERNAL_TITLE_GENERATION:-}" = "1" ]; then
-  printf '{"continue":true}'
-  exit 0
-fi
-if [ -z "$SESSION_STATE_FILE" ] && { [ -z "$GHOSTEX_DIRECT_SESSION_REF" ] || [ -z "$GHOSTEX_DIRECT_BASE_URL" ] || [ -z "$GHOSTEX_DIRECT_TOKEN_FILE" ]; }; then
-  printf '{"continue":true}'
-  exit 0
-fi
-
-/usr/bin/python3 - "$SESSION_STATE_FILE" "$INPUT" "$HOOK_STATE_DIR" <<'PY'
-import datetime
-import base64
-import json
-import os
-import pathlib
-import time
-import sys
-import urllib.request
-
-state_path = sys.argv[1]
-raw_input = sys.argv[2]
-hook_state_dir = pathlib.Path(sys.argv[3]).expanduser()
-has_state_path = bool(state_path.strip())
-try:
-    payload = json.loads(raw_input)
-except Exception:
-    payload = {}
-
-state = {}
-if has_state_path:
-    try:
-        with open(state_path, "r", encoding="utf-8") as handle:
-            for line in handle:
-                key, separator, value = line.partition("=")
-                if separator:
-                    state[key] = value.strip() if key in {"firstUserMessageBase64", "agentSessionPath"} else " ".join(value.strip().split())
-    except FileNotFoundError:
-        pass
-
-def first_string(*values):
-    for value in values:
-        if isinstance(value, str) and value.strip():
-            return " ".join(value.strip().split())
-    return ""
-
-def first_path(*values):
-    for value in values:
-        if isinstance(value, str) and value.strip():
-            return value.strip()
-    return ""
-
-def decode_base64_text(value):
-    try:
-        return base64.b64decode((value or "").encode("ascii")).decode("utf-8").strip()
-    except Exception:
-        return ""
-
-def normalize_prompt_text(value):
-    return " ".join(str(value or "").strip().split())
-
-def normalized_agent_key(value):
-    normalized = " ".join(str(value or "").strip().lower().split())
-    if normalized in {"claude", "claude code"}:
-        return "claude"
-    if normalized in {"codex", "openai codex", "codex cli"}:
-        return "codex"
-    if normalized in {"pi", "π"}:
-        return "pi"
-    if normalized in {"opencode", "open code"}:
-        return "opencode"
-    if normalized in {"grok", "grok build"}:
-        return "grok"
-    if normalized in {"amp", "amp cli"}:
-        return "amp"
-    if normalized in {"cursor", "cursor agent", "cursor cli", "cursor-agent"}:
-        return "cursor"
-    if normalized in {"gemini", "gemini cli"}:
-        return "gemini"
-    if normalized in {"agy", "antigravity", "antigravity cli"}:
-        return "antigravity"
-    if normalized in {"copilot", "github copilot"}:
-        return "copilot"
-    if normalized in {"codebuddy", "code buddy"}:
-        return "codebuddy"
-    if normalized in {"droid", "factory", "factory droid"}:
-        return "droid"
-    if normalized in {"qoder", "qodercli"}:
-        return "qoder"
-    if normalized in {"rovo", "rovo dev", "rovodev"}:
-        return "rovodev"
-    if normalized in {"hermes", "hermes agent", "hermes-agent"}:
-        return "hermes-agent"
-    return "".join(ch if ch.isalnum() or ch in {"-", "_"} else "-" for ch in normalized).strip("-") or "codex"
-
-def nested_get(source, *path):
-    current = source
-    for key in path:
-        if not isinstance(current, dict):
-            return None
-        current = current.get(key)
-    return current
-
-def write_state():
-    if not has_state_path:
-        return
-    keys = [
-        "status",
-        "statusUpdatedAt",
-        "attentionEventId",
-        "attentionAcknowledgedAt",
-        "attentionAcknowledgedEventId",
-        "agent",
-        "agentSessionId",
-        "agentSessionPath",
-        "firstUserMessageBase64",
-        "frozenAt",
-        "autoTitleFromFirstPrompt",
-        "historyBase64",
-        "lastActivityAt",
-        "pendingFirstPromptAutoRenamePrompt",
-        "title",
-    ]
-    path = pathlib.Path(state_path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temp_path = path.with_suffix(path.suffix + ".tmp")
-    temp_path.write_text("".join(f"{key}={state.get(key, '')}\\n" for key in keys), encoding="utf-8")
-    temp_path.replace(path)
-
-def write_hook_store(agent_key, session_id, transcript_path):
-    workspace_id = first_string(os.environ.get("GHOSTEX_WORKSPACE_ID"), os.environ.get("VSMUX_WORKSPACE_ID"), os.environ.get("ghostex_WORKSPACE_ID"))
-    surface_id = first_string(os.environ.get("GHOSTEX_SESSION_ID"), os.environ.get("VSMUX_SESSION_ID"), os.environ.get("ghostex_SESSION_ID"))
-    if not workspace_id or not surface_id:
-        direct_project_id, direct_session_id = parse_global_session_ref(os.environ.get("GHOSTEX_GLOBAL_SESSION_REF", ""))
-        workspace_id = workspace_id or direct_project_id
-        surface_id = surface_id or direct_session_id
-    if not session_id or not workspace_id or not surface_id:
-        return
-    store_path = hook_state_dir / f"{agent_key}-hook-sessions.json"
-    try:
-        data = json.loads(store_path.read_text(encoding="utf-8"))
-    except Exception:
-        data = {}
-    if not isinstance(data, dict):
-        data = {}
-    sessions = data.get("sessions")
-    if not isinstance(sessions, dict):
-        sessions = {}
-    sessions[session_id] = {
-        "sessionId": session_id,
-        "workspaceId": workspace_id,
-        "surfaceId": surface_id,
-        "cwd": first_path(payload.get("cwd"), os.environ.get("GHOSTEX_WORKSPACE_ROOT"), os.environ.get("VSMUX_WORKSPACE_ROOT"), os.getcwd()),
-        "transcriptPath": transcript_path or None,
-        "pid": os.getppid(),
-        "isRestorable": True,
-        "updatedAt": time.time(),
-    }
-    data["version"] = 1
-    data["sessions"] = sessions
-    store_path.parent.mkdir(parents=True, exist_ok=True)
-    temp_path = store_path.with_suffix(store_path.suffix + ".tmp")
-    temp_path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\\n", encoding="utf-8")
-    temp_path.replace(store_path)
-
-def parse_global_session_ref(value):
-    parts = str(value or "").strip().split(":")
-    if len(parts) == 3 and parts[1] and parts[2]:
-        return parts[1], parts[2]
-    return "", ""
-
-def read_gxserver_auth_token():
-    token_file = first_path(os.environ.get("GHOSTEX_GXSERVER_AUTH_TOKEN_FILE"))
-    if not token_file:
-        return ""
-    try:
-        return pathlib.Path(token_file).expanduser().read_text(encoding="utf-8").strip()
-    except Exception:
-        return ""
-
-def post_gxserver_session_state(agent_key, session_id, transcript_path, first_user_message):
-    base_url = first_string(os.environ.get("GHOSTEX_GXSERVER_BASE_URL")).rstrip("/")
-    project_id, surface_id = parse_global_session_ref(os.environ.get("GHOSTEX_GLOBAL_SESSION_REF", ""))
-    token = read_gxserver_auth_token()
-    if not base_url or not project_id or not surface_id or not token:
-        return
-    try:
-        protocol_version = int(first_string(os.environ.get("GHOSTEX_GXSERVER_PROTOCOL_VERSION"), "0"))
-    except Exception:
-        protocol_version = 0
-    params = {
-        "agentName": agent_key,
-        "projectId": project_id,
-        "sessionId": surface_id,
-    }
-    if session_id:
-        params["agentSessionId"] = session_id
-    if transcript_path:
-        params["agentSessionPath"] = transcript_path
-    if first_user_message:
-        params["firstUserMessage"] = first_user_message
-    body = json.dumps({"protocolVersion": protocol_version, "params": params}).encode("utf-8")
-    request = urllib.request.Request(
-        base_url + "/api/ingestSessionStateEvent",
-        data=body,
-        headers={
-            "Authorization": "Bearer " + token,
-            "Content-Type": "application/json",
-            "x-gxserver-protocol-version": str(protocol_version),
-        },
-        method="POST",
-    )
-    try:
-        with urllib.request.urlopen(request, timeout=1.5) as response:
-            response.read(128)
-    except Exception:
-        pass
-
-# CDXC:CursorCLI 2026-05-27-09:06:
-# Cursor Agent's global hook command exports GHOSTEX_AGENT=cursor even when a manually-started pane inherited another agent value. Prefer that explicit hook identity so Cursor transcript metadata cannot be persisted as Codex.
-payload_agent = payload.get("agent")
-explicit_agent_name = first_string(payload_agent, os.environ.get("GHOSTEX_AGENT"), os.environ.get("ghostex_AGENT"))
-agent_name = first_string(explicit_agent_name, os.environ.get("VSMUX_AGENT"), state.get("agent"), "codex")
-agent_key = normalized_agent_key(agent_name)
-event_name = first_string(payload.get("hook_event_name"), payload.get("event"))
-session_id = first_string(
-    payload.get("session_id"),
-    payload.get("sessionId"),
-    payload.get("conversation_id"),
-    payload.get("conversationId"),
-    payload.get("thread_id"),
-    payload.get("threadId"),
-    nested_get(payload, "session", "id"),
-    nested_get(payload, "thread", "id"),
-    nested_get(payload, "properties", "sessionID"),
-    nested_get(payload, "properties", "sessionId"),
-    nested_get(payload, "properties", "session_id"),
-    nested_get(payload, "properties", "info", "id"),
-)
-transcript_path = first_path(payload.get("transcript_path"), payload.get("transcriptPath"), payload.get("log_path"), payload.get("logPath"))
-prompt = first_string(
-    payload.get("prompt"),
-    payload.get("text"),
-    payload.get("message"),
-    payload.get("input"),
-    nested_get(payload, "prompt", "text"),
-)
-
-def now_iso():
-    return datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00", "Z")
-
-def update_status(status):
-    timestamp = now_iso()
-    state["status"] = status
-    state["statusUpdatedAt"] = timestamp
-    state["lastActivityAt"] = timestamp
-    if status == "attention":
-        state["attentionEventId"] = f"{timestamp}:attention"
-        state["attentionAcknowledgedAt"] = ""
-        state["attentionAcknowledgedEventId"] = ""
-    elif status == "working":
-        state["attentionAcknowledgedAt"] = timestamp
-        state["attentionAcknowledgedEventId"] = state.get("attentionEventId", "")
-
-state["status"] = state.get("status") or "idle"
-state["statusUpdatedAt"] = state.get("statusUpdatedAt") or state.get("lastActivityAt", "")
-state["agent"] = agent_key if explicit_agent_name else (state.get("agent") or agent_key)
-if session_id:
-    state["agentSessionId"] = session_id
-if transcript_path:
-    state["agentSessionPath"] = transcript_path
-if session_id:
-    write_hook_store(agent_key, session_id, transcript_path)
-
-if event_name in {"UserPromptSubmit", "BeforeAgent", "PreInvocation", "beforeSubmitPrompt", "pre_llm_call", "pre_tool_call"}:
-    update_status("working")
-elif event_name in {"Stop", "AfterAgent", "afterAgentResponse", "turn-completion", "Notification", "stop", "on_tool_permission", "PermissionRequest"}:
-    update_status("attention")
-elif event_name in {"SessionEnd", "session_shutdown", "release"}:
-    update_status("idle")
-
-if event_name in {"UserPromptSubmit", "BeforeAgent", "PreInvocation", "beforeSubmitPrompt", "pre_llm_call", "pre_tool_call", "on_tool_permission"} and prompt:
-    state["firstUserMessageBase64"] = state.get("firstUserMessageBase64") or base64.b64encode(prompt.encode("utf-8")).decode("ascii")
-    state["lastActivityAt"] = state.get("lastActivityAt") or now_iso()
-    # CDXC:SessionTitleSync 2026-05-30-05:42:
-    # Cursor Agent and Claude Code name their own sessions. Keep recording the
-    # first message for session metadata, but do not queue Ghostex auto-rename.
-    if agent_key not in {"claude", "cursor"} and state.get("autoTitleFromFirstPrompt") not in {"1", "true", "TRUE", "True"} and not state.get("pendingFirstPromptAutoRenamePrompt", "").strip():
-        first_prompt = normalize_prompt_text(decode_base64_text(state.get("firstUserMessageBase64", "")))
-        current_prompt = normalize_prompt_text(prompt)
-        # CDXC:SessionTitleSync 2026-05-30-05:44:
-        # Cancelled first-prompt title generation clears the pending field but
-        # preserves the first message. Queue the next prompt with that original
-        # message so the retry title reflects both pieces of user intent.
-        if first_prompt and first_prompt != current_prompt:
-            state["pendingFirstPromptAutoRenamePrompt"] = normalize_prompt_text(first_prompt + "\\n" + current_prompt)
-        else:
-            state["pendingFirstPromptAutoRenamePrompt"] = current_prompt
-
-first_user_message = first_string(
-    state.get("pendingFirstPromptAutoRenamePrompt"),
-    decode_base64_text(state.get("firstUserMessageBase64", "")),
-    prompt,
-)
-post_gxserver_session_state(agent_key, session_id, transcript_path, first_user_message)
-write_state()
-PY
-
-printf '{"continue":true}'
-exit 0
-`;
-}
-
-function getNativeAgentHookMergeScript(): string {
-  return `import json
-import pathlib
-import sys
-
-hooks_path = pathlib.Path(sys.argv[1])
-notify_hook_path = sys.argv[2]
-agent_name = sys.argv[3]
-command = notify_hook_path
-try:
-    with open(hooks_path, "r", encoding="utf-8") as handle:
-        data = json.load(handle)
-except FileNotFoundError:
-    data = {}
-
-if not isinstance(data, dict):
-    data = {}
-hooks = data.get("hooks")
-if not isinstance(hooks, dict):
-    hooks = {}
-    data["hooks"] = hooks
-
-def is_ghostex_command(hook):
-    return isinstance(hook, dict) and hook.get("command") == command
-
-matcher = "*" if agent_name == "claude" else None
-
-def merge_event(event_name):
-    groups = hooks.get(event_name)
-    if not isinstance(groups, list):
-        groups = []
-
-    for group in groups:
-        if not isinstance(group, dict):
-            continue
-        group_hooks = group.get("hooks")
-        if isinstance(group_hooks, list) and any(is_ghostex_command(hook) for hook in group_hooks):
-            hooks[event_name] = groups
-            return
-
-    next_group = {
-        "hooks": [
-            {
-                "type": "command",
-                "command": command,
-            }
-        ]
-    }
-    if matcher is not None:
-        next_group["matcher"] = matcher
-    groups.append(next_group)
-    hooks[event_name] = groups
-
-for event_name in ["SessionStart", "UserPromptSubmit"]:
-    merge_event(event_name)
-
-hooks_path.parent.mkdir(parents=True, exist_ok=True)
-with open(hooks_path, "w", encoding="utf-8") as handle:
-    json.dump(data, handle, indent=2)
-    handle.write("\\n")
-`;
-}
-
-function getNativeGenericAgentHookMergeScript(): string {
-  return `import json
-import pathlib
-import shlex
-import shutil
-import sys
-
-notify_hook_path = pathlib.Path(sys.argv[1])
-home_path = pathlib.Path(sys.argv[2])
-
-def p(*parts):
-    return home_path.joinpath(*parts)
-
-targets = [
-    (p(".grok", "hooks", "ghostex-session.json"), "nested", "grok", "grok", ["SessionStart", "UserPromptSubmit", "Stop", "Notification", "SessionEnd"]),
-    (p(".gemini", "settings.json"), "nested", "gemini", "gemini", ["SessionStart", "BeforeAgent", "AfterAgent", "SessionEnd"]),
-    (p(".copilot", "config.json"), "nested", "copilot", "copilot", ["SessionStart", "Stop", "Notification", "SessionEnd"]),
-    (p(".codebuddy", "settings.json"), "nested", "codebuddy", "codebuddy", ["SessionStart", "Stop", "Notification", "SessionEnd"]),
-    (p(".factory", "settings.json"), "nested", "droid", "droid", ["SessionStart", "Stop", "Notification", "SessionEnd"]),
-    (p(".qoder", "settings.json"), "nested", "qoder", "qodercli", ["SessionStart", "Stop", "SessionEnd"]),
-    (p(".cursor", "hooks.json"), "flat", "cursor", "cursor-agent", ["beforeSubmitPrompt", "beforeShellExecution", "afterAgentResponse", "stop"]),
-    (p(".gemini", "config", "hooks.json"), "antigravity", "antigravity", "agy", ["SessionStart", "PreInvocation", "Stop", "turn-completion", "Notification", "SessionEnd"]),
-]
-
-def load_json(path):
-    try:
-        with path.open("r", encoding="utf-8") as handle:
-            data = json.load(handle)
-    except FileNotFoundError:
-        data = {}
-    except Exception:
-        data = {}
-    return data if isinstance(data, dict) else {}
-
-def command_for(agent):
-    return f"GHOSTEX_AGENT={shlex.quote(agent)} {shlex.quote(str(notify_hook_path))}"
-
-def is_ghostex_command(hook, command):
-    return isinstance(hook, dict) and hook.get("command") == command
-
-def merge_nested(data, events, command):
-    hooks = data.get("hooks")
-    if not isinstance(hooks, dict):
-        hooks = {}
-        data["hooks"] = hooks
-    for event_name in events:
-        groups = hooks.get(event_name)
-        if not isinstance(groups, list):
-            groups = []
-        found = False
-        for group in groups:
-            if not isinstance(group, dict):
-                continue
-            group_hooks = group.get("hooks")
-            if isinstance(group_hooks, list) and any(is_ghostex_command(hook, command) for hook in group_hooks):
-                found = True
-                break
-        if not found:
-            groups.append({"hooks": [{"type": "command", "command": command, "timeout": 5000}]})
-        hooks[event_name] = groups
-
-def merge_flat(data, events, command):
-    hooks = data.get("hooks")
-    if not isinstance(hooks, dict):
-        hooks = {}
-        data["hooks"] = hooks
-    data["version"] = data.get("version") or 1
-    for event_name in events:
-        entries = hooks.get(event_name)
-        if not isinstance(entries, list):
-            entries = []
-        if not any(is_ghostex_command(entry, command) for entry in entries):
-            entries.append({"command": command})
-        hooks[event_name] = entries
-
-def merge_antigravity(data, events, command):
-    group = {}
-    for event_name in events:
-        group[event_name] = [{"type": "command", "command": command, "timeout": 5}]
-    data["ghostex"] = group
-
-def yaml_double_quote(value):
-    return '"' + str(value).replace("\\\\", "\\\\\\\\").replace('"', '\\"').replace("\\n", "\\\\n") + '"'
-
-def without_marked_block(lines, begin_marker, end_marker):
-    result = []
-    index = 0
-    while index < len(lines):
-        if lines[index].strip() != begin_marker:
-            result.append(lines[index])
-            index += 1
-            continue
-        index += 1
-        while index < len(lines) and lines[index].strip() != end_marker:
-            index += 1
-        if index < len(lines):
-            index += 1
-    while result and not result[-1].strip():
-        result.pop()
-    return result
-
-def install_rovo_hooks(path, command):
-    begin_marker = "# ghostex hooks rovodev begin"
-    end_marker = "# ghostex hooks rovodev end"
-    try:
-        lines = path.read_text(encoding="utf-8").splitlines()
-    except FileNotFoundError:
-        lines = []
-    lines = without_marked_block(lines, begin_marker, end_marker)
-    if lines and lines[-1].strip():
-        lines.append("")
-    lines.extend([
-        begin_marker,
-        "eventHooks:",
-        "  events:",
-        "    - name: on_complete",
-        "      commands:",
-        f"        - command: {yaml_double_quote(command)}",
-        "    - name: on_error",
-        "      commands:",
-        f"        - command: {yaml_double_quote(command)}",
-        "    - name: on_tool_permission",
-        "      commands:",
-        f"        - command: {yaml_double_quote(command)}",
-        end_marker,
-    ])
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text("\\n".join(lines) + "\\n", encoding="utf-8")
-
-def install_hermes_hooks(path, command):
-    begin_marker = "# ghostex hooks hermes-agent begin"
-    end_marker = "# ghostex hooks hermes-agent end"
-    shell_command = f"sh -c {shlex.quote(command)}"
-    try:
-        lines = path.read_text(encoding="utf-8").splitlines()
-    except FileNotFoundError:
-        lines = []
-    lines = without_marked_block(lines, begin_marker, end_marker)
-    if lines and lines[-1].strip():
-        lines.append("")
-    lines.extend([
-        begin_marker,
-        "hooks:",
-        "  on_session_start:",
-        f"    - command: {yaml_double_quote(shell_command)}",
-        "      timeout: 5",
-        "  pre_llm_call:",
-        f"    - command: {yaml_double_quote(shell_command)}",
-        "      timeout: 5",
-        "  post_llm_call:",
-        f"    - command: {yaml_double_quote(shell_command)}",
-        "      timeout: 5",
-        "  on_session_end:",
-        f"    - command: {yaml_double_quote(shell_command)}",
-        "      timeout: 5",
-        "  on_session_finalize:",
-        f"    - command: {yaml_double_quote(shell_command)}",
-        "      timeout: 5",
-        "  on_session_reset:",
-        f"    - command: {yaml_double_quote(shell_command)}",
-        "      timeout: 5",
-        end_marker,
-    ])
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text("\\n".join(lines) + "\\n", encoding="utf-8")
-
-for path, format_name, agent, binary_name, events in targets:
-    if shutil.which(binary_name) is None:
-        continue
-    command = command_for(agent)
-    data = load_json(path)
-    if format_name == "flat":
-        merge_flat(data, events, command)
-    elif format_name == "antigravity":
-        merge_antigravity(data, events, command)
-    else:
-        merge_nested(data, events, command)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temp_path = path.with_suffix(path.suffix + ".tmp")
-    temp_path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\\n", encoding="utf-8")
-    temp_path.replace(path)
-    print(f"agentHooksPath={path}")
-
-if shutil.which("acli") is not None:
-    rovo_path = p(".rovodev", "config.yml")
-    install_rovo_hooks(rovo_path, command_for("rovodev"))
-    print(f"agentHooksPath={rovo_path}")
-
-hermes_dir = p(".hermes")
-if shutil.which("hermes") is not None and hermes_dir.exists():
-    hermes_path = hermes_dir / "config.yaml"
-    install_hermes_hooks(hermes_path, command_for("hermes-agent"))
-    print(f"agentHooksPath={hermes_path}")
-`;
-}
-
-function getNativeAmpPluginInstallScript(): string {
-  return `import pathlib
-import shutil
-import sys
-
-notify_hook_path = pathlib.Path(sys.argv[1])
-home_path = pathlib.Path(sys.argv[2])
-if shutil.which("amp") is None:
-    sys.exit(0)
-plugin_path = home_path / ".config" / "amp" / "plugins" / "ghostex-session.ts"
-plugin_source = r'''// ghostex-amp-session-extension-marker v1
-import { spawn } from "node:child_process";
-import type { PluginAPI } from "@ampcode/plugin";
-
-function firstString(...values: unknown[]): string | null {
-  for (const value of values) {
-    if (typeof value === "string" && value.trim().length > 0) return value.trim();
-  }
-  return null;
-}
-
-function sendHook(eventName: string, event: any, ctx: any): void {
-  if (process.env.GHOSTEX_AMP_HOOKS_DISABLED === "1") return;
-  const sessionId = firstString(event?.thread?.id, ctx?.thread?.id);
-  if (!sessionId) return;
-  const payload = {
-    agent: "amp",
-    cwd: firstString(process.env.PWD, process.cwd()) || process.cwd(),
-    event: eventName,
-    hook_event_name: eventName,
-    session_id: sessionId,
-  };
-  try {
-    const child = spawn("__GHOSTEX_NOTIFY_HOOK__", [], { stdio: ["pipe", "ignore", "ignore"], env: { ...process.env, GHOSTEX_AGENT: "amp" }, detached: true });
-    child.on("error", () => {});
-    child.stdin.on("error", () => {});
-    child.stdin.end(JSON.stringify(payload));
-    child.unref();
-  } catch (_) {}
-}
-
-export default function (amp: PluginAPI) {
-  amp.on("session.start", async (event: any, ctx: any) => sendHook("SessionStart", event, ctx));
-  amp.on("agent.start", async (event: any, ctx: any) => sendHook("UserPromptSubmit", event, ctx));
-  amp.on("agent.end", async (event: any, ctx: any) => sendHook("Stop", event, ctx));
-}
-'''.replace("__GHOSTEX_NOTIFY_HOOK__", str(notify_hook_path))
-
-plugin_path.parent.mkdir(parents=True, exist_ok=True)
-plugin_path.write_text(plugin_source, encoding="utf-8")
-print(f"ampPluginPath={plugin_path}")
-`;
-}
-
-function getNativePiExtensionScript(): string {
-  return `import fs from "node:fs";
-import path from "node:path";
-import type { ExtensionAPI, ExtensionContext, InputEvent } from "@earendil-works/pi-coding-agent";
-
-const BRAILLE_FRAMES = ["⠸", "⠴", "⠼", "⠧", "⠦", "⠏", "⠋", "⠇", "⠙", "⠹"] as const;
-const STATE_KEYS = [
-  "status",
-  "statusUpdatedAt",
-  "attentionEventId",
-  "attentionAcknowledgedAt",
-  "attentionAcknowledgedEventId",
-  "agent",
-  "agentSessionId",
-  "agentSessionPath",
-  "firstUserMessageBase64",
-  "frozenAt",
-  "autoTitleFromFirstPrompt",
-  "historyBase64",
-  "lastActivityAt",
-  "pendingFirstPromptAutoRenamePrompt",
-  "title",
-] as const;
-
-function getStateFile(): string | undefined {
-  return (
-    process.env.VSMUX_SESSION_STATE_FILE ||
-    process.env.GHOSTEX_SESSION_STATE_FILE ||
-    process.env.ghostex_SESSION_STATE_FILE
-  );
-}
-
-function readState(filePath: string): Record<string, string> {
-  const state: Record<string, string> = {};
-  try {
-    const raw = fs.readFileSync(filePath, "utf8");
-    for (const line of raw.split(/\\r?\\n/g)) {
-      const separatorIndex = line.indexOf("=");
-      if (separatorIndex <= 0) {
-        continue;
-      }
-      const key = line.slice(0, separatorIndex);
-      const value = line.slice(separatorIndex + 1);
-      state[key] = key === "firstUserMessageBase64" || key === "agentSessionPath"
-        ? value.trim()
-        : value.trim().replace(/\\s+/g, " ");
-    }
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
-      throw error;
-    }
-  }
-  return state;
-}
-
-function writeState(filePath: string, state: Record<string, string>): void {
-  fs.mkdirSync(path.dirname(filePath), { recursive: true });
-  const tempPath = filePath + ".tmp";
-  fs.writeFileSync(
-    tempPath,
-    STATE_KEYS.map((key) => key + "=" + (state[key] || "")).join("\\n") + "\\n",
-    "utf8",
-  );
-  fs.renameSync(tempPath, filePath);
-}
-
-function updateStatus(state: Record<string, string>, status: "attention" | "idle" | "working"): string {
-  const timestamp = new Date().toISOString();
-  state.status = status;
-  state.statusUpdatedAt = timestamp;
-  state.lastActivityAt = timestamp;
-  if (status === "attention") {
-    state.attentionEventId = timestamp + ":attention";
-    state.attentionAcknowledgedAt = "";
-    state.attentionAcknowledgedEventId = "";
-  } else if (status === "working") {
-    state.attentionAcknowledgedAt = timestamp;
-    state.attentionAcknowledgedEventId = state.attentionEventId || "";
-  }
-  return timestamp;
-}
-
-function baseTitle(pi: ExtensionAPI, ctx: ExtensionContext): string {
-  const cwd = path.basename(ctx.cwd || process.cwd());
-  const session = pi.getSessionName();
-  return session ? "π - " + session + " - " + cwd : "π - " + cwd;
-}
-
-function syncSessionState(pi: ExtensionAPI, ctx: ExtensionContext, updates: Record<string, string> = {}): void {
-  const filePath = getStateFile();
-  if (!filePath) {
-    return;
-  }
-  const state = readState(filePath);
-  const nextStatus = updates.status as "attention" | "idle" | "working" | undefined;
-  if (nextStatus === "attention" || nextStatus === "idle" || nextStatus === "working") {
-    updateStatus(state, nextStatus);
-  } else {
-    state.status = state.status || "idle";
-    state.statusUpdatedAt = state.statusUpdatedAt || state.lastActivityAt || "";
-  }
-  state.agent = "pi";
-  state.agentSessionId = ctx.sessionManager.getSessionId() || state.agentSessionId || "";
-  state.agentSessionPath = ctx.sessionManager.getSessionFile() || state.agentSessionPath || "";
-  state.title = pi.getSessionName() || state.title || "";
-  for (const [key, value] of Object.entries(updates)) {
-    if (key === "status" || key === "lastActivityAt") {
-      continue;
-    }
-    state[key] = value;
-  }
-  writeState(filePath, state);
-}
-
-function captureInput(pi: ExtensionAPI, event: InputEvent, ctx: ExtensionContext): void {
-  const prompt = event.text.trim();
-  if (!prompt) {
-    return;
-  }
-  const filePath = getStateFile();
-  if (!filePath) {
-    return;
-  }
-  const state = readState(filePath);
-  state.status = state.status || "idle";
-  state.agent = "pi";
-  state.agentSessionId = ctx.sessionManager.getSessionId() || state.agentSessionId || "";
-  state.agentSessionPath = ctx.sessionManager.getSessionFile() || state.agentSessionPath || "";
-  state.title = pi.getSessionName() || state.title || "";
-  state.firstUserMessageBase64 =
-    state.firstUserMessageBase64 || Buffer.from(prompt, "utf8").toString("base64");
-  state.lastActivityAt = new Date().toISOString();
-  if (!state.pendingFirstPromptAutoRenamePrompt && !/^(1|true)$/iu.test(state.autoTitleFromFirstPrompt || "")) {
-    /*
-     * CDXC:SessionTitleSync 2026-05-30-05:44:
-     * Cancelled first-prompt title generation keeps the first message stored
-     * but clears the pending prompt. Retry with the next prompt plus the
-     * original first message so generated titles use both user requests.
-     */
-    const firstPrompt = Buffer.from(state.firstUserMessageBase64 || "", "base64")
-      .toString("utf8")
-      .replace(/\\s+/g, " ")
-      .trim();
-    const currentPrompt = prompt.replace(/\\s+/g, " ").trim();
-    state.pendingFirstPromptAutoRenamePrompt =
-      firstPrompt && firstPrompt !== currentPrompt
-        ? (firstPrompt + " " + currentPrompt).replace(/\\s+/g, " ")
-        : currentPrompt;
-  }
-  writeState(filePath, state);
-}
-
-export default function (pi: ExtensionAPI) {
-  let timer: ReturnType<typeof setInterval> | undefined;
-  let frameIndex = 0;
-
-  function stopAnimation(ctx: ExtensionContext): void {
-    if (timer) {
-      clearInterval(timer);
-      timer = undefined;
-    }
-    frameIndex = 0;
-    ctx.ui.setTitle(baseTitle(pi, ctx));
-  }
-
-  function startAnimation(ctx: ExtensionContext): void {
-    stopAnimation(ctx);
-    timer = setInterval(() => {
-      const frame = BRAILLE_FRAMES[frameIndex % BRAILLE_FRAMES.length];
-      ctx.ui.setTitle(frame + " " + baseTitle(pi, ctx));
-      frameIndex += 1;
-    }, 120);
-  }
-
-  pi.on("session_start", async (_event, ctx) => {
-    syncSessionState(pi, ctx);
-    ctx.ui.setTitle(baseTitle(pi, ctx));
-  });
-
-  pi.on("input", async (event, ctx) => {
-    captureInput(pi, event, ctx);
-    return { action: "continue" };
-  });
-
-  pi.on("agent_start", async (_event, ctx) => {
-    syncSessionState(pi, ctx, { status: "working" });
-    startAnimation(ctx);
-  });
-
-  pi.on("agent_end", async (_event, ctx) => {
-    syncSessionState(pi, ctx, { status: "attention" });
-    stopAnimation(ctx);
-  });
-
-  pi.on("session_shutdown", async (_event, ctx) => {
-    syncSessionState(pi, ctx, { status: "idle" });
-    stopAnimation(ctx);
-  });
-}
-`;
-}
-
-function getNativeCodexHookMergeAllScript(): string {
-  return `import json
-import pathlib
-import sys
-
-notify_hook_path = pathlib.Path(sys.argv[1])
-home_path = pathlib.Path(sys.argv[2])
-command = str(notify_hook_path)
-
-def load_hooks_data(hooks_path):
-    try:
-        with open(hooks_path, "r", encoding="utf-8") as handle:
-            data = json.load(handle)
-    except FileNotFoundError:
-        data = {}
-
-    if not isinstance(data, dict):
-        data = {}
-    hooks = data.get("hooks")
-    if not isinstance(hooks, dict):
-        hooks = {}
-        data["hooks"] = hooks
-    return data, hooks
-
-def is_ghostex_command(hook):
-    return isinstance(hook, dict) and hook.get("command") == command
-
-def merge_hook(hooks_path):
-    data, hooks = load_hooks_data(hooks_path)
-    def merge_event(event_name):
-        groups = hooks.get(event_name)
-        if not isinstance(groups, list):
-            groups = []
-
-        for group in groups:
-            if not isinstance(group, dict):
-                continue
-            group_hooks = group.get("hooks")
-            if isinstance(group_hooks, list) and any(is_ghostex_command(hook) for hook in group_hooks):
-                hooks[event_name] = groups
-                return
-
-        groups.append({
-            "hooks": [
-                {
-                    "type": "command",
-                    "command": command,
-                }
-            ]
-        })
-        hooks[event_name] = groups
-
-    for event_name in ["SessionStart", "UserPromptSubmit", "Stop", "Notification", "SessionEnd"]:
-        merge_event(event_name)
-
-    hooks_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(hooks_path, "w", encoding="utf-8") as handle:
-        json.dump(data, handle, indent=2)
-        handle.write("\\n")
-
-hook_paths = [home_path / ".codex" / "hooks.json"]
-profiles_path = home_path / ".codex-profiles"
-if profiles_path.is_dir():
-    for profile_path in sorted(profiles_path.iterdir()):
-        if profile_path.is_dir():
-            hook_paths.append(profile_path / "hooks.json")
-
-seen = set()
-for hooks_path in hook_paths:
-    resolved = str(hooks_path)
-    if resolved in seen:
-        continue
-    seen.add(resolved)
-    merge_hook(hooks_path)
-    print(f"codexHooksPath={resolved}")
-`;
 }
 
 function dirnameNativePath(path: string): string {
@@ -19467,7 +18494,7 @@ async function stageNativeAgentPrompt(input: {
    * conflicts, and worktree first prompts all use the same ordered path.
    *
    * CDXC:PromptAgents 2026-05-31-07:35:
-   * Long bead prompts must be written in fifteen-line chunks so Cursor Agent does
+   * Long bead prompts must be written in thirteen-line chunks so Cursor Agent does
    * not collapse the staged text into a "[Pasted text #1 +N lines]" chip before submit.
    */
   await waitForNativeTerminalReady(input.session.sessionId);
@@ -21788,50 +20815,15 @@ async function clearNativeFirstPromptAutoRenamePendingPrompt(
   /*
   CDXC:GxserverSessionTitle 2026-06-07-01:19:
   Escape cancellation should suppress only the currently pending title prompt. Clear the hook-state pending prompt while preserving the first-user-message field so the next UserPromptSubmit hook can queue a retry that includes the original request plus the new user message.
+
+  CDXC:NativeCommandBridge 2026-06-10-18:17:
+  This state mutation runs through Ghostex's bundled code-server Node runtime so sidebar recovery and cancellation do not depend on Python being installed on the user's Mac.
   */
-  const command = [
-    `/usr/bin/python3 - ${quoteNativeShellArg(sessionStateFilePath)} <<'GHOSTEX_CLEAR_PENDING_FIRST_PROMPT'`,
-    "import pathlib",
-    "import sys",
-    "",
-    "keys = [",
-    '    "status",',
-    '    "statusUpdatedAt",',
-    '    "attentionEventId",',
-    '    "attentionAcknowledgedAt",',
-    '    "attentionAcknowledgedEventId",',
-    '    "agent",',
-    '    "agentSessionId",',
-    '    "agentSessionPath",',
-    '    "firstUserMessageBase64",',
-    '    "frozenAt",',
-    '    "autoTitleFromFirstPrompt",',
-    '    "historyBase64",',
-    '    "lastActivityAt",',
-    '    "pendingFirstPromptAutoRenamePrompt",',
-    '    "title",',
-    "]",
-    "state_path = pathlib.Path(sys.argv[1])",
-    "state = {}",
-    "try:",
-    "    lines = state_path.read_text(encoding='utf-8').splitlines()",
-    "except FileNotFoundError:",
-    "    print('unchanged')",
-    "    sys.exit(0)",
-    "for line in lines:",
-    "    key, separator, value = line.partition('=')",
-    "    if separator:",
-    "        state[key] = value",
-    "changed = bool(state.get('pendingFirstPromptAutoRenamePrompt', '').strip())",
-    "state['pendingFirstPromptAutoRenamePrompt'] = ''",
-    "state_path.parent.mkdir(parents=True, exist_ok=True)",
-    "temp_path = state_path.with_suffix(state_path.suffix + '.tmp')",
-    "temp_path.write_text(''.join(f'{key}={state.get(key, \"\")}\\n' for key in keys), encoding='utf-8')",
-    "temp_path.replace(state_path)",
-    "print('changed' if changed else 'unchanged')",
-    "GHOSTEX_CLEAR_PENDING_FIRST_PROMPT",
-  ].join("\n");
-  const result = await runNativeProcess("/bin/zsh", ["-lc", command], { timeoutMs: 5_000 });
+  const result = await runNativeNodeScript(
+    getClearNativeFirstPromptAutoRenamePendingPromptScript(),
+    [sessionStateFilePath],
+    { timeoutMs: 5_000 },
+  );
   if (result.exitCode !== 0) {
     appendSessionTitleGenerationErrorLog("nativeSidebar.firstPromptAutoRename.clearPendingFailed", {
       exitCode: result.exitCode,
@@ -22055,132 +21047,211 @@ function syncNativePersistedAgentSessionState(
 }
 
 function getStampNativeSessionSemanticActivityScript(): string {
-  return `import os
-import pathlib
-import sys
-from datetime import datetime
+  return String.raw`
+const fs = require("node:fs");
+const path = require("node:path");
+const process = require("node:process");
 
-state_path = pathlib.Path(sys.argv[1])
-timestamp = sys.argv[2]
-activity = sys.argv[3]
+const [statePath, timestamp, activity] = process.argv.slice(1);
+const keys = [
+  "status",
+  "statusUpdatedAt",
+  "attentionEventId",
+  "attentionAcknowledgedAt",
+  "attentionAcknowledgedEventId",
+  "agent",
+  "agentSessionId",
+  "agentSessionPath",
+  "firstUserMessageBase64",
+  "frozenAt",
+  "autoTitleFromFirstPrompt",
+  "historyBase64",
+  "lastActivityAt",
+  "pendingFirstPromptAutoRenamePrompt",
+  "title",
+];
 
-keys = [
-    "status",
-    "statusUpdatedAt",
-    "attentionEventId",
-    "attentionAcknowledgedAt",
-    "attentionAcknowledgedEventId",
-    "agent",
-    "agentSessionId",
-    "agentSessionPath",
-    "firstUserMessageBase64",
-    "frozenAt",
-    "autoTitleFromFirstPrompt",
-    "historyBase64",
-    "lastActivityAt",
-    "pendingFirstPromptAutoRenamePrompt",
-    "title",
-]
+function readState(filePath) {
+  const state = Object.create(null);
+  let raw = "";
+  try {
+    raw = fs.readFileSync(filePath, "utf8");
+  } catch (error) {
+    if (error?.code !== "ENOENT") {
+      throw error;
+    }
+  }
+  for (const line of raw.split(/\r?\n/g)) {
+    const index = line.indexOf("=");
+    if (index >= 0) {
+      state[line.slice(0, index)] = line.slice(index + 1);
+    }
+  }
+  return state;
+}
 
-state = {}
-try:
-    lines = state_path.read_text(encoding="utf-8").splitlines()
-except FileNotFoundError:
-    lines = []
+function parseTimestamp(value) {
+  if (!value) {
+    return undefined;
+  }
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
 
-for line in lines:
-    key, separator, value = line.partition("=")
-    if separator:
-        state[key] = value
+function writeState(filePath, state) {
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  /*
+  CDXC:SessionAttention 2026-06-07-03:40:
+  Concurrent hook/ack writes for the same session-state file must not share one temp path; use a per-process temp file so atomic replace stays race-safe.
 
-def parse_timestamp(value):
-    if not value:
-        return None
-    try:
-        return datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except ValueError:
-        return None
+  CDXC:NativeCommandBridge 2026-06-10-18:17:
+  Sidebar state stamping must run in Ghostex's bundled code-server Node runtime, not a Python interpreter that may be absent on the user's machine.
+  */
+  const tempPath = path.join(path.dirname(filePath), path.basename(filePath) + "." + process.pid + ".tmp");
+  fs.writeFileSync(tempPath, keys.map((key) => key + "=" + (state[key] ?? "") + "\n").join(""), "utf8");
+  fs.renameSync(tempPath, filePath);
+}
 
-existing_timestamp = parse_timestamp(state.get("lastActivityAt", ""))
-next_timestamp = parse_timestamp(timestamp)
-if next_timestamp is None:
-    sys.exit(0)
-if existing_timestamp is not None and existing_timestamp > next_timestamp:
-    sys.exit(0)
+const state = readState(statePath);
+const existingTimestamp = parseTimestamp(state.lastActivityAt);
+const nextTimestamp = parseTimestamp(timestamp);
+if (nextTimestamp === undefined) {
+  process.exit(0);
+}
+if (existingTimestamp !== undefined && existingTimestamp > nextTimestamp) {
+  process.exit(0);
+}
 
-state["status"] = activity
-state["statusUpdatedAt"] = timestamp
-state["lastActivityAt"] = timestamp
-if activity == "attention":
-    state["attentionEventId"] = f"{timestamp}:attention"
-    state["attentionAcknowledgedAt"] = ""
-    state["attentionAcknowledgedEventId"] = ""
-elif activity == "working":
-    state["attentionAcknowledgedAt"] = timestamp
-    state["attentionAcknowledgedEventId"] = state.get("attentionEventId", "")
-elif activity == "idle":
-    state["attentionAcknowledgedAt"] = timestamp
-    state["attentionAcknowledgedEventId"] = state.get("attentionEventId", "")
-state_path.parent.mkdir(parents=True, exist_ok=True)
-# CDXC:SessionAttention 2026-06-07-03:40:
-# Concurrent hook/ack writes for the same session-state file must not share one
-# temp path; use a per-process temp file so atomic replace stays race-safe.
-temp_path = state_path.with_name(f"{state_path.name}.{os.getpid()}.tmp")
-temp_path.write_text("".join(f"{key}={state.get(key, '')}\\n" for key in keys), encoding="utf-8")
-temp_path.replace(state_path)
+state.status = activity;
+state.statusUpdatedAt = timestamp;
+state.lastActivityAt = timestamp;
+if (activity === "attention") {
+  state.attentionEventId = timestamp + ":attention";
+  state.attentionAcknowledgedAt = "";
+  state.attentionAcknowledgedEventId = "";
+} else if (activity === "working" || activity === "idle") {
+  state.attentionAcknowledgedAt = timestamp;
+  state.attentionAcknowledgedEventId = state.attentionEventId ?? "";
+}
+
+writeState(statePath, state);
 `;
 }
 
 function getAcknowledgeNativeSessionAttentionScript(): string {
-  return `import os
-import pathlib
-import sys
+  return String.raw`
+const fs = require("node:fs");
+const path = require("node:path");
+const process = require("node:process");
 
-state_path = pathlib.Path(sys.argv[1])
-timestamp = sys.argv[2]
+const [statePath, timestamp] = process.argv.slice(1);
+const keys = [
+  "status",
+  "statusUpdatedAt",
+  "attentionEventId",
+  "attentionAcknowledgedAt",
+  "attentionAcknowledgedEventId",
+  "agent",
+  "agentSessionId",
+  "agentSessionPath",
+  "firstUserMessageBase64",
+  "frozenAt",
+  "autoTitleFromFirstPrompt",
+  "historyBase64",
+  "lastActivityAt",
+  "pendingFirstPromptAutoRenamePrompt",
+  "title",
+];
 
-keys = [
-    "status",
-    "statusUpdatedAt",
-    "attentionEventId",
-    "attentionAcknowledgedAt",
-    "attentionAcknowledgedEventId",
-    "agent",
-    "agentSessionId",
-    "agentSessionPath",
-    "firstUserMessageBase64",
-    "frozenAt",
-    "autoTitleFromFirstPrompt",
-    "historyBase64",
-    "lastActivityAt",
-    "pendingFirstPromptAutoRenamePrompt",
-    "title",
-]
+let raw = "";
+try {
+  raw = fs.readFileSync(statePath, "utf8");
+} catch (error) {
+  if (error?.code === "ENOENT") {
+    process.exit(0);
+  }
+  throw error;
+}
 
-state = {}
-try:
-    lines = state_path.read_text(encoding="utf-8").splitlines()
-except FileNotFoundError:
-    sys.exit(0)
+const state = Object.create(null);
+for (const line of raw.split(/\r?\n/g)) {
+  const index = line.indexOf("=");
+  if (index >= 0) {
+    state[line.slice(0, index)] = line.slice(index + 1);
+  }
+}
 
-for line in lines:
-    key, separator, value = line.partition("=")
-    if separator:
-        state[key] = value
+if (state.status !== "attention") {
+  process.exit(0);
+}
 
-if state.get("status") != "attention":
-    sys.exit(0)
+state.attentionAcknowledgedAt = timestamp;
+state.attentionAcknowledgedEventId = state.attentionEventId ?? "";
+fs.mkdirSync(path.dirname(statePath), { recursive: true });
+/*
+CDXC:SessionAttention 2026-06-07-03:40:
+Acknowledgement can be requested from focus, restore, and sidebar paths at the same time. Use a unique temp path per process so one ack cannot remove another ack's pending replace source.
 
-state["attentionAcknowledgedAt"] = timestamp
-state["attentionAcknowledgedEventId"] = state.get("attentionEventId", "")
-state_path.parent.mkdir(parents=True, exist_ok=True)
-# CDXC:SessionAttention 2026-06-07-03:40:
-# Acknowledgement can be requested from focus, restore, and sidebar paths at the
-# same time. Use a unique temp path per process so one ack cannot remove another
-# ack's pending replace source.
-temp_path = state_path.with_name(f"{state_path.name}.{os.getpid()}.tmp")
-temp_path.write_text("".join(f"{key}={state.get(key, '')}\\n" for key in keys), encoding="utf-8")
-temp_path.replace(state_path)
+CDXC:NativeCommandBridge 2026-06-10-18:17:
+Attention acknowledgement writes must use Ghostex's bundled code-server Node runtime so the native app does not depend on system Python.
+*/
+const tempPath = path.join(path.dirname(statePath), path.basename(statePath) + "." + process.pid + ".tmp");
+fs.writeFileSync(tempPath, keys.map((key) => key + "=" + (state[key] ?? "") + "\n").join(""), "utf8");
+fs.renameSync(tempPath, statePath);
+`;
+}
+
+function getClearNativeFirstPromptAutoRenamePendingPromptScript(): string {
+  return String.raw`
+const fs = require("node:fs");
+const path = require("node:path");
+const process = require("node:process");
+
+const [statePath] = process.argv.slice(1);
+const keys = [
+  "status",
+  "statusUpdatedAt",
+  "attentionEventId",
+  "attentionAcknowledgedAt",
+  "attentionAcknowledgedEventId",
+  "agent",
+  "agentSessionId",
+  "agentSessionPath",
+  "firstUserMessageBase64",
+  "frozenAt",
+  "autoTitleFromFirstPrompt",
+  "historyBase64",
+  "lastActivityAt",
+  "pendingFirstPromptAutoRenamePrompt",
+  "title",
+];
+
+let raw = "";
+try {
+  raw = fs.readFileSync(statePath, "utf8");
+} catch (error) {
+  if (error?.code === "ENOENT") {
+    console.log("unchanged");
+    process.exit(0);
+  }
+  throw error;
+}
+
+const state = Object.create(null);
+for (const line of raw.split(/\r?\n/g)) {
+  const index = line.indexOf("=");
+  if (index >= 0) {
+    state[line.slice(0, index)] = line.slice(index + 1);
+  }
+}
+
+const changed = Boolean((state.pendingFirstPromptAutoRenamePrompt ?? "").trim());
+state.pendingFirstPromptAutoRenamePrompt = "";
+fs.mkdirSync(path.dirname(statePath), { recursive: true });
+const tempPath = path.join(path.dirname(statePath), path.basename(statePath) + "." + process.pid + ".pending-title.tmp");
+fs.writeFileSync(tempPath, keys.map((key) => key + "=" + (state[key] ?? "") + "\n").join(""), "utf8");
+fs.renameSync(tempPath, statePath);
+console.log(changed ? "changed" : "unchanged");
 `;
 }
 
@@ -22585,12 +21656,18 @@ function updateGxserverSessionLifecycleOnly(
     });
 }
 
+type NativeGxserverSessionTransitionResult = {
+  focusTarget?: NativeSessionTransitionFocusTarget;
+  handled: boolean;
+  committed: boolean;
+};
+
 function applyGxserverSessionTransition(
   reference: ReturnType<typeof resolveSidebarSessionReference>,
   session: SessionRecord | undefined,
   action: "close" | "sleep",
   origin: NativeGxserverSessionTransitionOrigin,
-): { focusTarget?: NativeSessionTransitionFocusTarget; handled: boolean } {
+): NativeGxserverSessionTransitionResult {
   const presentationSession = findGxserverPresentationSession(
     reference.project.projectId,
     reference.sessionId,
@@ -22605,7 +21682,7 @@ function applyGxserverSessionTransition(
     (!canTransitionLocalTerminal && !canTransitionPresentationSession) ||
     !isCanonicalGxserverProjectSession(reference.project.projectId, reference.sessionId)
   ) {
-    return { handled: false };
+    return { handled: false, committed: false };
   }
   const orderedSessions =
     origin.kind === "projectSessionList"
@@ -22646,7 +21723,7 @@ function applyGxserverSessionTransition(
       projectId: reference.project.projectId,
       sessionId: reference.sessionId,
     });
-    return { focusTarget, handled: true };
+    return { focusTarget, handled: true, committed: true };
   }
 
   try {
@@ -22657,6 +21734,18 @@ function applyGxserverSessionTransition(
       sessionId: reference.sessionId as never,
     });
     rememberGxserverProviderSessionState(result.session);
+    if (!didGxserverProviderTransitionCommit(result)) {
+      appendTerminalFocusDebugLog("nativeSidebar.gxserverTransition.incomplete", {
+        action,
+        focusTarget,
+        lifecycleState: result.session.lifecycleState,
+        originKind: origin.kind,
+        projectId: reference.project.projectId,
+        providerLifecycleState: result.session.providerState.lifecycleState,
+        sessionId: reference.sessionId,
+      });
+      return { handled: true, committed: false };
+    }
     appendTerminalFocusDebugLog("nativeSidebar.gxserverTransition.applied", {
       action,
       focusTarget,
@@ -22664,7 +21753,7 @@ function applyGxserverSessionTransition(
       projectId: reference.project.projectId,
       sessionId: reference.sessionId,
     });
-    return { focusTarget, handled: true };
+    return { focusTarget, handled: true, committed: true };
   } catch (error) {
     appendTerminalFocusDebugLog("nativeSidebar.gxserverTransition.failed", {
       action,
@@ -22673,7 +21762,7 @@ function applyGxserverSessionTransition(
       projectId: reference.project.projectId,
       sessionId: reference.sessionId,
     });
-    return { handled: false };
+    return { handled: false, committed: false };
   }
 }
 
@@ -22835,7 +21924,7 @@ function closeTerminal(
     shouldParkLastProjectSession ? "sleep" : "close",
     transitionOrigin,
   );
-  if (shouldParkLastProjectSession && !transitionResult.handled) {
+  if (shouldParkLastProjectSession && !transitionResult.committed) {
     appendSidebarRefreshDebugLog("nativeSidebar.closeSession.lastProjectSessionParkSkipped", {
       projectId: reference.project.projectId,
       requestedSessionId: sessionId,
@@ -24188,13 +23277,11 @@ async function persistNativeSessionAttentionAcknowledged(
   sessionId: string,
   source: string,
 ): Promise<void> {
-  const command = [
-    `/usr/bin/python3 - ${quoteNativeShellArg(sessionStateFilePath)} ${quoteNativeShellArg(timestamp)} <<'GHOSTEX_ACK_ATTENTION'`,
-    getAcknowledgeNativeSessionAttentionScript(),
-    "GHOSTEX_ACK_ATTENTION",
-  ].join("\n");
   try {
-    const result = await runNativeProcess("/bin/zsh", ["-lc", command]);
+    const result = await runNativeNodeScript(
+      getAcknowledgeNativeSessionAttentionScript(),
+      [sessionStateFilePath, timestamp],
+    );
     if (result.exitCode !== 0) {
       appendAgentDetectionDebugLog("nativeSidebar.attentionAcknowledgePersistFailed", {
         error: result.stderr.trim() || result.stdout.trim() || "persist attention acknowledgement failed",
@@ -24615,7 +23702,17 @@ function setNativeSessionSleeping(
       focusSidebarSession(sessionId);
       return;
     }
-    if (presentationSession.lifecycleState === "sleeping") {
+    const usesGxserverProviderTransition = shouldUseGxserverProviderTransition({
+      localProvider: undefined,
+      presentation: presentationSession,
+    });
+    if (
+      shouldSkipNativeSleepRequest({
+        isLocalSessionSleeping: false,
+        presentationLifecycleState: presentationSession.lifecycleState,
+        usesGxserverProviderTransition,
+      })
+    ) {
       return;
     }
     const transitionOrigin = options.transitionOrigin ?? createProjectSessionListTransitionOrigin(reference.project);
@@ -24625,7 +23722,7 @@ function setNativeSessionSleeping(
       "sleep",
       transitionOrigin,
     );
-    if (transitionResult.handled) {
+    if (transitionResult.committed) {
       setGxserverPresentationSessionLifecycleLocally(
         reference.project.projectId,
         reference.sessionId,
@@ -24642,13 +23739,25 @@ function setNativeSessionSleeping(
     return;
   }
   const wasSleeping = session.isSleeping === true;
+  const providerInfo = getTerminalProviderSessionInfo(session);
+  const usesGxserverProviderTransition = shouldUseGxserverProviderTransition({
+    localProvider: providerInfo?.provider ?? session.sessionPersistenceProvider,
+    presentation: presentationSession,
+  });
   /*
-   * CDXC:NativeSidebarBulkActions 2026-06-07-13:34:
-   * Bulk sleep commands can arrive from stale sidebar data while rows are
-   * already parked. Treat those as no-ops before provider/runtime cleanup so
-   * Sleep below, group sleep, and titlebar sleep never re-close sleeping agents.
+   * CDXC:NativeSidebarBulkActions 2026-06-10-10:01:
+   * Bulk sleep commands can arrive while presentation rows are stale-faded as
+   * sleeping even though their zmx provider still exists. Only providerless
+   * already-sleeping rows are no-ops; zmx-backed rows must still reach gxserver.
    */
-  if (sleeping && (wasSleeping || presentationSession?.lifecycleState === "sleeping")) {
+  if (
+    sleeping &&
+    shouldSkipNativeSleepRequest({
+      isLocalSessionSleeping: wasSleeping,
+      presentationLifecycleState: presentationSession?.lifecycleState,
+      usesGxserverProviderTransition,
+    })
+  ) {
     return;
   }
   const transitionOrigin =
@@ -24656,10 +23765,16 @@ function setNativeSessionSleeping(
     (session.surface === "commands"
       ? createCommandPaneTransitionOrigin(reference.project, reference.sessionId)
       : createProjectSessionListTransitionOrigin(reference.project));
-  const transitionResult: { focusTarget?: NativeSessionTransitionFocusTarget; handled: boolean } =
+  const transitionResult: NativeGxserverSessionTransitionResult =
     sleeping
       ? applyGxserverSessionTransition(reference, session, "sleep", transitionOrigin)
-      : { handled: false };
+      : { handled: false, committed: false };
+  if (sleeping && usesGxserverProviderTransition && !transitionResult.committed) {
+    if (options.publish !== false) {
+      publish();
+    }
+    return;
+  }
   if (session.surface === "commands") {
     updateProjectCommandsPanel(reference.project.projectId, (panel) => ({
       ...panel,
@@ -24681,7 +23796,6 @@ function setNativeSessionSleeping(
     );
   }
   if (sleeping) {
-    const providerInfo = getTerminalProviderSessionInfo(session);
     if (providerInfo) {
       rememberProviderSessionState(
         reference.project.projectId,
@@ -24730,7 +23844,15 @@ function isNativeSidebarSessionAlreadySleeping(sessionId: string): boolean {
     reference.project.projectId,
     reference.sessionId,
   );
-  return session?.isSleeping === true || presentationSession?.lifecycleState === "sleeping";
+  const providerInfo = session ? getTerminalProviderSessionInfo(session) : undefined;
+  return shouldSkipNativeSleepRequest({
+    isLocalSessionSleeping: session?.isSleeping === true,
+    presentationLifecycleState: presentationSession?.lifecycleState,
+    usesGxserverProviderTransition: shouldUseGxserverProviderTransition({
+      localProvider: providerInfo?.provider ?? session?.sessionPersistenceProvider,
+      presentation: presentationSession,
+    }),
+  });
 }
 
 function setNativeSessionsSleepingInBackground(
@@ -27230,48 +26352,70 @@ function getNativeSidebarCommandStatusStampText(
   runId: string,
   exitCode: string,
 ): string {
+  const stampCommand = nativeNodeEvalShellCommand(getNativeSidebarCommandStatusStampScript(), [
+    { raw: '"$__ghostex_session_state_file"' },
+    status,
+    runId,
+    { raw: exitCode },
+  ]);
   return [
     "__ghostex_session_state_file=\"${GHOSTEX_SESSION_STATE_FILE:-${VSMUX_SESSION_STATE_FILE:-$ghostex_SESSION_STATE_FILE}}\"",
     'if [ -n "$__ghostex_session_state_file" ]; then',
-    `  /usr/bin/python3 - "$__ghostex_session_state_file" ${quoteNativeShellArg(status)} ${quoteNativeShellArg(runId)} ${exitCode} <<'GHOSTEX_COMMAND_PANE_STATUS'`,
-    "import datetime",
-    "import os",
-    "import pathlib",
-    "import sys",
-    "",
-    "state_path = pathlib.Path(sys.argv[1])",
-    "status = sys.argv[2]",
-    "run_id = sys.argv[3]",
-    "exit_code = sys.argv[4]",
-    "state = {}",
-    "order = []",
-    "try:",
-    "    for line in state_path.read_text(encoding='utf-8').splitlines():",
-    "        key, separator, value = line.partition('=')",
-    "        if separator:",
-    "            state[key] = value",
-    "            if key not in order:",
-    "                order.append(key)",
-    "except FileNotFoundError:",
-    "    pass",
-    "",
-    "state['status'] = status",
-    "state['statusUpdatedAt'] = datetime.datetime.now(datetime.timezone.utc).isoformat().replace('+00:00', 'Z')",
-    "state['commandRunId'] = run_id",
-    "state['commandExitCode'] = exit_code",
-    "state['lastActivityAt'] = state['statusUpdatedAt']",
-    "for key in ['status', 'statusUpdatedAt', 'commandRunId', 'commandExitCode', 'lastActivityAt']:",
-    "    if key not in order:",
-    "        order.append(key)",
-    "state_path.parent.mkdir(parents=True, exist_ok=True)",
-    "# CDXC:CommandsPanel 2026-06-08-13:19:",
-    "# Command-pane completion sound depends on the idle status stamp being read by macOS. Use a per-process temp file so concurrent hook/status writers cannot clobber the replace source before the final state reaches disk.",
-    "temp_path = state_path.with_name(f'{state_path.name}.{os.getpid()}.command.tmp')",
-    "temp_path.write_text(''.join(f'{key}={state.get(key, \"\")}\\n' for key in order), encoding='utf-8')",
-    "temp_path.replace(state_path)",
-    "GHOSTEX_COMMAND_PANE_STATUS",
+    `  ${stampCommand}`,
     "fi",
   ].join("\n");
+}
+
+function getNativeSidebarCommandStatusStampScript(): string {
+  return String.raw`
+const fs = require("node:fs");
+const path = require("node:path");
+const process = require("node:process");
+
+const [statePath, status, runId, exitCode] = process.argv.slice(1);
+const state = Object.create(null);
+const order = [];
+
+try {
+  for (const line of fs.readFileSync(statePath, "utf8").split(/\r?\n/g)) {
+    const index = line.indexOf("=");
+    if (index >= 0) {
+      const key = line.slice(0, index);
+      state[key] = line.slice(index + 1);
+      if (!order.includes(key)) {
+        order.push(key);
+      }
+    }
+  }
+} catch (error) {
+  if (error?.code !== "ENOENT") {
+    throw error;
+  }
+}
+
+state.status = status;
+state.statusUpdatedAt = new Date().toISOString();
+state.commandRunId = runId;
+state.commandExitCode = exitCode;
+state.lastActivityAt = state.statusUpdatedAt;
+for (const key of ["status", "statusUpdatedAt", "commandRunId", "commandExitCode", "lastActivityAt"]) {
+  if (!order.includes(key)) {
+    order.push(key);
+  }
+}
+
+fs.mkdirSync(path.dirname(statePath), { recursive: true });
+/*
+CDXC:CommandsPanel 2026-06-08-13:19:
+Command-pane completion sound depends on the idle status stamp being read by macOS. Use a per-process temp file so concurrent hook/status writers cannot clobber the replace source before the final state reaches disk.
+
+CDXC:NativeCommandBridge 2026-06-10-18:17:
+Command pane status stamping runs inside user shell commands, but the embedded helper must use Ghostex's bundled Node runtime instead of Python.
+*/
+const tempPath = path.join(path.dirname(statePath), path.basename(statePath) + "." + process.pid + ".command.tmp");
+fs.writeFileSync(tempPath, order.map((key) => key + "=" + (state[key] ?? "") + "\n").join(""), "utf8");
+fs.renameSync(tempPath, statePath);
+`;
 }
 
 function createNativeSidebarCommandRunId(commandId: string): string {
@@ -31980,42 +31124,23 @@ async function openAgentsHubFileInDefaultEditor(filePath: string): Promise<void>
 }
 
 async function saveAgentsHubFile(filePath: string, content: string): Promise<void> {
-  /**
-   * CDXC:AgentsHub 2026-05-14-08:27:
-   * The Agents Hub modal now edits real file buffers in-place and exposes a Save button only after the editor becomes dirty.
-   * Write the exact current editor text to the requested path through the native process bridge so saving corrects the file contents directly instead of opening a secondary editor or maintaining a separate draft store.
-   */
+	  /**
+	   * CDXC:AgentsHub 2026-05-14-08:27:
+	   * The Agents Hub modal now edits real file buffers in-place and exposes a Save button only after the editor becomes dirty.
+	   * Write the exact current editor text to the requested path through the native process bridge so saving corrects the file contents directly instead of opening a secondary editor or maintaining a separate draft store.
+	   *
+	   * CDXC:AgentsHub 2026-06-10-18:17:
+	   * Native file writes must use Ghostex's bundled code-server Node runtime, not Python, because the app cannot assume a user-installed interpreter exists.
+	   */
   const normalizedFilePath = filePath.trim();
   if (!normalizedFilePath) {
     showNativeMessage("warning", "Choose an Agents Hub file first.");
     return;
   }
 
-  const result = await runNativeProcess(
-    "/usr/bin/python3",
-    [
-      "-c",
-      [
-        "import base64, os, sys, tempfile",
-        "file_path = sys.argv[1]",
-        "content = base64.b64decode(os.environ['GHOSTEX_AGENTS_HUB_FILE_B64'])",
-        "directory = os.path.dirname(file_path)",
-        "if directory:",
-        "    os.makedirs(directory, exist_ok=True)",
-        "fd, temp_path = tempfile.mkstemp(prefix=os.path.basename(file_path) + '.', suffix='.tmp', dir=directory or '.')",
-        "try:",
-        "    with os.fdopen(fd, 'wb') as handle:",
-        "        handle.write(content)",
-        "    os.replace(temp_path, file_path)",
-        "except Exception:",
-        "    try:",
-        "        os.unlink(temp_path)",
-        "    except OSError:",
-        "        pass",
-        "    raise",
-      ].join("\n"),
-      normalizedFilePath,
-    ],
+  const result = await runNativeNodeScript(
+    getSaveAgentsHubFileNodeScript(),
+    [normalizedFilePath],
     {
       env: {
         GHOSTEX_AGENTS_HUB_FILE_B64: encodeUtf8Base64(content),
@@ -32047,15 +31172,40 @@ function encodeUtf8Base64(value: string): string {
   return btoa(binary);
 }
 
+function getSaveAgentsHubFileNodeScript(): string {
+  return String.raw`
+const fs = require("node:fs");
+const path = require("node:path");
+const process = require("node:process");
+
+const [filePath] = process.argv.slice(1);
+const content = Buffer.from(process.env.GHOSTEX_AGENTS_HUB_FILE_B64 || "", "base64");
+const directory = path.dirname(filePath);
+if (directory) {
+  fs.mkdirSync(directory, { recursive: true });
+}
+const tempPath = path.join(directory || ".", path.basename(filePath) + "." + process.pid + ".tmp");
+try {
+  fs.writeFileSync(tempPath, content);
+  fs.renameSync(tempPath, filePath);
+} catch (error) {
+  try {
+    fs.unlinkSync(tempPath);
+  } catch (_) {}
+  throw error;
+}
+`;
+}
+
 async function requestAgentsHubCatalog(): Promise<void> {
-  /**
-   * CDXC:AgentsHub 2026-05-14-08:29:
-   * Agents Hub's file tree is machine-local state. Build it in native by scanning the user's real Claude, Codex, shared agent, OpenCode, and Pi profile folders, including profile plugin caches and shared skill/hook directories, while pruning session/history/todo/runtime noise.
-   */
-  const result = await runNativeProcess("/bin/zsh", [
-    "-lc",
-    `/usr/bin/python3 - <<'GHOSTEX_AGENTS_HUB_CATALOG'\n${getAgentsHubCatalogPythonScript()}\nGHOSTEX_AGENTS_HUB_CATALOG`,
-  ]);
+	  /**
+	   * CDXC:AgentsHub 2026-05-14-08:29:
+	   * Agents Hub's file tree is machine-local state. Build it in native by scanning the user's real Claude, Codex, shared agent, OpenCode, and Pi profile folders, including profile plugin caches and shared skill/hook directories, while pruning session/history/todo/runtime noise.
+	   *
+	   * CDXC:AgentsHub 2026-06-10-18:17:
+	   * Catalog scanning must run through Ghostex's bundled code-server Node runtime instead of Python so the app works on Macs without a system Python install.
+	   */
+  const result = await runNativeNodeScript(getAgentsHubCatalogNodeScript());
   if (result.exitCode !== 0) {
     showNativeMessage(
       "error",
@@ -32075,208 +31225,298 @@ async function requestAgentsHubCatalog(): Promise<void> {
   }
 }
 
-function getAgentsHubCatalogPythonScript(): string {
+function getAgentsHubCatalogNodeScript(): string {
   return String.raw`
-from __future__ import annotations
+const fs = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
 
-import json
-import os
-from pathlib import Path
-from datetime import datetime, timezone
+const home = os.homedir();
+const maxFileBytes = 128 * 1024;
+const groupsByTab = { mds: [], skills: [], hooks: [], configs: [] };
+const seenFiles = new Set();
 
-home = Path.home()
-max_file_bytes = 128 * 1024
-groups_by_tab = {"mds": [], "skills": [], "hooks": [], "configs": []}
-seen_files = set()
+function p(...parts) {
+  return path.join(home, ...parts);
+}
 
-def p(*parts):
-    return home.joinpath(*parts)
+function profile(icon, label, profilePath, filePath, targetPath) {
+  const item = { agentIcon: icon, filePath, label, profilePath };
+  if (targetPath !== undefined) {
+    item.targetPath = targetPath;
+  }
+  return item;
+}
 
-def profile(icon, label, profile_path, file_path, target_path=None):
-    item = {"agentIcon": icon, "filePath": str(file_path), "label": label, "profilePath": str(profile_path)}
-    if target_path is not None:
-        item["targetPath"] = str(target_path)
-    return item
+function exists(filePath) {
+  try {
+    fs.accessSync(filePath);
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
 
-main_target = p(".agents", "main.md")
-profiles = []
-main_claude = profile("claude", "Claude Code main", p(".claude"), p(".claude", "CLAUDE.md"), main_target)
-profiles.append(main_claude)
-for path in sorted(p(".claude-profiles").glob("*")):
-    if path.is_dir() and not path.name.startswith(".") and (path / "CLAUDE.md").is_file():
-        profiles.append(profile("claude", f"Claude Code {path.name}", path, path / "CLAUDE.md", main_target))
-main_codex = profile("codex", "Codex main", p(".codex"), p(".codex", "AGENTS.md"), main_target)
-profiles.append(main_codex)
-for path in sorted(p(".codex-profiles").glob("*")):
-    if path.is_dir() and not path.name.startswith(".") and ((path / "AGENTS.md").is_file() or (path / "config.toml").is_file()):
-        profiles.append(profile("codex", f"Codex {path.name}", path, path / "AGENTS.md", main_target))
-open_code = profile("opencode", "OpenCode main", p(".config", "opencode"), p(".config", "opencode", "opencode.json"))
-pi_agent = profile("pi", "Pi agent", p(".pi", "agent"), p(".pi", "agent", "settings.json"))
-linked_profiles = profiles[:]
+function isFile(filePath) {
+  try {
+    return fs.statSync(filePath).isFile();
+  } catch (_) {
+    return false;
+  }
+}
 
-def is_relative_to(path, root):
-    try:
-        path.relative_to(root)
-        return True
-    except ValueError:
-        return False
+function isDirectory(filePath) {
+  try {
+    return fs.statSync(filePath).isDirectory();
+  } catch (_) {
+    return false;
+  }
+}
 
-def profiles_for(path):
-    if is_relative_to(path, p(".agents")) or is_relative_to(path, home / "agents"):
-        if is_relative_to(path, home / "agents" / "hooks"):
-            return [*linked_profiles, pi_agent]
-        return linked_profiles
-    for item in profiles:
-        if is_relative_to(path, Path(item["profilePath"])):
-            return [item]
-    if is_relative_to(path, Path(open_code["profilePath"])):
-        return [open_code]
-    if is_relative_to(path, Path(pi_agent["profilePath"])):
-        return [pi_agent]
-    return []
+function listDirectories(root) {
+  try {
+    return fs.readdirSync(root, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => path.join(root, entry.name))
+      .sort((left, right) => left.localeCompare(right));
+  } catch (_) {
+    return [];
+  }
+}
 
-def language_for(path):
-    if path.name.endswith((".yaml", ".yml")):
-        return "yaml"
-    if path.suffix in (".json", ".jsonl"):
-        return "json"
-    if path.suffix == ".toml":
-        return "toml"
-    if path.suffix == ".sh":
-        return "shell"
-    if path.suffix == ".py":
-        return "python"
-    if path.suffix in (".ts", ".tsx"):
-        return "typescript"
-    if path.suffix in (".js", ".mjs", ".cjs"):
-        return "javascript"
-    if path.suffix == ".md":
-        return "markdown"
-    return "plaintext"
+function isRelativeTo(candidate, root) {
+  const relative = path.relative(path.resolve(root), path.resolve(candidate));
+  return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
+}
 
-def file_id(path):
-    slug = "".join(ch.lower() if ch.isalnum() else "-" for ch in str(path))
-    return "-".join(part for part in slug.split("-") if part)[:180]
+const mainTarget = p(".agents", "main.md");
+const profiles = [];
+const mainClaude = profile("claude", "Claude Code main", p(".claude"), p(".claude", "CLAUDE.md"), mainTarget);
+profiles.push(mainClaude);
+for (const profilePath of listDirectories(p(".claude-profiles"))) {
+  if (!path.basename(profilePath).startsWith(".") && isFile(path.join(profilePath, "CLAUDE.md"))) {
+    profiles.push(profile("claude", "Claude Code " + path.basename(profilePath), profilePath, path.join(profilePath, "CLAUDE.md"), mainTarget));
+  }
+}
+const mainCodex = profile("codex", "Codex main", p(".codex"), p(".codex", "AGENTS.md"), mainTarget);
+profiles.push(mainCodex);
+for (const profilePath of listDirectories(p(".codex-profiles"))) {
+  if (!path.basename(profilePath).startsWith(".") && (isFile(path.join(profilePath, "AGENTS.md")) || isFile(path.join(profilePath, "config.toml")))) {
+    profiles.push(profile("codex", "Codex " + path.basename(profilePath), profilePath, path.join(profilePath, "AGENTS.md"), mainTarget));
+  }
+}
+const openCode = profile("opencode", "OpenCode main", p(".config", "opencode"), p(".config", "opencode", "opencode.json"));
+const piAgent = profile("pi", "Pi agent", p(".pi", "agent"), p(".pi", "agent", "settings.json"));
+const linkedProfiles = profiles.slice();
 
-def read_file(path):
-    try:
-        if not path.is_file() or path.stat().st_size > max_file_bytes:
-            return None
-        return path.read_text("utf-8")
-    except Exception:
-        return None
+function profilesFor(candidatePath) {
+  if (isRelativeTo(candidatePath, p(".agents")) || isRelativeTo(candidatePath, path.join(home, "agents"))) {
+    if (isRelativeTo(candidatePath, path.join(home, "agents", "hooks"))) {
+      return linkedProfiles.concat([piAgent]);
+    }
+    return linkedProfiles;
+  }
+  for (const item of profiles) {
+    if (isRelativeTo(candidatePath, item.profilePath)) {
+      return [item];
+    }
+  }
+  if (isRelativeTo(candidatePath, openCode.profilePath)) {
+    return [openCode];
+  }
+  if (isRelativeTo(candidatePath, piAgent.profilePath)) {
+    return [piAgent];
+  }
+  return [];
+}
 
-def file_item(path, root=None):
-    resolved = path.resolve()
-    key = str(resolved)
-    if key in seen_files:
-        return None
-    content = read_file(resolved)
-    if content is None:
-        return None
-    seen_files.add(key)
-    name = str(resolved.relative_to(root)) if root and is_relative_to(resolved, root) else resolved.name
-    return {"content": content, "id": file_id(resolved), "language": language_for(resolved), "name": name, "path": str(resolved)}
+function languageFor(filePath) {
+  const name = path.basename(filePath);
+  const suffix = path.extname(filePath);
+  if (name.endsWith(".yaml") || name.endsWith(".yml")) return "yaml";
+  if (suffix === ".json" || suffix === ".jsonl") return "json";
+  if (suffix === ".toml") return "toml";
+  if (suffix === ".sh") return "shell";
+  if (suffix === ".py") return "python";
+  if (suffix === ".ts" || suffix === ".tsx") return "typescript";
+  if (suffix === ".js" || suffix === ".mjs" || suffix === ".cjs") return "javascript";
+  if (suffix === ".md") return "markdown";
+  return "plaintext";
+}
 
-def add_group(tab, group_id, name, path, description, files, group_profiles=None):
-    resolved_files = [item for candidate in files if (item := file_item(candidate, path))]
-    if not resolved_files:
-        return
-    groups_by_tab[tab].append({
-        "description": description,
-        "files": resolved_files,
-        "id": group_id,
-        "name": name,
-        "path": str(path),
-        "profiles": group_profiles if group_profiles is not None else profiles_for(path),
-    })
+function fileId(filePath) {
+  return String(filePath)
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .split("-")
+    .filter(Boolean)
+    .join("-")
+    .slice(0, 180);
+}
 
-def existing(paths):
-    return [path for path in paths if path.is_file()]
+function readFile(filePath) {
+  try {
+    const stat = fs.statSync(filePath);
+    if (!stat.isFile() || stat.size > maxFileBytes) {
+      return undefined;
+    }
+    return fs.readFileSync(filePath, "utf8");
+  } catch (_) {
+    return undefined;
+  }
+}
 
-def walk_files(root, max_depth, predicate):
-    if not root.exists():
-        return []
-    ignored_dirs = {".git", "node_modules", "dist", "build", "out", "coverage", ".cache", "cache", "__pycache__", "sessions", "projects", "todos", "telemetry", "usage-data", "ambient-suggestions", "memories_2026-04-24", "logs", "tmp", ".tmp"}
-    files = []
-    for current, dirs, names in os.walk(root):
-        current_path = Path(current)
-        depth = len(current_path.relative_to(root).parts)
-        dirs[:] = [name for name in dirs if name not in ignored_dirs and depth < max_depth]
-        for name in names:
-            candidate = current_path / name
-            if predicate(candidate):
-                files.append(candidate)
-    return sorted(files)
+function fileItem(candidatePath, root) {
+  const resolved = path.resolve(candidatePath);
+  if (seenFiles.has(resolved)) {
+    return undefined;
+  }
+  const content = readFile(resolved);
+  if (content === undefined) {
+    return undefined;
+  }
+  seenFiles.add(resolved);
+  const name = root && isRelativeTo(resolved, root) ? path.relative(path.resolve(root), resolved) : path.basename(resolved);
+  return { content, id: fileId(resolved), language: languageFor(resolved), name: name || path.basename(resolved), path: resolved };
+}
 
-text_suffixes = {".md", ".json", ".jsonl", ".toml", ".yaml", ".yml", ".sh", ".ts", ".js", ".mjs", ".py", ".txt"}
+function addGroup(tab, groupId, name, rootPath, description, files, groupProfiles) {
+  const resolvedFiles = files.map((candidate) => fileItem(candidate, rootPath)).filter(Boolean);
+  if (resolvedFiles.length === 0) {
+    return;
+  }
+  groupsByTab[tab].push({
+    description,
+    files: resolvedFiles,
+    id: groupId,
+    name,
+    path: rootPath,
+    profiles: groupProfiles !== undefined ? groupProfiles : profilesFor(rootPath),
+  });
+}
 
-add_group("mds", "md-shared-agents", "Shared agent markdown", p(".agents"), "Shared instructions and best-practice markdown linked by agent profiles.", walk_files(p(".agents"), 1, lambda path: path.suffix == ".md"), linked_profiles)
-add_group("mds", "md-claude-profiles", "Claude profile instructions", p(".claude-profiles"), "CLAUDE.md files owned by Claude profiles.", existing([Path(item["filePath"]) for item in profiles if item["agentIcon"] == "claude"]), [item for item in profiles if item["agentIcon"] == "claude"])
-add_group("mds", "md-codex-profiles", "Codex profile instructions", p(".codex-profiles"), "AGENTS.md files owned by Codex profiles.", existing([Path(item["filePath"]) for item in profiles if item["agentIcon"] == "codex"]), [item for item in profiles if item["agentIcon"] == "codex"])
+function existing(paths) {
+  return paths.filter((candidate) => isFile(candidate));
+}
 
-shared_skills_root = home / "agents" / "skills"
-for skill_dir in sorted([path for path in shared_skills_root.iterdir() if path.is_dir()] if shared_skills_root.exists() else []):
-    if skill_dir.name.startswith(".") and skill_dir.name != ".system":
-        continue
-    if skill_dir.name == ".system":
-        for system_skill in sorted([path for path in skill_dir.iterdir() if path.is_dir()]):
-            add_group("skills", f"skill-shared-{file_id(system_skill)}", system_skill.name, system_skill, "System skill installed in the shared agent skill folder.", walk_files(system_skill, 3, lambda path: path.name == "SKILL.md" or path.suffix in {".json", ".yaml", ".yml", ".sh", ".py", ".js", ".ts"}), linked_profiles)
-        continue
-    add_group("skills", f"skill-shared-{file_id(skill_dir)}", skill_dir.name, skill_dir, "Shared skill installed under ~/agents/skills.", walk_files(skill_dir, 3, lambda path: path.name == "SKILL.md" or path.suffix in {".json", ".yaml", ".yml", ".sh", ".py", ".js", ".ts"}), linked_profiles)
+function walkFiles(root, maxDepth, predicate) {
+  const resolvedRoot = path.resolve(root);
+  if (!exists(resolvedRoot)) {
+    return [];
+  }
+  const ignoredDirs = new Set([".git", "node_modules", "dist", "build", "out", "coverage", ".cache", "cache", "__pycache__", "sessions", "projects", "todos", "telemetry", "usage-data", "ambient-suggestions", "memories_2026-04-24", "logs", "tmp", ".tmp"]);
+  const files = [];
+  function visit(current, depth) {
+    let entries = [];
+    try {
+      entries = fs.readdirSync(current, { withFileTypes: true }).sort((left, right) => left.name.localeCompare(right.name));
+    } catch (_) {
+      return;
+    }
+    for (const entry of entries) {
+      const candidate = path.join(current, entry.name);
+      if (entry.isFile() && predicate(candidate)) {
+        files.push(candidate);
+      }
+    }
+    if (depth >= maxDepth) {
+      return;
+    }
+    for (const entry of entries) {
+      if (entry.isDirectory() && !ignoredDirs.has(entry.name)) {
+        visit(path.join(current, entry.name), depth + 1);
+      }
+    }
+  }
+  visit(resolvedRoot, 0);
+  return files.sort((left, right) => left.localeCompare(right));
+}
 
-for plugins_root in [p(".codex-profiles"), p(".claude-profiles")]:
-    for profile_dir in sorted([path for path in plugins_root.glob("*") if path.is_dir() and not path.name.startswith(".")]):
-        cache_root = profile_dir / "plugins" / "cache"
-        if not cache_root.exists():
-            continue
-        plugin_files = walk_files(cache_root, 7, lambda path: path.name == "SKILL.md" or str(path).endswith("/.codex-plugin/plugin.json") or str(path).endswith("/.claude-plugin/plugin.json"))
-        roots = {}
-        for path in plugin_files:
-            parts = path.parts
-            if "skills" in parts and path.name == "SKILL.md":
-                skill_index = parts.index("skills")
-                root = Path(*parts[: skill_index + 2])
-            else:
-                marker = ".codex-plugin" if ".codex-plugin" in parts else ".claude-plugin"
-                marker_index = parts.index(marker)
-                root = Path(*parts[:marker_index])
-            roots.setdefault(root, []).append(path)
-        for root, files in sorted(roots.items()):
-            rel_name = str(root.relative_to(cache_root))
-            add_group("skills", f"skill-profile-{file_id(root)}", rel_name, root, "Skill or plugin manifest installed inside an agent profile plugin cache.", files, profiles_for(root))
+const textSuffixes = new Set([".md", ".json", ".jsonl", ".toml", ".yaml", ".yml", ".sh", ".ts", ".js", ".mjs", ".py", ".txt"]);
 
-hooks_root = home / "agents" / "hooks"
-add_group("hooks", "hooks-shared", "Shared hooks", hooks_root, "Shared hook scripts and documentation used by agent profiles.", walk_files(hooks_root, 3, lambda path: path.suffix in text_suffixes), [*linked_profiles, pi_agent])
-#
-# CDXC:AgentsHub 2026-06-04-19:45:
-# Hook-specific files must be findable from the Hooks tab even when an agent stores them as JSON config files. Keep discrete hook files out of Configs so tab-scoped search and browsing match the user's hook-management intent in the macOS app.
-#
-add_group("hooks", "hooks-codex-main", "Codex main hooks", p(".codex"), "Global Codex hook configuration.", existing([p(".codex", "hooks.json")]), [main_codex])
-add_group("hooks", "hooks-codex-profiles", "Codex profile hooks", p(".codex-profiles"), "hooks.json files owned by Codex profiles.", walk_files(p(".codex-profiles"), 2, lambda path: path.name == "hooks.json"), [item for item in profiles if item["agentIcon"] == "codex"])
-add_group("hooks", "hooks-cursor-main", "Cursor hooks", p(".cursor"), "Cursor Agent hook configuration.", existing([p(".cursor", "hooks.json")]), [])
-add_group("hooks", "hooks-antigravity-main", "Antigravity hooks", p(".gemini", "config"), "Antigravity hook configuration.", existing([p(".gemini", "config", "hooks.json")]), [])
-add_group("hooks", "hooks-grok-main", "Grok hooks", p(".grok", "hooks"), "Grok hook configuration.", existing([p(".grok", "hooks", "ghostex-session.json")]), [])
-add_group("hooks", "hooks-pi-agent", "Pi extensions", p(".pi", "agent"), "Pi agent extension hooks and settings-adjacent TypeScript files.", walk_files(p(".pi", "agent", "extensions"), 2, lambda path: path.suffix in {".ts", ".js", ".json"}), [pi_agent])
+addGroup("mds", "md-shared-agents", "Shared agent markdown", p(".agents"), "Shared instructions and best-practice markdown linked by agent profiles.", walkFiles(p(".agents"), 1, (candidate) => path.extname(candidate) === ".md"), linkedProfiles);
+addGroup("mds", "md-claude-profiles", "Claude profile instructions", p(".claude-profiles"), "CLAUDE.md files owned by Claude profiles.", existing(profiles.filter((item) => item.agentIcon === "claude").map((item) => item.filePath)), profiles.filter((item) => item.agentIcon === "claude"));
+addGroup("mds", "md-codex-profiles", "Codex profile instructions", p(".codex-profiles"), "AGENTS.md files owned by Codex profiles.", existing(profiles.filter((item) => item.agentIcon === "codex").map((item) => item.filePath)), profiles.filter((item) => item.agentIcon === "codex"));
 
-add_group("configs", "config-shared-agents", "Shared agent config", p(".agents"), "Shared agent lock and setup files.", walk_files(p(".agents"), 1, lambda path: path.name.endswith(".json")), linked_profiles)
-add_group("configs", "config-claude-main", "Claude main configs", p(".claude"), "Global Claude Code settings and MCP configuration.", existing([p(".claude.json"), p(".claude", "settings.json"), p(".claude", "settings.local.json")]), [main_claude])
-for item in [profile_item for profile_item in profiles if profile_item["agentIcon"] == "claude" and "-profiles" in profile_item["profilePath"]]:
-    root = Path(item["profilePath"])
-    files = existing([root / ".claude.json", root / "settings.json", root / "settings.local.json", root / "policy-limits.json", root / "stats-cache.json", root / "plugins" / "installed_plugins.json", root / "plugins" / "known_marketplaces.json", root / "plugins" / "blocklist.json"])
-    add_group("configs", f"config-claude-{file_id(root)}", f"Claude {root.name} configs", root, "Claude profile-owned config and plugin registry files.", files, [item])
-add_group("configs", "config-codex-main", "Codex main configs", p(".codex"), "Global Codex TOML configuration.", existing([p(".codex", "config.toml")]), [main_codex])
-for item in [profile_item for profile_item in profiles if profile_item["agentIcon"] == "codex" and "-profiles" in profile_item["profilePath"]]:
-    root = Path(item["profilePath"])
-    files = existing([root / "config.toml", root / ".codex-global-state.json", root / "browser" / "config.toml", root / "plugins" / "installed_plugins.json", root / "plugins" / "known_marketplaces.json", root / "plugins" / "blocklist.json"])
-    add_group("configs", f"config-codex-{file_id(root)}", f"Codex {root.name} configs", root, "Codex profile-owned config, browser, and plugin registry files.", files, [item])
-add_group("configs", "config-opencode", "OpenCode configs", Path(open_code["profilePath"]), "OpenCode JSON, package, and plugin files.", walk_files(Path(open_code["profilePath"]), 2, lambda path: path.name in {"opencode.json", "tui.json", "package.json"} or (path.parent.name == "plugin" and path.suffix == ".js")), [open_code])
-add_group("configs", "config-pi", "Pi configs", Path(pi_agent["profilePath"]), "Pi agent settings and local extension files.", walk_files(Path(pi_agent["profilePath"]), 2, lambda path: path.suffix in {".json", ".ts", ".js"} and path.name != "auth.json"), [pi_agent])
+const sharedSkillsRoot = path.join(home, "agents", "skills");
+for (const skillDir of listDirectories(sharedSkillsRoot)) {
+  const skillName = path.basename(skillDir);
+  if (skillName.startsWith(".") && skillName !== ".system") {
+    continue;
+  }
+  if (skillName === ".system") {
+    for (const systemSkill of listDirectories(skillDir)) {
+      addGroup("skills", "skill-shared-" + fileId(systemSkill), path.basename(systemSkill), systemSkill, "System skill installed in the shared agent skill folder.", walkFiles(systemSkill, 3, (candidate) => path.basename(candidate) === "SKILL.md" || [".json", ".yaml", ".yml", ".sh", ".py", ".js", ".ts"].includes(path.extname(candidate))), linkedProfiles);
+    }
+    continue;
+  }
+  addGroup("skills", "skill-shared-" + fileId(skillDir), skillName, skillDir, "Shared skill installed under ~/agents/skills.", walkFiles(skillDir, 3, (candidate) => path.basename(candidate) === "SKILL.md" || [".json", ".yaml", ".yml", ".sh", ".py", ".js", ".ts"].includes(path.extname(candidate))), linkedProfiles);
+}
 
-for tab in groups_by_tab:
-    groups_by_tab[tab].sort(key=lambda group: group["name"].lower())
+for (const pluginsRoot of [p(".codex-profiles"), p(".claude-profiles")]) {
+  for (const profileDir of listDirectories(pluginsRoot).filter((candidate) => !path.basename(candidate).startsWith("."))) {
+    const cacheRoot = path.join(profileDir, "plugins", "cache");
+    if (!exists(cacheRoot)) {
+      continue;
+    }
+    const pluginFiles = walkFiles(cacheRoot, 7, (candidate) => path.basename(candidate) === "SKILL.md" || candidate.endsWith(path.join(".codex-plugin", "plugin.json")) || candidate.endsWith(path.join(".claude-plugin", "plugin.json")));
+    const roots = new Map();
+    for (const pluginFile of pluginFiles) {
+      const parts = path.resolve(pluginFile).split(path.sep);
+      let root;
+      if (parts.includes("skills") && path.basename(pluginFile) === "SKILL.md") {
+        const skillIndex = parts.indexOf("skills");
+        root = path.join(path.sep, ...parts.slice(1, skillIndex + 2));
+      } else {
+        const marker = parts.includes(".codex-plugin") ? ".codex-plugin" : ".claude-plugin";
+        const markerIndex = parts.indexOf(marker);
+        root = path.join(path.sep, ...parts.slice(1, markerIndex));
+      }
+      const existingFiles = roots.get(root) || [];
+      existingFiles.push(pluginFile);
+      roots.set(root, existingFiles);
+    }
+    for (const [root, files] of [...roots.entries()].sort(([left], [right]) => left.localeCompare(right))) {
+      const relName = path.relative(cacheRoot, root);
+      addGroup("skills", "skill-profile-" + fileId(root), relName, root, "Skill or plugin manifest installed inside an agent profile plugin cache.", files, profilesFor(root));
+    }
+  }
+}
 
-print(json.dumps({"generatedAt": datetime.now(timezone.utc).isoformat(), "groupsByTab": groups_by_tab, "type": "agentsHubCatalog"}))
+const hooksRoot = path.join(home, "agents", "hooks");
+addGroup("hooks", "hooks-shared", "Shared hooks", hooksRoot, "Shared hook scripts and documentation used by agent profiles.", walkFiles(hooksRoot, 3, (candidate) => textSuffixes.has(path.extname(candidate))), linkedProfiles.concat([piAgent]));
+/*
+CDXC:AgentsHub 2026-06-04-19:45:
+Hook-specific files must be findable from the Hooks tab even when an agent stores them as JSON config files. Keep discrete hook files out of Configs so tab-scoped search and browsing match the user's hook-management intent in the macOS app.
+*/
+addGroup("hooks", "hooks-codex-main", "Codex main hooks", p(".codex"), "Global Codex hook configuration.", existing([p(".codex", "hooks.json")]), [mainCodex]);
+addGroup("hooks", "hooks-codex-profiles", "Codex profile hooks", p(".codex-profiles"), "hooks.json files owned by Codex profiles.", walkFiles(p(".codex-profiles"), 2, (candidate) => path.basename(candidate) === "hooks.json"), profiles.filter((item) => item.agentIcon === "codex"));
+addGroup("hooks", "hooks-cursor-main", "Cursor hooks", p(".cursor"), "Cursor Agent hook configuration.", existing([p(".cursor", "hooks.json")]), []);
+addGroup("hooks", "hooks-antigravity-main", "Antigravity hooks", p(".gemini", "config"), "Antigravity hook configuration.", existing([p(".gemini", "config", "hooks.json")]), []);
+addGroup("hooks", "hooks-grok-main", "Grok hooks", p(".grok", "hooks"), "Grok hook configuration.", existing([p(".grok", "hooks", "ghostex-session.json")]), []);
+addGroup("hooks", "hooks-pi-agent", "Pi extensions", p(".pi", "agent"), "Pi agent extension hooks and settings-adjacent TypeScript files.", walkFiles(p(".pi", "agent", "extensions"), 2, (candidate) => [".ts", ".js", ".json"].includes(path.extname(candidate))), [piAgent]);
+
+addGroup("configs", "config-shared-agents", "Shared agent config", p(".agents"), "Shared agent lock and setup files.", walkFiles(p(".agents"), 1, (candidate) => path.basename(candidate).endsWith(".json")), linkedProfiles);
+addGroup("configs", "config-claude-main", "Claude main configs", p(".claude"), "Global Claude Code settings and MCP configuration.", existing([p(".claude.json"), p(".claude", "settings.json"), p(".claude", "settings.local.json")]), [mainClaude]);
+for (const item of profiles.filter((profileItem) => profileItem.agentIcon === "claude" && profileItem.profilePath.includes("-profiles"))) {
+  const root = item.profilePath;
+  const files = existing([path.join(root, ".claude.json"), path.join(root, "settings.json"), path.join(root, "settings.local.json"), path.join(root, "policy-limits.json"), path.join(root, "stats-cache.json"), path.join(root, "plugins", "installed_plugins.json"), path.join(root, "plugins", "known_marketplaces.json"), path.join(root, "plugins", "blocklist.json")]);
+  addGroup("configs", "config-claude-" + fileId(root), "Claude " + path.basename(root) + " configs", root, "Claude profile-owned config and plugin registry files.", files, [item]);
+}
+addGroup("configs", "config-codex-main", "Codex main configs", p(".codex"), "Global Codex TOML configuration.", existing([p(".codex", "config.toml")]), [mainCodex]);
+for (const item of profiles.filter((profileItem) => profileItem.agentIcon === "codex" && profileItem.profilePath.includes("-profiles"))) {
+  const root = item.profilePath;
+  const files = existing([path.join(root, "config.toml"), path.join(root, ".codex-global-state.json"), path.join(root, "browser", "config.toml"), path.join(root, "plugins", "installed_plugins.json"), path.join(root, "plugins", "known_marketplaces.json"), path.join(root, "plugins", "blocklist.json")]);
+  addGroup("configs", "config-codex-" + fileId(root), "Codex " + path.basename(root) + " configs", root, "Codex profile-owned config, browser, and plugin registry files.", files, [item]);
+}
+addGroup("configs", "config-opencode", "OpenCode configs", openCode.profilePath, "OpenCode JSON, package, and plugin files.", walkFiles(openCode.profilePath, 2, (candidate) => ["opencode.json", "tui.json", "package.json"].includes(path.basename(candidate)) || (path.basename(path.dirname(candidate)) === "plugin" && path.extname(candidate) === ".js")), [openCode]);
+addGroup("configs", "config-pi", "Pi configs", piAgent.profilePath, "Pi agent settings and local extension files.", walkFiles(piAgent.profilePath, 2, (candidate) => [".json", ".ts", ".js"].includes(path.extname(candidate)) && path.basename(candidate) !== "auth.json"), [piAgent]);
+
+for (const tab of Object.keys(groupsByTab)) {
+  groupsByTab[tab].sort((left, right) => left.name.toLowerCase().localeCompare(right.name.toLowerCase()));
+}
+
+console.log(JSON.stringify({ generatedAt: new Date().toISOString(), groupsByTab, type: "agentsHubCatalog" }));
 `;
 }
 

@@ -71,6 +71,7 @@ import {
   boardStatusBeadsValue,
   boardStatusLabel,
   buildAgentWorkPrompt,
+  ensureIssuePrefix,
   ensureWorkflowStatuses,
   extractDescriptionImageReferences,
   extractPreviewableDescriptionImageReferences,
@@ -81,6 +82,7 @@ import {
   getBlockingIds,
   normalizeBeadsPayload,
   normalizeDisplayIssueKey,
+  normalizeIssuePrefix,
   parseProjectBoardCommentText,
   parseBeadsJson,
   priorityLabel,
@@ -340,6 +342,9 @@ function ProjectBoardApp() {
   const displayKey = normalizeDisplayIssueKey(
     urlSearchParams.get("beadsDisplayKey") ?? projectName,
   );
+  const issuePrefix = normalizeIssuePrefix(
+    projectName || projectPath.split("/").filter(Boolean).at(-1) || displayKey,
+  );
   const [tickets, setTickets] = useState<BoardTicket[]>([]);
   const [allIssues, setAllIssues] = useState<BeadsIssue[]>([]);
   const [knownLabels, setKnownLabels] = useState<string[]>([]);
@@ -446,6 +451,10 @@ function ProjectBoardApp() {
    * CDXC:ProjectBoard 2026-05-30-09:45:
    * Create & Start should hand the created bead to native session launch as soon as the bead id is available.
    * Board refresh, lane hydration, labels, dependencies, and generated title updates are secondary work and must not sit in front of terminal creation.
+   *
+   * CDXC:ProjectBoardBeads 2026-06-10-20:27:
+   * New tickets must be created under the active project prefix, not a stale Beads issue-prefix value left by earlier gxserver-focused work.
+   * Keep Beads issue_prefix reconciled from the project identity before initial/manual board reads and before create so new cards return in the same project board scope.
    *
    * CDXC:ProjectBoardForms 2026-06-09-15:36:
    * Typing in New automation, edit-ticket, or new-ticket fields must never blank the Project/Kanban page.
@@ -637,6 +646,7 @@ function ProjectBoardApp() {
     }
     try {
       if (mode === "initial" || mode === "manual") {
+        await ensureIssuePrefix(runBeads, issuePrefix);
         await ensureWorkflowStatuses(runBeads);
       }
       const payload = await runBeads({ action: "listIssues" });
@@ -675,7 +685,7 @@ function ProjectBoardApp() {
     } finally {
       isRefreshingRef.current = false;
     }
-  }, [displayKey, runBeads]);
+  }, [displayKey, issuePrefix, runBeads]);
 
   useEffect(() => {
     void loadConversationState();
@@ -999,6 +1009,7 @@ function ProjectBoardApp() {
       targetStatus: draft.status,
     });
     try {
+      await ensureIssuePrefix(runBeads, issuePrefix);
       const requestedTitle = draft.title.trim();
       const shouldGenerateTitle = !requestedTitle;
       const title = shouldGenerateTitle ? PROJECT_BOARD_GENERATING_TITLE : requestedTitle;

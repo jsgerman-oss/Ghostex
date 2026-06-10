@@ -7,6 +7,7 @@ import {
   buildAgentWorkPrompt,
   extractDescriptionImagePreviews,
   extractDescriptionImageReferences,
+  ensureIssuePrefix,
   filterBoardTickets,
   formatProjectBoardCommentText,
   parseProjectBoardCommentText,
@@ -220,5 +221,44 @@ describe("project board routing", () => {
       "remote:machine:P9",
     );
     expect(projectBoardRawProjectIdFromUrlParam("P3lv0")).toBe("P3lv0");
+  });
+});
+
+describe("project board issue prefix", () => {
+  test("updates Beads issue_prefix when it differs from the project prefix", async () => {
+    /*
+     * CDXC:ProjectBoardBeads 2026-06-10-20:27:
+     * The Project board's visible ticket key is separate from Beads' durable issue_prefix, so prefix reconciliation must write the real project prefix before ticket creation when stale config still says gxserver.
+     */
+    const requests: Array<{ action: string; value?: string }> = [];
+    await ensureIssuePrefix(async (request) => {
+      requests.push({ action: request.action, value: request.value });
+      return request.action === "configGetIssuePrefix" ? { value: "gxserver" } : {};
+    }, "zmux");
+
+    expect(requests).toEqual([
+      { action: "configGetIssuePrefix", value: undefined },
+      { action: "renamePrefix", value: "zmux-" },
+    ]);
+  });
+
+  test("does not rewrite already matching normalized issue_prefix values", async () => {
+    const requests: Array<{ action: string; value?: string }> = [];
+    await ensureIssuePrefix(async (request) => {
+      requests.push({ action: request.action, value: request.value });
+      return { value: "zmux" };
+    }, "ZMUX");
+
+    expect(requests).toEqual([{ action: "configGetIssuePrefix", value: undefined }]);
+  });
+
+  test("accepts bare Beads config string payloads for issue_prefix", async () => {
+    const requests: Array<{ action: string; value?: string }> = [];
+    await ensureIssuePrefix(async (request) => {
+      requests.push({ action: request.action, value: request.value });
+      return "zmux";
+    }, "zmux");
+
+    expect(requests).toEqual([{ action: "configGetIssuePrefix", value: undefined }]);
   });
 });
