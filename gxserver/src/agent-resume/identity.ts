@@ -47,7 +47,15 @@ export function getCodexSessionReference(input: GxserverAgentResumeIdentityInput
 }
 
 export function getClaudeSessionReference(input: GxserverAgentResumeIdentityInput): string | undefined {
-  return normalizeText(input.agentSessionId);
+  /*
+  CDXC:AgentResume 2026-06-10-17:30:
+  Legacy macOS sidebar rows can carry Claude's restorable identity as a transcript path or saved resume command instead of `agentSessionId`. Treat those stored hints as exact identities so wake does not pass a mutable sidebar title to `claude --resume`.
+  */
+  return (
+    normalizeText(input.agentSessionId) ??
+    getClaudeSessionIdFromPath(input.agentSessionPath) ??
+    getClaudeSessionIdFromStoredCommands(input.storedCommandCandidates)
+  );
 }
 
 export function getOpenCodeSessionReference(input: GxserverAgentResumeIdentityInput): string | undefined {
@@ -93,6 +101,53 @@ function getCursorChatSessionIdFromStoredCommands(candidates: readonly string[] 
     }
   }
   return undefined;
+}
+
+function getClaudeSessionIdFromPath(value: string | undefined): string | undefined {
+  const normalized = normalizeText(value);
+  if (!normalized) {
+    return undefined;
+  }
+  return getClaudeSessionId(normalized);
+}
+
+function getClaudeSessionIdFromStoredCommands(candidates: readonly string[] | undefined): string | undefined {
+  for (const candidate of candidates ?? []) {
+    const parsed = getClaudeSessionIdFromStoredCommand(candidate);
+    if (parsed) {
+      return parsed;
+    }
+  }
+  return undefined;
+}
+
+function getClaudeSessionIdFromStoredCommand(command: string): string | undefined {
+  const resumeArgPattern = /(?:^|\s)--resume(?:=|\s+)(?:"([^"]*)"|'([^']*)'|([^\s;&|]+))/giu;
+  let match: RegExpExecArray | null;
+  while ((match = resumeArgPattern.exec(command)) !== null) {
+    const value = match[1] ?? match[2] ?? match[3];
+    const sessionId = getClaudeSessionId(value);
+    if (sessionId) {
+      return sessionId;
+    }
+  }
+  return undefined;
+}
+
+function getClaudeSessionId(value: string | undefined): string | undefined {
+  const normalized = value?.trim();
+  if (!normalized) {
+    return undefined;
+  }
+  const uuid = normalized.match(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/iu)?.[0];
+  if (uuid) {
+    return uuid.toLowerCase();
+  }
+  const transcriptName = normalized.match(/(?:^|[/\\])(ses_[A-Za-z0-9]+)(?:\.jsonl)?(?:$|[/\\])/u)?.[1];
+  if (transcriptName) {
+    return transcriptName;
+  }
+  return /^ses_[A-Za-z0-9]+$/u.test(normalized) ? normalized : undefined;
 }
 
 function getCursorChatSessionIdFromStoredCommand(command: string): string | undefined {

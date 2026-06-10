@@ -45,6 +45,7 @@ export interface GxserverAgentResumeInput {
   agentId?: string;
   agentSessionId?: string;
   agentSessionPath?: string;
+  firstUserMessage?: string;
   projectPath?: string;
   storedCommandCandidates?: readonly string[];
   title?: string;
@@ -417,7 +418,7 @@ export function buildAgentResumeCommand(
   const exactReference = getExactAgentSessionReference(agentId, input);
   const codexExactReference = agentId === "codex" ? getCodexSessionReference(input) : undefined;
   const codexReference = agentId === "codex" ? (codexExactReference ?? resumeTitle) : undefined;
-  const claudeReference = agentId === "claude" ? (getClaudeSessionReference(input) ?? resumeTitle) : undefined;
+  const claudeExactReference = agentId === "claude" ? getClaudeSessionReference(input) : undefined;
   const cursorReference = agentId === "cursor" ? getCursorSessionReference(input) : undefined;
   const openCodeReference = agentId === "opencode" ? getOpenCodeSessionReference(input) : undefined;
   const piReference = agentId === "pi" ? getPiSessionReference(input) : undefined;
@@ -449,7 +450,15 @@ export function buildAgentResumeCommand(
         ? buildCodexValidatedResumeCommand(agentCommand, codexExactReference)
         : buildCodexResumeLookupCommand(agentCommand, codexReference);
     case "claude":
-      return claudeReference ? `${agentCommand} --resume ${quoteShellDoubleArg(claudeReference)}` : undefined;
+      if (claudeExactReference) {
+        return `${agentCommand} --resume ${quoteShellDoubleArg(claudeExactReference)}`;
+      }
+      if (!resumeTitle) {
+        return undefined;
+      }
+      return options.display
+        ? `${agentCommand} --resume ${quoteShellDoubleArg(resumeTitle)}  # lookup Claude session id by title`
+        : buildClaudeResumeLookupCommand(agentCommand, input, resumeTitle);
     case "cursor":
       if (cursorReference) {
         return `${agentCommand} --resume ${quoteShellDoubleArg(cursorReference)}`;
@@ -544,10 +553,16 @@ function buildAgentForkCommand(
         : buildCodexForkLookupCommand(agentCommand, resumeTitle);
     }
     case "claude": {
-      const reference = getClaudeSessionReference(input) ?? resumeTitle;
-      return reference
-        ? `${agentCommand} --resume ${quoteShellDoubleArg(reference)} --fork-session`
-        : undefined;
+      const exactReference = getClaudeSessionReference(input);
+      if (exactReference) {
+        return `${agentCommand} --resume ${quoteShellDoubleArg(exactReference)} --fork-session`;
+      }
+      if (!resumeTitle) {
+        return undefined;
+      }
+      return options.display
+        ? `${agentCommand} --resume ${quoteShellDoubleArg(resumeTitle)} --fork-session  # lookup Claude session id by title`
+        : buildClaudeResumeLookupCommand(agentCommand, input, resumeTitle, { fork: true });
     }
     case "pi": {
       const reference = getPiSessionReference(input);
@@ -580,8 +595,8 @@ export function buildAgentResumeFallbackCommand(
     }
     case "claude": {
       const exactReference = getClaudeSessionReference(input);
-      return exactReference && exactReference !== resumeTitle
-        ? `${agentCommand} --resume ${quoteShellDoubleArg(resumeTitle)}`
+      return exactReference && resumeTitle
+        ? buildClaudeResumeLookupCommand(agentCommand, input, resumeTitle)
         : undefined;
     }
     case "opencode": {
@@ -819,6 +834,7 @@ function toAgentResumeInput(
     agentLookupCommand: baseAgentCommand,
     agentSessionId: normalizeText(session.runtimeSettings.agentSessionId),
     agentSessionPath: normalizeText(session.runtimeSettings.agentSessionPath),
+    firstUserMessage: normalizeText(session.runtimeSettings.firstUserMessage) ?? normalizeText(session.launchSettings.firstUserMessage),
     projectPath: session.cwd ?? project.path,
     storedCommandCandidates: collectStoredAgentResumeCommandCandidates(session),
     title: session.title,
@@ -885,10 +901,49 @@ function buildRovoDevResumeCommand(agentCommand: string, sessionReference: strin
     : `${agentCommand} rovodev run --restore ${quoted}`;
 }
 
+function buildClaudeResumeLookupCommand(
+  agentCommand: string,
+  input: GxserverAgentResumeInput,
+  resumeTitle: string,
+  options: { fork?: boolean } = {},
+): string {
+  /*
+  CDXC:GxserverMigration 2026-06-10-17:30:
+  Ghostex 3.6 Claude rows often persisted only a human title or first prompt, not Claude's exact session id. Wake must resolve the local Claude transcript id before running `claude --resume`; title-as-id restores fail for those migrated rows.
+  */
+  const args = [
+    quoteShellArg(input.projectPath ?? ""),
+    quoteShellArg(resumeTitle),
+    quoteShellArg(input.firstUserMessage ?? ""),
+  ].join(" ");
+  const resumeInvocation = options.fork
+    ? `${agentCommand} --resume "$CLAUDE_RESUME_SESSION_ID" --fork-session`
+    : `${agentCommand} --resume "$CLAUDE_RESUME_SESSION_ID"`;
+  return [
+    'CLAUDE_RESUME_SESSION_ID="$(',
+    `${buildNodeEvalCommand(getClaudeSessionIdLookupScript())} -- ${args}`,
+    ')"',
+    "&&",
+    'test -n "$CLAUDE_RESUME_SESSION_ID"',
+    "&&",
+    resumeInvocation,
+    "||",
+    `{ printf '%s\\n' ${quoteShellArg(`Unable to find restorable Claude session id for "${resumeTitle}".`)}; false; }`,
+  ].join(" ");
+}
+
+function buildNodeEvalCommand(script: string): string {
+  /*
+  CDXC:GxserverAgentLifecycle 2026-06-10-18:17:
+  Runtime resume lookup commands must not depend on `/usr/bin/python3` or any user-installed interpreter. gxserver is launched by Ghostex with the bundled code-server Node, so embed `process.execPath` and run lookup helpers through that app-owned runtime.
+  */
+  return `${quoteShellArg(process.execPath)} --no-warnings -e ${quoteShellArg(script)}`;
+}
+
 function buildCursorResumeLookupCommand(agentCommand: string, projectPath: string, resumeTitle: string): string {
   return [
     'CURSOR_CHAT_ID="$(',
-    `/usr/bin/python3 -c ${quoteShellArg(getCursorChatSessionLookupScript())} ${quoteShellArg(projectPath)} ${quoteShellArg(resumeTitle)}`,
+    `${buildNodeEvalCommand(getCursorChatSessionLookupScript())} -- ${quoteShellArg(projectPath)} ${quoteShellArg(resumeTitle)}`,
     ')"',
     "&&",
     'test -n "$CURSOR_CHAT_ID"',
@@ -900,7 +955,7 @@ function buildCursorResumeLookupCommand(agentCommand: string, projectPath: strin
 }
 
 function buildOpenCodeResumeCommand(agentCommand: string, resumeTitle: string, lookupAgentCommand = agentCommand): string {
-  return `${agentCommand} -s "$(${lookupAgentCommand} session list --format json | /usr/bin/python3 -c ${quoteShellArg(getOpenCodeSessionLookupScript())} ${quoteShellArg(resumeTitle)})"`;
+  return `${agentCommand} -s "$(${lookupAgentCommand} session list --format json | ${buildNodeEvalCommand(getOpenCodeSessionLookupScript())} -- ${quoteShellArg(resumeTitle)})"`;
 }
 
 function buildCodexValidatedResumeCommand(agentCommand: string, sessionReference: string): string {
@@ -910,7 +965,7 @@ function buildCodexValidatedResumeCommand(agentCommand: string, sessionReference
   */
   return [
     'CODEX_RESUME_SESSION_ID="$(',
-    `/usr/bin/python3 -c ${quoteShellArg(getCodexSessionIdLookupScript())} --exact ${quoteShellArg(sessionReference)}`,
+    `${buildNodeEvalCommand(getCodexSessionIdLookupScript())} -- --exact ${quoteShellArg(sessionReference)}`,
     ')"',
     "&&",
     'test -n "$CODEX_RESUME_SESSION_ID"',
@@ -924,7 +979,7 @@ function buildCodexValidatedResumeCommand(agentCommand: string, sessionReference
 function buildCodexResumeLookupCommand(agentCommand: string, resumeTitle: string): string {
   return [
     'CODEX_RESUME_SESSION_ID="$(',
-    `/usr/bin/python3 -c ${quoteShellArg(getCodexSessionIdLookupScript())} --title ${quoteShellArg(resumeTitle)}`,
+    `${buildNodeEvalCommand(getCodexSessionIdLookupScript())} -- --title ${quoteShellArg(resumeTitle)}`,
     ')"',
     "&&",
     'test -n "$CODEX_RESUME_SESSION_ID"',
@@ -938,7 +993,7 @@ function buildCodexResumeLookupCommand(agentCommand: string, resumeTitle: string
 function buildCodexForkLookupCommand(agentCommand: string, resumeTitle: string): string {
   return [
     'CODEX_FORK_SESSION_ID="$(',
-    `/usr/bin/python3 -c ${quoteShellArg(getCodexSessionIdLookupScript())} --title ${quoteShellArg(resumeTitle)}`,
+    `${buildNodeEvalCommand(getCodexSessionIdLookupScript())} -- --title ${quoteShellArg(resumeTitle)}`,
     ')"',
     "&&",
     'test -n "$CODEX_FORK_SESSION_ID"',
@@ -949,220 +1004,522 @@ function buildCodexForkLookupCommand(agentCommand: string, resumeTitle: string):
   ].join(" ");
 }
 
+function getClaudeSessionIdLookupScript(): string {
+  return `const fs = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
+
+const [projectPathArg = "", titleArg = "", firstPromptArg = ""] = process.argv.slice(1);
+const projectPath = projectPathArg.trim();
+const title = normalize(titleArg);
+const firstPrompt = normalize(firstPromptArg);
+if (!title && !firstPrompt) {
+  process.exit(1);
+}
+
+const home = os.homedir();
+const roots = [path.join(home, ".claude", "projects")];
+const profilesRoot = path.join(home, ".claude-profiles");
+try {
+  for (const entry of fs.readdirSync(profilesRoot, { withFileTypes: true })) {
+    if (entry.isDirectory()) {
+      roots.push(path.join(profilesRoot, entry.name, "projects"));
+    }
+  }
+} catch {}
+
+function normalize(value) {
+  return String(value || "").split(/\\s+/u).filter(Boolean).join(" ");
+}
+
+function textFromMessage(message) {
+  if (typeof message === "string") {
+    return message;
+  }
+  if (!message || typeof message !== "object") {
+    return "";
+  }
+  const content = message.content;
+  if (typeof content === "string") {
+    return content;
+  }
+  if (Array.isArray(content)) {
+    const parts = [];
+    for (const item of content) {
+      if (typeof item === "string") {
+        parts.push(item);
+      } else if (item && typeof item === "object" && typeof item.text === "string") {
+        parts.push(item.text);
+      }
+    }
+    return parts.join("\\n");
+  }
+  return "";
+}
+
+function expandHome(value) {
+  if (value === "~") {
+    return home;
+  }
+  return value.startsWith("~/") ? path.join(home, value.slice(2)) : value;
+}
+
+function normalizedPath(value) {
+  return path.resolve(expandHome(value));
+}
+
+function pathContains(parent, child) {
+  const relative = path.relative(parent, child);
+  return Boolean(relative) && !relative.startsWith("..") && !path.isAbsolute(relative);
+}
+
+function isProjectMatch(cwd) {
+  if (!projectPath) {
+    return true;
+  }
+  const cwdText = String(cwd || "").trim();
+  if (!cwdText) {
+    return false;
+  }
+  try {
+    const project = normalizedPath(projectPath);
+    const candidate = normalizedPath(cwdText);
+    return candidate === project || pathContains(project, candidate) || pathContains(candidate, project);
+  } catch {
+    return cwdText === projectPath || cwdText.startsWith(projectPath.replace(/\\/+$/u, "") + "/") || projectPath.startsWith(cwdText.replace(/\\/+$/u, "") + "/");
+  }
+}
+
+function scanTranscript(filePath) {
+  let sessionId = path.basename(filePath).replace(/\\.jsonl$/u, "");
+  const cwdValues = [];
+  const names = [];
+  const summaries = [];
+  let firstUser = "";
+  let latest = "";
+  let lines;
+  try {
+    lines = fs.readFileSync(filePath, "utf8").split(/\\r?\\n/u);
+  } catch {
+    return undefined;
+  }
+  for (let index = 0; index < lines.length && index <= 2000; index += 1) {
+    const line = lines[index];
+    if (!line) {
+      continue;
+    }
+    let item;
+    try {
+      item = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (!item || typeof item !== "object") {
+      continue;
+    }
+    if (typeof item.sessionId === "string" && item.sessionId.trim()) {
+      sessionId = item.sessionId.trim();
+    }
+    if (typeof item.cwd === "string") {
+      cwdValues.push(item.cwd);
+    }
+    if (typeof item.projectPath === "string") {
+      cwdValues.push(item.projectPath);
+    }
+    if (typeof item.timestamp === "string" && item.timestamp > latest) {
+      latest = item.timestamp;
+    }
+    const itemType = String(item.type || "");
+    if (itemType === "custom-title" && typeof item.customTitle === "string") {
+      names.push(item.customTitle);
+    }
+    if (itemType === "agent-name" && typeof item.agentName === "string") {
+      names.push(item.agentName);
+    }
+    if (typeof item.slug === "string") {
+      names.push(item.slug);
+    }
+    if (typeof item.summary === "string") {
+      summaries.push(item.summary);
+    }
+    if (itemType === "user" && !firstUser) {
+      firstUser = textFromMessage(item.message);
+    }
+  }
+  const projectScore = cwdValues.some(isProjectMatch) ? 2 : 0;
+  if (projectPath && projectScore === 0) {
+    return undefined;
+  }
+  const normalizedNames = names.concat(summaries).map(normalize).filter(Boolean);
+  const normalizedFirstUser = normalize(firstUser);
+  let score = projectScore;
+  if (title) {
+    if (normalizedNames.some((value) => value === title)) {
+      score += 8;
+    } else if (normalizedNames.some((value) => value.includes(title) || title.includes(value))) {
+      score += 4;
+    }
+  }
+  if (firstPrompt && normalizedFirstUser) {
+    if (normalizedFirstUser === firstPrompt) {
+      score += 10;
+    } else if (firstPrompt.includes(normalizedFirstUser) || normalizedFirstUser.includes(firstPrompt)) {
+      score += 5;
+    }
+  }
+  return score > 0 ? { latest, score, sessionId } : undefined;
+}
+
+const matches = [];
+for (const root of roots) {
+  let projectDirs;
+  try {
+    projectDirs = fs.readdirSync(root, { withFileTypes: true });
+  } catch {
+    continue;
+  }
+  for (const projectDir of projectDirs) {
+    if (!projectDir.isDirectory() || projectDir.name === "subagents") {
+      continue;
+    }
+    const projectDirPath = path.join(root, projectDir.name);
+    let files;
+    try {
+      files = fs.readdirSync(projectDirPath, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const file of files) {
+      if (!file.isFile() || !file.name.endsWith(".jsonl")) {
+        continue;
+      }
+      const result = scanTranscript(path.join(projectDirPath, file.name));
+      if (result) {
+        matches.push(result);
+      }
+    }
+  }
+}
+
+if (!matches.length) {
+  process.exit(1);
+}
+
+matches.sort((left, right) => left.score - right.score || left.latest.localeCompare(right.latest));
+process.stdout.write(matches[matches.length - 1].sessionId);
+`;
+}
+
 function getCodexSessionIdLookupScript(): string {
-  return `import json
-import os
-import pathlib
-import re
-import sys
+  return `const fs = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
 
-mode = sys.argv[1].strip() if len(sys.argv) > 1 else ""
-query = sys.argv[2].strip() if len(sys.argv) > 2 else ""
-if mode not in {"--exact", "--title"} or not query:
-    sys.exit(1)
+const [mode = "", query = ""] = process.argv.slice(1).map((value) => String(value || "").trim());
+if (!["--exact", "--title"].includes(mode) || !query) {
+  process.exit(1);
+}
 
-home = pathlib.Path.home()
-candidate_homes = []
-for value in [os.environ.get("CODEX_HOME")]:
-    if value:
-        candidate_homes.append(pathlib.Path(value).expanduser())
-for value in [
-    home / ".codex-profiles" / "personal",
-    home / ".codex-profiles" / "work",
-    home / ".codex",
-]:
-    candidate_homes.append(value)
+const home = os.homedir();
+const candidateHomes = [];
+if (process.env.CODEX_HOME) {
+  candidateHomes.push(expandHome(process.env.CODEX_HOME));
+}
+candidateHomes.push(
+  path.join(home, ".codex-profiles", "personal"),
+  path.join(home, ".codex-profiles", "work"),
+  path.join(home, ".codex"),
+);
 
-seen = set()
-codex_homes = []
-for codex_home in candidate_homes:
-    codex_home = codex_home.resolve() if codex_home.exists() else codex_home
-    if str(codex_home) in seen:
-        continue
-    seen.add(str(codex_home))
-    codex_homes.append(codex_home)
+const seen = new Set();
+const codexHomes = [];
+for (const candidate of candidateHomes) {
+  let normalized = candidate;
+  try {
+    if (fs.existsSync(candidate)) {
+      normalized = fs.realpathSync(candidate);
+    }
+  } catch {}
+  if (seen.has(normalized)) {
+    continue;
+  }
+  seen.add(normalized);
+  codexHomes.push(normalized);
+}
 
-session_id_pattern = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", re.I)
-internal_title_prompt_markers = (
-    "Write a concise session title that summarizes the user's text.",
-    "Output handling:",
-    "Print only the final result to stdout.",
-)
+const sessionIdPattern = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/iu;
+const internalTitlePromptMarkers = [
+  "Write a concise session title that summarizes the user's text.",
+  "Output handling:",
+  "Print only the final result to stdout.",
+];
 
-def transcript_paths_for_session(codex_home, session_id, item=None):
-    seen_paths = set()
-    for key in ["path", "session_path", "sessionPath", "transcript_path", "transcriptPath"]:
-        value = str((item or {}).get(key) or "").strip()
-        if not value:
-            continue
-        path = pathlib.Path(value).expanduser()
-        if not path.is_absolute():
-            path = codex_home / path
-        if str(path) not in seen_paths:
-            seen_paths.add(str(path))
-            yield path
-    sessions_dir = codex_home / "sessions"
-    if not sessions_dir.is_dir():
-        return
-    try:
-        for path in sessions_dir.rglob(f"*{session_id}*.jsonl"):
-            if str(path) in seen_paths:
-                continue
-            seen_paths.add(str(path))
-            yield path
-    except Exception:
-        return
+function expandHome(value) {
+  const text = String(value || "");
+  if (text === "~") {
+    return home;
+  }
+  return text.startsWith("~/") ? path.join(home, text.slice(2)) : text;
+}
 
-def transcript_is_internal_codex_exec(path):
-    try:
-        with path.open("r", encoding="utf-8") as handle:
-            for index, line in enumerate(handle):
-                if index > 80:
-                    break
-                if all(marker in line for marker in internal_title_prompt_markers):
-                    return True
-                try:
-                    entry = json.loads(line)
-                except Exception:
-                    continue
-                payload = entry.get("payload") if isinstance(entry, dict) else None
-                if not isinstance(payload, dict):
-                    continue
-                if str(payload.get("originator") or "").strip() == "codex_exec":
-                    return True
-                if str(payload.get("source") or "").strip() == "exec":
-                    return True
-    except FileNotFoundError:
-        return False
-    except Exception:
-        return False
-    return False
+function resolveTranscriptPath(codexHome, value) {
+  const expanded = expandHome(String(value || "").trim());
+  return path.isAbsolute(expanded) ? expanded : path.join(codexHome, expanded);
+}
 
-def is_internal_codex_session(codex_home, session_id, item=None):
-    if str((item or {}).get("originator") or "").strip() == "codex_exec":
-        return True
-    if str((item or {}).get("source") or "").strip() == "exec":
-        return True
-    return any(transcript_is_internal_codex_exec(path) for path in transcript_paths_for_session(codex_home, session_id, item))
+function* walkFiles(root, sessionId) {
+  const stack = [root];
+  while (stack.length > 0) {
+    const current = stack.pop();
+    let entries;
+    try {
+      entries = fs.readdirSync(current, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      const entryPath = path.join(current, entry.name);
+      if (entry.isDirectory()) {
+        stack.push(entryPath);
+      } else if (entry.isFile() && entry.name.includes(sessionId) && entry.name.endsWith(".jsonl")) {
+        yield entryPath;
+      }
+    }
+  }
+}
 
-def exact_reference_is_internal(session_id):
-    for codex_home in codex_homes:
-        if is_internal_codex_session(codex_home, session_id):
-            return True
-    return False
+function transcriptPathsForSession(codexHome, sessionId, item = {}) {
+  const paths = [];
+  const seenPaths = new Set();
+  for (const key of ["path", "session_path", "sessionPath", "transcript_path", "transcriptPath"]) {
+    const value = typeof item[key] === "string" ? item[key].trim() : "";
+    if (!value) {
+      continue;
+    }
+    const transcriptPath = resolveTranscriptPath(codexHome, value);
+    if (!seenPaths.has(transcriptPath)) {
+      seenPaths.add(transcriptPath);
+      paths.push(transcriptPath);
+    }
+  }
+  const sessionsDir = path.join(codexHome, "sessions");
+  for (const transcriptPath of walkFiles(sessionsDir, sessionId)) {
+    if (!seenPaths.has(transcriptPath)) {
+      seenPaths.add(transcriptPath);
+      paths.push(transcriptPath);
+    }
+  }
+  return paths;
+}
 
-if mode == "--exact":
-    exact_match = session_id_pattern.search(query)
-    if not exact_match:
-        sys.stdout.write(query)
-        sys.exit(0)
-    session_id = exact_match.group(0).lower()
-    if exact_reference_is_internal(session_id):
-        sys.exit(1)
-    sys.stdout.write(session_id)
-    sys.exit(0)
+function transcriptIsInternalCodexExec(transcriptPath) {
+  let lines;
+  try {
+    lines = fs.readFileSync(transcriptPath, "utf8").split(/\\r?\\n/u);
+  } catch {
+    return false;
+  }
+  for (let index = 0; index < lines.length && index <= 80; index += 1) {
+    const line = lines[index] || "";
+    if (internalTitlePromptMarkers.every((marker) => line.includes(marker))) {
+      return true;
+    }
+    let entry;
+    try {
+      entry = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    const payload = entry && typeof entry === "object" ? entry.payload : undefined;
+    if (!payload || typeof payload !== "object") {
+      continue;
+    }
+    if (String(payload.originator || "").trim() === "codex_exec") {
+      return true;
+    }
+    if (String(payload.source || "").trim() === "exec") {
+      return true;
+    }
+  }
+  return false;
+}
 
-matches = []
-for codex_home in codex_homes:
-    index_path = codex_home / "session_index.jsonl"
-    try:
-        lines = index_path.read_text(encoding="utf-8").splitlines()
-    except FileNotFoundError:
-        continue
-    for line in lines:
-        try:
-            item = json.loads(line)
-        except Exception:
-            continue
-        if str(item.get("thread_name") or "").strip() != query:
-            continue
-        session_id = str(item.get("id") or "").strip()
-        if not session_id:
-            continue
-        if is_internal_codex_session(codex_home, session_id, item):
-            continue
-        matches.append((str(item.get("updated_at") or ""), session_id))
+function isInternalCodexSession(codexHome, sessionId, item = {}) {
+  if (String(item.originator || "").trim() === "codex_exec") {
+    return true;
+  }
+  if (String(item.source || "").trim() === "exec") {
+    return true;
+  }
+  return transcriptPathsForSession(codexHome, sessionId, item).some(transcriptIsInternalCodexExec);
+}
 
-if not matches:
-    sys.exit(1)
+function exactReferenceIsInternal(sessionId) {
+  return codexHomes.some((codexHome) => isInternalCodexSession(codexHome, sessionId));
+}
 
-matches.sort()
-sys.stdout.write(matches[-1][1])
+if (mode === "--exact") {
+  const exactMatch = query.match(sessionIdPattern);
+  if (!exactMatch) {
+    process.stdout.write(query);
+    process.exit(0);
+  }
+  const sessionId = exactMatch[0].toLowerCase();
+  if (exactReferenceIsInternal(sessionId)) {
+    process.exit(1);
+  }
+  process.stdout.write(sessionId);
+  process.exit(0);
+}
+
+const matches = [];
+for (const codexHome of codexHomes) {
+  const indexPath = path.join(codexHome, "session_index.jsonl");
+  let lines;
+  try {
+    lines = fs.readFileSync(indexPath, "utf8").split(/\\r?\\n/u);
+  } catch {
+    continue;
+  }
+  for (const line of lines) {
+    if (!line) {
+      continue;
+    }
+    let item;
+    try {
+      item = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (String(item.thread_name || "").trim() !== query) {
+      continue;
+    }
+    const sessionId = String(item.id || "").trim();
+    if (!sessionId || isInternalCodexSession(codexHome, sessionId, item)) {
+      continue;
+    }
+    matches.push({ sessionId, updatedAt: String(item.updated_at || "") });
+  }
+}
+
+if (!matches.length) {
+  process.exit(1);
+}
+
+matches.sort((left, right) => left.updatedAt.localeCompare(right.updatedAt));
+process.stdout.write(matches[matches.length - 1].sessionId);
 `;
 }
 
 function getCursorChatSessionLookupScript(): string {
-  return `import hashlib
-import json
-import pathlib
-import sqlite3
-import sys
+  return `const crypto = require("node:crypto");
+const fs = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
+const { DatabaseSync } = require("node:sqlite");
 
-project_path = sys.argv[1].strip()
-title = sys.argv[2].strip()
-if not project_path or not title:
-    sys.exit(1)
+const [projectPath = "", title = ""] = process.argv.slice(1).map((value) => String(value || "").trim());
+if (!projectPath || !title) {
+  process.exit(1);
+}
 
-project_hash = hashlib.md5(project_path.encode()).hexdigest()
-chats_dir = pathlib.Path.home() / ".cursor" / "chats" / project_hash
-if not chats_dir.is_dir():
-    sys.exit(1)
+const projectHash = crypto.createHash("md5").update(projectPath).digest("hex");
+const chatsDir = path.join(os.homedir(), ".cursor", "chats", projectHash);
+let chatDirs;
+try {
+  chatDirs = fs.readdirSync(chatsDir, { withFileTypes: true });
+} catch {
+  process.exit(1);
+}
 
-def parse_meta_value(raw):
-    raw = raw.strip()
-    if raw.startswith("{"):
-        return json.loads(raw)
-    return json.loads(bytes.fromhex(raw).decode("utf-8"))
+function parseMetaValue(raw) {
+  const value = String(raw || "").trim();
+  if (value.startsWith("{")) {
+    return JSON.parse(value);
+  }
+  return JSON.parse(Buffer.from(value, "hex").toString("utf8"));
+}
 
-matches = []
-for chat_dir in chats_dir.iterdir():
-    if not chat_dir.is_dir():
-        continue
-    db_path = chat_dir / "store.db"
-    if not db_path.is_file():
-        continue
-    try:
-        connection = sqlite3.connect(db_path)
-        rows = connection.execute("select value from meta").fetchall()
-        connection.close()
-    except Exception:
-        continue
-    for row in rows:
-        try:
-            meta = parse_meta_value(str(row[0] or ""))
-        except Exception:
-            continue
-        name = str(meta.get("name") or "").strip()
-        if name != title:
-            continue
-        chat_id = str(meta.get("agentId") or chat_dir.name).strip()
-        if not chat_id:
-            continue
-        created_at = int(meta.get("createdAt") or 0)
-        matches.append((created_at, chat_id))
+const matches = [];
+for (const chatDir of chatDirs) {
+  if (!chatDir.isDirectory()) {
+    continue;
+  }
+  const dbPath = path.join(chatsDir, chatDir.name, "store.db");
+  if (!fs.existsSync(dbPath)) {
+    continue;
+  }
+  let db;
+  let rows;
+  try {
+    db = new DatabaseSync(dbPath, { readOnly: true });
+    rows = db.prepare("select value from meta").all();
+  } catch {
+    rows = [];
+  } finally {
+    try {
+      db?.close();
+    } catch {}
+  }
+  for (const row of rows) {
+    let meta;
+    try {
+      meta = parseMetaValue(row.value);
+    } catch {
+      continue;
+    }
+    if (String(meta.name || "").trim() !== title) {
+      continue;
+    }
+    const chatId = String(meta.agentId || chatDir.name).trim();
+    if (!chatId) {
+      continue;
+    }
+    const createdAt = Number(meta.createdAt || 0);
+    matches.push({ chatId, createdAt: Number.isFinite(createdAt) ? createdAt : 0 });
+  }
+}
 
-if not matches:
-    sys.exit(1)
+if (!matches.length) {
+  process.exit(1);
+}
 
-matches.sort()
-sys.stdout.write(matches[-1][1])
+matches.sort((left, right) => left.createdAt - right.createdAt);
+process.stdout.write(matches[matches.length - 1].chatId);
 `;
 }
 
 function getOpenCodeSessionLookupScript(): string {
-  return `import json, os, sys
-title = sys.argv[1].strip()
-for line in sys.stdin:
-    try:
-        item = json.loads(line)
-    except Exception:
-        continue
-    name = str(item.get("title") or item.get("name") or "").strip()
-    session_id = str(item.get("id") or "").strip()
-    if name == title and session_id:
-        sys.stdout.write(session_id)
-        sys.exit(0)
-sys.exit(1)
+  return `const title = String(process.argv[1] || "").trim();
+if (!title) {
+  process.exit(1);
+}
+
+let input = "";
+process.stdin.setEncoding("utf8");
+process.stdin.on("data", (chunk) => {
+  input += chunk;
+});
+process.stdin.on("end", () => {
+  for (const line of input.split(/\\r?\\n/u)) {
+    if (!line.trim()) {
+      continue;
+    }
+    let item;
+    try {
+      item = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    const name = String(item.title || item.name || "").trim();
+    const sessionId = String(item.id || "").trim();
+    if (name === title && sessionId) {
+      process.stdout.write(sessionId);
+      process.exit(0);
+    }
+  }
+  process.exit(1);
+});
 `;
 }
 

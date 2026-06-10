@@ -3,7 +3,6 @@ import { createReadStream, statSync } from "node:fs";
 import { stat as statFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { createInterface } from "node:readline";
 import type {
   GxserverBeadsAction,
   GxserverBeadsBoardResult,
@@ -226,7 +225,7 @@ export async function buildBeadsCommand(
   context: GxserverTypedOperationContext,
 ): Promise<GxserverTypedCommand | undefined> {
   const action = normalizeBeadsAction(params.action);
-  if (action === "board" || action === "storageExists") {
+  if (action === "storageExists") {
     return undefined;
   }
   const bd = await requireBd(context);
@@ -235,6 +234,8 @@ export async function buildBeadsCommand(
   Project board Beads reads and mutations are gxserver-owned backend operations after the native/gxserver split. Keep the full board command surface as typed allowlisted `bd` actions here so the macOS WKWebView bridge only forwards requests and no longer constructs or runs Beads subprocesses.
   */
   switch (action) {
+    case "board":
+      return { args: ["list", "--all", "--json"], cwd: context.cwd, executable: bd };
     case "addLabel":
       return {
         args: ["label", "add", normalizeIssueId(params.issueId), normalizeRequiredText(params.label, "label"), "--json"],
@@ -259,9 +260,9 @@ export async function buildBeadsCommand(
         cwd: context.cwd,
         executable: bd,
       };
-    case "configSetIssuePrefix":
+    case "renamePrefix":
       return {
-        args: ["config", "set", "issue_prefix", normalizeRequiredText(params.value, "value"), "--json"],
+        args: ["rename-prefix", normalizeBeadsRenamePrefix(params.value), "--repair", "--json"],
         cwd: context.cwd,
         executable: bd,
       };
@@ -496,12 +497,29 @@ export async function runBeadsAction(
   const action = normalizeBeadsAction(params.action);
   const command = await buildBeadsCommand(params, context);
   if (action === "board") {
-    const { issues, stdout } = await readBeadsIssuesJsonl(context.cwd, resolveBeadsBoardLimits(context));
+    if (!command) {
+      throw new GxserverTypedOperationError("badRequest", "No command was constructed for Beads board reads.");
+    }
+    /*
+    CDXC:ProjectBoardBeads 2026-06-10-20:27:
+    Board refreshes must read the same live Beads source as create/update operations. Use the pinned bd list command, then apply row and serialized-response limits before returning issues so daemon-backed Beads state cannot diverge from stale `.beads/issues.jsonl` exports.
+    */
+    const result = await runTypedCommand(command, commandOptions(context, { BD_JSON_ENVELOPE: "1" }));
+    if (result.exitCode !== 0) {
+      return {
+        action,
+        command,
+        issues: [],
+        ...result,
+      };
+    }
+    const { issues, stdout } = parseBeadsBoardListOutput(result.stdout, resolveBeadsBoardLimits(context));
     return {
       action,
+      command,
       exitCode: 0,
       issues,
-      stderr: "",
+      stderr: result.stderr,
       stdout,
     };
   }
@@ -743,77 +761,57 @@ async function requireBd(context: GxserverTypedOperationContext): Promise<string
   });
 }
 
-async function readBeadsIssuesJsonl(
-  cwd: string,
+function parseBeadsBoardListOutput(
+  stdout: string,
   limits: GxserverBeadsBoardLimits,
-): Promise<{ issues: readonly Record<string, unknown>[]; stdout: string }> {
-  const issuesPath = path.join(cwd, ".beads", "issues.jsonl");
+): { issues: readonly Record<string, unknown>[]; stdout: string } {
+  let parsed: unknown;
   try {
-    const stats = await statFile(issuesPath);
-    if (stats.size > limits.fileLimitBytes) {
-      throw new GxserverTypedOperationError(
-        "badRequest",
-        `Beads board state exceeds the ${limits.fileLimitBytes}-byte file limit; refusing to read oversized .beads/issues.jsonl.`,
-        { fileLimitBytes: limits.fileLimitBytes, fileSizeBytes: stats.size },
-      );
-    }
-
-    const issues: Record<string, unknown>[] = [];
-    const serializedIssues: string[] = [];
-    let responseBytes = 2;
-    let rowCount = 0;
-    const stream = createReadStream(issuesPath, { encoding: "utf8" });
-    const lines = createInterface({ crlfDelay: Infinity, input: stream });
-    try {
-      for await (const line of lines) {
-        const trimmed = line.trim();
-        if (!trimmed) {
-          continue;
-        }
-        rowCount += 1;
-        if (rowCount > limits.rowLimit) {
-          throw new GxserverTypedOperationError(
-            "badRequest",
-            `Beads board state exceeds the ${limits.rowLimit}-row limit; refusing to read oversized .beads/issues.jsonl.`,
-            { rowCount, rowLimit: limits.rowLimit },
-          );
-        }
-        let parsed: unknown;
-        try {
-          parsed = JSON.parse(trimmed);
-        } catch {
-          continue;
-        }
-        if (isRecord(parsed)) {
-          const serialized = JSON.stringify(parsed);
-          const nextResponseBytes = responseBytes + Buffer.byteLength(serialized, "utf8") + (serializedIssues.length === 0 ? 0 : 1);
-          if (nextResponseBytes > limits.responseLimitBytes) {
-            throw new GxserverTypedOperationError(
-              "badRequest",
-              `Beads board response exceeds the ${limits.responseLimitBytes}-byte serialized JSON limit; refusing to return oversized board data.`,
-              {
-                capturedBytes: responseBytes,
-                responseLimitBytes: limits.responseLimitBytes,
-                rowCount,
-              },
-            );
-          }
-          responseBytes = nextResponseBytes;
-          issues.push(parsed);
-          serializedIssues.push(serialized);
-        }
-      }
-    } finally {
-      lines.close();
-      stream.destroy();
-    }
-    return { issues, stdout: `[${serializedIssues.join(",")}]` };
+    parsed = JSON.parse(stdout.trim() || "[]");
   } catch (error) {
     if (error instanceof GxserverTypedOperationError) {
       throw error;
     }
-    return { issues: [], stdout: "[]" };
+    throw new GxserverTypedOperationError("badRequest", "Beads board output was not valid JSON.");
   }
+  const payload = isRecord(parsed) && Array.isArray(parsed.data) ? parsed.data : parsed;
+  if (!Array.isArray(payload)) {
+    throw new GxserverTypedOperationError("badRequest", "Beads board output must be a JSON array.");
+  }
+  const issues: Record<string, unknown>[] = [];
+  const serializedIssues: string[] = [];
+  let responseBytes = 2;
+  let rowCount = 0;
+  for (const item of payload) {
+    if (!isRecord(item)) {
+      continue;
+    }
+    rowCount += 1;
+    if (rowCount > limits.rowLimit) {
+      throw new GxserverTypedOperationError(
+        "badRequest",
+        `Beads board state exceeds the ${limits.rowLimit}-row limit; refusing to return oversized board data.`,
+        { rowCount, rowLimit: limits.rowLimit },
+      );
+    }
+    const serialized = JSON.stringify(item);
+    const nextResponseBytes = responseBytes + Buffer.byteLength(serialized, "utf8") + (serializedIssues.length === 0 ? 0 : 1);
+    if (nextResponseBytes > limits.responseLimitBytes) {
+      throw new GxserverTypedOperationError(
+        "badRequest",
+        `Beads board response exceeds the ${limits.responseLimitBytes}-byte serialized JSON limit; refusing to return oversized board data.`,
+        {
+          capturedBytes: responseBytes,
+          responseLimitBytes: limits.responseLimitBytes,
+          rowCount,
+        },
+      );
+    }
+    responseBytes = nextResponseBytes;
+    issues.push(item);
+    serializedIssues.push(serialized);
+  }
+  return { issues, stdout: `[${serializedIssues.join(",")}]` };
 }
 
 async function beadsStorageDirectoryExists(cwd: string): Promise<boolean> {
@@ -1052,6 +1050,17 @@ function normalizeBeadsStatus(input: unknown): string {
   return status;
 }
 
+function normalizeBeadsRenamePrefix(input: unknown): string {
+  const normalized = normalizeRequiredText(input, "value")
+    .toLowerCase()
+    .replace(/[^a-z0-9-]+/gu, "-")
+    .replace(/^-+|-+$/gu, "");
+  if (!normalized || !/^[a-z]/u.test(normalized)) {
+    throw new GxserverTypedOperationError("badRequest", "value must start with a letter after normalization.");
+  }
+  return `${normalized}-`;
+}
+
 function normalizeRequiredText(input: unknown, field: string): string {
   if (typeof input !== "string" || !input.trim()) {
     throw new GxserverTypedOperationError("badRequest", `${field} must be a non-empty string.`);
@@ -1184,13 +1193,13 @@ function normalizeBeadsAction(action: unknown): GxserverBeadsAction {
     action === "configGet" ||
     action === "configGetIssuePrefix" ||
     action === "configSet" ||
-    action === "configSetIssuePrefix" ||
     action === "create" ||
     action === "delete" ||
     action === "depAdd" ||
     action === "depRemove" ||
     action === "list" ||
     action === "listAllLabels" ||
+    action === "renamePrefix" ||
     action === "removeLabel" ||
     action === "search" ||
     action === "setLabels" ||

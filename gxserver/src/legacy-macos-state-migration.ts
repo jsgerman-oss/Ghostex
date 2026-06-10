@@ -210,6 +210,10 @@ export async function migrateLegacyMacosStateIntoGxserver(
         importedAt: repairedAt,
         serverId: options.serverId,
       });
+      repairLegacySessionRowsFromSnapshot(db, repairSource, importResult, {
+        importedAt: repairedAt,
+        serverId: options.serverId,
+      });
       repairPreviousSessionHistoryIdReferencesFromDatabase(db, importResult, {
         createSessionId: options.createSessionId,
         repairedAt,
@@ -1064,6 +1068,56 @@ function repairUnmappedLegacySessionsFromSnapshot(
   })();
 }
 
+function repairLegacySessionRowsFromSnapshot(
+  db: Database.Database,
+  snapshot: LegacyStateSnapshot,
+  importResult: LegacySnapshotImportResult,
+  options: {
+    importedAt: string;
+    serverId: GxserverServerId;
+  },
+): number {
+  return db.transaction(() => {
+    let repaired = 0;
+    for (const legacyProject of snapshot.projects) {
+      const legacyProjectId = text(legacyProject.projectId);
+      if (!legacyProjectId) {
+        continue;
+      }
+      const projectId = importResult.projectIdByLegacyProjectId[legacyProjectId];
+      if (!projectId) {
+        continue;
+      }
+      const projectPath = text(legacyProject.path);
+      const sessionIdByLegacySessionId = importResult.sessionIdByLegacyProjectId[legacyProjectId] ?? {};
+      for (const session of collectLegacyTerminalSessions(legacyProject)) {
+        const legacySessionId = text(session.sessionId);
+        const sessionId =
+          legacySessionId !== undefined
+            ? sessionIdByLegacySessionId[legacySessionId] ??
+              (isGxserverSessionId(legacySessionId) ? legacySessionId : undefined)
+            : undefined;
+        if (!sessionId) {
+          continue;
+        }
+        if (
+          repairLegacySessionRowMetadata(db, legacyProject, session, {
+            importedAt: options.importedAt,
+            projectId,
+            projectPath,
+            serverId: options.serverId,
+            sessionId,
+            settings: snapshot.settings,
+          })
+        ) {
+          repaired += 1;
+        }
+      }
+    }
+    return repaired;
+  })();
+}
+
 function repairProjectBoardConfigIdReferencesFromDatabase(
   db: Database.Database,
   importResult: LegacySnapshotImportResult,
@@ -1352,6 +1406,14 @@ function importLegacyProjectSessions(
     const existingSessionId = legacySessionId ? options.sessionIdByLegacySessionId?.[legacySessionId] : undefined;
     if (existingSessionId) {
       if (existingSessionRowIds.has(existingSessionId)) {
+        repairLegacySessionRowMetadata(db, legacyProject, session, {
+          importedAt: options.importedAt,
+          projectId: options.projectId,
+          projectPath: options.projectPath,
+          serverId: options.serverId,
+          sessionId: existingSessionId,
+          settings: options.settings,
+        });
         imported += 1;
         continue;
       }
@@ -1360,6 +1422,14 @@ function importLegacyProjectSessions(
       if (options.sessionIdByLegacySessionId) {
         options.sessionIdByLegacySessionId[legacySessionId] = legacySessionId;
       }
+      repairLegacySessionRowMetadata(db, legacyProject, session, {
+        importedAt: options.importedAt,
+        projectId: options.projectId,
+        projectPath: options.projectPath,
+        serverId: options.serverId,
+        sessionId: legacySessionId,
+        settings: options.settings,
+      });
       imported += 1;
       continue;
     }
@@ -1390,6 +1460,95 @@ function importLegacyProjectSessions(
   return imported;
 }
 
+function repairLegacySessionRowMetadata(
+  db: Database.Database,
+  legacyProject: JsonObject,
+  session: JsonObject,
+  options: {
+    importedAt: string;
+    projectId: GxserverProjectId;
+    projectPath?: string;
+    serverId: GxserverServerId;
+    sessionId: GxserverSessionId;
+    settings: JsonObject;
+  },
+): boolean {
+  /*
+  CDXC:GxserverMigration 2026-06-10-17:30:
+  The 3.6 to 4.1 recovery proved that importing the sidebar rows is not enough for Claude sessions. Completed-import repair must backfill missing agent ids, first prompts, transcript paths, and saved resume commands so wake can resolve Claude's real session id without overwriting newer gxserver-owned row state.
+  */
+  const row = db
+    .prepare<
+      [string, string],
+      {
+        agentId: string | null;
+        commandId: string | null;
+        kind: string;
+        launchSettingsJson: string;
+        providerStateJson: string;
+        runtimeSettingsJson: string;
+      }
+    >(
+      `SELECT agentId, commandId, kind, launchSettingsJson, providerStateJson, runtimeSettingsJson
+       FROM sessions
+       WHERE projectId = ? AND sessionId = ?`,
+    )
+    .get(options.projectId, options.sessionId);
+  if (!row) {
+    return false;
+  }
+
+  const metadata = createLegacySessionMetadata(legacyProject, session, options);
+  const launchSettings = mergeMissingLegacyObjectFields(
+    normalizeObject(parseJson(row.launchSettingsJson)),
+    metadata.launchSettings,
+  );
+  const runtimeSettings = mergeMissingLegacyObjectFields(
+    normalizeObject(parseJson(row.runtimeSettingsJson)),
+    metadata.runtimeSettings,
+  );
+  const providerState = mergeMissingLegacyObjectFields(
+    normalizeObject(parseJson(row.providerStateJson)),
+    metadata.providerState,
+  );
+  const agentId = text(row.agentId) ?? metadata.agentId ?? null;
+  const commandId = text(row.commandId) ?? text(session.commandTitle) ?? null;
+  const kind = row.kind === "agent" || metadata.kind === "agent" ? "agent" : "terminal";
+  const next = {
+    agentId,
+    commandId,
+    kind,
+    launchSettingsJson: stringifyJson(launchSettings),
+    projectId: options.projectId,
+    providerStateJson: stringifyJson(providerState),
+    runtimeSettingsJson: stringifyJson(runtimeSettings),
+    sessionId: options.sessionId,
+    updatedAt: options.importedAt,
+  };
+  if (
+    next.agentId === row.agentId &&
+    next.commandId === row.commandId &&
+    next.kind === row.kind &&
+    next.launchSettingsJson === row.launchSettingsJson &&
+    next.providerStateJson === row.providerStateJson &&
+    next.runtimeSettingsJson === row.runtimeSettingsJson
+  ) {
+    return false;
+  }
+  db.prepare(
+    `UPDATE sessions
+     SET agentId = @agentId,
+         commandId = @commandId,
+         kind = @kind,
+         launchSettingsJson = @launchSettingsJson,
+         providerStateJson = @providerStateJson,
+         runtimeSettingsJson = @runtimeSettingsJson,
+         updatedAt = @updatedAt
+     WHERE projectId = @projectId AND sessionId = @sessionId`,
+  ).run(next);
+  return true;
+}
+
 function insertLegacySessionRow(
   db: Database.Database,
   legacyProject: JsonObject,
@@ -1403,12 +1562,9 @@ function insertLegacySessionRow(
     settings: JsonObject;
   },
 ): void {
-  const legacySessionId = text(session.sessionId);
-  const zmxName = createZmxSessionName(options.serverId, options.projectId, options.sessionId);
-  const legacyProvider = normalizeLegacyProvider(session.sessionPersistenceProvider, session.tmuxSessionName);
-  const legacyProviderName = text(session.sessionPersistenceName) ?? text(session.tmuxSessionName) ?? legacySessionId;
+  const metadata = createLegacySessionMetadata(legacyProject, session, options);
   insertSessionRow(db, {
-    agentId: text(session.agentName) ?? null,
+    agentId: metadata.agentId ?? null,
     attentionRulesJson: stringifyJson(pickAttentionRules(options.settings)),
     commandId: text(session.commandTitle) ?? null,
     completionRulesJson: stringifyJson(pickCompletionRules(options.settings)),
@@ -1416,46 +1572,101 @@ function insertLegacySessionRow(
     cwd: options.projectPath ?? null,
     isFavorite: session.isFavorite === true ? 1 : 0,
     isPinned: session.isPinned === true ? 1 : 0,
-    kind: text(session.agentName) || text(session.agentSessionId) ? "agent" : "terminal",
+    kind: metadata.kind,
     lastActiveAt: text(session.lastActivityAt) ?? text(session.lastAccessedAt) ?? null,
-    launchSettingsJson: stringifyJson({
+    launchSettingsJson: stringifyJson(metadata.launchSettings),
+    lifecycleState: session.isSleeping === true ? "sleeping" : "running",
+    notificationRulesJson: stringifyJson(pickNotificationRules(options.settings)),
+    projectId: options.projectId,
+    providerStateJson: stringifyJson(metadata.providerState),
+    restoredFromHistoryId: null,
+    restoredFromSessionId: null,
+    runtimeSettingsJson: stringifyJson(metadata.runtimeSettings),
+    sessionId: options.sessionId,
+    title: exactTitle(session.title, options.sessionId),
+    updatedAt: options.importedAt,
+    worktreeJson: stringifyJson(normalizeObject(legacyProject.worktree)),
+    zmxName: metadata.zmxName,
+  });
+  recordIdAllocation(db, "session", options.projectId, options.sessionId, options.importedAt);
+}
+
+function createLegacySessionMetadata(
+  legacyProject: JsonObject,
+  session: JsonObject,
+  options: {
+    projectId: GxserverProjectId;
+    projectPath?: string;
+    serverId: GxserverServerId;
+    sessionId: GxserverSessionId;
+  },
+): {
+  agentId?: string;
+  kind: "agent" | "terminal";
+  launchSettings: JsonObject;
+  providerState: JsonObject;
+  runtimeSettings: JsonObject;
+  zmxName: string;
+} {
+  const legacySessionId = text(session.sessionId);
+  const zmxName = createZmxSessionName(options.serverId, options.projectId, options.sessionId);
+  const legacyProvider = normalizeLegacyProvider(session.sessionPersistenceProvider, session.tmuxSessionName);
+  const legacyProviderName = text(session.sessionPersistenceName) ?? text(session.tmuxSessionName) ?? legacySessionId;
+  const agentId = inferLegacyAgentId(session);
+  const agentCommand = pickLegacyAgentCommand(session);
+  const resumeCommand = pickLegacyCommandText(session, [
+    "agentResumeCommand",
+    "resumeCommand",
+    "primaryCommand",
+  ]);
+  const resumeFallbackCommand = pickLegacyCommandText(session, [
+    "resumeFallbackCommand",
+    "fallbackCommand",
+  ]);
+  const copyCommand = pickLegacyCommandText(session, ["copyCommand"]);
+  const startupText = pickLegacyCommandText(session, ["startupText"]);
+  const firstUserMessage = text(session.firstUserMessage) ?? text(session.initialUserMessage);
+  return {
+    agentId,
+    kind: agentId || text(session.agentSessionId) || text(session.agentSessionPath) ? "agent" : "terminal",
+    launchSettings: compactObject({
       alias: text(session.alias),
       commandTitle: text(session.commandTitle),
       displayId: text(session.displayId),
-      firstUserMessage: text(session.firstUserMessage),
+      firstUserMessage,
+      legacyAgentName: text(session.agentName),
       legacySessionId,
       slotIndex: typeof session.slotIndex === "number" ? session.slotIndex : undefined,
       surface: text(session.surface),
       titleSource: text(session.titleSource),
     }),
-    lifecycleState: session.isSleeping === true ? "sleeping" : "running",
-    notificationRulesJson: stringifyJson(pickNotificationRules(options.settings)),
-    projectId: options.projectId,
-    providerStateJson: stringifyJson({
+    providerState: compactObject({
       legacyProvider,
       legacyProviderSessionName: legacyProviderName,
       legacySessionId,
       lifecycleState: "unknown",
       zmxName,
     }),
-    restoredFromHistoryId: null,
-    restoredFromSessionId: null,
-    runtimeSettingsJson: stringifyJson({
+    runtimeSettings: compactObject({
+      agentCommand,
+      agentName: agentId,
       agentSessionId: text(session.agentSessionId),
       agentSessionPath: text(session.agentSessionPath),
+      copyCommand,
       delayedSendDeadlineAt: text(session.delayedSendDeadlineAt),
+      firstUserMessage,
       globalRef: createGlobalSessionRef(options.serverId, options.projectId, options.sessionId),
       lastStartedAt: text(session.lastStartedAt),
+      projectPath: options.projectPath,
       restoreActivity: text(session.restoreActivity),
+      resumeCommand,
+      resumeFallbackCommand,
+      startupText,
       terminalEngine: text(session.terminalEngine),
+      titleSource: text(session.titleSource),
     }),
-    sessionId: options.sessionId,
-    title: exactTitle(session.title, options.sessionId),
-    updatedAt: options.importedAt,
-    worktreeJson: stringifyJson(normalizeObject(legacyProject.worktree)),
     zmxName,
-  });
-  recordIdAllocation(db, "session", options.projectId, options.sessionId, options.importedAt);
+  };
 }
 
 async function rewriteSharedSidebarStateWithGxserverIds(
@@ -1904,6 +2115,181 @@ function pickSettings(settings: JsonObject, keys: readonly string[]): JsonObject
     }
   }
   return picked;
+}
+
+function mergeMissingLegacyObjectFields(current: JsonObject, patch: JsonObject): JsonObject {
+  const next = { ...current };
+  for (const [key, value] of Object.entries(patch)) {
+    if (value === undefined || hasUsefulLegacyFieldValue(next[key])) {
+      continue;
+    }
+    next[key] = value;
+  }
+  return next;
+}
+
+function hasUsefulLegacyFieldValue(value: unknown): boolean {
+  if (value === undefined || value === null) {
+    return false;
+  }
+  if (typeof value === "string") {
+    return value.trim().length > 0;
+  }
+  if (Array.isArray(value)) {
+    return value.length > 0;
+  }
+  if (isRecord(value)) {
+    return Object.keys(value).length > 0;
+  }
+  return true;
+}
+
+function inferLegacyAgentId(session: JsonObject): string | undefined {
+  for (const value of [session.agentName, session.agentId, session.agent]) {
+    const agentId = normalizeLegacyAgentAlias(text(value));
+    if (agentId) {
+      return agentId;
+    }
+  }
+  for (const value of [session.commandTitle, session.title]) {
+    const agentId = normalizeLegacyAgentAlias(text(value));
+    if (agentId) {
+      return agentId;
+    }
+  }
+  for (const command of collectLegacyCommandTextCandidates(session)) {
+    const agentId = inferLegacyAgentIdFromCommand(command);
+    if (agentId) {
+      return agentId;
+    }
+  }
+  return undefined;
+}
+
+function normalizeLegacyAgentAlias(value: string | undefined): string | undefined {
+  const slug = value
+    ?.toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9]+/gu, "-")
+    .replace(/^-|-$/gu, "");
+  if (!slug) {
+    return undefined;
+  }
+  const aliases: Record<string, string> = {
+    amp: "amp",
+    antigravity: "antigravity",
+    agy: "antigravity",
+    claude: "claude",
+    "claude-code": "claude",
+    codebuddy: "codebuddy",
+    codex: "codex",
+    "codex-cli": "codex",
+    copilot: "copilot",
+    cursor: "cursor",
+    "cursor-agent": "cursor",
+    droid: "droid",
+    gemini: "gemini",
+    grok: "grok",
+    "hermes-agent": "hermes-agent",
+    opencode: "opencode",
+    "open-code": "opencode",
+    pi: "pi",
+    qoder: "qoder",
+    rovodev: "rovodev",
+  };
+  return aliases[slug];
+}
+
+function inferLegacyAgentIdFromCommand(command: string): string | undefined {
+  const words: readonly string[] = command.toLowerCase().match(/[a-z0-9][a-z0-9._-]*/gu) ?? [];
+  const has = (value: string) => words.includes(value);
+  if (has("claude")) {
+    return "claude";
+  }
+  if (has("codex")) {
+    return "codex";
+  }
+  if (has("cursor-agent") || has("cursor")) {
+    return "cursor";
+  }
+  if (has("opencode")) {
+    return "opencode";
+  }
+  if (has("gemini")) {
+    return "gemini";
+  }
+  if (has("grok")) {
+    return "grok";
+  }
+  if (has("amp")) {
+    return "amp";
+  }
+  if (has("agy") || has("antigravity")) {
+    return "antigravity";
+  }
+  if (has("rovodev")) {
+    return "rovodev";
+  }
+  return undefined;
+}
+
+function pickLegacyAgentCommand(session: JsonObject): string | undefined {
+  const launchPlan = normalizeObject(session.agentLaunchPlan);
+  const legacyLaunchPlan = normalizeObject(session.launchPlan);
+  return (
+    text(session.agentCommand) ??
+    text(launchPlan.agentCommand) ??
+    text(legacyLaunchPlan.agentCommand) ??
+    text(launchPlan.command)
+  );
+}
+
+function pickLegacyCommandText(session: JsonObject, keys: readonly string[]): string | undefined {
+  for (const object of collectLegacyCommandObjects(session)) {
+    for (const key of keys) {
+      const value = text(object[key]);
+      if (value) {
+        return value;
+      }
+    }
+  }
+  return undefined;
+}
+
+function collectLegacyCommandTextCandidates(session: JsonObject): string[] {
+  const values: string[] = [];
+  for (const object of collectLegacyCommandObjects(session)) {
+    for (const key of [
+      "agentCommand",
+      "agentResumeCommand",
+      "command",
+      "copyCommand",
+      "displayCommand",
+      "fallbackCommand",
+      "primaryCommand",
+      "resumeCommand",
+      "resumeFallbackCommand",
+      "startupText",
+    ]) {
+      const value = text(object[key]);
+      if (value) {
+        values.push(value);
+      }
+    }
+  }
+  return values;
+}
+
+function collectLegacyCommandObjects(session: JsonObject): JsonObject[] {
+  return [
+    session,
+    normalizeObject(session.agentLaunchPlan),
+    normalizeObject(session.launchPlan),
+    normalizeObject(session.agentResumePlan),
+    normalizeObject(session.resumePlan),
+    normalizeObject(session.agentForkPlan),
+    normalizeObject(session.forkPlan),
+  ];
 }
 
 function normalizeLegacyProvider(provider: unknown, tmuxSessionName: unknown): string | undefined {

@@ -134,6 +134,7 @@ test("first-run import migrates macOS sidebar projects, active and sleeping sess
       assert.equal(live?.providerState.legacyProviderSessionName, "legacy-zmx-live");
       assert.equal(live?.providerState.zmxName, "S7k-P3a91-G8v20");
       assert.equal(live?.runtimeSettings.agentSessionId, "codex-thread-1");
+      assert.equal(live?.runtimeSettings.firstUserMessage, "Fix the sidebar");
       assert.equal(live?.launchSettings.firstUserMessage, "Fix the sidebar");
 
       const sleeping = importedSessions.find((session) => session.sessionId === "G1z99");
@@ -146,6 +147,15 @@ test("first-run import migrates macOS sidebar projects, active and sleeping sess
       const commandPane = importedSessions.find((session) => session.sessionId === "G2abc");
       assert.equal(commandPane?.launchSettings.surface, "commands");
       assert.equal(commandPane?.title, "Build pane");
+
+      const worktreeClaude = sessions.find((session) => session.projectId === "P4b22" && session.sessionId === "G3def");
+      assert.equal(worktreeClaude?.agentId, "claude");
+      assert.equal(worktreeClaude?.kind, "agent");
+      assert.equal(worktreeClaude?.runtimeSettings.firstUserMessage, "Review the worktree migration");
+      assert.equal(
+        worktreeClaude?.runtimeSettings.resumeCommand,
+        'claude --resume "9970b270-b39f-4d63-a764-fa8d88083995"',
+      );
 
       const logEntries = (await readFile(fixture.paths.logFile, "utf8"))
         .trim()
@@ -841,6 +851,51 @@ test("already-migrated repair imports legacy-shaped sessions written inside cano
   });
 });
 
+test("completed repair backfills Claude resume metadata on already imported legacy rows", async () => {
+  await withLegacyImportFixture(async (fixture) => {
+    /*
+    CDXC:GxserverMigration 2026-06-10-17:30:
+    Users can have a completed 3.6 to 4.1 migration where rows exist but Claude wake still fails because resume identity hints were not copied. A later completed-import repair should enrich the existing G row from the canonical shared sidebar snapshot without duplicating the session.
+    */
+    await runImport(fixture);
+    const db = openGxserverDatabase(fixture.paths);
+    try {
+      db.prepare(
+        `UPDATE sessions
+         SET agentId = NULL,
+             kind = 'terminal',
+             launchSettingsJson = '{}',
+             runtimeSettingsJson = '{}'
+         WHERE projectId = ? AND sessionId = ?`,
+      ).run("P4b22", "G3def");
+    } finally {
+      db.close();
+    }
+
+    const skipped = await runImport(fixture);
+
+    assert.equal(skipped.status.status, "skipped");
+    assert.equal(skipped.status.skippedReason, "alreadyCompleted");
+    const repairedDb = openGxserverDatabase(fixture.paths);
+    try {
+      const repository = new GxserverDomainRepository(repairedDb, "S7k");
+      const sessions = repository.listSessions();
+      assert.equal(sessions.filter((session) => session.sessionId === "G3def").length, 1);
+      const repaired = sessions.find((session) => session.projectId === "P4b22" && session.sessionId === "G3def");
+      assert.equal(repaired?.agentId, "claude");
+      assert.equal(repaired?.kind, "agent");
+      assert.equal(repaired?.launchSettings.firstUserMessage, "Review the worktree migration");
+      assert.equal(repaired?.runtimeSettings.firstUserMessage, "Review the worktree migration");
+      assert.equal(
+        repaired?.runtimeSettings.resumeCommand,
+        'claude --resume "9970b270-b39f-4d63-a764-fa8d88083995"',
+      );
+    } finally {
+      repairedDb.close();
+    }
+  });
+});
+
 test("completed marker rebuilds missing DB rows from canonical shared sidebar state", async () => {
   await withLegacyImportFixture(async (fixture) => {
     /*
@@ -1381,10 +1436,13 @@ function createLegacyWorktreeProjectFixture(projectId: string, worktreePath: str
             sessions: [
               {
                 agentName: "claude",
+                agentSessionPath: "/Users/example/.claude/projects/-repo-ghostex-feature/9970b270-b39f-4d63-a764-fa8d88083995.jsonl",
                 alias: "1",
                 createdAt: "2026-05-30T08:10:00.000Z",
                 displayId: "1",
+                firstUserMessage: "Review the worktree migration",
                 kind: "terminal",
+                resumeCommand: 'claude --resume "9970b270-b39f-4d63-a764-fa8d88083995"',
                 sessionId: "legacy-worktree-session",
                 sessionPersistenceName: "legacy-worktree-zmx",
                 sessionPersistenceProvider: "zmx",

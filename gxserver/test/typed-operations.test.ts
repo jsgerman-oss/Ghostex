@@ -394,6 +394,9 @@ test("Beads command construction uses resolved bd and preserves current board al
     const status = await buildBeadsCommand({ action: "status", projectPath: repo }, context);
     assert.deepEqual(status?.args, ["status"]);
 
+    const board = await buildBeadsCommand({ action: "board", projectPath: repo }, context);
+    assert.deepEqual(board?.args, ["list", "--all", "--json"]);
+
     const storageExists = await buildBeadsCommand({ action: "storageExists", projectPath: repo }, context);
     assert.equal(storageExists, undefined);
 
@@ -436,6 +439,9 @@ test("Beads command construction uses resolved bd and preserves current board al
 
     const configSet = await buildBeadsCommand({ action: "configSet", value: "backlog,test,review" }, context);
     assert.deepEqual(configSet?.args, ["config", "set", "status.custom", "backlog,test,review", "--json"]);
+
+    const renamePrefix = await buildBeadsCommand({ action: "renamePrefix", value: "ZMUX" }, context);
+    assert.deepEqual(renamePrefix?.args, ["rename-prefix", "zmux-", "--repair", "--json"]);
 
     await assert.rejects(
       () => buildBeadsCommand({ action: "update", issueId: "gxserver-15", status: "todo" as never }, context),
@@ -498,31 +504,33 @@ test("Beads storageExists inspects project storage without requiring bd", async 
   }
 });
 
-test("Beads board reads preserve normal issues.jsonl output", async () => {
+test("Beads board reads live bd list output after create", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "gxserver-beads-board-"));
   try {
     const repo = path.join(root, "repo");
-    const bin = path.join(root, "bin");
-    await mkdir(path.join(repo, ".beads"), { recursive: true });
-    await makeExecutable(path.join(bin, "bd"));
-    await writeFile(
-      path.join(repo, ".beads", "issues.jsonl"),
-      [
-        JSON.stringify({ id: "gxserver-1", status: "open", title: "First" }),
-        "",
-        "not json",
-        JSON.stringify({ id: "gxserver-2", status: "test", title: "Second" }),
-      ].join("\n"),
+    const appWebRoot = path.join(root, "app-web");
+    const gxserverRoot = path.join(appWebRoot, "gxserver");
+    const bd = path.join(appWebRoot, "bin", "bd");
+    await mkdir(repo);
+    await makeExecutable(
+      bd,
+      `#!/bin/sh
+printf '%s\\n' '{"data":[{"id":"zmux-new","status":"open","title":"Created from board"}]}'
+`,
     );
+    const context = {
+      beadsBoardLimits: { fileLimitBytes: 1024, responseLimitBytes: 1024, rowLimit: 10 },
+      cwd: repo,
+      projects: [project("P3a91", repo)],
+      toolchain: { gxserverRoot, repoRoot: path.join(root, "source-root") },
+    };
+
+    const create = await runBeadsAction({ action: "create", title: "Created from board" }, context);
+    assert.equal(create.exitCode, 0);
 
     const result = await runBeadsAction(
       { action: "board", projectPath: repo },
-      {
-        beadsBoardLimits: { fileLimitBytes: 1024, responseLimitBytes: 1024, rowLimit: 10 },
-        cwd: repo,
-        envPath: bin,
-        projects: [project("P3a91", repo)],
-      },
+      context,
     );
 
     if (!("issues" in result)) {
@@ -530,10 +538,8 @@ test("Beads board reads preserve normal issues.jsonl output", async () => {
     }
     assert.equal(result.exitCode, 0);
     assert.equal(result.stderr, "");
-    assert.deepEqual(result.issues, [
-      { id: "gxserver-1", status: "open", title: "First" },
-      { id: "gxserver-2", status: "test", title: "Second" },
-    ]);
+    assert.deepEqual(result.command?.args, ["list", "--all", "--json"]);
+    assert.deepEqual(result.issues, [{ id: "zmux-new", status: "open", title: "Created from board" }]);
     assert.equal(result.stdout, JSON.stringify(result.issues));
   } finally {
     await rm(root, { force: true, recursive: true });
@@ -544,35 +550,21 @@ test("Beads board reads reject oversized board state with typed errors", async (
   const root = await mkdtemp(path.join(os.tmpdir(), "gxserver-beads-board-limits-"));
   try {
     const repo = path.join(root, "repo");
-    const bin = path.join(root, "bin");
-    const issuesPath = path.join(repo, ".beads", "issues.jsonl");
-    await mkdir(path.join(repo, ".beads"), { recursive: true });
-    await makeExecutable(path.join(bin, "bd"));
-    const context = { cwd: repo, envPath: bin, projects: [project("P3a91", repo)] };
+    const appWebRoot = path.join(root, "app-web");
+    const gxserverRoot = path.join(appWebRoot, "gxserver");
+    const bd = path.join(appWebRoot, "bin", "bd");
+    await mkdir(repo);
+    const context = {
+      cwd: repo,
+      projects: [project("P3a91", repo)],
+      toolchain: { gxserverRoot, repoRoot: path.join(root, "source-root") },
+    };
 
-    await writeFile(issuesPath, `${JSON.stringify({ id: "gxserver-large" })}\n`);
-    await assert.rejects(
-      () =>
-        runBeadsAction(
-          { action: "board", projectPath: repo },
-          { ...context, beadsBoardLimits: { fileLimitBytes: 4, responseLimitBytes: 1024, rowLimit: 10 } },
-        ),
-      (error: unknown) => {
-        assert.equal(error instanceof GxserverTypedOperationError, true);
-        assert.equal((error as GxserverTypedOperationError).code, "badRequest");
-        assert.match((error as GxserverTypedOperationError).message, /file limit/);
-        assert.equal((error as GxserverTypedOperationError).details?.fileLimitBytes, 4);
-        return true;
-      },
-    );
-
-    await writeFile(
-      issuesPath,
-      [
-        JSON.stringify({ id: "gxserver-1" }),
-        JSON.stringify({ id: "gxserver-2" }),
-        JSON.stringify({ id: "gxserver-3" }),
-      ].join("\n"),
+    await makeExecutable(
+      bd,
+      `#!/bin/sh
+printf '%s\\n' '[{"id":"gxserver-1"},{"id":"gxserver-2"},{"id":"gxserver-3"}]'
+`,
     );
     await assert.rejects(
       () =>
@@ -589,7 +581,12 @@ test("Beads board reads reject oversized board state with typed errors", async (
       },
     );
 
-    await writeFile(issuesPath, `${JSON.stringify({ id: "gxserver-1", title: "response body is too large" })}\n`);
+    await makeExecutable(
+      bd,
+      `#!/bin/sh
+printf '%s\\n' '[{"id":"gxserver-1","title":"response body is too large"}]'
+`,
+    );
     await assert.rejects(
       () =>
         runBeadsAction(

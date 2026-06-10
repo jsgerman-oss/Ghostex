@@ -118,6 +118,94 @@ test("Cursor resume extracts exact identity from stored raw resume commands", ()
   assert.doesNotMatch(plan.startupText ?? "", /lookup chat id|Unable to find Cursor/);
 });
 
+test("Claude resume extracts exact identity from transcript path", () => {
+  const project = projectFixture();
+  const claudeSessionId = "9970b270-b39f-4d63-a764-fa8d88083995";
+  const session = sessionFixture({
+    agentId: "claude",
+    runtimeSettings: {
+      agentCommand: "claude",
+      agentSessionPath: `/Users/example/.claude/projects/-repo-ghostex/${claudeSessionId}.jsonl`,
+      titleSource: "user",
+    },
+    title: "Readable Claude title",
+  });
+
+  const plan = buildAgentResumePlan(project, session);
+
+  assert.equal(plan.primaryCommand, `claude --resume "${claudeSessionId}"`);
+  assert.equal(plan.displayCommand, plan.primaryCommand);
+  assert.equal(plan.copyCommand, `claude --resume "${claudeSessionId}"`);
+  assert.match(plan.fallbackCommand ?? "", /CLAUDE_RESUME_SESSION_ID/);
+  assert.doesNotMatch(plan.startupText ?? "", /claude --resume "Readable Claude title"/);
+});
+
+test("Claude resume with only migrated title and first prompt looks up a transcript id", () => {
+  const tempDir = mkdtempSync(path.join(os.tmpdir(), "ghostex-claude-resume-"));
+  const binDir = path.join(tempDir, "bin");
+  const homeDir = path.join(tempDir, "home");
+  const transcriptDir = path.join(homeDir, ".claude", "projects", "-repo-ghostex");
+  mkdirSync(binDir, { recursive: true });
+  mkdirSync(transcriptDir, { recursive: true });
+
+  const claudeSessionId = "9970b270-b39f-4d63-a764-fa8d88083995";
+  const title = "Migration Fix";
+  const firstPrompt = "Review the worktree migration";
+  writeFileSync(
+    path.join(transcriptDir, `${claudeSessionId}.jsonl`),
+    [
+      JSON.stringify({
+        customTitle: title,
+        cwd: "/repo/ghostex",
+        sessionId: claudeSessionId,
+        timestamp: "2026-06-10T13:00:00.000Z",
+        type: "custom-title",
+      }),
+      JSON.stringify({
+        cwd: "/repo/ghostex",
+        message: { content: [{ text: firstPrompt, type: "text" }] },
+        sessionId: claudeSessionId,
+        timestamp: "2026-06-10T13:01:00.000Z",
+        type: "user",
+      }),
+    ].join("\n") + "\n",
+    "utf8",
+  );
+  const fakeClaude = path.join(binDir, "claude");
+  writeFileSync(fakeClaude, "#!/bin/sh\nprintf '%s\\n' \"$*\"\n", "utf8");
+  chmodSync(fakeClaude, 0o755);
+
+  const project = projectFixture();
+  const session = sessionFixture({
+    agentId: "claude",
+    runtimeSettings: {
+      agentCommand: "claude",
+      firstUserMessage: firstPrompt,
+      titleSource: "user",
+    },
+    title,
+  });
+  const plan = buildAgentResumePlan(project, session);
+
+  assert.match(plan.primaryCommand ?? "", /CLAUDE_RESUME_SESSION_ID/);
+  assert.equal((plan.primaryCommand ?? "").includes(process.execPath), true);
+  assert.doesNotMatch(plan.primaryCommand ?? "", /python/i);
+  assert.equal(plan.displayCommand, 'claude --resume "Migration Fix"  # lookup Claude session id by title');
+  assert.equal(plan.copyCommand, undefined);
+  assert.doesNotMatch(plan.primaryCommand ?? "", /claude --resume "Migration Fix"/);
+
+  const output = execFileSync("/bin/sh", ["-c", (plan.startupText ?? "").trim()], {
+    cwd: tempDir,
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      HOME: homeDir,
+      PATH: `${binDir}:${process.env.PATH ?? ""}`,
+    },
+  });
+  assert.match(output, new RegExp(`--resume ${claudeSessionId}`));
+});
+
 test("Cursor placeholder titles are not used for chat-store lookup", () => {
   const project = projectFixture();
   const session = sessionFixture({

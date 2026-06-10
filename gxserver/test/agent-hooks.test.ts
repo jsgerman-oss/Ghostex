@@ -114,11 +114,11 @@ async function runOpenCodeHookInstallTest(): Promise<void> {
     assert.equal(installResult.agents[0]?.status, "installed");
     assert.equal(installResult.installedPaths.length, 2);
     const notifyHook = await readFile(path.join(homeDir, ".ghostex", "hooks", "agent-shell-notify.sh"), "utf8");
-    assert.match(notifyHook, /ghostex-gxserver-agent-notify-hook-marker v3/);
+    assert.match(notifyHook, /ghostex-gxserver-agent-notify-hook-marker v4/);
     assert.match(notifyHook, /\/api\/ingestAgentHookEvent/);
     assert.doesNotMatch(notifyHook, /INPUT="\$\(cat\)"/);
-    assert.match(notifyHook, /3<&0 2>\/dev\/null/);
-    assert.match(notifyHook, /temp_path_for/);
+    assert.match(notifyHook, /read -r -t 1 INPUT_ARG/);
+    assert.match(notifyHook, /tempPathFor/);
     const plugin = await readFile(path.join(homeDir, ".config", "opencode", "plugins", "ghostex-session.js"), "utf8");
     assert.match(plugin, /ghostex-opencode-session-plugin-marker/);
     assert.match(plugin, /return \{\s*event: async/s);
@@ -190,7 +190,7 @@ async function runOldNotifyHookUpdateTest(): Promise<void> {
     assert.ok(autoUpgradeStatus.autoUpgradedPaths?.includes(notifyHookPath));
     assert.ok(autoUpgradeStatus.autoUpgradedPaths?.includes(codexHooksPath));
     const notifyHook = await readFile(notifyHookPath, "utf8");
-    assert.match(notifyHook, /ghostex-gxserver-agent-notify-hook-marker v3/);
+    assert.match(notifyHook, /ghostex-gxserver-agent-notify-hook-marker v4/);
     assert.match(notifyHook, /\/api\/ingestAgentHookEvent/);
     const repairedConfig = JSON.parse(await readFile(codexHooksPath, "utf8")) as unknown;
     const commands = recursiveCommands(repairedConfig);
@@ -218,7 +218,7 @@ async function runOutdatedGxserverNotifyHookUpdateTest(): Promise<void> {
 
   CDXC:AgentHooks 2026-06-07-13:05:
   App updates should not leave users on broken Ghostex-owned v2 hooks. The
-  default status path now auto-upgrades that proven existing install to v3 while
+  default status path now auto-upgrades that proven existing install to the current marker while
   the opt-out status check still exposes the raw migration state for diagnostics.
   */
   const previousPath = process.env.PATH;
@@ -260,7 +260,7 @@ async function runOutdatedGxserverNotifyHookUpdateTest(): Promise<void> {
     assert.ok(repairedStatus.autoUpgradedPaths?.includes(notifyHookPath));
     assert.ok(repairedStatus.autoUpgradedPaths?.includes(codexHooksPath));
     const notifyHook = await readFile(notifyHookPath, "utf8");
-    assert.match(notifyHook, /ghostex-gxserver-agent-notify-hook-marker v3/);
+    assert.match(notifyHook, /ghostex-gxserver-agent-notify-hook-marker v4/);
     assert.doesNotMatch(notifyHook, /INPUT="\$\(cat\)"/);
   } finally {
     process.env.PATH = previousPath;
