@@ -396,14 +396,17 @@ const TITLEBAR_SPLIT_MENU_CENTER_OFFSET = -14;
  *
  * CDXC:TipsAndTricks 2026-06-05-12:39:
  * The dropdown should teach users early that the sidebar is highly customizable.
- * Keep this as the second built-in tip so it appears immediately after the command-palette pane-move hint for users who have not marked it read.
+ * Keep this as the second built-in tip so it appears immediately after the command-palette hint for users who have not marked it read.
+ *
+ * CDXC:TipsAndTricks 2026-06-10-22:15:
+ * The first tip should introduce Cmd K as the universal entry point for app actions, not only pane moves.
  */
 const TITLEBAR_TIPS: TitlebarTip[] = [
   {
-    body: 'Open actions with Cmd K, then type "move pane" to place the active terminal without dragging.',
+    body: "Search for project actions, pane splits and moves, session controls, settings shortcuts, and other Ghostex actions.",
     icon: "command",
-    id: "command-palette-pane-moves",
-    title: "Use Command Palette for pane moves",
+    id: "command-palette-all-actions",
+    title: "Press Cmd K anywhere to open the Command Palette",
   },
   {
     body: "Open Settings to customize sidebar presets, visible details, agents, actions, project tools, and workspace open targets.",
