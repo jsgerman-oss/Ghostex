@@ -2899,7 +2899,10 @@ final class TerminalWorkspaceView: NSView {
   private static let paneHeaderDragGhostMaxWidth: CGFloat = 230
   /**
    CDXC:ChromiumBrowserPanes 2026-06-09-18:13:
-   Temporarily disable the native CEF drag hover/release bridge so embedded code-server text selection can be tested without synthetic VS Code drag/drop retargeting. Keep the existing bridge code in place for quick re-enable after the selection regression is confirmed.
+   Temporarily disable the native CEF drag hover/release bridge so Chromium-pane
+   text selection can be tested without synthetic drag/drop retargeting. Keep
+   the existing bridge code in place for quick re-enable after the selection
+   regression is confirmed.
    */
   private static let isCEFNativeDragHoverBridgeEnabled = false
   private static let cefNativeDragHoverInterval: TimeInterval = 1.0 / 30.0
@@ -4843,30 +4846,25 @@ final class TerminalWorkspaceView: NSView {
       return
     }
 
-    let requestedMode = command.mode ?? projectEditorModeFromNativeEditorId(command.projectId) ?? "code"
-    guard requestedMode == "tasks" || GhostexCEFIsRuntimeAvailable() else {
+    let requestedModeCandidate = command.mode ?? projectEditorModeFromNativeEditorId(command.projectId) ?? "code"
+    let requestedMode =
+      ["code", "git", "tasks"].contains(requestedModeCandidate) ? requestedModeCandidate : "code"
+    guard requestedMode != "git" || GhostexCEFIsRuntimeAvailable() else {
       /**
-       CDXC:EditorPanes 2026-05-06-14:21
-       Project editors must embed code-server through Chromium without browser
-       chrome. If CEF is unavailable, fail visibly instead of creating a WebKit
-       substitute that would have different VS Code rendering and websocket
-       behavior.
-
-       CDXC:ProjectBoard 2026-05-23-03:16:
-       Project mode is the exception to the Chromium requirement because it is
-       now a first-party bundled board backed by WKWebView. Keep the CEF guard
-       scoped to Code and Git so Project can open even when Chromium is not
-       available.
+       CDXC:GitProjectTabs 2026-05-16-10:32:
+       Git mode still embeds external GitHub pages through Chromium/CEF so its
+       browser tabs, profile handling, and toolbar behavior remain unchanged.
+       Code and Project modes use WKWebView and do not require the CEF runtime.
        */
       sendEvent(
         .terminalError(
           sessionId: "project-editor-\(command.projectId)",
-          message: "Chromium runtime is not bundled for editor panes"))
+          message: "Chromium runtime is not bundled for Git panes"))
       sendEvent(
         .projectEditorLoadState(
           projectId: command.projectId,
           status: "error",
-          message: "Chromium runtime is not bundled for editor panes"))
+          message: "Chromium runtime is not bundled for Git panes"))
       return
     }
 
@@ -4904,6 +4902,7 @@ final class TerminalWorkspaceView: NSView {
       titleBarView = nil
     }
     let initialTab = makeProjectEditorBrowserTab(
+      mode: requestedMode,
       projectId: command.projectId,
       tabId: createProjectEditorGitTabId(),
       title: projectEditorTabTitle(for: command.url, fallback: command.title),
@@ -4939,6 +4938,7 @@ final class TerminalWorkspaceView: NSView {
   }
 
   private func makeProjectEditorBrowserTab(
+    mode: String,
     projectId: String,
     tabId: String,
     title: String,
@@ -4948,53 +4948,58 @@ final class TerminalWorkspaceView: NSView {
     showsInitialLoadingOverlay: Bool,
     reason: String
   ) -> ProjectEditorBrowserTab {
-    /**
-     CDXC:EditorPanes 2026-05-07-07:53
-     Embedded VS Code panel positions must survive app restarts without making
-     code-server boot in a fresh browser profile. The VS Code workbench stores
-     layout in browser-side origin storage, so project editor CEF views use the
-     persistent default Chromium profile; project ownership stays in the native
-     editor session and code-server folder URL, not in a separate CEF profile.
-
-     CDXC:GitProjectTabs 2026-05-16-10:32:
-     Git project tabs need stable browser state when switching tabs. Each Git
-     tab owns its own CEF view and WebPaneHostView, while the project-editor
-     session points at whichever tab is active for existing layout, focus, and
-     toolbar commands.
-     */
-    let useWebKitProjectView = projectEditorModeFromNativeEditorId(projectId) == "tasks"
+    let useWebKitProjectView = mode == "code" || mode == "tasks"
     let chromiumView: GhostexCEFBrowserView?
     let webView: WKWebView?
     let browserView: NSView
     if useWebKitProjectView {
       /**
        CDXC:ProjectBoard 2026-06-02-13:31:
-       The Project mode board is a first-party local React app and should use WKWebView, not the Chromium/CEF browser path used by Code and Git.
-       WebKit gives the board a native message handler that forwards Beads requests to gxserver typed operations while preserving the project-editor companion layout.
+       The Project mode board is a first-party local React app and should use
+       WKWebView, not the Chromium/CEF browser path used by Git.
+       WebKit gives the board a native message handler that forwards Beads
+       requests to gxserver typed operations while preserving the project-editor
+       companion layout.
+
+       CDXC:EditorPanes 2026-06-10-22:41:
+       Code mode also uses WKWebView for the embedded code-server VS Code page.
+       Keep this scoped to Code so Git project tabs continue to use their
+       existing CEF profile, toolbar, and tab behavior.
        */
       let configuration = WKWebViewConfiguration()
       configuration.preferences.javaScriptCanOpenWindowsAutomatically = false
       configuration.preferences.setValue(true, forKey: "developerExtrasEnabled")
       configuration.websiteDataStore = .default()
-      let beadsBridge = ProjectBeadsBridge { [weak self] request, webView in
-        self?.handleProjectBeadsBridgeRequest(request, webView: webView)
+      let beadsBridge: ProjectBeadsBridge?
+      let projectBoardImageBridge: ProjectBoardImageBridge?
+      if mode == "tasks" {
+        let nextBeadsBridge = ProjectBeadsBridge { [weak self] request, webView in
+          self?.handleProjectBeadsBridgeRequest(request, webView: webView)
+        }
+        let projectBoardBridge = ProjectBoardBridge { [weak self] request in
+          self?.sendEvent(.projectBoardRequest(request))
+        }
+        let nextProjectBoardImageBridge = ProjectBoardImageBridge { [weak self] request, webView in
+          self?.handleProjectBoardImageBridgeRequest(request, webView: webView)
+        }
+        configuration.userContentController.add(
+          nextBeadsBridge,
+          name: ProjectBeadsBridge.messageHandlerName)
+        configuration.userContentController.add(
+          projectBoardBridge,
+          name: ProjectBoardBridge.messageHandlerName)
+        configuration.userContentController.add(
+          nextProjectBoardImageBridge,
+          name: ProjectBoardImageBridge.messageHandlerName)
+        beadsBridge = nextBeadsBridge
+        projectBoardImageBridge = nextProjectBoardImageBridge
+      } else {
+        beadsBridge = nil
+        projectBoardImageBridge = nil
       }
-      let projectBoardBridge = ProjectBoardBridge { [weak self] request in
-        self?.sendEvent(.projectBoardRequest(request))
-      }
-      let projectBoardImageBridge = ProjectBoardImageBridge { [weak self] request, webView in
-        self?.handleProjectBoardImageBridgeRequest(request, webView: webView)
-      }
-      configuration.userContentController.add(beadsBridge, name: ProjectBeadsBridge.messageHandlerName)
-      configuration.userContentController.add(
-        projectBoardBridge,
-        name: ProjectBoardBridge.messageHandlerName)
-      configuration.userContentController.add(
-        projectBoardImageBridge,
-        name: ProjectBoardImageBridge.messageHandlerName)
       let projectWebView = WKWebView(frame: .zero, configuration: configuration)
-      beadsBridge.webView = projectWebView
-      projectBoardImageBridge.webView = projectWebView
+      beadsBridge?.webView = projectWebView
+      projectBoardImageBridge?.webView = projectWebView
       if #available(macOS 13.3, *) {
         projectWebView.isInspectable = true
       }
@@ -5152,11 +5157,10 @@ final class TerminalWorkspaceView: NSView {
     }
     /**
      CDXC:EditorPanes 2026-05-13-23:13
-     VS Code drag/drop inside the embedded CEF editor depends on ghostex's native
-     drag hover/release bridge being armed as soon as the project editor becomes
-     the visible interaction surface. Focus can happen before the next AppKit
-     layout pass, so install the CEF drag monitor directly after the Chromium
-     host is visible and ordered.
+     Chromium-backed project editor panes need ghostex's native drag
+     hover/release bridge armed as soon as they become visible. Focus can happen
+     before the next AppKit layout pass, so sync the CEF drag monitor directly
+     after the active project editor host is ordered.
     */
     syncCEFNativeDragSourceReleaseMonitor(reason: "focusProjectEditorPane")
     _ = window?.makeFirstResponder(session.chromiumView ?? session.webView ?? session.hostView)
@@ -5258,7 +5262,7 @@ final class TerminalWorkspaceView: NSView {
      Git browser chrome focus is a user-visible project-mode selection. Report
      toolbar-originated focus, including Back button clicks and address-field
      edits, to the sidebar before React sends another layout command so stale
-     Code-mode state cannot bring the Code CEF pane forward.
+     Code-mode state cannot bring the Code pane forward.
      */
     sendProjectEditorTabSelected(projectId: projectId)
   }
@@ -5376,6 +5380,7 @@ final class TerminalWorkspaceView: NSView {
       return
     }
     let tab = makeProjectEditorBrowserTab(
+      mode: session.mode,
       projectId: projectId,
       tabId: createProjectEditorGitTabId(),
       title: title ?? projectEditorTabTitle(for: url, fallback: "GitHub"),
@@ -6775,8 +6780,8 @@ final class TerminalWorkspaceView: NSView {
         if isActive {
           /*
            CDXC:ChromiumBrowserPanes 2026-05-17-10:05:
-           Switching the active session shown in the Code/Git companion pane must not temporarily expand the editor CEF host to full workspace width before the normal layout pass restores the split.
-           Use the current companion editor frame during setActiveTerminalSet relayout so Chromium sees a stable width while the companion pane retargets.
+           Switching the active session shown in the Code/Git companion pane must not temporarily expand the editor host to full workspace width before the normal layout pass restores the split.
+           Use the current companion editor frame during setActiveTerminalSet relayout so embedded web content sees a stable width while the companion pane retargets.
            */
           let companionLayout = projectEditorCompanionLayout(in: bounds)
           layoutProjectEditorPane(session, in: companionLayout?.editorFrame ?? bounds)
@@ -8438,8 +8443,8 @@ final class TerminalWorkspaceView: NSView {
     /**
      CDXC:EditorPanes 2026-05-08-13:37
      Sidebar resize must not synchronously refresh or display the hosted VS
-     Code CEF view from inside TerminalWorkspaceView.layout(). Resizing only
-     moves the host frame; WebPaneHostView.layout owns the child Chromium frame
+     Code view from inside TerminalWorkspaceView.layout(). Resizing only
+     moves the host frame; WebPaneHostView.layout owns the child web view frame
      on the normal AppKit pass. Do not mark the host as needing layout from
      this layout method, because that self-invalidates and can loop when the
      project editor is the active workspace surface.
@@ -9159,7 +9164,11 @@ final class TerminalWorkspaceView: NSView {
               message: message))
           return
         }
-        session.chromiumView?.loadURLString(url)
+        if let chromiumView = session.chromiumView {
+          chromiumView.loadURLString(url)
+        } else if let webView = session.webView, let parsedURL = URL(string: url) {
+          webView.load(URLRequest(url: parsedURL))
+        }
         session.hostView.refreshHostedWebView(reason: reason)
       }
     }
@@ -9276,22 +9285,21 @@ final class TerminalWorkspaceView: NSView {
     }
     /**
      CDXC:EditorPanes 2026-05-07-05:18
-     VS Code view movement depends on browser drag/drop retargeting for live
-     sidebar drop indicators and hold-before-release interactions. CEF Alloy
-     panes receive native mouse movement but can miss in-page `dragover`
-     retargeting, so ghostex keeps code-server free of load-time injected drag
+     Chromium-backed project pages can depend on browser drag/drop retargeting
+     for live sidebar drop indicators and hold-before-release interactions. CEF
+     Alloy panes receive native mouse movement but can miss in-page `dragover`
+     retargeting, so ghostex keeps pages free of load-time injected drag
      diagnostics and uses a scoped active-drag hover bridge only while dragging.
 
      CDXC:EditorPanes 2026-05-07-08:29
-     First editor startup should show a native loading spinner immediately while
-     the existing code-server readiness wait continues in parallel. The loader is
-     dismissed from CEF navigation state after the real editor URL finishes, so
-     it never adds startup delay or waits on a separate timer.
+     Chromium-backed editor startup should show a native loading spinner
+     immediately while any readiness wait continues in parallel. The loader is
+     dismissed from CEF navigation state after the real URL finishes, so it
+     never adds startup delay or waits on a separate timer.
 
      CDXC:EditorPanes 2026-05-15-18:53:
-     When the embedded code editor shows "reconnecting", refreshes to page not
-     found, then recovers after switching away and back, diagnostics need the
-     CEF load lifecycle and VS Code console stream tagged by project editor ID.
+     Chromium-backed project editor diagnostics need the CEF load lifecycle and
+     console stream tagged by project editor ID.
      Log those signals without adding fallback reloads or masking the failure.
      */
     NativeT3CodePaneReproLog.append("nativeWorkspace.projectEditor.chromiumCallbacksConfigured", [
@@ -10123,11 +10131,11 @@ final class TerminalWorkspaceView: NSView {
    routing can bypass the rail and make pane resize hover/drag delivery disappear.
 
    CDXC:CommandsPanel 2026-05-14-09:31:
-   The command pane remains interactive while the embedded VS Code CEF editor is
+   The command pane remains interactive while the embedded VS Code editor is
    active. Route visible command-pane and companion pane titlebar/content hits
    before yielding the rest of the workspace to the editor surface, because
    AppKit's default subview hit order can hand floating command-pane clicks to
-   Chromium even when native command chrome is visually above it.
+   embedded web content even when native command chrome is visually above it.
 
    CDXC:ProjectEditorCompanion 2026-05-15-09:01:
    Project-editor hit logs showed editor-region points falling through to
@@ -11456,25 +11464,25 @@ final class TerminalWorkspaceView: NSView {
      receives the native end.
 
      CDXC:ChromiumBrowserPanes 2026-05-07-05:33
-     CEF Alloy panes show native mouse movement during HTML drags, but VS Code's
-     composite/view drop targets do not always receive browser `dragover`
-     retargeting while the pointer moves. Bridge only the in-drag hover/drop
-     retargeting into the page; Chromium still owns the original drag source
-     and the native source-ended completion.
+     CEF Alloy panes show native mouse movement during HTML drags, but page drop
+     targets do not always receive browser `dragover` retargeting while the
+     pointer moves. Bridge only the in-drag hover/drop retargeting into the
+     page; Chromium still owns the original drag source and the native
+     source-ended completion.
 
      CDXC:ChromiumBrowserPanes 2026-05-07-06:32
      Chromium's native drag loop can suppress AppKit's normal
      `leftMouseDragged` delivery to local monitors, so one-shot dragover
      forwarding only reacts at drag start/release. Poll the current mouse
-     location in common run-loop modes during an active CEF drag so VS Code
-     drop targets keep receiving hover updates while the user holds or moves.
+     location in common run-loop modes during an active CEF drag so page drop
+     targets keep receiving hover updates while the user holds or moves.
 
      CDXC:ChromiumBrowserPanes 2026-05-07-07:22
-     VS Code drop indicators flicker when bridged hover events retarget every
-     small DOM child under the pointer or arrive faster than the workbench's
-     drop observer needs. Coalesce native hover dispatch to a stable cadence and
-     let the in-page bridge stabilize dragenter/dragleave targets while still
-     sending periodic dragover events for hold-to-drop workflows.
+     Drop indicators flicker when bridged hover events retarget every small DOM
+     child under the pointer or arrive faster than the page's drop observer
+     needs. Coalesce native hover dispatch to a stable cadence and let the
+     in-page bridge stabilize dragenter/dragleave targets while still sending
+     periodic dragover events for hold-to-drop workflows.
 
      CDXC:ChromiumBrowserPanes 2026-05-07-07:33
      A 07:31 failed editor drag had no CEF hover bridge log entries while the
@@ -14037,13 +14045,22 @@ final class TerminalWorkspaceView: NSView {
     guard let entry = projectEditorSessionEntry(for: webView) else {
       return
     }
+    let nsError = error as NSError
+    if nsError.domain == NSURLErrorDomain && nsError.code == NSURLErrorCancelled {
+      NativeT3CodePaneReproLog.append("nativeWorkspace.projectEditor.webkitNavigation.cancelled", [
+        "projectId": entry.projectId,
+        "reason": reason,
+        "url": webView.url?.absoluteString ?? NSNull(),
+      ])
+      return
+    }
     let message = error.localizedDescription
     entry.session.hostView.setInitialLoadingOverlayError(message, reason: reason)
     sendEvent(.projectEditorLoadState(projectId: entry.projectId, status: "error", message: message))
     NativeT3CodePaneReproLog.append("nativeWorkspace.projectEditor.webkitNavigation.fail", [
       "error": message,
-      "errorCode": (error as NSError).code,
-      "errorDomain": (error as NSError).domain,
+      "errorCode": nsError.code,
+      "errorDomain": nsError.domain,
       "projectId": entry.projectId,
       "reason": reason,
       "url": webView.url?.absoluteString ?? NSNull(),
@@ -24182,7 +24199,7 @@ final class WebPaneHostView: NSView, NSTextFieldDelegate {
     }
     /**
      CDXC:EditorPanes 2026-05-07-08:29
-     The VS Code startup loader is a native overlay above the embedded Chromium
+     The VS Code startup loader is a native overlay above the embedded web
      view. It is created only for project editor panes, does not participate in
      browser layout or code-server startup, and ignores hit testing so it cannot
      add interaction or startup latency.
