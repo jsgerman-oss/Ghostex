@@ -127,16 +127,18 @@ test("zehn resolves from bundled artifacts and gives build guidance when missing
   }
 });
 
-test("bd resolves from app resources before PATH and falls back to PATH for source checkouts", async () => {
+test("bd resolves from app/source resources and ignores PATH bd", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "gxserver-toolchain-bd-"));
   try {
     const appWebRoot = path.join(root, "app-web");
     const gxserverRoot = path.join(appWebRoot, "gxserver");
     const bundledBdPath = path.join(appWebRoot, "bin", "bd");
+    const sourceStagedBdPath = path.join(root, "repo", "native", "macos", "ghostexHost", "Web", "bin", "bd");
     const pathDir = path.join(root, "path-bin");
     const bdPath = path.join(pathDir, "bd");
     await mkdir(gxserverRoot, { recursive: true });
     await makeExecutable(bundledBdPath);
+    await makeExecutable(sourceStagedBdPath);
     await makeExecutable(bdPath);
 
     const available = await getBdToolStatus({
@@ -148,23 +150,41 @@ test("bd resolves from app resources before PATH and falls back to PATH for sour
     assert.equal(available.executablePath, bundledBdPath);
     assert.equal(available.source, "appResource");
 
-    const pathFallback = await getBdToolStatus({
+    await rm(bundledBdPath, { force: true });
+    const sourceStaged = await getBdToolStatus({
       envPath: pathDir,
       gxserverRoot: path.join(root, "missing-gxserver"),
+      repoRoot: path.join(root, "repo"),
       resourcesPath: path.join(root, "missing-resources"),
     });
-    assert.equal(pathFallback.availability, "available");
-    assert.equal(pathFallback.executablePath, bdPath);
-    assert.equal(pathFallback.source, "path");
+    assert.equal(sourceStaged.availability, "available");
+    assert.equal(sourceStaged.executablePath, sourceStagedBdPath);
+    assert.equal(sourceStaged.source, "appResource");
 
+    const inferredRoot = path.join(root, "inferred");
+    const inferredSourceBdPath = path.join(inferredRoot, "native", "macos", "ghostexHost", "Web", "bin", "bd");
+    await makeExecutable(inferredSourceBdPath);
+    const inferredSourceStaged = await getBdToolStatus({
+      envPath: pathDir,
+      gxserverRoot: path.join(inferredRoot, "gxserver", "dist"),
+      resourcesPath: path.join(root, "missing-resources"),
+    });
+    assert.equal(inferredSourceStaged.availability, "available");
+    assert.equal(inferredSourceStaged.executablePath, inferredSourceBdPath);
+
+    await rm(sourceStagedBdPath, { force: true });
+    await rm(inferredSourceBdPath, { force: true });
     const missing = await getBdToolStatus({
-      envPath: "",
+      envPath: pathDir,
       gxserverRoot: path.join(root, "missing-gxserver"),
+      repoRoot: path.join(root, "repo"),
       resourcesPath: path.join(root, "missing-resources"),
     });
     assert.equal(missing.availability, "missing");
-    assert.match(missing.message, /resources or PATH/);
+    assert.match(missing.message, /Bundled bd was not found/);
     assert.match(missing.guidance ?? "", /Packaged Ghostex builds include/);
+    assert.doesNotMatch(missing.message, /PATH/);
+    assert.notEqual(missing.executablePath, bdPath);
   } finally {
     await rm(root, { force: true, recursive: true });
   }

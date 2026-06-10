@@ -21,7 +21,7 @@ import type {
   GxserverWorktreeAction,
 } from "../protocol/index.js";
 import { normalizeGitWorktreeBranch, parseGitWorktreeListPorcelain } from "./git-worktrees.js";
-import { getBdToolStatus } from "./toolchain.js";
+import { getBdToolStatus, type GxserverToolchainLayoutOptions } from "./toolchain.js";
 
 export const GXSERVER_TYPED_OPERATION_TIMEOUT_MS = 120_000;
 export const GXSERVER_TYPED_OPERATION_STDOUT_LIMIT_BYTES = 4 * 1024 * 1024;
@@ -59,6 +59,7 @@ export interface GxserverTypedOperationContext {
   cwd: string;
   envPath?: string;
   projects: readonly GxserverProjectDomainState[];
+  toolchain?: GxserverToolchainLayoutOptions;
 }
 
 export interface GxserverBeadsBoardLimits {
@@ -228,7 +229,7 @@ export async function buildBeadsCommand(
   if (action === "board" || action === "storageExists") {
     return undefined;
   }
-  const bd = await requireBd(context.envPath);
+  const bd = await requireBd(context);
   /*
   CDXC:ProjectBoard 2026-06-02-13:31:
   Project board Beads reads and mutations are gxserver-owned backend operations after the native/gxserver split. Keep the full board command surface as typed allowlisted `bd` actions here so the macOS WKWebView bridge only forwards requests and no longer constructs or runs Beads subprocesses.
@@ -731,8 +732,8 @@ function resolveBeadsBoardLimits(context: GxserverTypedOperationContext): Gxserv
   };
 }
 
-async function requireBd(envPath?: string): Promise<string> {
-  const status = await getBdToolStatus({ envPath: envPath ?? process.env.PATH ?? "" });
+async function requireBd(context: GxserverTypedOperationContext): Promise<string> {
+  const status = await getBdToolStatus(context.toolchain ?? {});
   if (status.availability === "available" && status.executablePath) {
     return status.executablePath;
   }

@@ -122,7 +122,7 @@ gxserver status --json
 curl -fsS http://127.0.0.1:58744/api/health
 ```
 
-Remote/headless hosts still need system Node 22 LTS or newer. Project board features use bundled `bin/bd` by default, with PATH `bd` only as a source-checkout fallback.
+Remote/headless hosts still need system Node 22 LTS or newer. Project board features require bundled `bin/bd`; shell-installed `bd` is intentionally ignored so all Ghostex and agent workflows share the same pinned Beads binary.
 
 When installing the tarball directly instead of using the Homebrew helper, run `npm ci --omit=dev --no-audit --no-fund` in the extracted package before invoking `bin/gxserver`. Homebrew performs that production dependency install with its declared `node@22` dependency.
 

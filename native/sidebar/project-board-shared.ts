@@ -565,6 +565,9 @@ function isLegacyDataImageSource(source: string): boolean {
  *
  * CDXC:ProjectBoardComments 2026-06-05-06:55:
  * The Session footer is the saved session identity from the agent CLI that authored the comment, such as a Codex thread id or Cursor chat id, not the Ghostex pane/provider session id. Users need this id to resume the actual agent session that made the comment.
+ *
+ * CDXC:ProjectBoardBeads 2026-06-10-09:31:
+ * Start Work prompts must tell agents to use `gx bd` so bead comments and status moves run through Ghostex's bundled Beads binary instead of a shell-installed `bd` that can diverge from Project/Kanban state.
  */
 export function buildAgentWorkPrompt(ticket: BoardTicket): string {
   const beadId = ticket.id;
@@ -574,17 +577,17 @@ export function buildAgentWorkPrompt(ticket: BoardTicket): string {
     ticket.description?.trim() || "No prompt provided.",
     "",
     "After each turn where you made progress on this bead, add a bead comment summarizing what you did:",
-    `- \`bd comment ${beadId} "<summary>"\``,
+    `- \`gx bd comment ${beadId} "<summary>"\``,
     "- Focus on user-facing requirements delivered and high-level technical approach.",
     "- Do not list specific files or line numbers.",
     "- End the comment with `Agent: <agent name>` and `Session: <saved agent CLI session id>` lines so the ticket view can show the agent after the user name and the resumable agent session id at the bottom.",
     "",
     "Status workflow for this project board:",
-    `- Park for later: \`bd update ${beadId} --status backlog\``,
-    `- When you start: \`bd update ${beadId} --status in_progress\``,
-    `- When implementation is ready for test: \`bd update ${beadId} --status test\``,
-    `- When ready for review: \`bd update ${beadId} --status review\``,
-    `- When done: \`bd close ${beadId}\``,
+    `- Park for later: \`gx bd update ${beadId} --status backlog\``,
+    `- When you start: \`gx bd update ${beadId} --status in_progress\``,
+    `- When implementation is ready for test: \`gx bd update ${beadId} --status test\``,
+    `- When ready for review: \`gx bd update ${beadId} --status review\``,
+    `- When done: \`gx bd close ${beadId}\``,
   ].join("\n");
 }
 

@@ -32,6 +32,7 @@ import {
   parseVsCodePathPosition,
   readAndroidReadinessSettings,
   requestGxserverRpc,
+  resolveBundledBeadsLaunchFromRoot,
   resolveGxserverServerTarget,
   resolveGhostexTuiLaunchFromRoot,
   resolveListedSessions,
@@ -1003,7 +1004,7 @@ printf '%s\\n' "$@" > ${JSON.stringify(markerFile)}
       const skillMetadata = await readFile(path.join(targetDir, "agents", "openai.yaml"), "utf8");
 
       expect(payload).toMatchObject({
-        command: "bd --help",
+        command: "gx bd --help",
         ok: true,
         skill: "ghostex-manage-beads",
         targetDir,
@@ -1092,8 +1093,29 @@ printf '%s\\n' "$@" > ${JSON.stringify(markerFile)}
     expect(cliHelpResult.stdout).toBe(`${help}\n`);
     expect(help).toContain("gx manage-beads install-skill");
     expect(help).toContain("$ghostex-manage-beads");
+    expect(help).toContain("gx bd list/show/comments");
     expect(help).toContain("codex-thread:$CODEX_THREAD_ID");
     expect(help).toContain("Ghostex and Codex ids");
+  });
+
+  test("resolves bundled Beads from app and source-staged resources", async () => {
+    const tempDir = await mkdtemp(path.join(tmpdir(), "ghostex-bundled-bd-"));
+    try {
+      const appBd = path.join(tempDir, "app", "bin", "bd");
+      await mkdir(path.dirname(appBd), { recursive: true });
+      await writeFile(appBd, "#!/bin/sh\n");
+      await chmod(appBd, 0o755);
+      expect(resolveBundledBeadsLaunchFromRoot(path.join(tempDir, "app"))?.command).toBe(appBd);
+
+      const sourceBd = path.join(tempDir, "source", "native", "macos", "ghostexHost", "Web", "bin", "bd");
+      await mkdir(path.dirname(sourceBd), { recursive: true });
+      await writeFile(sourceBd, "#!/bin/sh\n");
+      await chmod(sourceBd, 0o755);
+      expect(resolveBundledBeadsLaunchFromRoot(path.join(tempDir, "source"))?.command).toBe(sourceBd);
+      expect(resolveBundledBeadsLaunchFromRoot(path.join(tempDir, "path-bin"))).toBeUndefined();
+    } finally {
+      await rm(tempDir, { force: true, recursive: true });
+    }
   });
 
   test("builds picker rows with intro text, project spacing, and agent indicators", () => {

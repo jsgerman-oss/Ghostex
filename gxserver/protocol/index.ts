@@ -182,7 +182,7 @@ export interface GxserverServerHealthResponse extends GxserverMinimalHealthRespo
 
 export type GxserverToolName = "zmx" | "zehn" | "bd";
 export type GxserverToolAvailability = "available" | "missing" | "notExecutable" | "unsupported";
-export type GxserverToolResolutionSource = "devSubmodule" | "appResource" | "gxserverBundle" | "path";
+export type GxserverToolResolutionSource = "devSubmodule" | "appResource" | "gxserverBundle";
 
 export interface GxserverToolCapabilityStatus {
   availability: GxserverToolAvailability;
@@ -1245,7 +1245,8 @@ export type GxserverAgentActivityEvent =
   | "resume"
   | "terminalError"
   | "terminalExited"
-  | "title";
+  | "title"
+  | "wake";
 
 export interface GxserverAgentActivityState {
   activity: "attention" | "idle" | "working";

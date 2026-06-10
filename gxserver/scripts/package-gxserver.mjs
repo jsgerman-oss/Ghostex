@@ -504,6 +504,6 @@ npm ci --omit=dev --no-audit --no-fund
 - \`bin/gxserver stop\`: stop only the gxserver control plane; zmx sessions are not killed.
 - \`bin/gxserver stop-all\`: kill gxserver-tracked zmx sessions, then stop the control plane.
 
-The package includes Ghostex's pinned zmx, zehn, and upstream Beads \`bd\` artifacts in \`bin/\`. Project board operations use the bundled \`bd\` by default and only need PATH \`bd\` in source-checkout fallback scenarios.
+The package includes Ghostex's pinned zmx, zehn, and upstream Beads \`bd\` artifacts in \`bin/\`. Project board operations require the bundled \`bd\`; shell-installed \`bd\` is intentionally ignored so Ghostex and agent workflows share one pinned Beads binary.
 `;
 }

@@ -4054,7 +4054,7 @@ function ProjectBoardNotice({ message }: { message: string }) {
   const bodyLines = isMissingBeads
     ? [
         "Packaged Ghostex includes the Beads CLI used to read and update Project tickets.",
-        "Update or rebuild Ghostex so the bundled bd is staged, or install bd on PATH for source checkouts.",
+        "Update or rebuild Ghostex so the bundled bd is staged. Source checkouts must stage the bundled bd instead of using PATH bd.",
       ]
     : isMissingProject
       ? [

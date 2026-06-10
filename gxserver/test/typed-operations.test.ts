@@ -373,11 +373,16 @@ test("Beads command construction uses resolved bd and preserves current board al
   const root = await mkdtemp(path.join(os.tmpdir(), "gxserver-beads-ops-"));
   try {
     const repo = path.join(root, "repo");
-    const bin = path.join(root, "bin");
-    const bd = path.join(bin, "bd");
+    const appWebRoot = path.join(root, "app-web");
+    const gxserverRoot = path.join(appWebRoot, "gxserver");
+    const bd = path.join(appWebRoot, "bin", "bd");
     await mkdir(repo);
     await makeExecutable(bd);
-    const context = { cwd: repo, envPath: bin, projects: [project("P3a91", repo)] };
+    const context = {
+      cwd: repo,
+      projects: [project("P3a91", repo)],
+      toolchain: { gxserverRoot, repoRoot: path.join(root, "source-root") },
+    };
 
     const comment = await buildBeadsCommand({ action: "comment", comment: "moved to test", issueId: "gxserver-15" }, context);
     assert.deepEqual(comment, {
@@ -441,11 +446,24 @@ test("Beads command construction uses resolved bd and preserves current board al
       /depType contains unsupported characters/,
     );
     await assert.rejects(
-      () => runBeadsAction({ action: "list", projectPath: repo }, { cwd: repo, envPath: "", projects: [project("P3a91", repo)] }),
+      () =>
+        runBeadsAction(
+          { action: "list", projectPath: repo },
+          {
+            cwd: repo,
+            envPath: "",
+            projects: [project("P3a91", repo)],
+            toolchain: {
+              gxserverRoot: path.join(root, "missing-gxserver"),
+              repoRoot: path.join(root, "missing-source-root"),
+              resourcesPath: path.join(root, "missing-resources"),
+            },
+          },
+        ),
       (error: unknown) => {
         assert.equal(error instanceof GxserverTypedOperationError, true);
         assert.equal((error as GxserverTypedOperationError).code, "dependencyUnavailable");
-        assert.match((error as GxserverTypedOperationError).message, /resources or PATH/);
+        assert.match((error as GxserverTypedOperationError).message, /Bundled bd was not found/);
         return true;
       },
     );

@@ -178,6 +178,8 @@ const COMMANDS = new Map([
   ["browser", browserCommand],
   ["browser-devtools-mcp", browserDevToolsMcpCommand],
   ["browser-mcp", browserDevToolsMcpCommand],
+  ["bd", beadsCommand],
+  ["beads", beadsCommand],
   ["server", serverCommand],
   ["install-browser-skill", installBrowserSkillCommand],
   ["install-browser-mcp-skill", installBrowserSkillCommand],
@@ -264,7 +266,7 @@ async function main() {
     throw new Error(`Unknown command: ${commandName}\n\n${usage()}`);
   }
   if (
-    !["agent-orchestration", "browser", "computer-use", "f", "find", "generate-title", "manage-beads", "server"].includes(commandName) &&
+    !["agent-orchestration", "bd", "beads", "browser", "computer-use", "f", "find", "generate-title", "manage-beads", "server"].includes(commandName) &&
     (args.includes("-h") || args.includes("--help"))
   ) {
     helpCommand();
@@ -556,12 +558,25 @@ async function installManageBeadsSkillCommand(args) {
    * project-board workflow and the session-association pattern for review
    * beads. Installing it through the Ghostex CLI keeps the skill version tied
    * to the app bundle instead of relying on a local checkout.
+   *
+   * CDXC:ProjectBoardBeads 2026-06-10-09:31:
+   * Agent-facing bead workflows must go through `gx bd` so installed agents use
+   * Ghostex's pinned bundled Beads binary instead of whichever shell `bd`
+   * happens to be first on PATH.
    */
   await installGhostexAgentSkill({
     args,
-    command: "bd --help",
+    command: "gx bd --help",
     envVars: ["GHOSTEX_MANAGE_BEADS_SKILL_SOURCE"],
     skillName: GHOSTEX_MANAGE_BEADS_SKILL_NAME,
+  });
+}
+
+async function beadsCommand(args) {
+  const launch = resolveBundledBeadsLaunch();
+  await runInteractiveProcess(launch.command, [...launch.args, ...args], {
+    cwd: process.cwd(),
+    env: launch.env,
   });
 }
 
@@ -3718,6 +3733,46 @@ function resolveGhostexTuiLaunch(flags = {}) {
   );
 }
 
+function resolveBundledBeadsLaunch() {
+  const cliDir = path.dirname(fileURLToPath(import.meta.url));
+  const repoRoot = path.resolve(cliDir, "..");
+  /**
+   * CDXC:ProjectBoardBeads 2026-06-10-09:31:
+   * `gx bd` is the supported agent/user shell boundary for Beads operations.
+   * Resolve only Ghostex-bundled or source-staged Beads binaries so Project/Kanban, agent prompts, and manual commands cannot split state across different shell-installed `bd` versions.
+   */
+  const roots = uniquePaths([
+    ...ghostexBundledWebResourceRoots(cliDir),
+    repoRoot,
+    process.env.GHOSTEX_SOURCE_ROOT,
+    findGhostexSourceRoot(process.cwd()),
+  ]);
+  for (const root of roots) {
+    const launch = resolveBundledBeadsLaunchFromRoot(root);
+    if (launch) {
+      return launch;
+    }
+  }
+  throw new Error(
+    "Bundled bd was not found. Rebuild or reinstall Ghostex so Web/bin/bd is staged; shell-installed bd is intentionally ignored.",
+  );
+}
+
+function resolveBundledBeadsLaunchFromRoot(root) {
+  if (!root) {
+    return undefined;
+  }
+  for (const candidate of [
+    path.join(root, "bin", "bd"),
+    path.join(root, "native", "macos", "ghostexHost", "Web", "bin", "bd"),
+  ]) {
+    if (fileExistsSync(candidate)) {
+      return { args: [], command: candidate, env: process.env };
+    }
+  }
+  return undefined;
+}
+
 function ghostexBundledWebResourceRoots(cliDir) {
   /**
    * CDXC:CliInstall 2026-06-07-13:53:
@@ -5269,6 +5324,7 @@ function usage() {
     formatHelpCommand("automation-set-enabled <automationId> <true|false> --path path", "Pause or resume an automation"),
     formatHelpCommand("automation-archive-run --run-id id --path path [--remove-worktree true]", "Archive a completed run"),
     formatHelpCommand("automation-mark-run-read --run-id id --path path", "Mark a run as read"),
+    formatHelpCommand("bd <args...>", "Run Ghostex's bundled Beads CLI for the current project"),
   ].join("\n");
 
   const inputCommands = [
@@ -5541,9 +5597,13 @@ function manageBeadsUsage() {
   /**
    * CDXC:ProjectBoardBeads 2026-06-04-03:32:
    * The bead workflow is agent-facing guidance rather than an app runtime API.
-   * Keep the CLI surface focused on installing `$ghostex-manage-beads`; the
-   * skill owns the exact `bd` commands for creating review beads, adding
+   * Keep the manage-beads surface focused on installing `$ghostex-manage-beads`; the
+   * skill owns the exact Beads commands for creating review beads, adding
    * session-association comments, and moving beads through review.
+   *
+   * CDXC:ProjectBoardBeads 2026-06-10-09:31:
+   * The skill must teach `gx bd` instead of raw `bd` so agents and users operate
+   * on the same pinned Beads binary as Project/Kanban.
    */
   return `Ghostex Manage Beads - install the agent skill for project board beads
 
@@ -5557,14 +5617,14 @@ Agent skill:
   comments, and associating a bead with the current Ghostex or Codex session.
 
 What the skill teaches:
-  Inspect existing beads with bd list/show/comments, create review beads with
+  Inspect existing beads with gx bd list/show/comments, create review beads with
   external refs such as codex-thread:$CODEX_THREAD_ID, move work to review, and
   add a session-association comment containing Ghostex and Codex ids when those
   environment variables are available.
 
 Boundary:
-  The skill teaches agents to use the existing bd CLI. Ghostex does not wrap bd
-  commands or invent a second project-board API.
+  The skill teaches agents to use gx bd, which forwards to Ghostex's bundled
+  Beads CLI. Ghostex does not invent a second project-board API.
 `;
 }
 
@@ -5652,6 +5712,7 @@ export {
   parseVsCodePathPosition,
   readAndroidReadinessSettings,
   requestGxserverRpc,
+  resolveBundledBeadsLaunchFromRoot,
   resolveGxserverServerTarget,
   resolveListedSessions,
   resolveGhostexTuiLaunchFromRoot,
