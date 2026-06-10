@@ -1781,6 +1781,114 @@ test("zmx lifecycle APIs attach existing sessions without replay and create miss
   );
 });
 
+test("wakeSession suppresses wake-time title attention and logs safe diagnostics", async () => {
+  const calls: string[] = [];
+  await withApiServer(
+    "local",
+    async ({ baseUrl, paths, token }) => {
+      await writeNativeSidebarSettings(paths.homeDir, { debuggingMode: true });
+      await delay(1_100);
+      const project = (
+        await requestJson(baseUrl, "/api/createProject", {
+          body: { params: { name: "Ghostex", path: paths.rootDir }, protocolVersion: GXSERVER_PROTOCOL_VERSION },
+          method: "POST",
+          token,
+        })
+      ).body.result.project;
+      const session = (
+        await requestJson(baseUrl, "/api/createAgentSession", {
+          body: {
+            params: {
+              agentId: "codex",
+              lifecycleState: "sleeping",
+              projectId: project.projectId,
+              providerState: { lifecycleState: "missing", provider: "zmx" },
+              runtimeSettings: {
+                agentActivity: {
+                  activity: "working",
+                  agentName: "codex",
+                  hasSeenWorking: true,
+                  isAcknowledged: false,
+                  lastChangedAt: "2026-06-10T06:50:00.000Z",
+                  workingStartedAt: "2026-06-10T06:50:00.000Z",
+                },
+                titleSource: "user",
+              },
+              title: "Sleeping private session",
+            },
+            protocolVersion: GXSERVER_PROTOCOL_VERSION,
+          },
+          method: "POST",
+          token,
+        })
+      ).body.result.session;
+
+      const beforeWakeMs = Date.now();
+      const wake = await requestJson(baseUrl, "/api/wakeSession", {
+        body: {
+          params: { projectId: project.projectId, sessionId: session.sessionId, startupText: "" },
+          protocolVersion: GXSERVER_PROTOCOL_VERSION,
+        },
+        method: "POST",
+        token,
+      });
+      assert.equal(wake.status, 200);
+      assert.equal(wake.body.result.session.lifecycleState, "running");
+      assert.equal(wake.body.result.session.runtimeSettings.agentActivity.activity, "idle");
+      assert.equal(wake.body.result.session.runtimeSettings.agentActivity.hasSeenWorking, false);
+      assert.equal(wake.body.result.session.runtimeSettings.agentActivity.isAcknowledged, true);
+      const suppressedUntil = Date.parse(wake.body.result.session.runtimeSettings.agentActivity.suppressedUntil);
+      assert.equal(Number.isFinite(suppressedUntil), true);
+      assert.ok(suppressedUntil - beforeWakeMs > 10_000);
+
+      const title = await requestJson(baseUrl, "/api/ingestTerminalTitleEvent", {
+        body: {
+          params: {
+            agentName: "codex",
+            projectId: project.projectId,
+            rawTitle: "[ ! ] Action Required /Users/person/private?token=secret https://example.test/path?token=secret",
+            sessionId: session.sessionId,
+            sessionPersistenceProvider: "zmx",
+          },
+          protocolVersion: GXSERVER_PROTOCOL_VERSION,
+        },
+        method: "POST",
+        token,
+      });
+      assert.equal(title.status, 200);
+      assert.equal(title.body.result.activity.activity, "idle");
+      assert.equal(title.body.result.enteredAttention, false);
+      assert.equal(title.body.result.session.runtimeSettings.agentActivity.activity, "idle");
+
+      const { entry: wakeLog } = await waitForLogEvent(
+        paths.logFile,
+        "sessionActivity.wakeSuppressionStarted",
+        1_000,
+      );
+      assert.equal(wakeLog.level, "info");
+      assert.equal(wakeLog.details.changed, true);
+      assert.equal(wakeLog.details.previousActivity, "working");
+      assert.equal(wakeLog.details.previousHadSuppression, false);
+      assert.equal(wakeLog.details.provider, "zmx");
+      assert.equal(typeof wakeLog.details.suppressedUntil, "string");
+      assert.equal(typeof wakeLog.details.suppressionMs, "number");
+
+      const { entry: titleLog, text: logs } = await waitForLogEvent(
+        paths.logFile,
+        "sessionTitle.terminalTitleEvent",
+        1_000,
+      );
+      assert.equal(titleLog.details.activitySuppressedByWindow, true);
+      assert.equal(typeof titleLog.details.activitySuppressionRemainingMs, "number");
+      assert.equal(titleLog.details.statusUpdateStored, false);
+      assert.doesNotMatch(logs, /Sleeping private session|Action Required|\/Users\/person|example\.test|token=secret/u);
+    },
+    {
+      zmxLifecycle: fakeZmxLifecycle(calls, () => 1),
+    },
+  );
+});
+
 test("zmx lifecycle API starts missing providers through detached zmx run without replaying existing sessions", async () => {
   const calls: string[] = [];
   let probeExitCode = 1;

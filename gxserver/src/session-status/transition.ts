@@ -22,7 +22,11 @@ export function applyAgentActivityTransition(input: GxserverAgentActivityInput):
   const previous = normalizeAgentActivityState(input.previous, { activity: "idle" });
   const previousActivity = previous.activity;
   const hasExplicitActivity = input.activity !== undefined;
-  if (input.event === "launch" || input.event === "resume" || input.event === "agentDetected") {
+  /*
+  CDXC:SessionStatus 2026-06-10-11:27:
+  Waking a sleeping zmx session can replay the settled terminal title before the resumed terminal has emitted fresh agent activity. Treat wake like launch/resume so stale title-derived done status cannot enter attention or play completion sounds during the initial activity suppression window.
+  */
+  if (input.event === "launch" || input.event === "resume" || input.event === "agentDetected" || input.event === "wake") {
     return {
       activity: "idle",
       agentName: normalizeStatusAgentName(input.agentId),
@@ -269,6 +273,7 @@ export function normalizeActivity(value: unknown): GxserverAgentActivityState["a
 export function normalizeActivityEvent(value: unknown): GxserverAgentActivityEvent | undefined {
   return value === "launch" ||
     value === "resume" ||
+    value === "wake" ||
     value === "agentDetected" ||
     value === "title" ||
     value === "bell" ||

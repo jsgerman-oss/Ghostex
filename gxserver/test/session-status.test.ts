@@ -47,6 +47,40 @@ test("explicit hook activity bypasses launch suppression and plain title downgra
   assert.equal(attention.activity, "attention");
 });
 
+test("wake suppression ignores title-derived attention from a resumed sleeping session", () => {
+  const wake = applyAgentActivityTransition({
+    agentId: "codex",
+    event: "wake",
+    nowMs: Date.parse("2026-06-10T07:27:00.000Z"),
+    previous: {
+      activity: "working",
+      agentName: "codex",
+      hasSeenWorking: true,
+      isAcknowledged: false,
+      lastChangedAt: "2026-06-10T07:20:00.000Z",
+      workingStartedAt: "2026-06-10T07:20:00.000Z",
+    },
+  });
+
+  assert.equal(wake.activity, "idle");
+  assert.equal(wake.hasSeenWorking, false);
+  assert.equal(wake.isAcknowledged, true);
+  assert.equal(wake.suppressedUntil, "2026-06-10T07:27:12.000Z");
+
+  const wakeTitle = applyAgentActivityTransition({
+    agentId: "codex",
+    event: "title",
+    nowMs: Date.parse("2026-06-10T07:27:05.000Z"),
+    previous: wake,
+    title: "[ ! ] Action Required",
+  });
+
+  assert.equal(wakeTitle.activity, "idle");
+  assert.equal(wakeTitle.hasSeenWorking, false);
+  assert.equal(wakeTitle.isAcknowledged, true);
+  assert.equal(wakeTitle.suppressedUntil, "2026-06-10T07:27:12.000Z");
+});
+
 test("same-title Codex spinner stop clears explicit hook working", () => {
   const titleWorking = applyAgentActivityTransition({
     agentId: "codex",

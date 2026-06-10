@@ -1433,13 +1433,21 @@ async function dispatchDomainStateEndpoint(
             })
           : undefined;
       const presentedSession = presentation?.session ?? titledSession;
+      const previousActivityState = normalizeAgentActivityState(presentedSession.runtimeSettings.agentActivity, { activity: "idle" });
+      const titleActivityNowMs = Date.now();
+      const previousSuppressedUntilMs = previousActivityState.suppressedUntil
+        ? Date.parse(previousActivityState.suppressedUntil)
+        : Number.NaN;
       const statusUpdate = updateSessionActivitySettings(presentedSession, {
         agentName: titleEvent.agentName,
         event: "title",
+        nowMs: titleActivityNowMs,
         projectId: lifecycle.projectId,
         sessionId: lifecycle.sessionId,
         title: titleEvent.rawTitle,
       });
+      const activitySuppressedByWindow =
+        Number.isFinite(previousSuppressedUntilMs) && titleActivityNowMs < previousSuppressedUntilMs;
       /*
       CDXC:GxserverSessionTitles 2026-06-06-07:09:
       zmx title streams can produce many repeated spinner frames. Preserve title-derived working detection by storing real activity-window changes, but do not rewrite the session row, force metadata checks, or broadcast sidebar presentation deltas when a terminal-title event leaves both stored status and projected session chrome unchanged.
@@ -1506,6 +1514,11 @@ async function dispatchDomainStateEndpoint(
           agentSessionIdCaptured: decision.agentSessionId !== undefined,
           agentSessionIdCapturedHash: hashLogIdentity(decision.agentSessionId),
           agentSessionIdUpdateSource: decision.agentSessionId !== undefined ? "terminal-title" : undefined,
+          activitySuppressedByWindow,
+          activitySuppressedUntil: previousActivityState.suppressedUntil,
+          activitySuppressionRemainingMs: activitySuppressedByWindow
+            ? Math.max(0, previousSuppressedUntilMs - titleActivityNowMs)
+            : undefined,
           changed: response.changed,
           decisionChanged: decision.changed,
           decisionReason: decision.reason,
@@ -2675,7 +2688,7 @@ async function dispatchZmxLifecycleEndpoint(
         requestId,
         agentSettings,
       );
-      const session =
+      const lifecycleSession =
         endpointPath === "/api/wakeSession" && !attach.restoreBlocked
           ? repository.updateSession({
               lifecycleState: "running",
@@ -2684,6 +2697,10 @@ async function dispatchZmxLifecycleEndpoint(
               sessionId: attach.session.sessionId,
             })
           : attach.session;
+      const session =
+        endpointPath === "/api/wakeSession" && !attach.restoreBlocked
+          ? applyWakeSessionActivitySuppression(runtime, repository, lifecycleSession, requestId)
+          : lifecycleSession;
       const normalizedAttach: GxserverAttachSessionMetadataResult =
         session === attach.session ? attach : { ...attach, session };
       observeZmxTitleForSession(runtime, normalizedAttach.session, endpointPath === "/api/wakeSession" ? "wake-session" : "attach-session-metadata");
@@ -2757,6 +2774,52 @@ async function dispatchZmxLifecycleEndpoint(
     default:
       throw new GxserverDomainStateError("notFound", `${endpointPath} is not a gxserver zmx lifecycle endpoint.`);
   }
+}
+
+function applyWakeSessionActivitySuppression(
+  runtime: GxserverApiRuntime,
+  repository: GxserverDomainRepository,
+  session: GxserverSessionDomainState,
+  requestId: string,
+): GxserverSessionDomainState {
+  const previous = normalizeAgentActivityState(session.runtimeSettings.agentActivity, { activity: "idle" });
+  const update = updateSessionActivitySettings(session, {
+    event: "wake",
+    projectId: session.projectId,
+    sessionId: session.sessionId,
+  });
+  const changed = shouldPersistSessionStatusUpdate(session, update);
+  const suppressedUntilMs = update.activity.suppressedUntil ? Date.parse(update.activity.suppressedUntil) : Number.NaN;
+  const nowMs = update.activity.lastChangedAt ? Date.parse(update.activity.lastChangedAt) : Date.now();
+  const updatedSession = changed
+    ? repository.updateSession({
+        lastActiveAt: update.lastActiveAt,
+        projectId: session.projectId,
+        runtimeSettings: update.runtimeSettings,
+        sessionId: session.sessionId,
+      })
+    : session;
+  /*
+  CDXC:GxserverZmxLifecycle 2026-06-10-11:27:
+  Wake must leave an auditable server-side breadcrumb before the zmx title observer starts. Log only IDs, booleans, enum states, and suppression timing so support can prove stale wake-time done status was suppressed without persisting titles, commands, paths, prompts, or terminal content.
+  */
+  void runtime.logger.log({
+    details: {
+      changed,
+      previousActivity: update.previousActivity,
+      previousHadSuppression: previous.suppressedUntil !== undefined,
+      provider: "zmx",
+      suppressedUntil: update.activity.suppressedUntil,
+      suppressionMs: Number.isFinite(suppressedUntilMs) ? Math.max(0, suppressedUntilMs - nowMs) : undefined,
+    },
+    event: "sessionActivity.wakeSuppressionStarted",
+    level: "info",
+    projectId: session.projectId,
+    requestId,
+    serverId: runtime.metadata.serverId,
+    sessionId: session.sessionId,
+  });
+  return updatedSession;
 }
 
 async function dispatchSessionTransitionEndpoint(
