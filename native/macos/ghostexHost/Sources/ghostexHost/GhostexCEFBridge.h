@@ -51,12 +51,16 @@ int GhostexCEFRemoteDebuggingPort(void);
 @property(nonatomic, readonly) BOOL canGoBack;
 @property(nonatomic, readonly) BOOL canGoForward;
 @property(nonatomic, readonly) BOOL isLoading;
+@property(nonatomic, readonly) double zoomLevel;
 
 - (void)loadURLString:(NSString*)urlString;
 - (void)goBack;
 - (void)goForward;
 - (void)reload;
 - (void)stopLoading;
+- (void)zoomIn;
+- (void)zoomOut;
+- (void)resetZoom;
 - (void)executeJavaScript:(NSString*)javaScript;
 - (void)emitToolbarActionDiagnosticsWithAction:(NSString*)action
                                          phase:(NSString*)phase NS_SWIFT_NAME(emitToolbarActionDiagnostics(action:phase:));

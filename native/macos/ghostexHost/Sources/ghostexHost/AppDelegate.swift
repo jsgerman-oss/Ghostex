@@ -8741,6 +8741,13 @@ final class ghostexRootView: NSView {
       closeAppModalHost(reason: "keyboardEscape")
       return true
     }
+    if workspaceView.handleFocusedChromiumZoomShortcut(event) {
+      /**
+       CDXC:ChromiumBrowserPanes 2026-06-10-15:55:
+       CEF panes need Chrome-style Cmd+=, Cmd+-, and Cmd+0 zoom before AppKit's generic hotkey path or embedded Chromium can consume those key equivalents. Keep this rooted in the workspace so only the focused Chromium pane receives the command.
+       */
+      return true
+    }
     let hotkeyText = Self.hotkeyText(for: event)
     if Self.isSessionNavigationHotkeyText(hotkeyText) {
       logNativeHotkeyNavigationRepro(

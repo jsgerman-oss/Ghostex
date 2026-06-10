@@ -2753,6 +2753,12 @@ final class TerminalWorkspaceView: NSView {
     case projectEditorCompanion
   }
 
+  private enum ChromiumZoomShortcut {
+    case zoomIn
+    case zoomOut
+    case reset
+  }
+
   private struct PaneHeaderDrag {
     var isDragging: Bool
     var lastLoggedMoveAt: TimeInterval
@@ -6786,6 +6792,13 @@ final class TerminalWorkspaceView: NSView {
       scheduleDeferredWebPaneLayout(sessionId: command.focusedSessionId, reason: "setActiveTerminalSet")
     }
     updateAllTerminalBorders()
+    let responderSessionIdBeforePassiveRestore = currentResponderSessionId()
+    let didRestorePassiveLayoutFirstResponder =
+      restorePassiveLayoutTerminalFirstResponderIfNeeded(
+        previousResponderSessionId: passiveResponderSessionId,
+        responderSessionIdAfterLayout: responderSessionIdBeforePassiveRestore,
+        shouldRelayout: shouldRelayout,
+        commandHadFocusRequest: command.focusRequestId != nil)
     let responderSessionIdAfterBorderApply = currentResponderSessionId()
     let focusedSurfaceSessionIdsAfterActiveSet = focusedSurfaceSessionIds()
     if command.focusRequestId == nil,
@@ -6821,7 +6834,9 @@ final class TerminalWorkspaceView: NSView {
           "paneOwnerSelectionApplied": didApplyPaneOwnerSelection,
           "paneOwnerSelectionChanged": command.paneOwnerSelectionChanged == true,
           "previousFocusedSessionId": nullableString(previousFocusedSessionId),
+          "responderSessionIdBeforePassiveRestore": nullableString(responderSessionIdBeforePassiveRestore),
           "responderSessionIdAfterBorderApply": nullableString(responderSessionIdAfterBorderApply),
+          "restoredPassiveLayoutFirstResponder": didRestorePassiveLayoutFirstResponder,
         ])
     }
     TerminalFocusDebugLog.append(
@@ -6840,6 +6855,7 @@ final class TerminalWorkspaceView: NSView {
         "poppedOutSessionIds": Array(poppedOutSessionIds).sorted(),
         "responderAfterLayout": responderSnapshot(),
         "responderBefore": responderBefore,
+        "restoredPassiveLayoutFirstResponder": didRestorePassiveLayoutFirstResponder,
         "visibleSessionIds": orderedVisibleSessionIds(),
       ])
     if shouldRelayout || previousActiveProjectEditorId != activeProjectEditorId || webPaneSessions[command.focusedSessionId ?? ""] != nil {
@@ -15223,6 +15239,50 @@ final class TerminalWorkspaceView: NSView {
   }
 
   @discardableResult
+  private func restorePassiveLayoutTerminalFirstResponderIfNeeded(
+    previousResponderSessionId: String?,
+    responderSessionIdAfterLayout: String?,
+    shouldRelayout: Bool,
+    commandHadFocusRequest: Bool
+  ) -> Bool {
+    /*
+     CDXC:NativeTerminalFocus 2026-06-10-17:52:
+     Passive setActiveTerminalSet relayouts must preserve the terminal AppKit first responder the user was already typing into. When removing/sleeping a neighboring pane makes AppKit drop first responder to the window shell, restore only that exact pre-layout terminal after validating it is still the selected visible target.
+     */
+    guard shouldRelayout,
+      !commandHadFocusRequest,
+      let previousResponderSessionId,
+      sessions[previousResponderSessionId] != nil,
+      responderSessionIdAfterLayout == nil,
+      passiveLayoutDroppedFirstResponderToWorkspaceShell()
+    else {
+      return false
+    }
+    let didRestore = reinforceWorkspaceFocus(
+      sessionId: previousResponderSessionId,
+      reason: "setActiveTerminalSet.passiveLayoutFirstResponderDropped",
+      logEventPrefix: "nativeFocusTrace.passiveLayoutFirstResponderRestore")
+    if didRestore {
+      rememberTerminalFirstResponderSessionId(previousResponderSessionId)
+      updateAllTerminalBorders()
+    }
+    return didRestore
+  }
+
+  private func passiveLayoutDroppedFirstResponderToWorkspaceShell() -> Bool {
+    guard let responder = window?.firstResponder else {
+      return true
+    }
+    if let currentWindow = window, responder === currentWindow {
+      return true
+    }
+    guard let responderView = responder as? NSView else {
+      return false
+    }
+    return responderView === self
+  }
+
+  @discardableResult
   func reinforceSidebarWorkspaceFocus(sessionId: String, reason: String) -> Bool {
     reinforceWorkspaceFocus(
       sessionId: sessionId,
@@ -15535,6 +15595,107 @@ final class TerminalWorkspaceView: NSView {
       return nil
     }
     return sessionId(containing: responder)
+  }
+
+  @discardableResult
+  func handleFocusedChromiumZoomShortcut(_ event: NSEvent) -> Bool {
+    guard event.type == .keyDown,
+      let shortcut = Self.chromiumZoomShortcut(for: event),
+      let target = focusedChromiumZoomTarget()
+    else {
+      return false
+    }
+    /*
+     CDXC:ChromiumBrowserPanes 2026-06-10-15:55:
+     Cmd+=, Cmd+-, and Cmd+0 should behave like Chrome for the currently focused embedded Chromium pane only. Resolve focus from the live AppKit responder first so side-by-side CEF panes do not share one app-wide zoom command.
+     */
+    switch shortcut {
+    case .zoomIn:
+      target.chromiumView.zoomIn()
+    case .zoomOut:
+      target.chromiumView.zoomOut()
+    case .reset:
+      target.chromiumView.resetZoom()
+    }
+    target.hostView?.refreshPageZoomState(reason: "keyboardShortcut")
+    DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) { [weak targetHostView = target.hostView] in
+      targetHostView?.refreshPageZoomState(reason: "keyboardShortcutDelayed")
+    }
+    return true
+  }
+
+  private static func chromiumZoomShortcut(for event: NSEvent) -> ChromiumZoomShortcut? {
+    let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+    guard flags.contains(.command),
+      flags.isDisjoint(with: [.control, .option])
+    else {
+      return nil
+    }
+    switch event.keyCode {
+    case 24:
+      return .zoomIn
+    case 27:
+      return .zoomOut
+    case 29 where !flags.contains(.shift):
+      return .reset
+    default:
+      return nil
+    }
+  }
+
+  private func focusedChromiumZoomTarget() -> (chromiumView: GhostexCEFBrowserView, hostView: WebPaneHostView?)? {
+    if let responderView = window?.firstResponder as? NSView {
+      guard responderView === self || responderView.isDescendant(of: self) else {
+        return nil
+      }
+      if let chromiumView = chromiumBrowserView(containing: responderView) {
+        return (chromiumView, hostView(for: chromiumView))
+      }
+    }
+    if let responderSessionId = currentResponderSessionId() {
+      if let session = webPaneSessions[responderSessionId], let chromiumView = session.chromiumView {
+        return (chromiumView, session.hostView)
+      }
+      return nil
+    }
+    let candidateSessionIds = [
+      focusedSessionId,
+    ].compactMap { $0 }
+    for sessionId in candidateSessionIds {
+      if let session = webPaneSessions[sessionId], let chromiumView = session.chromiumView {
+        return (chromiumView, session.hostView)
+      }
+    }
+    if let activeProjectEditorId,
+      let session = projectEditorPaneSessions[activeProjectEditorId],
+      let chromiumView = session.chromiumView
+    {
+      return (chromiumView, session.hostView)
+    }
+    return nil
+  }
+
+  private func chromiumBrowserView(containing responderView: NSView) -> GhostexCEFBrowserView? {
+    var currentView: NSView? = responderView
+    while let view = currentView {
+      if let chromiumView = view as? GhostexCEFBrowserView {
+        return chromiumView
+      }
+      currentView = view.superview
+    }
+    return nil
+  }
+
+  private func hostView(for chromiumView: GhostexCEFBrowserView) -> WebPaneHostView? {
+    for session in webPaneSessions.values where session.chromiumView.map({ $0 === chromiumView }) == true {
+      return session.hostView
+    }
+    for (projectId, _) in projectEditorPaneSessions {
+      if let hostView = projectEditorHostView(projectId: projectId, chromiumView: chromiumView) {
+        return hostView
+      }
+    }
+    return nil
   }
 
   func passiveSidebarReturnFocusTerminalSessionId() -> String? {
@@ -23714,6 +23875,11 @@ final class WebPaneHostView: NSView, NSTextFieldDelegate {
   )
   private let securityIcon = NSImageView(frame: .zero)
   private let addressField = NSTextField(frame: .zero)
+  private let zoomButton = WebPaneHostView.makeToolbarButton(
+    systemSymbolName: "magnifyingglass",
+    fallbackTitle: "Z",
+    tooltip: "Reset Page Zoom"
+  )
   private let devToolsButton = WebPaneHostView.makeToolbarButton(
     systemSymbolName: "wrench.and.screwdriver",
     fallbackTitle: "D",
@@ -24114,11 +24280,13 @@ final class WebPaneHostView: NSView, NSTextFieldDelegate {
     toolbarView.wantsLayer = true
     toolbarView.layer?.backgroundColor = NSColor.black.cgColor
 
-    [backButton, forwardButton, reloadButton, reactGrabButton, profileButton, appearanceButton, devToolsButton].forEach {
+    [backButton, forwardButton, reloadButton, zoomButton, reactGrabButton, profileButton, appearanceButton, devToolsButton].forEach {
       button in
       button.target = self
       toolbarView.addSubview(button)
     }
+    zoomButton.action = #selector(resetPageZoom)
+    zoomButton.isHidden = true
     backButton.action = #selector(goBack)
     forwardButton.action = #selector(goForward)
     reloadButton.action = #selector(reloadPage)
@@ -24195,7 +24363,7 @@ final class WebPaneHostView: NSView, NSTextFieldDelegate {
      Import remains a profile-menu action instead of a fifth always-visible
      toolbar button so the pane chrome does not drift from the expected layout.
      */
-    let rightButtons = [reactGrabButton, profileButton, appearanceButton, devToolsButton]
+    let rightButtons = [zoomButton, reactGrabButton, profileButton, appearanceButton, devToolsButton].filter { !$0.isHidden }
     var rightX = toolbarView.bounds.width - Self.toolbarHorizontalPadding
     for button in rightButtons.reversed() {
       rightX -= Self.toolbarButtonSize.width
@@ -24230,6 +24398,7 @@ final class WebPaneHostView: NSView, NSTextFieldDelegate {
     backButton.isEnabled = canGoBack()
     forwardButton.isEnabled = canGoForward()
     reloadButton.toolTip = isPageLoading() ? "Stop Loading" : "Reload"
+    updatePageZoomButton()
     let lockSymbol = URL(string: currentURLString() ?? "")?.scheme == "https" ? "lock.fill" : "globe"
     securityIcon.image = NSImage(systemSymbolName: lockSymbol, accessibilityDescription: nil)
     if !isEditingAddress {
@@ -24263,6 +24432,40 @@ final class WebPaneHostView: NSView, NSTextFieldDelegate {
 
   private func isPageLoading() -> Bool {
     chromiumView?.isLoading ?? webView?.isLoading ?? false
+  }
+
+  private func isPageZoomed() -> Bool {
+    guard let chromiumView else {
+      return false
+    }
+    return abs(chromiumView.zoomLevel) > 0.001
+  }
+
+  private func zoomPercentText() -> String {
+    guard let chromiumView else {
+      return "100%"
+    }
+    let percent = Int(round(pow(1.2, chromiumView.zoomLevel) * 100))
+    return "\(percent)%"
+  }
+
+  private func updatePageZoomButton() {
+    /**
+     CDXC:ChromiumBrowserPanes 2026-06-10-15:59:
+     Zoomed CEF pages need visible browser chrome feedback without adding a custom zoom persistence store. Show a compact reset-only toolbar icon when Chromium reports non-default zoom, and let clicking it restore the focused pane through CEF's browser zoom command.
+     */
+    let shouldShowZoomButton = isPageZoomed()
+    if zoomButton.isHidden == shouldShowZoomButton {
+      zoomButton.isHidden = !shouldShowZoomButton
+      needsLayout = true
+    }
+    zoomButton.toolTip = shouldShowZoomButton
+      ? "Reset Page Zoom (\(zoomPercentText()))"
+      : "Reset Page Zoom"
+  }
+
+  func refreshPageZoomState(reason: String) {
+    updatePageZoomButton()
   }
 
   private static func browserPaneNavigationRequest(url: URL) -> URLRequest {
@@ -24368,6 +24571,21 @@ final class WebPaneHostView: NSView, NSTextFieldDelegate {
     } else {
       webView?.load(Self.browserPaneNavigationRequest(url: url))
     }
+  }
+
+  @objc private func resetPageZoom() {
+    logBrowserToolbarActionDiagnostics(action: "resetZoom", phase: "before", details: [
+      "isZoomed": isPageZoomed(),
+      "windowNumber": window?.windowNumber ?? NSNull(),
+      "zoomLevel": chromiumView?.zoomLevel ?? 0,
+    ])
+    onFocus?()
+    chromiumView?.resetZoom()
+    updateBrowserToolbarState()
+    DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) { [weak self] in
+      self?.updateBrowserToolbarState()
+    }
+    logBrowserToolbarActionDiagnostics(action: "resetZoom", phase: "after")
   }
 
   @objc private func openDevTools() {
@@ -24496,6 +24714,9 @@ final class WebPaneHostView: NSView, NSTextFieldDelegate {
     if addressField.frame.contains(point) {
       return "addressField"
     }
+    if !zoomButton.isHidden, zoomButton.frame.contains(point) {
+      return "zoomButton"
+    }
     if reactGrabButton.frame.contains(point) {
       return "feedbackToolButton"
     }
@@ -24535,6 +24756,9 @@ final class WebPaneHostView: NSView, NSTextFieldDelegate {
     }
     if addressField.frame.contains(point) {
       return addressField
+    }
+    if !zoomButton.isHidden, zoomButton.frame.contains(point) {
+      return zoomButton
     }
     if reactGrabButton.frame.contains(point) {
       return reactGrabButton

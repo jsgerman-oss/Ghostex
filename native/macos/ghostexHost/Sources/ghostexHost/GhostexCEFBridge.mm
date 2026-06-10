@@ -1477,6 +1477,10 @@ static void GhostexCEFGrantTrustedClipboardContentSetting(CefRefPtr<CefRequestCo
   return isLoading_;
 }
 
+- (double)zoomLevel {
+  return browser_ ? browser_->GetHost()->GetZoomLevel() : 0.0;
+}
+
 - (void)createBrowserIfNeeded {
   if (didCreateBrowser_ || !g_cefInitialized) {
     return;
@@ -1568,6 +1572,31 @@ static void GhostexCEFGrantTrustedClipboardContentSetting(CefRefPtr<CefRequestCo
   if (browser_) {
     browser_->StopLoad();
   }
+}
+
+- (void)zoomIn {
+  if (!browser_) {
+    return;
+  }
+  /*
+   CDXC:ChromiumBrowserPanes 2026-06-10-15:47:
+   Browser zoom shortcuts must use Chromium's own focused-browser zoom command instead of CSS or JavaScript scaling. This keeps Cmd+=, Cmd+-, and Cmd+0 aligned with Chrome behavior while leaving any same-site persistence to CEF's profile storage.
+   */
+  browser_->GetHost()->Zoom(CEF_ZOOM_COMMAND_IN);
+}
+
+- (void)zoomOut {
+  if (!browser_) {
+    return;
+  }
+  browser_->GetHost()->Zoom(CEF_ZOOM_COMMAND_OUT);
+}
+
+- (void)resetZoom {
+  if (!browser_) {
+    return;
+  }
+  browser_->GetHost()->Zoom(CEF_ZOOM_COMMAND_RESET);
 }
 
 - (void)executeJavaScript:(NSString*)javaScript {
