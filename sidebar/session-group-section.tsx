@@ -4,6 +4,7 @@ import {
   IconChevronDown,
   IconChevronLeft,
   IconChevronRight,
+  IconChevronUp,
   IconCopy,
   IconFolder,
   IconFolderOpen,
@@ -50,7 +51,10 @@ import {
 } from "../shared/session-grid-contract";
 import type { SidebarProjectDiffStats } from "../shared/project-diff-stats";
 import type { SidebarAgentButton } from "../shared/sidebar-agents";
-import { DEFAULT_ghostex_SETTINGS } from "../shared/ghostex-settings";
+import {
+  DEFAULT_ghostex_SETTINGS,
+  clampProjectSessionListCollapsedCount,
+} from "../shared/ghostex-settings";
 import { ConfirmationModal } from "./confirmation-modal";
 import {
   createGroupDropData,
@@ -70,7 +74,6 @@ import type { WebviewApi } from "./webview-api";
 import { openAppModal } from "./app-modal-host-bridge";
 import {
   PROJECT_SESSION_LIST_COLLAPSED_CHANGED_EVENT,
-  PROJECT_SESSION_LIST_COLLAPSED_COUNT,
   getVisibleProjectSessionIds,
   readProjectSessionListCollapsedState,
   writeProjectSessionListCollapsedState,
@@ -879,6 +882,13 @@ export function SessionGroupSection({
       state.hud.settings?.showProjectEditorDiffFileCount ??
       DEFAULT_ghostex_SETTINGS.showProjectEditorDiffFileCount,
   );
+  const projectSessionListCollapsedCount = useSidebarStore(
+    (state) =>
+      clampProjectSessionListCollapsedCount(
+        state.hud.settings?.projectSessionListCollapsedCount ??
+          DEFAULT_ghostex_SETTINGS.projectSessionListCollapsedCount,
+      ),
+  );
   const postGroupDebugLog = useEffectEvent((event: string, details: Record<string, unknown>) => {
     if (!debuggingMode) {
       return;
@@ -954,6 +964,7 @@ export function SessionGroupSection({
     projectSessionListStorageId !== undefined &&
     projectSessionListCollapsedState[projectSessionListStorageId] === true;
   const visibleSessionIds = getVisibleProjectSessionIds({
+    collapsedCount: projectSessionListCollapsedCount,
     isCollapsed: isProjectSessionListCollapsed,
     isProjectGroup: Boolean(projectContext),
     isToggleEnabled: enableProjectSessionListToggle,
@@ -973,8 +984,10 @@ export function SessionGroupSection({
     .filter((session): session is NonNullable<typeof session> => session !== undefined);
   const shouldShowProjectSessionListToggle =
     Boolean(projectContext) &&
+    !isCollapsed &&
     enableProjectSessionListToggle &&
-    orderedSessionIds.length > PROJECT_SESSION_LIST_COLLAPSED_COUNT;
+    orderedSessionIds.length > projectSessionListCollapsedCount;
+  const projectSessionListToggleLabel = isProjectSessionListCollapsed ? "Show more" : "Show less";
   const shouldScrubDisabledGroupDndAccessibility = isChatCollection || draggingDisabled;
   const sessionSummary = getGroupSessionSummary(groupSessions);
   const actualSessionCount = storedSessionIds.length;
@@ -1900,8 +1913,44 @@ export function SessionGroupSection({
                        * chrome as local project headers, but only expose the wired
                        * remote terminal creation action until remote browser/agent and
                        * worktree actions are implemented.
-                      */
+                       *
+                       * CDXC:ProjectSessionLists 2026-06-10-13:39:
+                       * Show more / Show less moved from the bottom of long project session lists into the project header action cluster. Keep it as an icon button with the same per-project collapsed-state storage, and only show it when the expanded project has more rows than the Settings-owned collapsed count.
+                       */
                       <>
+                        {shouldShowProjectSessionListToggle ? (
+                          <ProjectHeaderActionButton
+                            aria-label={
+                              isProjectSessionListCollapsed
+                                ? `Show more sessions in ${group.title}`
+                                : `Show less sessions in ${group.title}`
+                            }
+                            className="group-add-button group-project-session-list-toggle-button"
+                            onClick={(event) => {
+                              event.preventDefault();
+                              event.stopPropagation();
+                              toggleProjectSessionListCollapsed();
+                            }}
+                            tooltip={projectSessionListToggleLabel}
+                            type="button"
+                          >
+                            {isProjectSessionListCollapsed ? (
+                              <IconChevronDown
+                                aria-hidden="true"
+                                className="group-add-icon"
+                                size={14}
+                                stroke={2}
+                              />
+                            ) : (
+                              <IconChevronUp
+                                aria-hidden="true"
+                                className="group-add-icon"
+                                size={14}
+                                stroke={2}
+                              />
+                            )}
+                          </ProjectHeaderActionButton>
+                        ) : null}
                         {projectHeaderActions === "all" && projectContext.worktree ? (
                           <ProjectHeaderActionButton
                             aria-label={`Create PR for ${group.title}`}
@@ -2151,24 +2200,6 @@ export function SessionGroupSection({
                       pinnedSessionDropGapKey === PINNED_SESSION_DROP_GAP_AFTER_LAST,
                     )}
                   />
-                ) : null}
-                {shouldShowProjectSessionListToggle ? (
-                  <button
-                    aria-label={
-                      isProjectSessionListCollapsed
-                        ? `Show all sessions in ${group.title}`
-                        : `Show fewer sessions in ${group.title}`
-                    }
-                    className="project-session-list-toggle"
-                    onClick={(event) => {
-                      event.preventDefault();
-                      event.stopPropagation();
-                      toggleProjectSessionListCollapsed();
-                    }}
-                    type="button"
-                  >
-                    {isProjectSessionListCollapsed ? "Show more" : "Show less"}
-                  </button>
                 ) : null}
               </>
             ) : isEmptyProjectGroup ? null : (

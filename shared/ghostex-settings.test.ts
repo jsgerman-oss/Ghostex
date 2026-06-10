@@ -6,10 +6,13 @@ import {
   BROWSER_OPEN_MODE_OPTIONS,
   DEFAULT_ghostex_SETTINGS,
   DEFAULT_EDITOR_COMMAND_OPTIONS,
+  DEFAULT_PROJECT_SESSION_LIST_COLLAPSED_COUNT,
   DEFAULT_SIDEBAR_DEFAULT_WIDTH_PX,
   GHOSTTY_THEME_SETTING_OPTIONS,
   KEEP_AWAKE_DURATION_OPTIONS,
+  MAX_PROJECT_SESSION_LIST_COLLAPSED_COUNT,
   MAX_SIDEBAR_DEFAULT_WIDTH_PX,
+  MIN_PROJECT_SESSION_LIST_COLLAPSED_COUNT,
   MIN_SIDEBAR_DEFAULT_WIDTH_PX,
   applySidebarSettingsPreset,
   getDefaultEditorCommandForSettings,
@@ -178,6 +181,28 @@ describe("normalizeghostexSettings", () => {
     });
   });
 
+  test("normalizes the project session Show less count", () => {
+    /*
+    CDXC:ProjectSessionLists 2026-06-10-13:39:
+    Settings owns how many project sessions remain visible after Show less. Keep the historical six-row default while allowing larger explicit counts such as ten.
+    */
+    expect(DEFAULT_ghostex_SETTINGS.projectSessionListCollapsedCount).toBe(
+      DEFAULT_PROJECT_SESSION_LIST_COLLAPSED_COUNT,
+    );
+    expect(normalizeghostexSettings({})).toMatchObject({
+      projectSessionListCollapsedCount: DEFAULT_PROJECT_SESSION_LIST_COLLAPSED_COUNT,
+    });
+    expect(normalizeghostexSettings({ projectSessionListCollapsedCount: 10 })).toMatchObject({
+      projectSessionListCollapsedCount: 10,
+    });
+    expect(normalizeghostexSettings({ projectSessionListCollapsedCount: 0 })).toMatchObject({
+      projectSessionListCollapsedCount: MIN_PROJECT_SESSION_LIST_COLLAPSED_COUNT,
+    });
+    expect(normalizeghostexSettings({ projectSessionListCollapsedCount: 999 })).toMatchObject({
+      projectSessionListCollapsedCount: MAX_PROJECT_SESSION_LIST_COLLAPSED_COUNT,
+    });
+  });
+
   test("keeps untracked project diff lines off unless explicitly enabled", () => {
     expect(DEFAULT_ghostex_SETTINGS.showUntrackedProjectDiffWhenNoTrackedChanges).toBe(false);
     expect(normalizeghostexSettings({})).toMatchObject({
@@ -286,6 +311,21 @@ describe("normalizeghostexSettings", () => {
     });
     expect(normalizeghostexSettings({ showSessionCommandCopyActions: true })).toMatchObject({
       showSessionCommandCopyActions: true,
+    });
+  });
+
+  test("hides the session close context-menu option unless explicitly enabled", () => {
+    /**
+     * CDXC:SidebarContextMenu 2026-06-10-13:58:
+     * The single-session Close context-menu item should be absent by default.
+     * Users can opt into it separately from the hover close button.
+     */
+    expect(DEFAULT_ghostex_SETTINGS.showSessionCloseContextMenuAction).toBe(false);
+    expect(normalizeghostexSettings({})).toMatchObject({
+      showSessionCloseContextMenuAction: false,
+    });
+    expect(normalizeghostexSettings({ showSessionCloseContextMenuAction: true })).toMatchObject({
+      showSessionCloseContextMenuAction: true,
     });
   });
 

@@ -1,4 +1,9 @@
-export const PROJECT_SESSION_LIST_COLLAPSED_COUNT = 6;
+import {
+  clampProjectSessionListCollapsedCount,
+  DEFAULT_PROJECT_SESSION_LIST_COLLAPSED_COUNT,
+} from "../shared/ghostex-settings";
+
+export const PROJECT_SESSION_LIST_COLLAPSED_COUNT = DEFAULT_PROJECT_SESSION_LIST_COLLAPSED_COUNT;
 export const PROJECT_SESSION_LIST_COLLAPSED_STORAGE_KEY =
   "ghostex-sidebar-project-session-list-collapsed";
 export const PROJECT_SESSION_LIST_COLLAPSED_CHANGED_EVENT =
@@ -23,37 +28,44 @@ export function normalizeStoredProjectSessionListCollapsedState(
 }
 
 export function getVisibleProjectSessionIds({
+  collapsedCount = PROJECT_SESSION_LIST_COLLAPSED_COUNT,
   isCollapsed,
   isProjectGroup,
   isToggleEnabled,
   sessionIds,
 }: {
+  collapsedCount?: number;
   isCollapsed: boolean;
   isProjectGroup: boolean;
   isToggleEnabled: boolean;
   sessionIds: readonly string[];
 }): readonly string[] {
+  const normalizedCollapsedCount = clampProjectSessionListCollapsedCount(collapsedCount);
   /**
    * CDXC:ProjectSessionLists 2026-05-16-21:50:
-   * Project groups with more than six sessions need a per-project Show less /
-   * Show more toggle. Default to all sessions, and only trim rendering after
-   * the user explicitly collapses that project list.
+   * Project groups with more than the collapsed-count threshold need a
+   * per-project Show less / Show more toggle. Default to all sessions, and
+   * only trim rendering after the user explicitly collapses that project list.
    *
    * CDXC:ProjectSessionLists 2026-05-26-22:27:
-   * Show less must be literal: render only the first six sessions in project
-   * order. Live zmx-backed rows still remain in sidebar inventory and Show more,
-   * but they must not expand the collapsed card list past the user-requested cap.
+   * Show less must be literal: render only the first collapsed-count sessions
+   * in project order. Live zmx-backed rows still remain in sidebar inventory
+   * and Show more, but they must not expand the collapsed card list past the
+   * user-requested cap.
+   *
+   * CDXC:ProjectSessionLists 2026-06-10-13:39:
+   * The collapsed cap is now Settings-owned, but the default remains six. Use the normalized cap for both row rendering and shortcut slot calculations so Show less can mean ten or another configured count without diverging from the visible sidebar.
    */
   if (
     !isProjectGroup ||
     !isToggleEnabled ||
     !isCollapsed ||
-    sessionIds.length <= PROJECT_SESSION_LIST_COLLAPSED_COUNT
+    sessionIds.length <= normalizedCollapsedCount
   ) {
     return sessionIds;
   }
 
-  return sessionIds.slice(0, PROJECT_SESSION_LIST_COLLAPSED_COUNT);
+  return sessionIds.slice(0, normalizedCollapsedCount);
 }
 
 export function readProjectSessionListCollapsedState(

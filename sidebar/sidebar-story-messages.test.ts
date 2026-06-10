@@ -14,6 +14,8 @@ const DEFAULT_STORY_ARGS: SidebarStoryArgs = {
   isFocusModeActive: false,
   renameSessionOnDoubleClick: false,
   showCloseButtonOnSessionCards: true,
+  showSessionCloseContextMenuAction: false,
+  showSessionCommandCopyActions: false,
   theme: "dark-blue",
   viewMode: "grid",
   visibleCount: 1,

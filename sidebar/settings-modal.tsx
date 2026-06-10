@@ -102,11 +102,13 @@ import {
   BROWSER_FEEDBACK_TOOL_OPTIONS,
   DEFAULT_ghostex_SETTINGS,
   DEFAULT_EDITOR_COMMAND_OPTIONS,
+  MAX_PROJECT_SESSION_LIST_COLLAPSED_COUNT,
   GHOSTTY_CONFIRM_CLOSE_SURFACE_OPTIONS,
   GHOSTTY_COPY_ON_SELECT_OPTIONS,
   GHOSTTY_SCROLLBAR_OPTIONS,
   GHOSTTY_THEME_SETTING_OPTIONS,
   KEEP_AWAKE_DURATION_OPTIONS,
+  MIN_PROJECT_SESSION_LIST_COLLAPSED_COUNT,
   PROMPT_EDITOR_BACKEND_OPTIONS,
   type PromptEditorBackend,
   SESSION_PERSISTENCE_PROVIDER_OPTIONS,
@@ -328,6 +330,7 @@ const MAIN_SETTINGS_SECTION_SETTING_KEYS: Record<
     "sidebarSettingsPreset",
     "sidebarSide",
     "sidebarDefaultWidthPx",
+    "projectSessionListCollapsedCount",
     "sidebarTheme",
     "sessionStatusIndicatorSize",
     "agentManagerZoomPercent",
@@ -356,6 +359,7 @@ const MAIN_SETTINGS_SECTION_SETTING_KEYS: Record<
     "hideBrowserFaviconUntilHover",
     "showCloseButtonOnSessionCards",
     "hideLastActiveTimeOnSessionCards",
+    "showSessionCloseContextMenuAction",
     "showSessionCommandCopyActions",
   ],
   workspace: [
@@ -487,6 +491,7 @@ export type SettingsModalProps = {
   firstLaunchSetupVisibleSettings?: ReadonlySet<FirstLaunchSetupMainSettingKey>;
   initialSection?: MainSettingsInitialSectionId;
   initialSearchQuery?: string;
+  initialRemoteMachineId?: string;
   initialTab?: SettingsModalTab;
   isOpen: boolean;
   presentation?: SettingsModalPresentation;
@@ -532,6 +537,7 @@ export function SettingsModal({
   firstLaunchSetupVisibleSettings,
   initialSection,
   initialSearchQuery,
+  initialRemoteMachineId,
   initialTab = "settings",
   isOpen,
   onChange,
@@ -1003,6 +1009,11 @@ export function SettingsModal({
         title: "Hide last active time",
       },
       {
+        key: "showSessionCloseContextMenuAction",
+        subtitle: "Show the Close item in session context menus.",
+        title: "Show Close option in context menu",
+      },
+      {
         key: "showSessionCommandCopyActions",
         subtitle: "Show Copy resume and Copy attach command in session context menus.",
         title: "Show command copy actions",
@@ -1059,6 +1070,11 @@ export function SettingsModal({
         key: "sidebarDefaultWidthPx",
         subtitle: "Width restored when double-clicking the sidebar resize handle.",
         title: "Default Width",
+      },
+      {
+        key: "projectSessionListCollapsedCount",
+        subtitle: "Number of project sessions kept visible after Show less.",
+        title: "Show Less Count",
       },
       {
         key: "sidebarTheme",
@@ -1841,6 +1857,27 @@ export function SettingsModal({
                 />
               </>
               ) : null}
+              {mainSettingVisible(settingsSearch.sidebar, "projectSessionListCollapsedCount") ? (
+              <>
+                {/*
+                 * CDXC:ProjectSessionLists 2026-06-10-13:39:
+                 * The project-header Show less button should preserve the old six-row default while letting users raise the collapsed project-session count, such as ten rows, without changing the per-project Show more / Show less state model.
+                 */}
+                <SliderNumberField
+                  description="Project sessions kept visible after Show less."
+                  label="Show Less Count"
+                  {...getSettingModificationProps("projectSessionListCollapsedCount")}
+                  max={MAX_PROJECT_SESSION_LIST_COLLAPSED_COUNT}
+                  min={MIN_PROJECT_SESSION_LIST_COLLAPSED_COUNT}
+                  onCommit={(value) => updateDraft("projectSessionListCollapsedCount", value)}
+                  onChange={(value) =>
+                    updateDraftDebounced("projectSessionListCollapsedCount", value)
+                  }
+                  step={1}
+                  value={draft.projectSessionListCollapsedCount}
+                />
+              </>
+              ) : null}
               {mainSettingVisible(settingsSearch.sidebar, "sidebarTheme") ? (
               <StaticNoteField
                 description="Dark Gray is active. Themes are coming back soon."
@@ -2003,6 +2040,23 @@ export function SettingsModal({
                 {...getSettingModificationProps("hideLastActiveTimeOnSessionCards")}
                 onChange={(checked) => updateDraft("hideLastActiveTimeOnSessionCards", checked)}
               />
+              ) : null}
+              {mainSettingVisible(settingsSearch.sessionCards, "showSessionCloseContextMenuAction") ? (
+              <>
+                {/*
+                 * CDXC:SidebarContextMenu 2026-06-10-13:58:
+                 * Session context menus should hide the destructive Close item by default. Place this opt-in directly above the command-copy opt-in because both settings reveal advanced context-menu actions.
+                 */}
+                <ToggleField
+                  checked={draft.showSessionCloseContextMenuAction}
+                  description="Show the Close item in session context menus."
+                  label="Show Close option in context menu"
+                  {...getSettingModificationProps("showSessionCloseContextMenuAction")}
+                  onChange={(checked) =>
+                    updateDraft("showSessionCloseContextMenuAction", checked)
+                  }
+                />
+              </>
               ) : null}
               {mainSettingVisible(settingsSearch.sessionCards, "showSessionCommandCopyActions") ? (
               <>
@@ -3031,6 +3085,8 @@ export function SettingsModal({
           {!isFirstLaunchSetup ? (
           <TabsContent className="mt-0 min-h-0 flex-1 overflow-hidden" value="remote">
             <RemoteSettingsTab
+              initialRemoteMachineId={initialRemoteMachineId}
+              isActive={isOpen && activeTab === "remote"}
               onChange={(nextRemoteMachines) =>
                 applySettings({
                   ...draft,
@@ -3158,17 +3214,55 @@ function createRemoteMachineDraft(): RemoteMachineDraft {
 }
 
 function RemoteSettingsTab({
+  initialRemoteMachineId,
+  isActive,
   onChange,
   remoteMachines,
   vscode,
 }: {
+  initialRemoteMachineId?: string;
+  isActive: boolean;
   onChange: (remoteMachines: RemoteMachineSettings[]) => void;
   remoteMachines: RemoteMachineSettings[];
   vscode?: WebviewApi;
 }) {
+  const containerRef = useRef<HTMLDivElement>(null);
   const [isTailscaleHelpOpen, setIsTailscaleHelpOpen] = useState(false);
   const [newMachine, setNewMachine] = useState<RemoteMachineDraft>(() => createRemoteMachineDraft());
   const [sshPasswordDrafts, setSshPasswordDrafts] = useState<Record<string, string>>({});
+  const lastTargetedRemoteMachineIdRef = useRef<string | undefined>(undefined);
+
+  useEffect(() => {
+    if (!isActive || !initialRemoteMachineId) {
+      if (!isActive) {
+        lastTargetedRemoteMachineIdRef.current = undefined;
+      }
+      return;
+    }
+    if (lastTargetedRemoteMachineIdRef.current === initialRemoteMachineId) {
+      return;
+    }
+    const animationFrame = requestAnimationFrame(() => {
+      const targetCard = Array.from(
+        containerRef.current?.querySelectorAll<HTMLElement>("[data-settings-remote-machine-id]") ?? [],
+      ).find((candidate) => candidate.dataset.settingsRemoteMachineId === initialRemoteMachineId);
+      if (!targetCard) {
+        return;
+      }
+      /*
+       * CDXC:RemoteMachines 2026-06-10-09:54:
+       * Remote machine header Edit should land on the selected saved machine's
+       * editable card, not just the generic Remote settings tab. Focus the name
+       * field after scrolling because it is the first user-facing machine field.
+       */
+      targetCard.scrollIntoView({ behavior: "smooth", block: "center" });
+      targetCard
+        .querySelector<HTMLInputElement>("input[aria-label='Remote machine name']")
+        ?.focus({ preventScroll: true });
+      lastTargetedRemoteMachineIdRef.current = initialRemoteMachineId;
+    });
+    return () => cancelAnimationFrame(animationFrame);
+  }, [initialRemoteMachineId, isActive, remoteMachines]);
 
   const updateRemoteMachine = (machineId: string, patch: Partial<RemoteMachineDraft>) => {
     if (patch.sshPassword !== undefined) {
@@ -3248,7 +3342,7 @@ function RemoteSettingsTab({
   const canAddMachine = newMachine.name.trim().length > 0 && newMachine.sshHost.trim().length > 0;
 
   return (
-    <div className="settings-tab-scroll scroll-mask-y">
+    <div className="settings-tab-scroll scroll-mask-y" ref={containerRef}>
       <div className="settings-management-layout">
         <header className="settings-management-header">
           <h3 className="settings-management-heading">Remote machines</h3>
@@ -3311,7 +3405,12 @@ function RemoteSettingsTab({
             </div>
           ) : (
             remoteMachines.map((machine) => (
-              <Card className="settings-remote-machine-card" key={machine.id} size="sm">
+              <Card
+                className="settings-remote-machine-card"
+                data-settings-remote-machine-id={machine.id}
+                key={machine.id}
+                size="sm"
+              >
                 <div className="settings-remote-machine-summary settings-management-row">
                   <span className="settings-management-icon flex size-9 shrink-0 items-center justify-center bg-muted">
                     <IconDeviceDesktop aria-hidden="true" />

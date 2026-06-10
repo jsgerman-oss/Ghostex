@@ -16,6 +16,7 @@ export const DEFAULT_SIDEBAR_STORY_ARGS: SidebarStoryArgs = {
   isFocusModeActive: false,
   renameSessionOnDoubleClick: false,
   showCloseButtonOnSessionCards: true,
+  showSessionCloseContextMenuAction: false,
   showSessionCommandCopyActions: false,
   theme: "dark-blue",
   viewMode: "grid",
@@ -57,6 +58,9 @@ export const SIDEBAR_STORY_ARG_TYPES: NonNullable<Meta<SidebarStoryArgs>["argTyp
     control: "boolean",
   },
   showCloseButtonOnSessionCards: {
+    control: "boolean",
+  },
+  showSessionCloseContextMenuAction: {
     control: "boolean",
   },
   showSessionCommandCopyActions: {

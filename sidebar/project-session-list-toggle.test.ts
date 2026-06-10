@@ -37,7 +37,7 @@ describe("getVisibleProjectSessionIds", () => {
     ).toEqual(sessionIds);
   });
 
-  test("shows the first six project sessions after Show less is selected", () => {
+  test("shows the first six project sessions after Show less is selected by default", () => {
     expect(
       getVisibleProjectSessionIds({
         isCollapsed: true,
@@ -46,6 +46,19 @@ describe("getVisibleProjectSessionIds", () => {
         sessionIds,
       }),
     ).toEqual(sessionIds.slice(0, PROJECT_SESSION_LIST_COLLAPSED_COUNT));
+  });
+
+  test("uses the configured Show less session count", () => {
+    const configuredSessionIds = Array.from({ length: 12 }, (_, index) => `session-${index + 1}`);
+    expect(
+      getVisibleProjectSessionIds({
+        collapsedCount: 10,
+        isCollapsed: true,
+        isProjectGroup: true,
+        isToggleEnabled: true,
+        sessionIds: configuredSessionIds,
+      }),
+    ).toEqual(configuredSessionIds.slice(0, 10));
   });
 
   test("does not trim non-project or temporarily disabled lists", () => {

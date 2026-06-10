@@ -14,6 +14,7 @@ import {
   IconCheck,
   IconCopy,
   IconDownload,
+  IconEdit,
   IconEye,
   IconFilter2,
   IconFileSearch,
@@ -3579,6 +3580,14 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
                             type: "openRemoteCloneRepository",
                           })
                         }
+                        onEdit={() =>
+                          openAppModal({
+                            initialRemoteMachineId: machine.id,
+                            initialTab: "remote",
+                            modal: "settings",
+                            type: "open",
+                          })
+                        }
                         onReconnect={() =>
                           vscode.postMessage({
                             remoteMachineId: machine.id,
@@ -4165,6 +4174,7 @@ function SidebarReferenceSectionHeader({
   onConfigureAgents,
   onCreateBrowserChat,
   onCreateChat,
+  onEdit,
   onFilterChats,
   onReconnect,
   onRunAgent,
@@ -4187,6 +4197,7 @@ function SidebarReferenceSectionHeader({
   onConfigureAgents?: () => void;
   onCreateBrowserChat?: () => void;
   onCreateChat?: () => void;
+  onEdit?: () => void;
   onFilterChats?: () => void;
   onReconnect?: () => void;
   onRunAgent?: (agent: SidebarAgentButton) => void;
@@ -4243,6 +4254,11 @@ function SidebarReferenceSectionHeader({
    * keeps Browser and Terminal as separate section-header actions. The main
    * agent half launches the selected provider and the chevron opens the shared
    * agent list plus Configure.
+   *
+   * CDXC:RemoteMachines 2026-06-10-09:54:
+   * Remote machine headers need a Tabler edit action immediately to the right
+   * of Reload so users can jump from a machine section to that machine's saved
+   * Settings -> Remote fields without using the global Settings entry point.
    */
   const [sortMenuPosition, setSortMenuPosition] = useState<HeaderSortMenuPosition>();
   const [agentMenuPosition, setAgentMenuPosition] = useState<HeaderSortMenuPosition>();
@@ -4258,6 +4274,7 @@ function SidebarReferenceSectionHeader({
     onConfigureAgents ||
     onCreateBrowserChat ||
     onCreateChat ||
+    onEdit ||
     onFilterChats ||
     onReconnect ||
     onRunAgent ||
@@ -4408,6 +4425,17 @@ function SidebarReferenceSectionHeader({
               type="button"
             >
               <IconRefresh aria-hidden="true" size={14} stroke={1.9} />
+            </button>
+          ) : null}
+          {onEdit ? (
+            <button
+              aria-label={`Edit ${title}`}
+              className="reference-sidebar-section-action reference-sidebar-hover-action-tooltip"
+              data-tooltip="Edit"
+              onClick={onEdit}
+              type="button"
+            >
+              <IconEdit aria-hidden="true" size={14} stroke={1.9} />
             </button>
           ) : null}
           {onAddRepository ? (
@@ -4575,6 +4603,7 @@ function RemoteMachineSidebarSection({
   machine,
   onAddProject,
   onCloneRepository,
+  onEdit,
   onReconnect,
   onToggleCollapsed,
   projectGroupIds,
@@ -4586,6 +4615,7 @@ function RemoteMachineSidebarSection({
   machine: RemoteMachineSettings;
   onAddProject: () => void;
   onCloneRepository: () => void;
+  onEdit: () => void;
   onReconnect: () => void;
   onToggleCollapsed: () => void;
   projectGroupIds: readonly string[];
@@ -4614,6 +4644,7 @@ function RemoteMachineSidebarSection({
         collapsed={collapsed}
         onAddProject={isConnected ? onAddProject : undefined}
         onAddRepository={isConnected ? onCloneRepository : undefined}
+        onEdit={onEdit}
         onReconnect={isConnected ? undefined : onReconnect}
         onToggleCollapsed={onToggleCollapsed}
         sectionKey="remote"

@@ -78,6 +78,9 @@ export const MAX_COMMANDS_PANEL_DEFAULT_HEIGHT_PX = 600;
 export const DEFAULT_SIDEBAR_DEFAULT_WIDTH_PX = 235;
 export const MIN_SIDEBAR_DEFAULT_WIDTH_PX = 150;
 export const MAX_SIDEBAR_DEFAULT_WIDTH_PX = 520;
+export const DEFAULT_PROJECT_SESSION_LIST_COLLAPSED_COUNT = 6;
+export const MIN_PROJECT_SESSION_LIST_COLLAPSED_COUNT = 1;
+export const MAX_PROJECT_SESSION_LIST_COLLAPSED_COUNT = 50;
 export const SESSION_TITLE_GENERATION_AGENT_OPTIONS: ReadonlyArray<{
   label: string;
   value: SessionTitleGenerationAgent;
@@ -107,6 +110,16 @@ export function clampSidebarDefaultWidthPx(value: number): number {
   return Math.min(
     MAX_SIDEBAR_DEFAULT_WIDTH_PX,
     Math.max(MIN_SIDEBAR_DEFAULT_WIDTH_PX, Math.round(value)),
+  );
+}
+
+export function clampProjectSessionListCollapsedCount(value: number): number {
+  if (!Number.isFinite(value)) {
+    return DEFAULT_PROJECT_SESSION_LIST_COLLAPSED_COUNT;
+  }
+  return Math.min(
+    MAX_PROJECT_SESSION_LIST_COLLAPSED_COUNT,
+    Math.max(MIN_PROJECT_SESSION_LIST_COLLAPSED_COUNT, Math.round(value)),
   );
 }
 
@@ -181,6 +194,13 @@ export type ghostexSettings = {
   showCloseButtonOnSessionCards: boolean;
   hideLastActiveTimeOnSessionCards: boolean;
   /**
+   * CDXC:SidebarContextMenu 2026-06-10-13:58:
+   * The destructive single-session Close context-menu item is advanced chrome.
+   * Hide it by default and expose it through an explicit Session Cards setting
+   * so context menus stay focused unless users opt into close-from-menu actions.
+   */
+  showSessionCloseContextMenuAction: boolean;
+  /**
    * CDXC:SidebarContextMenu 2026-06-09-23:17:
    * Session context menus should hide Copy resume and Copy attach command by default because they expose raw shell-command utilities. Settings owns a single opt-in that reveals both actions for users who intentionally copy commands into external terminals.
    */
@@ -231,6 +251,11 @@ export type ghostexSettings = {
    * does not erase the user's last manual resize.
    */
   sidebarDefaultWidthPx: number;
+  /**
+   * CDXC:ProjectSessionLists 2026-06-10-13:39:
+   * The project header Show less action keeps a configurable number of project sessions visible. Default to the historical six-row cap, but normalize a wider Settings range so users can keep ten or more rows visible before switching back to Show more.
+   */
+  projectSessionListCollapsedCount: number;
   sidebarTheme: SidebarThemeSetting;
   terminalCursorStyle: TerminalCursorStyle;
   terminalCursorStyleBlink: boolean;
@@ -477,6 +502,7 @@ export const DEFAULT_ghostex_SETTINGS: ghostexSettings = {
    */
   hideLastActiveTimeOnSessionCards:
     SIDEBAR_SETTINGS_PRESET_SETTINGS.codex.hideLastActiveTimeOnSessionCards,
+  showSessionCloseContextMenuAction: false,
   showSessionCommandCopyActions: false,
   /**
    * CDXC:AutoSleep 2026-05-28-08:06:
@@ -598,6 +624,7 @@ export const DEFAULT_ghostex_SETTINGS: ghostexSettings = {
    * last-width restore path used at app restart.
    */
   sidebarDefaultWidthPx: DEFAULT_SIDEBAR_DEFAULT_WIDTH_PX,
+  projectSessionListCollapsedCount: DEFAULT_PROJECT_SESSION_LIST_COLLAPSED_COUNT,
   /**
    * CDXC:SidebarTheme 2026-05-08-11:14
    * Dark Gray is the only active user-facing sidebar theme while the broader
@@ -1044,6 +1071,11 @@ export function normalizeghostexSettings(candidate: unknown): ghostexSettings {
       "hideLastActiveTimeOnSessionCards",
       DEFAULT_ghostex_SETTINGS.hideLastActiveTimeOnSessionCards,
     ),
+    showSessionCloseContextMenuAction: readBoolean(
+      source,
+      "showSessionCloseContextMenuAction",
+      DEFAULT_ghostex_SETTINGS.showSessionCloseContextMenuAction,
+    ),
     showSessionCommandCopyActions: readBoolean(
       source,
       "showSessionCommandCopyActions",
@@ -1265,6 +1297,17 @@ export function normalizeghostexSettings(candidate: unknown): ghostexSettings {
         source,
         "sidebarDefaultWidthPx",
         DEFAULT_ghostex_SETTINGS.sidebarDefaultWidthPx,
+      ),
+    ),
+    /**
+     * CDXC:ProjectSessionLists 2026-06-10-13:39:
+     * Missing settings must preserve the old six-session Show less behavior, while explicit numeric values tune how many project sessions remain visible before the header toggle offers Show more.
+     */
+    projectSessionListCollapsedCount: clampProjectSessionListCollapsedCount(
+      readNumber(
+        source,
+        "projectSessionListCollapsedCount",
+        DEFAULT_ghostex_SETTINGS.projectSessionListCollapsedCount,
       ),
     ),
     sidebarTheme: clampSidebarThemeSetting(

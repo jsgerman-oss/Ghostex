@@ -43,6 +43,7 @@ export type SidebarStoryArgs = {
   isFocusModeActive: boolean;
   renameSessionOnDoubleClick: boolean;
   showCloseButtonOnSessionCards: boolean;
+  showSessionCloseContextMenuAction: boolean;
   showSessionCommandCopyActions: boolean;
   theme: SidebarTheme;
   viewMode: TerminalViewMode;
@@ -148,10 +149,11 @@ export function createSidebarStoryMessage(
 ): SidebarHydrateMessage {
   const storySettings = isCombinedReferenceFixture(args.fixture)
     ? createCombinedStorySettings(currentSettings)
-    : args.showSessionCommandCopyActions
+    : args.showSessionCloseContextMenuAction || args.showSessionCommandCopyActions
       ? normalizeghostexSettings({
           ...DEFAULT_ghostex_SETTINGS,
-          showSessionCommandCopyActions: true,
+          showSessionCloseContextMenuAction: args.showSessionCloseContextMenuAction,
+          showSessionCommandCopyActions: args.showSessionCommandCopyActions,
         })
       : undefined;
   const groups = cloneGroups(GROUPS_BY_FIXTURE[args.fixture]).map((group) => {

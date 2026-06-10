@@ -81,6 +81,7 @@ export type OpenAppModalMessage =
   | { initialQuery?: string; modal: "findPreviousSession"; type: "open" }
   | {
       initialSearchQuery?: string;
+      initialRemoteMachineId?: string;
       initialTab?: SettingsModalTab;
       modal: "settings";
       type: "open";

@@ -752,6 +752,7 @@ export const EmptySidebarDoubleClickEnabled: Story = {
 
 export const SessionCardActions: Story = {
   args: {
+    showSessionCloseContextMenuAction: true,
     showSessionCommandCopyActions: true,
   },
   play: async ({ canvas, canvasElement, step, userEvent }) => {

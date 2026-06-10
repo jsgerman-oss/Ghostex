@@ -114,6 +114,7 @@ type AppModalHostMessage =
       gitFileDiff?: GitFileDiffModalDraft;
       worktreeDeleteDraft?: WorktreeDeleteModalDraft;
       initialFrame?: FloatingPromptEditorFrame;
+      initialRemoteMachineId?: string;
       initialSection?: MainSettingsInitialSectionId;
       initialSearchQuery?: string;
       initialTab?: SettingsModalTab;
@@ -1775,6 +1776,7 @@ function AppModalHost() {
     ghostexFolderStats,
     osIntegrationStatus,
     settingsInitialSection,
+    settingsInitialRemoteMachineId,
     settingsInitialSearchQuery,
     settingsInitialTabOverride,
   } = useModalStateFromNative();
@@ -2305,6 +2307,7 @@ function AppModalHost() {
         agentHookStatus={agentHookStatus}
         agentHookStatusLoading={agentHookStatusLoading}
         initialSection={settingsInitialSection}
+        initialRemoteMachineId={settingsInitialRemoteMachineId}
         initialSearchQuery={settingsInitialSearchQuery}
         initialTab={settingsInitialTab}
         isOpen={isSettingsRenderable}
@@ -2667,6 +2670,7 @@ function useModalStateFromNative() {
   const [osIntegrationStatus, setOSIntegrationStatus] = useState<OSIntegrationStatusMessage>();
   const [settingsInitialSection, setSettingsInitialSection] =
     useState<MainSettingsInitialSectionId>();
+  const [settingsInitialRemoteMachineId, setSettingsInitialRemoteMachineId] = useState<string>();
   const [settingsInitialSearchQuery, setSettingsInitialSearchQuery] = useState<string>();
   const [settingsInitialTabOverride, setSettingsInitialTabOverride] = useState<SettingsModalTab>();
   const activeModalRef = useRef<AppModalKind | undefined>(activeModal);
@@ -2693,6 +2697,7 @@ function useModalStateFromNative() {
     setOSIntegrationStatus(undefined);
     setAgentsHubCatalog(undefined);
     setSettingsInitialSection(undefined);
+    setSettingsInitialRemoteMachineId(undefined);
     setSettingsInitialSearchQuery(undefined);
     setSettingsInitialTabOverride(undefined);
   }, []);
@@ -3100,11 +3105,24 @@ function useModalStateFromNative() {
                 ? message.initialSearchQuery
                 : undefined,
             );
+            /**
+             * CDXC:RemoteMachines 2026-06-10-09:54:
+             * Sidebar Remote machine Edit opens Settings directly on the Remote
+             * tab and carries the selected machine id so the modal can scroll to
+             * and focus that machine's editable fields.
+             */
+            setSettingsInitialRemoteMachineId(
+              typeof message.initialRemoteMachineId === "string" &&
+                message.initialRemoteMachineId.trim()
+                ? message.initialRemoteMachineId
+                : undefined,
+            );
             setSettingsInitialTabOverride(
               isSettingsModalTab(message.initialTab) ? message.initialTab : undefined,
             );
           } else {
             setSettingsInitialSection(undefined);
+            setSettingsInitialRemoteMachineId(undefined);
             setSettingsInitialSearchQuery(undefined);
             setSettingsInitialTabOverride(undefined);
           }
@@ -3304,6 +3322,7 @@ function useModalStateFromNative() {
     ghostexFolderStats,
     osIntegrationStatus,
     settingsInitialSection,
+    settingsInitialRemoteMachineId,
     settingsInitialSearchQuery,
     settingsInitialTabOverride,
   };
