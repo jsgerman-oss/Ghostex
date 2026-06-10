@@ -8,6 +8,30 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
         <link>https://github.com/maddada/Ghostex/releases</link>
         <description>Sparkle appcast for Ghostex macOS releases.</description>
         <item>
+            <title>4.1.5</title>
+            <pubDate>Wed, 10 Jun 2026 21:10:30 +0400</pubDate>
+            <sparkle:fullReleaseNotesLink>https://github.com/maddada/Ghostex/releases/tag/v4.1.5</sparkle:fullReleaseNotesLink>
+            <sparkle:version>40105</sparkle:version>
+            <sparkle:shortVersionString>4.1.5</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <description sparkle:format="markdown"><![CDATA[# Ghostex 4.1.5
+
+- Installed agent hooks, gxserver resume lookup, native sidebar state helpers, and Electron command-pane updates now run through Ghostex-owned bundled runtimes instead of `/usr/bin/python3` or user-installed Node interpreters, so hook sidecars and command status updates keep working on machines without Python.
+- Claude sessions migrated from Ghostex 3.6 can wake more reliably because gxserver repair backfills transcript paths and saved resume commands, and wake resolves Claude's real session id before running `claude --resume` instead of trusting a sidebar title.
+- Context-menu Sleep no longer parks a row as sleeping while the zmx provider is still alive; Wake and intentional close flows still show immediate sleeping feedback until the host snapshot confirms the same state.
+- Project board ticket creation reconciles each project's Beads issue prefix before mutations, and local board actions send both project id and project path so gxserver can reject stale URL/id mismatches.
+- The sidebar adds a configurable Show less row count, a Close menu visibility setting, and remote-session edit entry points for quicker day-to-day session management.
+- Chromium-embedded panes support standard zoom in, zoom out, and reset shortcuts from the toolbar.
+- Waking zmx sessions no longer replays stale working/attention activity from the pre-sleep snapshot.
+- Project and Kanban flows require Ghostex's bundled Beads CLI and ignore unrelated `bd` binaries already on PATH.
+- Future macOS Sparkle, GitHub, and Homebrew releases ship Apple Silicon builds only.
+
+[Full release notes](https://github.com/maddada/Ghostex/releases/tag/v4.1.5)
+]]></description>
+            <enclosure url="https://github.com/maddada/Ghostex/releases/download/v4.1.5/ghostex-4.1.5-arm64.dmg" length="566561128" type="application/octet-stream" sparkle:edSignature="wodw3b4pt8dmGi2UEiRDBl92wQlMRPwRQc+B93RGf5sn1yfVpz+je9Yb/hQHFFaK2e4+2d8wujNKT6w4hpvnCw=="/>
+        </item>
+        <item>
             <title>4.1.0</title>
             <pubDate>Wed, 10 Jun 2026 08:21:18 +0400</pubDate>
             <sparkle:fullReleaseNotesLink>https://github.com/maddada/Ghostex/releases/tag/v4.1.0</sparkle:fullReleaseNotesLink>
@@ -115,16 +139,6 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
             <enclosure url="https://github.com/maddada/Ghostex/releases/download/v4.0.0/ghostex-4.0.0-arm64.dmg" length="337287279" type="application/octet-stream" sparkle:edSignature="e/hEWazOEUh1AVCF2xeHWIdlI/MhJT6J5/NRS3KyJs0MH6ojhSnklYJAJGv5LPUd3e/zd9LRLjtMW9C0kdaJCw=="/>
         </item>
         <item>
-            <title>3.26.2</title>
-            <pubDate>Tue, 02 Jun 2026 13:36:13 +0400</pubDate>
-            <sparkle:fullReleaseNotesLink>https://github.com/maddada/Ghostex/releases/tag/v3.26.2</sparkle:fullReleaseNotesLink>
-            <sparkle:version>32602</sparkle:version>
-            <sparkle:shortVersionString>3.26.2</sparkle:shortVersionString>
-            <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
-            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
-            <enclosure url="https://github.com/maddada/Ghostex/releases/download/v3.26.2/ghostex-3.26.2-arm64.dmg" length="187040448" type="application/octet-stream" sparkle:edSignature="UAXBqredQ0WL0C4mBIPdj7VvIOeJGRoj0lG49pHJsq4PDGO2DRQRftzlFCZXr5dxwF1dAXlILQEErbSsM+irAw=="/>
-        </item>
-        <item>
             <title>3.26.1</title>
             <pubDate>Mon, 01 Jun 2026 18:43:20 +0400</pubDate>
             <sparkle:fullReleaseNotesLink>https://github.com/maddada/Ghostex/releases/tag/v3.26.1</sparkle:fullReleaseNotesLink>
@@ -136,6 +150,6 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
     </channel>
 </rss>
 <!-- sparkle-signatures:
-edSignature: eepc0HSrBkArrh7YQJ0Jqqq1jO57Lq2rYb03FIrgWgkNZW++8g9n6ti7iXuwIexubVkMs2qXp2mW1ie7ZnCUCQ==
-length: 13936
+edSignature: yxhhmcvi/dDJYZxIv9rLt3aslmjCuK+C2aVlHAsemOComZ+6+5gwNhLOXPeMnRAntALO4L/lodtf6HOAMq9sCQ==
+length: 15665
 -->
