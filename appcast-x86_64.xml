@@ -8,6 +8,29 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
         <link>https://github.com/maddada/Ghostex/releases</link>
         <description>Sparkle appcast for Ghostex Intel macOS releases.</description>
         <item>
+            <title>4.1.0</title>
+            <pubDate>Wed, 10 Jun 2026 08:21:29 +0400</pubDate>
+            <sparkle:fullReleaseNotesLink>https://github.com/maddada/Ghostex/releases/tag/v4.1.0</sparkle:fullReleaseNotesLink>
+            <sparkle:version>40100</sparkle:version>
+            <sparkle:shortVersionString>4.1.0</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
+            <description sparkle:format="markdown"><![CDATA[# Ghostex 4.1.0
+
+- Remote machines can now save SSH passwords in macOS Keychain, use them for SSH/SCP/tunnel connections without storing raw passwords in settings, and show clearer saved-password state and authentication guidance.
+- Agent hook and session-state updates now reject cross-wired agent identities, reducing cases where one agent terminal could inherit another row's title, status, completion state, or resume identity.
+- Ctrl+G prompt editing and Monaco prompt-editor dismissal return focus to the correct terminal more reliably, including sessions launched through gxserver global references.
+- Sidebar presentation updates apply smaller live patches for session groups and HUD chrome, reducing sidebar refresh churn and terminal focus steals while sessions are added, removed, reordered, or updated.
+- Session context menus are safer and cleaner: Copy Resume and Copy Attach Command are hidden by default behind an explicit setting, and Sleep Below / Close Below now target the rendered rows beneath the clicked card across project groups.
+- Remote sections, Recent Projects search, active sidebar search, titlebar resource copy, command icons, tag menus, drag handles, and sidebar panel spacing received visual polish for denser daily use.
+- The Ghostex TUI now uses a neutral gray-blue default theme, clearer Help/Hotkeys and Quit Ghostex labels, and broader built-in agent labels so restored desktop sessions are easier to recognize from the terminal switcher.
+- Embedded code-server packaging is more reliable across Apple Silicon and Intel builds, including target-architecture ripgrep materialization and authenticated GitHub artifact fetches during release builds.
+- The Android download badge now points at the 4.1.0 release APK.
+
+[Full release notes](https://github.com/maddada/Ghostex/releases/tag/v4.1.0)
+]]></description>
+            <enclosure url="https://github.com/maddada/Ghostex/releases/download/v4.1.0/ghostex-4.1.0-x86_64.dmg" length="592244688" type="application/octet-stream" sparkle:edSignature="PkcaZmhfZLF51KXeJHXtQcOKs/B/A6cPZiEGnyes0UkOMlcs9xVzYsh7Q4HRrvxebMWhFnVc5mcAZ93CDFfwDg=="/>
+        </item>
+        <item>
             <title>4.0.3</title>
             <pubDate>Mon, 08 Jun 2026 20:32:34 +0400</pubDate>
             <sparkle:fullReleaseNotesLink>https://github.com/maddada/Ghostex/releases/tag/v4.0.3</sparkle:fullReleaseNotesLink>
@@ -95,18 +118,9 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
             <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
             <enclosure url="https://github.com/maddada/Ghostex/releases/download/v3.26.2/ghostex-3.26.2-x86_64.dmg" length="200241298" type="application/octet-stream" sparkle:edSignature="glJQobGojPO+8nIYixxLWAaHcvElIV4NmaAK5I4wYqZYxj5894frmlbfg0MDkev2cOKLvFEPay5R/IsAEI4DAQ=="/>
         </item>
-        <item>
-            <title>3.26.1</title>
-            <pubDate>Mon, 01 Jun 2026 18:44:51 +0400</pubDate>
-            <sparkle:fullReleaseNotesLink>https://github.com/maddada/Ghostex/releases/tag/v3.26.1</sparkle:fullReleaseNotesLink>
-            <sparkle:version>32601</sparkle:version>
-            <sparkle:shortVersionString>3.26.1</sparkle:shortVersionString>
-            <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
-            <enclosure url="https://github.com/maddada/Ghostex/releases/download/v3.26.1/ghostex-3.26.1-x86_64.dmg" length="200150759" type="application/octet-stream" sparkle:edSignature="4jAXK4pAagAVAggoa+uSFm0GE60z+o5cFlMZhsNTJlWRpSd7zAo+3SD5GkSn15OrXTrGlYsWEAthMuYz+PR4Aw=="/>
-        </item>
     </channel>
 </rss>
 <!-- sparkle-signatures:
-edSignature: qmmkm5doOF6/Ln2bze371dQLpa/owm8veF2vcOF7UlXH7dNKC08alRLPblr1jDKuvQSBbMANuIffEkG20bkyDg==
-length: 10816
+edSignature: UDvYWUwJ+en58aBXzkdd8bYOY64VRuuxiIyOr9hhL3rhlYzhqYh8yUkwE9B5Wc6ezAF98F/ex8+C/uZPAcMyDg==
+length: 12720
 -->
