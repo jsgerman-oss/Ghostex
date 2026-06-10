@@ -3,6 +3,7 @@ import type { SidebarSessionItem } from "../shared/session-grid-contract";
 import {
   canSleepSidebarSession,
   getSessionCardAccessibleLabel,
+  resolveSessionCardSessionIdsBelow,
   runSidebarBulkContextMenuActionInBackground,
 } from "./sortable-session-card";
 
@@ -80,6 +81,28 @@ describe("runSidebarBulkContextMenuActionInBackground", () => {
 
     expect(processedSessionIds).toEqual(["session-2"]);
     expect(queuedOperations).toHaveLength(0);
+  });
+});
+
+describe("resolveSessionCardSessionIdsBelow", () => {
+  test("keeps below actions scoped to the group-provided session list", () => {
+    expect(
+      resolveSessionCardSessionIdsBelow({
+        contextMenuSessionIdsBelow: [],
+        isContextMenuOpen: false,
+        sessionIdsBelow: ["same-project-2", "same-project-3"],
+      }),
+    ).toEqual(["same-project-2", "same-project-3"]);
+  });
+
+  test("uses the clicked menu snapshot while the context menu is open", () => {
+    expect(
+      resolveSessionCardSessionIdsBelow({
+        contextMenuSessionIdsBelow: ["snapshot-session"],
+        isContextMenuOpen: true,
+        sessionIdsBelow: ["rerendered-session"],
+      }),
+    ).toEqual(["snapshot-session"]);
   });
 });
 

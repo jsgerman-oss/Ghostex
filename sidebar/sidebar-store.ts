@@ -61,7 +61,6 @@ type SidebarStoreActions = {
   hideSessionLocally: (sessionId: string) => void;
   hideSessionsLocally: (sessionIds: readonly string[]) => void;
   setSessionSleepingLocally: (sessionId: string, sleeping: boolean) => void;
-  setSessionsSleepingLocally: (sessionIds: readonly string[], sleeping: boolean) => void;
   applySessionPresentationMessage: (message: SidebarSessionPresentationChangedMessage) => void;
   applySidebarMessage: (message: SidebarHydrateMessage | SidebarSessionStateMessage) => void;
   clearCommandRunState: (commandId: string) => void;
@@ -184,9 +183,6 @@ export const useSidebarStore = create<SidebarStoreState>((set) => ({
   },
   setSessionSleepingLocally: (sessionId, sleeping) => {
     set((state) => setSessionSleepingLocallyState(state, sessionId, sleeping));
-  },
-  setSessionsSleepingLocally: (sessionIds, sleeping) => {
-    set((state) => setSessionsSleepingLocallyState(state, sessionIds, sleeping));
   },
   applySessionPresentationMessage: (message) => {
     set((state) => applySessionPresentationMessageState(state, message));
@@ -763,7 +759,10 @@ function setSessionSleepingLocallyState(
 
   /*
   CDXC:LocalFirstSidebar 2026-06-01-19:34:
-  Sleep and Wake from the session context menu should dismiss the menu and flip the card state before native disposes or recreates the terminal surface. Keep a local override until the host snapshot confirms the same sleeping state.
+  Wake from the session context menu and explicit local parking flows should dismiss the menu and flip the card state before native disposes or recreates the terminal surface. Keep a local override until the host snapshot confirms the same sleeping state.
+
+  CDXC:SessionSleep 2026-06-10-10:01:
+  Context-menu Sleep must not use this local override because zmx provider shutdown is the source of truth; otherwise rows can fade as sleeping while the provider stays alive. Keep local overrides for Wake and for close flows that intentionally park the last visible project session after native/gxserver has a separate lifecycle action.
   */
   return {
     localSessionSleepingOverrides: {
@@ -776,54 +775,6 @@ function setSessionSleepingLocallyState(
           [sessionId]: applyLocalSessionSleepingOverride(session, sleeping),
         }
       : state.sessionsById,
-  };
-}
-
-function setSessionsSleepingLocallyState(
-  state: SidebarStoreState,
-  sessionIds: readonly string[],
-  sleeping: boolean,
-): Partial<SidebarStoreState> | SidebarStoreState {
-  const targetSessionIds = Array.from(new Set(sessionIds));
-  if (targetSessionIds.length === 0) {
-    return state;
-  }
-
-  /*
-  CDXC:SidebarContextMenu 2026-06-07-13:34:
-  Sleep below can target many rows. Apply the local sleeping overlay to all awake targets in one store write so the context menu closes and the sidebar paints once while native session shutdown proceeds asynchronously.
-  */
-  let nextSessionSleepingOverrides: Record<string, boolean> | undefined;
-  let nextSessionsById: Record<string, SidebarSessionItem> | undefined;
-
-  for (const sessionId of targetSessionIds) {
-    const session = (nextSessionsById ?? state.sessionsById)[sessionId];
-    if (
-      session &&
-      session.isSleeping === sleeping &&
-      session.lifecycleState === (sleeping ? "sleeping" : "running")
-    ) {
-      continue;
-    }
-    if (!session && (nextSessionSleepingOverrides ?? state.localSessionSleepingOverrides)[sessionId] === sleeping) {
-      continue;
-    }
-
-    nextSessionSleepingOverrides ??= { ...state.localSessionSleepingOverrides };
-    nextSessionSleepingOverrides[sessionId] = sleeping;
-    if (session) {
-      nextSessionsById ??= { ...state.sessionsById };
-      nextSessionsById[sessionId] = applyLocalSessionSleepingOverride(session, sleeping);
-    }
-  }
-
-  if (!nextSessionSleepingOverrides && !nextSessionsById) {
-    return state;
-  }
-
-  return {
-    localSessionSleepingOverrides: nextSessionSleepingOverrides ?? state.localSessionSleepingOverrides,
-    sessionsById: nextSessionsById ?? state.sessionsById,
   };
 }
 

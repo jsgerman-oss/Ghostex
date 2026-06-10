@@ -1,4 +1,5 @@
 import {
+  PROJECT_SESSION_LIST_COLLAPSED_COUNT,
   getVisibleProjectSessionIds,
   type ProjectSessionListCollapsedState,
 } from "./project-session-list-toggle";
@@ -17,6 +18,7 @@ export type SidebarVisibleSessionSlotOptions = {
   groupsById: Record<string, SidebarVisibleSlotGroup | undefined>;
   isReferenceChatsCollapsed: boolean;
   isReferenceProjectsCollapsed: boolean;
+  projectSessionListCollapsedCount?: number;
   projectSessionListCollapsedState: ProjectSessionListCollapsedState;
   remoteMachineIds: readonly string[];
 };
@@ -29,6 +31,7 @@ export function createVisibleSidebarSessionSlotIds({
   groupsById,
   isReferenceChatsCollapsed,
   isReferenceProjectsCollapsed,
+  projectSessionListCollapsedCount = PROJECT_SESSION_LIST_COLLAPSED_COUNT,
   projectSessionListCollapsedState,
   remoteMachineIds,
 }: SidebarVisibleSessionSlotOptions): string[] {
@@ -44,6 +47,7 @@ export function createVisibleSidebarSessionSlotIds({
     const projectSessionListStorageId = group.projectContext?.editor?.projectId ?? groupId;
     visibleSessionIds.push(
       ...getVisibleProjectSessionIds({
+        collapsedCount: projectSessionListCollapsedCount,
         isCollapsed: projectSessionListCollapsedState[projectSessionListStorageId] === true,
         isProjectGroup: Boolean(group.projectContext),
         isToggleEnabled: enableProjectSessionListToggle,
@@ -156,23 +160,6 @@ export function createRenderedSidebarSessionSlotIds(
   elements: readonly RenderedSidebarSessionSlotElement[],
 ): string[] {
   return createRenderedSidebarSessionSlots(elements).map((slot) => slot.sessionId);
-}
-
-export function resolveRenderedSidebarSessionIdsBelow({
-  sessionId,
-  visibleSessionIds,
-}: {
-  sessionId: string;
-  visibleSessionIds: readonly string[];
-}): string[] {
-  /*
-   * CDXC:SidebarContextMenu 2026-06-09-23:32:
-   * Sleep below and Close below are pixel-order actions. Resolve targets from
-   * rendered sidebar rows so cross-group project lists, collapsed sections, and
-   * Show less state match the rows the user can actually see.
-   */
-  const sessionIndex = visibleSessionIds.indexOf(sessionId);
-  return sessionIndex >= 0 ? visibleSessionIds.slice(sessionIndex + 1) : [];
 }
 
 export function resolveAdjacentRenderedSidebarSessionSlotId({

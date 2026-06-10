@@ -62,10 +62,6 @@ import { openAppModal } from "./app-modal-host-bridge";
 import { SidebarContextMenuPortal } from "./sidebar-context-menu-portal";
 import { useSidebarStore } from "./sidebar-store";
 import {
-  readRenderedSidebarSessionSlotIds,
-  resolveRenderedSidebarSessionIdsBelow,
-} from "./sidebar-visible-session-slots";
-import {
   getEffectiveSessionTag,
   getSidebarSessionTagLabel,
   SessionTagIcon,
@@ -156,6 +152,24 @@ export type SortableSessionCardProps = {
   showDropPositionIndicator?: boolean;
   vscode: WebviewApi;
 };
+
+export function resolveSessionCardSessionIdsBelow({
+  contextMenuSessionIdsBelow,
+  isContextMenuOpen,
+  sessionIdsBelow,
+}: {
+  contextMenuSessionIdsBelow: readonly string[];
+  isContextMenuOpen: boolean;
+  sessionIdsBelow: readonly string[];
+}): readonly string[] {
+  /*
+   * CDXC:SidebarContextMenu 2026-06-10-10:01:
+   * Session-card below actions receive the current group/project slice from
+   * SessionGroupSection. Keep the menu target list scoped to that slice instead
+   * of deriving cross-project targets from global rendered sidebar rows.
+   */
+  return isContextMenuOpen ? contextMenuSessionIdsBelow : sessionIdsBelow;
+}
 
 export function getSessionCardAccessibleLabel({
   isFocused,
@@ -256,7 +270,11 @@ export function SortableSessionCard({
 }: SortableSessionCardProps) {
   const [contextMenuPosition, setContextMenuPosition] = useState<ContextMenuPosition>();
   const [contextMenuSessionIdsBelow, setContextMenuSessionIdsBelow] = useState<readonly string[]>([]);
-  const effectiveSessionIdsBelow = contextMenuPosition ? contextMenuSessionIdsBelow : sessionIdsBelow;
+  const effectiveSessionIdsBelow = resolveSessionCardSessionIdsBelow({
+    contextMenuSessionIdsBelow,
+    isContextMenuOpen: Boolean(contextMenuPosition),
+    sessionIdsBelow,
+  });
   const session = useSidebarStore((state) => state.sessionsById[sessionId]);
   const sleepableSessionIdsBelow = useSidebarStore(
     useShallow((state) =>
@@ -285,6 +303,7 @@ export function SortableSessionCard({
     showCloseButton,
     showDebugSessionNumbers,
     showLastActiveTime,
+    showSessionCloseContextMenuAction,
     showSessionCommandCopyActions,
   } = useSidebarStore(
     useShallow((state) => ({
@@ -312,6 +331,14 @@ export function SortableSessionCard({
       showLastActiveTime:
         !(state.hud.settings?.hideLastActiveTimeOnSessionCards ??
           DEFAULT_ghostex_SETTINGS.hideLastActiveTimeOnSessionCards),
+      /*
+       * CDXC:SidebarContextMenu 2026-06-10-13:58:
+       * The destructive single-session Close item is hidden unless Settings
+       * explicitly enables close actions in session context menus.
+       */
+      showSessionCloseContextMenuAction:
+        state.hud.settings?.showSessionCloseContextMenuAction ??
+        DEFAULT_ghostex_SETTINGS.showSessionCloseContextMenuAction,
       /*
        * CDXC:SidebarContextMenu 2026-06-09-23:17:
        * Copy resume and Copy attach command are opt-in context-menu utilities.
@@ -691,9 +718,10 @@ export function SortableSessionCard({
   ]);
 
   const readLatestSessionIdsBelow = () =>
-    resolveRenderedSidebarSessionIdsBelow({
-      sessionId: session.sessionId,
-      visibleSessionIds: readRenderedSidebarSessionSlotIds(),
+    resolveSessionCardSessionIdsBelow({
+      contextMenuSessionIdsBelow,
+      isContextMenuOpen: Boolean(contextMenuPosition),
+      sessionIdsBelow,
     });
 
   const getContextMenuCountsForSessionIdsBelow = (nextSessionIdsBelow: readonly string[]) => {
@@ -964,7 +992,15 @@ export function SortableSessionCard({
   const requestSetSleeping = (sleeping: boolean) => {
     flushSync(() => {
       setContextMenuPosition(undefined);
-      useSidebarStore.getState().setSessionSleepingLocally(session.sessionId, sleeping);
+      /*
+       * CDXC:SessionSleep 2026-06-10-10:01:
+       * Sleep state must come from native/gxserver after zmx provider shutdown.
+       * Wake can clear the local faded row immediately because it is reopening a
+       * sleeping record, but Sleep must not create a fake sleeping row first.
+       */
+      if (!sleeping) {
+        useSidebarStore.getState().setSessionSleepingLocally(session.sessionId, sleeping);
+      }
     });
     vscode.postMessage({
       sessionId: session.sessionId,
@@ -983,7 +1019,6 @@ export function SortableSessionCard({
 
     flushSync(() => {
       setContextMenuPosition(undefined);
-      useSidebarStore.getState().setSessionsSleepingLocally(targetSessionIds, true);
     });
     vscode.postMessage({
       sessionIds: targetSessionIds,
@@ -993,7 +1028,7 @@ export function SortableSessionCard({
   };
 
   const requestCloseBelow = () => {
-    const targetSessionIds = readLatestSessionIdsBelow();
+    const targetSessionIds = [...readLatestSessionIdsBelow()];
     if (targetSessionIds.length === 0) {
       return;
     }
@@ -1124,11 +1159,10 @@ export function SortableSessionCard({
      * sleepable terminal/agent rows, while Close below removes every visible
      * row beneath the clicked session in the current sidebar order.
      *
-     * CDXC:SidebarContextMenu 2026-06-09-23:32:
-     * "Below" must use rendered sidebar order across project groups, not only
-     * the current group's session slice. Snapshot rendered rows at menu open and
-     * recalculate them on click so zmx-backed rows below the group boundary are
-     * sent to the native/gxserver lifecycle path.
+     * CDXC:SidebarContextMenu 2026-06-10-10:01:
+     * Sleep below is scoped to the clicked session's current project/group, not
+     * every rendered row lower in the sidebar. Do not paint rows as sleeping
+     * before native/gxserver confirms the zmx provider was actually stopped.
      */
     if (sleepableSessionIdsBelow.length > 0) {
       belowActions.push({
@@ -1374,8 +1408,9 @@ export function SortableSessionCard({
     });
   }
 
-  const destructiveActions: SessionContextMenuAction[] = [
-    {
+  const destructiveActions: SessionContextMenuAction[] = [];
+  if (showSessionCloseContextMenuAction) {
+    destructiveActions.push({
       danger: true,
       icon: (
         <IconX aria-hidden="true" className="session-context-menu-icon" size={16} stroke={1.8} />
@@ -1385,12 +1420,16 @@ export function SortableSessionCard({
        * User-facing session removal language is Close. Keep the
        * destructive action behavior unchanged while making terminal, T3, and
        * browser context menus use the same visible verb.
+       *
+       * CDXC:SidebarContextMenu 2026-06-10-13:58:
+       * The Close menu item is hidden by default and appears only when the
+       * Session Cards setting opts into destructive close actions in menus.
        */
       key: "close",
       label: "Close",
       onClick: () => requestClose("context-menu"),
-    },
-  ];
+    });
+  }
   const contextMenuSections = [primaryActions, sessionActions, belowActions, destructiveActions].filter(
     (section) => section.length > 0,
   );

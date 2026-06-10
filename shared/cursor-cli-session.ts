@@ -62,65 +62,85 @@ export function appendCursorCliResumeFlag(agentCommand: string, chatId: string):
 }
 
 /**
- * CDXC:CursorCLI 2026-05-20-08:20:
- * Native full-reload and copy-resume run this script when `agentSessionId` is
- * missing but the persisted terminal title is trusted. It scans the current
- * project's Cursor chat store and returns the newest chat whose `name` matches.
+ * CDXC:CursorCLI 2026-06-10-18:17:
+ * Native full-reload and copy-resume run this script through Ghostex's bundled
+ * Node runtime, not Python or system sqlite. It scans the current project's
+ * Cursor chat store and returns the newest chat whose `name` matches.
  */
 export function getCursorChatSessionLookupScript(): string {
-  return `import hashlib
-import json
-import pathlib
-import sqlite3
-import sys
+  return `const crypto = require("node:crypto");
+const fs = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
+const { DatabaseSync } = require("node:sqlite");
 
-project_path = sys.argv[1].strip()
-title = sys.argv[2].strip()
-if not project_path or not title:
-    sys.exit(1)
+const [projectPath = "", title = ""] = process.argv.slice(1).map((value) => String(value || "").trim());
+if (!projectPath || !title) {
+  process.exit(1);
+}
 
-project_hash = hashlib.md5(project_path.encode()).hexdigest()
-chats_dir = pathlib.Path.home() / ".cursor" / "chats" / project_hash
-if not chats_dir.is_dir():
-    sys.exit(1)
+const projectHash = crypto.createHash("md5").update(projectPath).digest("hex");
+const chatsDir = path.join(os.homedir(), ".cursor", "chats", projectHash);
+let chatDirs;
+try {
+  chatDirs = fs.readdirSync(chatsDir, { withFileTypes: true });
+} catch {
+  process.exit(1);
+}
 
-def parse_meta_value(raw):
-    raw = raw.strip()
-    if raw.startswith("{"):
-        return json.loads(raw)
-    return json.loads(bytes.fromhex(raw).decode("utf-8"))
+function parseMetaValue(raw) {
+  const value = String(raw || "").trim();
+  if (value.startsWith("{")) {
+    return JSON.parse(value);
+  }
+  return JSON.parse(Buffer.from(value, "hex").toString("utf8"));
+}
 
-matches = []
-for chat_dir in chats_dir.iterdir():
-    if not chat_dir.is_dir():
-        continue
-    db_path = chat_dir / "store.db"
-    if not db_path.is_file():
-        continue
-    try:
-        connection = sqlite3.connect(db_path)
-        rows = connection.execute("select value from meta").fetchall()
-        connection.close()
-    except Exception:
-        continue
-    for row in rows:
-        try:
-            meta = parse_meta_value(str(row[0] or ""))
-        except Exception:
-            continue
-        name = str(meta.get("name") or "").strip()
-        if name != title:
-            continue
-        chat_id = str(meta.get("agentId") or chat_dir.name).strip()
-        if not chat_id:
-            continue
-        created_at = int(meta.get("createdAt") or 0)
-        matches.append((created_at, chat_id))
+const matches = [];
+for (const chatDir of chatDirs) {
+  if (!chatDir.isDirectory()) {
+    continue;
+  }
+  const dbPath = path.join(chatsDir, chatDir.name, "store.db");
+  if (!fs.existsSync(dbPath)) {
+    continue;
+  }
+  let db;
+  let rows;
+  try {
+    db = new DatabaseSync(dbPath, { readOnly: true });
+    rows = db.prepare("select value from meta").all();
+  } catch {
+    rows = [];
+  } finally {
+    try {
+      db?.close();
+    } catch {}
+  }
+  for (const row of rows) {
+    let meta;
+    try {
+      meta = parseMetaValue(row.value);
+    } catch {
+      continue;
+    }
+    if (String(meta.name || "").trim() !== title) {
+      continue;
+    }
+    const chatId = String(meta.agentId || chatDir.name).trim();
+    if (!chatId) {
+      continue;
+    }
+    const createdAt = Number(meta.createdAt || 0);
+    matches.push({ chatId, createdAt: Number.isFinite(createdAt) ? createdAt : 0 });
+  }
+}
 
-if not matches:
-    sys.exit(1)
+if (!matches.length) {
+  process.exit(1);
+}
 
-matches.sort()
-sys.stdout.write(matches[-1][1])
+matches.sort((left, right) => left.createdAt - right.createdAt);
+process.stdout.write(matches[matches.length - 1].chatId);
 `;
 }

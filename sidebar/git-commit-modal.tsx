@@ -405,11 +405,6 @@ export function GitCommitModal({
                         <span className="git-commit-branch-name">
                           {draft.branch ?? "(detached HEAD)"}
                         </span>
-                        {draft.isDefaultRef ? (
-                          <span className="git-commit-default-branch-note">
-                            Note: Publishing to Main
-                          </span>
-                        ) : null}
                       </div>
                     ) : null}
                     {isEditingFiles && changedFiles.length > 0 ? (

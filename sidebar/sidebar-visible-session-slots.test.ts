@@ -4,7 +4,6 @@ import {
   createRenderedSidebarSessionSlotIds,
   createRenderedSidebarSessionSlots,
   createVisibleSidebarSessionSlotIds,
-  resolveRenderedSidebarSessionIdsBelow,
   resolveAdjacentRenderedSidebarSessionSlotId,
   resolveVisibleSidebarSessionSlotId,
   type RenderedSidebarSessionSlotElement,
@@ -69,6 +68,7 @@ describe("createVisibleSidebarSessionSlotIds", () => {
         },
         isReferenceChatsCollapsed: false,
         isReferenceProjectsCollapsed: false,
+        projectSessionListCollapsedCount: PROJECT_SESSION_LIST_COLLAPSED_COUNT,
         projectSessionListCollapsedState: {
           "project-id": true,
         },
@@ -91,32 +91,6 @@ describe("createRenderedSidebarSessionSlotIds", () => {
         renderedSlotElement({ sessionId: "visible-session-2" }),
       ]),
     ).toEqual(["visible-session-1", "visible-session-2"]);
-  });
-});
-
-describe("resolveRenderedSidebarSessionIdsBelow", () => {
-  test("returns every rendered row beneath the clicked session across groups", () => {
-    /*
-     * CDXC:SidebarContextMenu 2026-06-09-23:32:
-     * Sleep below must fan out to the rendered rows beneath the clicked card,
-     * even when those rows are in later project groups, so every selected
-     * zmx-backed session reaches the native/gxserver sleep path.
-     */
-    expect(
-      resolveRenderedSidebarSessionIdsBelow({
-        sessionId: "session-2",
-        visibleSessionIds: ["session-1", "session-2", "session-3", "session-4"],
-      }),
-    ).toEqual(["session-3", "session-4"]);
-  });
-
-  test("returns no targets when the clicked session is not currently rendered", () => {
-    expect(
-      resolveRenderedSidebarSessionIdsBelow({
-        sessionId: "missing-session",
-        visibleSessionIds: ["session-1", "session-2"],
-      }),
-    ).toEqual([]);
   });
 });
 

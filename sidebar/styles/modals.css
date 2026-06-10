@@ -2100,13 +2100,6 @@
   white-space: nowrap;
 }
 
-.git-commit-default-branch-note {
-  color: color-mix(in srgb, var(--foreground) 70%, var(--muted-foreground) 30%);
-  font-size: 14px;
-  font-weight: 750;
-  white-space: nowrap;
-}
-
 .git-commit-files-header {
   align-items: center;
   display: flex;
