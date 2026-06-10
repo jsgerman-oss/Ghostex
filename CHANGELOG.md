@@ -13,6 +13,19 @@
 <!-- CDXC:Distribution 2026-06-08-14:24: Release notes for 4.0.2 must cover packaged Beads/code-server runtime fixes, terminal image paste controls, gxserver-backed attention side effects, command completion sound reliability, T3 runtime startup stability, Git workflow toast cleanup, and Android scrollback behavior. -->
 <!-- CDXC:Distribution 2026-06-08-20:20: Release notes for 4.0.3 must cover remote attach terminals, remote setup feedback, Quick agent launching, titlebar mode guards, Sparkle update UI behavior, bundled editor defaults, sidebar resize polish, and smaller macOS app bundles while keeping internal release validation details out of public notes. -->
 <!-- CDXC:Distribution 2026-06-09-23:55: Release notes for 4.1.0 must cover the reused public version, new Android APK link, remote SSH password auth, session identity protections, prompt-editor focus repair, sidebar live-update stability, TUI refresh, and packaged editor runtime fixes without exposing implementation-only release details. -->
+<!-- CDXC:Distribution 2026-06-10-21:05: Release notes for 4.1.5 must cover bundled-runtime hook reliability, Claude wake recovery for migrated sessions, sidebar sleep semantics, project-board Beads prefix alignment, Chromium zoom controls, Show less/Close menu settings, remote edit entry points, stale zmx wake activity suppression, and arm64-only macOS distribution without implementation-only bullets. -->
+
+## 4.1.5 - 2026-06-10
+
+- Installed agent hooks, gxserver resume lookup, native sidebar state helpers, and Electron command-pane updates now run through Ghostex-owned bundled runtimes instead of `/usr/bin/python3` or user-installed Node interpreters, so hook sidecars and command status updates keep working on machines without Python.
+- Claude sessions migrated from Ghostex 3.6 can wake more reliably because gxserver repair backfills transcript paths and saved resume commands, and wake resolves Claude's real session id before running `claude --resume` instead of trusting a sidebar title.
+- Context-menu Sleep no longer parks a row as sleeping while the zmx provider is still alive; Wake and intentional close flows still show immediate sleeping feedback until the host snapshot confirms the same state.
+- Project board ticket creation reconciles each project's Beads issue prefix before mutations, and local board actions send both project id and project path so gxserver can reject stale URL/id mismatches.
+- The sidebar adds a configurable Show less row count, a Close menu visibility setting, and remote-session edit entry points for quicker day-to-day session management.
+- Chromium-embedded panes support standard zoom in, zoom out, and reset shortcuts from the toolbar.
+- Waking zmx sessions no longer replays stale working/attention activity from the pre-sleep snapshot.
+- Project and Kanban flows require Ghostex's bundled Beads CLI and ignore unrelated `bd` binaries already on PATH.
+- Future macOS Sparkle, GitHub, and Homebrew releases ship Apple Silicon builds only.
 
 ## 4.1.0 - 2026-06-09
 

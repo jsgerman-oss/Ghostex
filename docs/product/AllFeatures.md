@@ -1,6 +1,16 @@
 
 ## All features:
 
+- 4.1.5 improves bundled-runtime hook reliability, Claude wake recovery for migrated sessions, sidebar sleep semantics, project-board Beads prefix alignment, Chromium zoom controls, Show less/Close menu settings, remote edit entry points, stale zmx wake activity suppression, and arm64-only macOS distribution.
+- Installed agent hooks, gxserver resume lookup, native sidebar state helpers, and Electron command-pane updates run through Ghostex-owned bundled runtimes instead of `/usr/bin/python3` or user-installed Node interpreters.
+- Claude sessions migrated from Ghostex 3.6 can wake more reliably because gxserver repair backfills transcript paths and saved resume commands before `claude --resume`.
+- Context-menu Sleep defers to zmx provider shutdown instead of showing a sleeping row while the provider stays alive; Wake and intentional close flows still show immediate sleeping feedback until the host snapshot confirms state.
+- Project board ticket creation reconciles each project's Beads issue prefix before mutations, and local board actions send both project id and project path for safer gxserver routing.
+- The sidebar adds a configurable Show less row count, a Close menu visibility setting, and remote-session edit entry points.
+- Chromium-embedded panes support standard zoom in, zoom out, and reset shortcuts from the toolbar.
+- Waking zmx sessions no longer replays stale working/attention activity from the pre-sleep snapshot.
+- Project and Kanban flows require Ghostex's bundled Beads CLI and ignore unrelated `bd` binaries already on PATH.
+- Future macOS Sparkle, GitHub, and Homebrew releases ship Apple Silicon builds only.
 - 4.1.0 adds Keychain-backed Remote SSH passwords, safer cross-agent session identity handling, more reliable Ctrl+G prompt-editor focus return, lower-churn sidebar live updates, safer session context menus, refreshed TUI styling and agent labels, stronger packaged editor runtime builds, and an updated Android APK download.
 - Remote machine SSH passwords can be saved in macOS Keychain and used for SSH, SCP, and tunnel connections without storing raw passwords in Ghostex settings.
 - Agent hook and session-state updates reject mismatched launch identities so one agent terminal does not inherit another row's status, title, completion event, or resume identity.
