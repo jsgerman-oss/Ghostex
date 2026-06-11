@@ -12,6 +12,7 @@ import {
   buildGxserverZmxChildEnvironment,
   buildZmxRunCommand,
   buildZmxSendCommand,
+  buildZmxShellProviderCommand,
   decideStartupTextDisposition,
   GXSERVER_ZMX_SEND_TEXT_LIMIT_BYTES,
   probeZmxSession,
@@ -29,6 +30,7 @@ test("zmx attach command preserves the renderer shell contract", () => {
     gxserverAuthTokenFile: "/Users/test/.ghostex/gxserver/auth/token",
     gxserverBaseUrl: "http://127.0.0.1:58744",
     gxserverProtocolVersion: 5,
+    promptEditor: "monaco",
     sessionName: "S1a-P3a91-G8v20",
     title: "Agent task",
     zmxExecutablePath: "/Applications/Ghostex.app/Contents/Resources/Web/bin/zmx",
@@ -48,7 +50,6 @@ test("zmx attach command preserves the renderer shell contract", () => {
   assert.match(command, /http:\/\/127\.0\.0\.1:58744/);
   assert.match(command, /\/Users\/test\/\.ghostex\/gxserver\/auth\/token/);
   assert.match(command, /zmx_prompt_editor_attach_args=/);
-  assert.match(command, /GHOSTEX_PROMPT_EDITOR_BACKEND/);
   assert.match(command, /--prompt-editor=monaco/);
   assert.match(command, /"\$zmx_bin" list --short/);
   assert.match(command, /\/bin\/zsh -lc "\$zmx_title_notice_command"/);
@@ -56,6 +57,24 @@ test("zmx attach command preserves the renderer shell contract", () => {
   assert.match(command, /cd "\$zmx_cwd" \|\| exit/);
   assert.match(command, /exec "\$zmx_bin" attach \$zmx_prompt_editor_attach_args "\$zmx_session"/);
   assert.doesNotMatch(command, /command -v zmx/);
+});
+
+test("zmx attach command defaults to gte when prompt editor capability is omitted", () => {
+  /*
+  CDXC:GxserverVerification 2026-06-11-18:24:
+  zmx attach capability is explicit per current client. If a client does not ask
+  for Monaco, the generated attach command must not infer it from environment so
+  TUI, Android, iOS, and SSH attaches keep using gte.
+  */
+  const command = buildZmxAttachCommand({
+    cwd: "/repo/ghostex",
+    sessionName: "S1a-P3a91-G8v20",
+    zmxExecutablePath: "/bundle/zmx",
+  });
+
+  assert.match(command, /zmx_prompt_editor_attach_args=/);
+  assert.doesNotMatch(command, /--prompt-editor=monaco/);
+  assert.doesNotMatch(command, /GHOSTEX_PROMPT_EDITOR_BACKEND/);
 });
 
 test("startup text is queued only for missing provider sessions", () => {
@@ -215,7 +234,13 @@ test("zmx run startup command is prefixed once for Atuin history ignore", () => 
   });
 
   assert.match(command, /zmx_startup_text=' codex resume abc'/);
-  assert.match(command, /zmx_startup_command=' codex resume abc\nexec \/bin\/zsh -li'/);
+  assert.match(command, /ghostex_prompt_editor_wrapper="\$ghostex_prompt_editor_home\/state\/prompt-editor"/);
+  assert.match(command, /export EDITOR="\$ghostex_prompt_editor_wrapper"/);
+  assert.match(command, /GHOSTEX_CLI_EXECUTABLE/);
+  assert.match(command, /exec "\$GHOSTEX_CLI_EXECUTABLE" prompt-editor "\$@"/);
+  assert.match(command, /exec ghostex prompt-editor "\$@"/);
+  assert.match(command, /exec gte "\$@"/);
+  assert.match(command, /zmx_startup_command='[\s\S]* codex resume abc\nexec \/bin\/zsh -li'/);
   assert.match(command, /export GHOSTEX_ZMX_BIN="\$zmx_bin"/);
   assert.match(command, /unset .*GHOSTEX_NATIVE_SESSION_ID/);
   assert.match(command, /exec "\$zmx_bin" run "\$zmx_session" -d --initial-command \/bin\/zsh -lic "\$zmx_startup_command"/);
@@ -228,6 +253,32 @@ test("zmx run startup command is prefixed once for Atuin history ignore", () => 
   });
   assert.match(alreadyPrefixed, /zmx_startup_text=' codex resume abc'/);
   assert.doesNotMatch(alreadyPrefixed, /zmx_startup_command='  codex/);
+});
+
+test("zmx shell provider command installs the neutral prompt-editor wrapper before login shell", () => {
+  /*
+  CDXC:GxserverVerification 2026-06-11-18:24:
+  Plain terminal providers can be created by non-desktop clients and later used
+  from macOS/Electron. Assert the provider starts with the same neutral wrapper
+  as agent providers without writing setup text into an already-live terminal.
+  */
+  const command = buildZmxShellProviderCommand({
+    cwd: "/repo/ghostex",
+    globalSessionRef: "S1a:P3a91:G8v20",
+    gxserverAuthTokenFile: "/Users/test/.ghostex/gxserver/auth/token",
+    gxserverBaseUrl: "http://127.0.0.1:58744",
+    gxserverProtocolVersion: 5,
+    sessionName: "S1a-P3a91-G8v20",
+    zmxExecutablePath: "/bundle/zmx",
+  });
+
+  assert.match(command, /zmx_shell_command='[\s\S]*ghostex_prompt_editor_wrapper="\$ghostex_prompt_editor_home\/state\/prompt-editor"/);
+  assert.match(command, /export EDITOR="\$ghostex_prompt_editor_wrapper"/);
+  assert.match(command, /exec "\$GHOSTEX_CLI_EXECUTABLE" prompt-editor "\$@"/);
+  assert.match(command, /exec ghostex prompt-editor "\$@"/);
+  assert.match(command, /exec gte "\$@"/);
+  assert.match(command, /exec "\$zmx_bin" run "\$zmx_session" -d --initial-command \/bin\/zsh -lic "\$zmx_shell_command"/);
+  assert.doesNotMatch(command, /--initial-command \/bin\/zsh -li$/);
 });
 
 test("zmx command runner caps output and pipes stdin without argv payloads", async () => {
@@ -253,7 +304,7 @@ test("zmx command runner caps output and pipes stdin without argv payloads", asy
   assert.match(capped.stderr, /stdout exceeded 25 bytes/);
 });
 
-test("zmx child environment strips inherited color-disabling, macOS launch identity, and session identity variables", () => {
+test("zmx child environment strips inherited terminal, color, macOS launch, and session identity variables", () => {
   /*
   CDXC:GxserverZmxLifecycle 2026-06-07-00:38:
   Forked agent providers must stay color-capable even when gxserver starts from an agent terminal with NO_COLOR-style variables. Assert the zmx runner removes those inherited keys before spawning the shell that starts zmx and agent CLIs.
@@ -265,6 +316,9 @@ test("zmx child environment strips inherited color-disabling, macOS launch ident
   zmx providers must not inherit stale Ghostex local/native session identity
   from the terminal that launched gxserver. Assert those keys are stripped while
   provider scripts re-export the current global session identity explicitly.
+
+  CDXC:GxserverZmxLifecycle 2026-06-10-23:19:
+  Command panes can start zmx providers through gxserver before native Ghostty creates the attach surface. Assert gxserver replaces inherited TERM=dumb and stale terminal identity with a terminal-capable environment before zmx execs provider shells, using xterm-ghostty only when matching bundled TERMINFO is available.
   */
   const preservedEnvironmentKeys = ["SECURITYSESSIONID", "SSH_AUTH_SOCK"] as const;
   const sessionIdentityEnvironmentKeys = [
@@ -275,6 +329,13 @@ test("zmx child environment strips inherited color-disabling, macOS launch ident
     "VSMUX_SESSION_ID",
     "ZMX_SESSION",
   ] as const;
+  const terminalEnvironmentKeys = [
+    "COLORTERM",
+    "TERM",
+    "TERMINFO",
+    "TERM_PROGRAM",
+    "TERM_PROGRAM_VERSION",
+  ] as const;
   const environmentKeys = [
     "ANSI_COLORS_DISABLED",
     "LaunchInstanceID",
@@ -284,31 +345,55 @@ test("zmx child environment strips inherited color-disabling, macOS launch ident
     "XPC_SERVICE_NAME",
     "__CFBundleIdentifier",
     ...sessionIdentityEnvironmentKeys,
+    ...terminalEnvironmentKeys,
     ...preservedEnvironmentKeys,
   ] as const;
   const environment: NodeJS.ProcessEnv = {};
   for (const key of environmentKeys) {
     environment[key] = "present";
   }
+  environment.COLORTERM = "false";
+  environment.GHOSTTY_RESOURCES_DIR = "/Applications/Ghostex.app/Contents/Resources/ghostty";
   environment.PATH = "/usr/bin:/bin";
+  environment.TERM = "dumb";
+  environment.TERMINFO = "/stale/terminfo";
+  environment.TERM_PROGRAM = "not-ghostty";
+  environment.TERM_PROGRAM_VERSION = "stale";
 
   assert.deepEqual(summarizeZmxChildEnvironmentSanitization(environment), {
     colorDisablingKeyCount: 3,
     macosLaunchIdentityKeyCount: 4,
     preservedSshAuthSock: true,
     sessionIdentityKeyCount: 6,
-    strippedKeyCount: 13,
+    strippedKeyCount: 18,
+    terminalEnvironmentKeyCount: 5,
   });
   const sanitized = buildGxserverZmxChildEnvironment(environment);
   for (const key of environmentKeys) {
-    if (preservedEnvironmentKeys.includes(key as (typeof preservedEnvironmentKeys)[number])) {
+    if (
+      preservedEnvironmentKeys.includes(key as (typeof preservedEnvironmentKeys)[number]) ||
+      terminalEnvironmentKeys.includes(key as (typeof terminalEnvironmentKeys)[number])
+    ) {
       continue;
     }
     assert.equal(sanitized[key], undefined);
   }
+  assert.equal(sanitized.COLORTERM, "truecolor");
+  assert.equal(sanitized.GHOSTTY_RESOURCES_DIR, "/Applications/Ghostex.app/Contents/Resources/ghostty");
   assert.equal(sanitized.PATH, "/usr/bin:/bin");
   assert.equal(sanitized.SECURITYSESSIONID, "present");
   assert.equal(sanitized.SSH_AUTH_SOCK, "present");
+  assert.equal(sanitized.TERM, "xterm-ghostty");
+  assert.equal(sanitized.TERMINFO, "/Applications/Ghostex.app/Contents/Resources/terminfo");
+  assert.equal(sanitized.TERM_PROGRAM, "ghostty");
+  assert.equal(sanitized.TERM_PROGRAM_VERSION, undefined);
+
+  const sanitizedWithoutGhosttyResources = buildGxserverZmxChildEnvironment({
+    TERM: "dumb",
+    TERMINFO: "/stale/terminfo",
+  });
+  assert.equal(sanitizedWithoutGhosttyResources.TERM, "xterm-256color");
+  assert.equal(sanitizedWithoutGhosttyResources.TERMINFO, undefined);
 });
 
 test("startup restore selects active visible sessions, not every stored session", () => {

@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import { stat } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import type {
   GxserverProviderKillResult,
   GxserverProviderLifecycleState,
@@ -47,6 +48,17 @@ const GXSERVER_COLOR_DISABLING_ENVIRONMENT_KEYS = [
   "NO_COLOR",
   "NODE_DISABLE_COLORS",
 ] as const;
+const GXSERVER_TERMINAL_ENVIRONMENT_KEYS = [
+  "COLORTERM",
+  "TERM",
+  "TERMINFO",
+  "TERM_PROGRAM",
+  "TERM_PROGRAM_VERSION",
+] as const;
+const GXSERVER_ZMX_PROVIDER_COLORTERM = "truecolor";
+const GXSERVER_ZMX_PROVIDER_GENERIC_TERM = "xterm-256color";
+const GXSERVER_ZMX_PROVIDER_GHOSTTY_TERM = "xterm-ghostty";
+const GXSERVER_ZMX_PROVIDER_TERM_PROGRAM = "ghostty";
 const GXSERVER_MACOS_LAUNCH_IDENTITY_ENVIRONMENT_KEYS = [
   "LaunchInstanceID",
   "XPC_FLAGS",
@@ -84,6 +96,7 @@ export interface GxserverZmxChildEnvironmentSanitizationSummary {
   preservedSshAuthSock: boolean;
   sessionIdentityKeyCount: number;
   strippedKeyCount: number;
+  terminalEnvironmentKeyCount: number;
 }
 
 export interface GxserverZmxAttachCommandInput {
@@ -92,6 +105,7 @@ export interface GxserverZmxAttachCommandInput {
   gxserverAuthTokenFile?: string;
   gxserverBaseUrl?: string;
   gxserverProtocolVersion?: number;
+  promptEditor?: "monaco";
   sessionName: GxserverZmxSessionName;
   title?: string;
   zmxExecutablePath: string;
@@ -103,6 +117,7 @@ export interface GxserverZmxRunCommandInput {
   gxserverAuthTokenFile?: string;
   gxserverBaseUrl?: string;
   gxserverProtocolVersion?: number;
+  promptEditor?: "monaco";
   sessionName: GxserverZmxSessionName;
   startupText: string;
   zmxExecutablePath: string;
@@ -152,6 +167,7 @@ does not resolve a stale PATH zmx before deciding whether Monaco is available.
 export function buildZmxAttachCommand(input: GxserverZmxAttachCommandInput): string {
   const persistenceNoticeCommand = persistenceNoticeShellCommand(input.sessionName);
   const titleNoticeCommand = sessionTitleShellCommand(input.title);
+  const promptEditorAttachArgs = input.promptEditor === "monaco" ? "--prompt-editor=monaco" : "";
   const script = `
 zmx_session=${shellQuote(input.sessionName)}
 zmx_cwd=${shellQuote(input.cwd)}
@@ -162,10 +178,7 @@ zmx_gxserver_protocol_version=${shellQuote(String(input.gxserverProtocolVersion 
 zmx_persistence_notice_command=${shellQuote(persistenceNoticeCommand)}
 zmx_title_notice_command=${shellQuote(titleNoticeCommand)}
 zmx_bin=${shellQuote(input.zmxExecutablePath)}
-zmx_prompt_editor_attach_args=
-if [ "$GHOSTEX_PROMPT_EDITOR_BACKEND" = "monaco" ] && [ "$GHOSTEX_PROMPT_EDITOR_CLIENT" = "macos-app" ]; then
-  zmx_prompt_editor_attach_args='--prompt-editor=monaco'
-fi
+zmx_prompt_editor_attach_args=${shellQuote(promptEditorAttachArgs)}
 if [ ! -x "$zmx_bin" ]; then
   printf '%s\\n' 'session persistence is set to zmx, but Ghostex bundled zmx was not found.'
   exit 127
@@ -260,7 +273,7 @@ export function buildZmxRunCommand(input: GxserverZmxRunCommandInput): string {
   `zmx run` normally sends command text through the provider PTY, which makes large restore wrappers appear in scrollback. Use zmx's initial-command mode so the missing provider execs the zsh wrapper as its first process instead of typing it into a shell.
   */
   const startupCommand = withAtuinIgnoredShellHistoryPrefix(input.startupText.replace(/[\r\n]+$/u, ""));
-  const providerShellCommand = `${startupCommand}\nexec /bin/zsh -li`;
+  const providerShellCommand = `${zmxProviderPromptEditorSetupShellCommand()}\n${startupCommand}\nexec /bin/zsh -li`;
   return `
 zmx_session=${shellQuote(input.sessionName)}
 zmx_cwd=${shellQuote(input.cwd)}
@@ -302,7 +315,15 @@ export function buildZmxShellProviderCommand(input: GxserverZmxShellProviderComm
   /*
   CDXC:GxserverZmxLifecycle 2026-06-09-09:53:
   TUI, CLI, and mobile clients can create plain terminal sessions before any macOS renderer exists. A missing blank terminal must still get a real detached zmx provider through gxserver so the daemon can persist providerState=exists, publish the presentation row, and keep every client sidebar in sync before the interactive attach process takes over.
+
+  CDXC:PromptEditor 2026-06-11-18:24:
+  Plain zmx providers also need the neutral prompt-editor wrapper because a shell
+  created first by TUI/mobile can later run an agent CLI from macOS/Electron.
+  Install the wrapper through zmx initial-command before the login shell starts,
+  preserving the gxserver restore rule that no setup text is pasted into a live
+  terminal.
   */
+  const providerShellCommand = `${zmxProviderPromptEditorSetupShellCommand()}\nexec /bin/zsh -li`;
   return `
 zmx_session=${shellQuote(input.sessionName)}
 zmx_cwd=${shellQuote(input.cwd)}
@@ -310,6 +331,7 @@ zmx_global_session_ref=${shellQuote(input.globalSessionRef ?? "")}
 zmx_gxserver_auth_token_file=${shellQuote(input.gxserverAuthTokenFile ?? "")}
 zmx_gxserver_base_url=${shellQuote(input.gxserverBaseUrl ?? "")}
 zmx_gxserver_protocol_version=${shellQuote(String(input.gxserverProtocolVersion ?? ""))}
+zmx_shell_command=${shellQuote(providerShellCommand)}
 zmx_bin=${shellQuote(input.zmxExecutablePath)}
 if [ ! -x "$zmx_bin" ]; then
   printf '%s\\n' 'session persistence is set to zmx, but Ghostex bundled zmx was not found.' >&2
@@ -330,7 +352,44 @@ if [ -n "$zmx_gxserver_protocol_version" ]; then
   export GHOSTEX_GXSERVER_PROTOCOL_VERSION="$zmx_gxserver_protocol_version"
 fi
 cd "$zmx_cwd" || exit
-exec "$zmx_bin" run "$zmx_session" -d --initial-command /bin/zsh -li
+exec "$zmx_bin" run "$zmx_session" -d --initial-command /bin/zsh -lic "$zmx_shell_command"
+`.trim();
+}
+
+function zmxProviderPromptEditorSetupShellCommand(): string {
+  /*
+  CDXC:PromptEditor 2026-06-11-18:24:
+  gxserver-created zmx providers may start before any desktop renderer attaches,
+  and the provider can later be driven by macOS/Electron, TUI, Android, or iOS.
+  Export a neutral Ghostex prompt-editor wrapper before the agent startup command
+  runs; the wrapper asks zmx for the current leader client's advertised Monaco
+  capability, so the same long-lived session opens Monaco from desktop attaches
+  and gte from clients that did not advertise Monaco. Keep this in the zmx
+  initial-command shell, not terminalReady startup text, so restore wrappers are
+  never pasted into an already-live terminal.
+  */
+  return String.raw`
+ghostex_prompt_editor_home="\${GHOSTEX_HOME:-$HOME/.ghostex}"
+ghostex_prompt_editor_wrapper="$ghostex_prompt_editor_home/state/prompt-editor"
+mkdir -p "\${ghostex_prompt_editor_wrapper:h}" 2>/dev/null || true
+cat > "$ghostex_prompt_editor_wrapper" <<'__GHOSTEX_PROMPT_EDITOR_WRAPPER__'
+#!/bin/zsh
+if [ -n "\${GHOSTEX_ZMX_BIN:-}" ] && [ -x "\${GHOSTEX_ZMX_BIN:-}" ]; then
+  export GHOSTEX_ZMX_BIN
+fi
+if [ -n "\${GHOSTEX_CLI_EXECUTABLE:-}" ] && [ -x "\${GHOSTEX_CLI_EXECUTABLE:-}" ]; then
+  exec "$GHOSTEX_CLI_EXECUTABLE" prompt-editor "$@"
+fi
+if command -v ghostex >/dev/null 2>&1; then
+  exec ghostex prompt-editor "$@"
+fi
+exec gte "$@"
+__GHOSTEX_PROMPT_EDITOR_WRAPPER__
+chmod 755 "$ghostex_prompt_editor_wrapper" 2>/dev/null || true
+export EDITOR="$ghostex_prompt_editor_wrapper"
+export VISUAL="$ghostex_prompt_editor_wrapper"
+export GHOSTEX_PROMPT_EDITOR_BACKEND="\${GHOSTEX_PROMPT_EDITOR_BACKEND:-monaco}"
+export GHOSTEX_PROMPT_EDITING_ENABLED=1
 `.trim();
 }
 
@@ -612,14 +671,27 @@ export function buildGxserverZmxChildEnvironment(environment: NodeJS.ProcessEnv 
   local/native session env may name the wrong pane. Strip those keys before zmx
   provider scripts export the current global S:P:G identity for prompt-editor
   hooks and return-focus routing.
+
+  CDXC:GxserverZmxLifecycle 2026-06-10-23:19:
+  gxserver-started zmx providers can launch before native Ghostty sanitizes terminal env, so inherited GUI or LaunchServices TERM=dumb must not reach provider login shells. Strip terminal identity keys and publish Ghostex's color-capable terminal env at the gxserver boundary; use xterm-ghostty only when bundled TERMINFO can be published.
   */
   const sanitized = { ...environment };
   for (const key of [
     ...GXSERVER_COLOR_DISABLING_ENVIRONMENT_KEYS,
+    ...GXSERVER_TERMINAL_ENVIRONMENT_KEYS,
     ...GXSERVER_MACOS_LAUNCH_IDENTITY_ENVIRONMENT_KEYS,
     ...GXSERVER_SESSION_IDENTITY_ENVIRONMENT_KEYS,
   ]) {
     delete sanitized[key];
+  }
+  sanitized.COLORTERM = GXSERVER_ZMX_PROVIDER_COLORTERM;
+  sanitized.TERM_PROGRAM = GXSERVER_ZMX_PROVIDER_TERM_PROGRAM;
+  const ghosttyResourcesDir = normalizedEnvironmentValue(sanitized.GHOSTTY_RESOURCES_DIR);
+  if (ghosttyResourcesDir) {
+    sanitized.TERM = GXSERVER_ZMX_PROVIDER_GHOSTTY_TERM;
+    sanitized.TERMINFO = join(dirname(ghosttyResourcesDir), "terminfo");
+  } else {
+    sanitized.TERM = GXSERVER_ZMX_PROVIDER_GENERIC_TERM;
   }
   return sanitized;
 }
@@ -633,17 +705,25 @@ export function summarizeZmxChildEnvironmentSanitization(
     GXSERVER_MACOS_LAUNCH_IDENTITY_ENVIRONMENT_KEYS,
   );
   const sessionIdentityKeyCount = countPresentEnvironmentKeys(environment, GXSERVER_SESSION_IDENTITY_ENVIRONMENT_KEYS);
+  const terminalEnvironmentKeyCount = countPresentEnvironmentKeys(environment, GXSERVER_TERMINAL_ENVIRONMENT_KEYS);
   return {
     colorDisablingKeyCount,
     macosLaunchIdentityKeyCount,
     preservedSshAuthSock: environment.SSH_AUTH_SOCK !== undefined,
     sessionIdentityKeyCount,
-    strippedKeyCount: colorDisablingKeyCount + macosLaunchIdentityKeyCount + sessionIdentityKeyCount,
+    strippedKeyCount:
+      colorDisablingKeyCount + macosLaunchIdentityKeyCount + sessionIdentityKeyCount + terminalEnvironmentKeyCount,
+    terminalEnvironmentKeyCount,
   };
 }
 
 function countPresentEnvironmentKeys(environment: NodeJS.ProcessEnv, keys: readonly string[]): number {
   return keys.reduce((count, key) => count + (environment[key] === undefined ? 0 : 1), 0);
+}
+
+function normalizedEnvironmentValue(value: string | undefined): string | undefined {
+  const trimmed = value?.trim() ?? "";
+  return trimmed || undefined;
 }
 
 export function runZshScript(script: string, options: GxserverZmxCommandOptions = {}): Promise<GxserverZmxCommandResult> {
