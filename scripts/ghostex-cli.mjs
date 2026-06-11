@@ -1935,12 +1935,14 @@ function normalizeCliSessionActivity(value) {
 }
 
 async function fetchAttachMetadataForSession(session, flags = {}) {
+  const promptEditor = promptEditorAttachModeFromFlags(flags);
   const result = await callGxserverRpc(
     "/api/attachSessionMetadata",
-    {
+    compactObject({
       projectId: session.projectId ?? projectIdFromGlobalRef(session.globalRef),
+      promptEditor,
       sessionId: session.sessionId,
-    },
+    }),
     flags,
   );
   return result.attach;
@@ -1958,12 +1960,25 @@ async function startMissingProviderForCliAttach(session, attach, flags = {}) {
     "/api/startSessionProvider",
     compactObject({
       projectId: attach.session?.projectId ?? session.projectId ?? projectIdFromGlobalRef(session.globalRef),
+      promptEditor: promptEditorAttachModeFromFlags(flags),
       sessionId: attach.session?.sessionId ?? session.sessionId,
       startupText: attach.startupText,
     }),
     flags,
   );
   return fetchAttachMetadataForSession(session, flags);
+}
+
+function promptEditorAttachModeFromFlags(flags = {}) {
+  /*
+   * CDXC:PromptEditor 2026-06-11-18:24:
+   * `ghostex attach --prompt-editor monaco` is the SSH-safe desktop capability
+   * advertisement. Android, iOS, TUI, and human SSH attaches omit this flag, so
+   * gxserver returns zmx attach commands without Monaco capability and Ctrl+G
+   * stays terminal-native through gte.
+   */
+  const value = String(flags.promptEditor ?? "").trim().toLowerCase();
+  return value === "monaco" ? "monaco" : undefined;
 }
 
 function shouldStartMissingProviderForCliAttach(attach) {
@@ -5290,7 +5305,7 @@ function usage() {
     formatHelpCommand("android-check [--json]", "Verify this Mac is ready for Ghostex Android"),
     formatHelpCommand("attach | a [selector]", "Attach to a provider session, or open the picker without a selector"),
     formatHelpCommand("resume | r [selector]", "Alias for attach"),
-    formatHelpCommand("attach | a --session-id <id> [--project-id id]", "Flag form used by mobile session attach"),
+    formatHelpCommand("attach | a --session-id <id> [--project-id id] [--prompt-editor monaco]", "Flag form used by mobile and desktop remote session attach"),
     formatHelpCommand("kill | k <selector|all> [--json]", "Close one session or every listed session"),
     formatHelpCommand("sleep <selector|all> [--json]", "Sleep one session or every listed session"),
     formatHelpCommand("wake <selector|all> [--json]", "Wake one session or every listed session"),

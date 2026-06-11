@@ -894,6 +894,16 @@ final class GxserverClient {
     for key in Self.colorDisablingEnvironmentKeys + Self.sessionIdentityEnvironmentKeys {
       environment.removeValue(forKey: key)
     }
+    /*
+     CDXC:PromptEditor 2026-06-11-18:24:
+     gxserver starts missing zmx providers before the native Ghostty attach
+     process exists. Export the current app executable so gxserver-created agent
+     shells can point EDITOR at the same prompt-editor wrapper path as app-created
+     terminals without relying on a Homebrew `ghostex` command being on PATH.
+     */
+    if let appExecutable = Bundle.main.executableURL?.path, !appExecutable.isEmpty {
+      environment["GHOSTEX_CLI_EXECUTABLE"] = appExecutable
+    }
     let defaultEntries = [
       "/opt/homebrew/bin",
       "/opt/homebrew/sbin",

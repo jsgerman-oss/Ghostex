@@ -87,6 +87,9 @@ describe("remote attach sidebar ownership", () => {
     expect(attachCommand).toContain("quoteNativeShellArg(target.sessionId)");
     expect(attachCommand).toContain('"--project-id"');
     expect(attachCommand).toContain("quoteNativeShellArg(target.projectId)");
+    expect(attachCommand).toContain('currentZmxPromptEditorAttachMode() === "monaco"');
+    expect(attachCommand).toContain('"--prompt-editor"');
+    expect(attachCommand).toContain('"monaco"');
 
     const loginShellCommand = sourceBetween(
       nativeSidebarSource,
