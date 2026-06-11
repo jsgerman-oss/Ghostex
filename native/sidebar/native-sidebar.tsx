@@ -337,6 +337,7 @@ import type {
   GxserverAgentSettings,
   GxserverAttachSessionMetadataResult,
   GxserverCancelFirstPromptAutoTitleResult,
+  GxserverDeleteWorktreeProjectResult,
   GxserverIngestAgentHookEventResult,
   GxserverPresentationDelta,
   GxserverPresentationProject,
@@ -862,6 +863,7 @@ type NativeHostEvent =
   | { cwd: string; sessionId: string; type: "terminalCwdChanged" }
   | { exitCode?: number; sessionId: string; text?: string; type: "terminalExited" }
   | { sessionId: string; type: "terminalFocused" }
+  | { sessionId: string; type: "terminalEscapePressed" }
   | { sessionId: string; type: "terminalBell" }
   | { sessionId: string; type: "firstPromptAutoRenameCancelled" }
   | { sessionId: string; type: "nativeSessionSurfaceMissing" }
@@ -1136,6 +1138,7 @@ const DELAYED_SEND_RESTORE_FIRE_GRACE_MS = 2_000;
  * after clicking the pane.
  */
 const NATIVE_INITIAL_ACTIVITY_SUPPRESSION_MS = 12_000;
+const NATIVE_ESCAPE_DONE_SUPPRESSION_MS = 5_000;
 const NATIVE_MIN_WORKING_DURATION_BEFORE_ATTENTION_MS = 5_000;
 const NATIVE_PERSISTED_WORKING_STALE_MS = 30 * 60 * 1_000;
 /**
@@ -1904,6 +1907,7 @@ const nativeInPlaceReloadCloseBySessionId = new Map<
   { nativeSessionId: string; startedAt: number }
 >();
 const nativeActivitySuppressedUntilBySessionId = new Map<string, number>();
+const nativeDoneSuppressedUntilBySessionId = new Map<string, number>();
 const nativeWorkingStartedAtBySessionId = new Map<string, number>();
 const nativePersistedAgentHookEventSyncKeyBySessionId = new Map<string, string>();
 const nativeRejectedPersistedAgentIdentityConflictKeyBySessionId = new Map<string, string>();
@@ -2881,18 +2885,19 @@ function applyGxserverPresentationSnapshot(snapshot: GxserverPresentationSnapsho
   if (!gxserverStartupSnapshot) {
     return;
   }
-  pruneLocalFirstPresentationHides(snapshot);
+  const nextSnapshot = applyNativeDoneSuppressionToGxserverPresentation(snapshot, `snapshot:${reason}`);
+  pruneLocalFirstPresentationHides(nextSnapshot);
   gxserverStartupSnapshot = {
     ...gxserverStartupSnapshot,
-    presentation: snapshot,
+    presentation: nextSnapshot,
   };
-  applyGxserverPresentationSessionsToNativePaneChrome(snapshot.sessions, reason);
+  applyGxserverPresentationSessionsToNativePaneChrome(nextSnapshot.sessions, reason);
   appendSidebarRefreshDebugLog("nativeSidebar.gxserver.presentationSnapshot.applied", {
-    groupCount: snapshot.groups.length,
-    projectCount: snapshot.projects.length,
+    groupCount: nextSnapshot.groups.length,
+    projectCount: nextSnapshot.projects.length,
     reason,
-    revision: snapshot.revision,
-    sessionCount: snapshot.sessions.length,
+    revision: nextSnapshot.revision,
+    sessionCount: nextSnapshot.sessions.length,
   });
   publish();
 }
@@ -2902,7 +2907,10 @@ function applyGxserverPresentationDelta(delta: GxserverPresentationDelta, revisi
   if (!gxserverStartupSnapshot || !presentation || revision <= presentation.revision) {
     return;
   }
-  const nextPresentation = reduceGxserverPresentationDelta(presentation, delta, revision);
+  const nextPresentation = applyNativeDoneSuppressionToGxserverPresentation(
+    reduceGxserverPresentationDelta(presentation, delta, revision),
+    `delta:${delta.type}`,
+  );
   const nextProjects = reduceGxserverProjectCacheForPresentationDelta(gxserverStartupSnapshot.projects, delta);
   if (delta.type === "sessionRemoved") {
     showGxserverPresentationSessionLocally(delta.projectId, delta.sessionId);
@@ -2927,7 +2935,11 @@ function applyGxserverPresentationDelta(delta: GxserverPresentationDelta, revisi
         )
       : undefined;
   if ("session" in delta) {
-    applyGxserverPresentationSessionToNativePaneChrome(delta.session, `delta:${delta.type}`);
+    const session =
+      nextPresentation.sessions.find(
+        (candidate) => candidate.projectId === delta.session.projectId && candidate.sessionId === delta.session.sessionId,
+      ) ?? delta.session;
+    applyGxserverPresentationSessionToNativePaneChrome(session, `delta:${delta.type}`);
   }
   appendSidebarRefreshDebugLog("nativeSidebar.gxserver.presentationDelta.applied", {
     deltaType: delta.type,
@@ -3218,6 +3230,37 @@ function setGxserverPresentationSessionActivityLocally(
     sessionId: reference.sessionId,
   });
   return true;
+}
+
+function applyNativeDoneSuppressionToGxserverPresentation(
+  presentation: GxserverPresentationSnapshot,
+  reason: string,
+): GxserverPresentationSnapshot {
+  let didSuppress = false;
+  const sessions = presentation.sessions.map((session) => {
+    if (session.activity !== "attention") {
+      return session;
+    }
+    const suppressedUntil = getNativeDoneSuppressedUntil(session.sessionId);
+    if (suppressedUntil === undefined) {
+      return session;
+    }
+    didSuppress = true;
+    const { attention: _attention, ...withoutAttention } = session;
+    appendAgentDetectionDebugLog("nativeSidebar.escapeDoneSuppression.presentationSuppressed", {
+      agentId: session.agentId,
+      agentName: session.agentName,
+      projectId: session.projectId,
+      reason,
+      sessionId: session.sessionId,
+      suppressedUntil: new Date(suppressedUntil).toISOString(),
+    });
+    return {
+      ...withoutAttention,
+      activity: "idle" as const,
+    };
+  });
+  return didSuppress ? { ...presentation, sessions } : presentation;
 }
 
 function titleProjectionFromGxserverPresentation(
@@ -3708,6 +3751,17 @@ function shouldStartZmxProviderBeforeNativeAttach(
     Boolean(attach.startupText?.trim());
 }
 
+function currentZmxPromptEditorAttachMode(): "monaco" | undefined {
+  /*
+  CDXC:PromptEditor 2026-06-11-18:24:
+  zmx prompt-editor routing is a current-client capability, not a durable session
+  setting. Desktop renderers advertise Monaco only when this client has the
+  Monaco backend selected; missing capability keeps TUI, Android, iOS, and SSH
+  attaches on gte without storing who originally created the provider.
+  */
+  return settings.promptEditorBackend === "monaco" ? "monaco" : undefined;
+}
+
 function markNativeTerminalCreateFailed(
   projectId: string,
   sessionId: string,
@@ -3818,7 +3872,9 @@ async function postNativeCreateTerminalWithGxserverAttach(
   When gxserver reports a missing zmx provider with startup text, start that provider through gxserver before creating the native Ghostty attach surface. Do not queue zmx restore text for terminalReady because the ready event only proves the renderer exists, not that an idle shell is safe for injected input.
   */
   let attach: GxserverAttachSessionMetadataResult;
+  const promptEditorAttachMode = currentZmxPromptEditorAttachMode();
   const attachParams = {
+    ...(promptEditorAttachMode ? { promptEditor: promptEditorAttachMode } : {}),
     projectId: project.projectId as never,
     sessionId: sidebarSessionId as never,
     startupText,
@@ -3848,6 +3904,7 @@ async function postNativeCreateTerminalWithGxserverAttach(
   if (shouldStartZmxProviderBeforeNativeAttach(attach)) {
     try {
       const provider = await gxserverClient.startSessionProvider({
+        ...(promptEditorAttachMode ? { promptEditor: promptEditorAttachMode } : {}),
         projectId: project.projectId as never,
         sessionId: sidebarSessionId as never,
         startupText: attach.startupText,
@@ -9759,12 +9816,16 @@ async function refreshGitState(): Promise<void> {
     gitGenerateCommitBody,
   );
   const project = activeProject();
+  const refreshProjectId = project.projectId;
+  const shouldApplyRefreshResult = () => activeProjectId === refreshProjectId;
+  let hasCompletedGitHubRemoteProbe = false;
+  let probedHasGitHubRemote = false;
   if (isQuickProject(project) || project.isRecentProject === true) {
     /*
      * CDXC:QuickSessions 2026-06-08-08:27:
      * Opening a Quick terminal must not show a Git backend error toast. Quick projects are disposable session containers, not code projects, so Git state refresh should clear the Git UI locally instead of probing gxserver project-scoped Git endpoints.
      */
-    gitState = { ...baseState, isBusy: false, isRepo: false };
+    gitState = { ...baseState, hasCheckedGitHubRemote: true, isBusy: false, isRepo: false };
     publish();
     return;
   }
@@ -9773,33 +9834,67 @@ async function refreshGitState(): Promise<void> {
 
   try {
     const repoCheck = await runGxserverGitActionForNativeProject(project, { action: "isInsideWorkTree" });
+    if (!shouldApplyRefreshResult()) {
+      return;
+    }
     if (repoCheck.exitCode !== 0 || repoCheck.stdout.trim() !== "true") {
-      gitState = { ...baseState, isRepo: false };
+      gitState = { ...baseState, hasCheckedGitHubRemote: true, isRepo: false };
       publish();
       return;
     }
 
-    const [
-      branch,
-      status,
-      diff,
-      untrackedFiles,
-      upstream,
-      remotes,
-      originRemote,
-      ghVersion,
-      pr,
-    ] = await Promise.all([
-      runGxserverGitActionForNativeProject(project, { action: "branch" }),
-      runGxserverGitActionForNativeProject(project, { action: "statusPorcelain" }),
-      runGxserverGitActionForNativeProject(project, { action: "diffNumstat" }),
-      runGxserverGitActionForNativeProject(project, { action: "listUntracked" }),
-      runGxserverGitActionForNativeProject(project, { action: "upstreamCounts" }),
-      runGxserverGitActionForNativeProject(project, { action: "listRemotes" }),
-      runGxserverGitActionForNativeProject(project, { action: "getOriginRemoteUrl" }),
-      runGxserverGitHubActionForNativeProject(project, { action: "version" }),
-      runGxserverGitHubActionForNativeProject(project, { action: "prView" }),
-    ]);
+    const branchPromise = runGxserverGitActionForNativeProject(project, { action: "branch" });
+    const statusPromise = runGxserverGitActionForNativeProject(project, { action: "statusPorcelain" });
+    const diffPromise = runGxserverGitActionForNativeProject(project, { action: "diffNumstat" });
+    const untrackedFilesPromise = runGxserverGitActionForNativeProject(project, { action: "listUntracked" });
+    const upstreamPromise = runGxserverGitActionForNativeProject(project, { action: "upstreamCounts" });
+    const remotesPromise = runGxserverGitActionForNativeProject(project, { action: "listRemotes" });
+    const originRemotePromise = runGxserverGitActionForNativeProject(project, {
+      action: "getOriginRemoteUrl",
+    });
+    const ghVersionPromise = runGxserverGitHubActionForNativeProject(project, { action: "version" });
+    const prPromise = runGxserverGitHubActionForNativeProject(project, { action: "prView" });
+    const remainingGitStatePromises = [
+      branchPromise,
+      statusPromise,
+      diffPromise,
+      untrackedFilesPromise,
+      upstreamPromise,
+      remotesPromise,
+      ghVersionPromise,
+      prPromise,
+    ] as const;
+    void Promise.allSettled(remainingGitStatePromises);
+    const originRemote = await originRemotePromise;
+    if (!shouldApplyRefreshResult()) {
+      return;
+    }
+    const hasGitHubRemote =
+      originRemote.exitCode === 0 && normalizeGitHubRemoteUrl(originRemote.stdout) !== undefined;
+    hasCompletedGitHubRemoteProbe = true;
+    probedHasGitHubRemote = hasGitHubRemote;
+    /**
+     * CDXC:ModeSwitcher 2026-06-10-22:39:
+     * Titlebar GitHub availability should not wait for slow GitHub CLI PR
+     * inspection. Publish the origin-remote answer as soon as the local Git
+     * probe finishes, and keep the rest of Git state busy until branch, diff,
+     * and PR metadata complete.
+     */
+    gitState = {
+      ...gitState,
+      ...baseState,
+      hasCheckedGitHubRemote: true,
+      hasGitHubRemote,
+      isBusy: true,
+      isRepo: true,
+    };
+    publish();
+
+    const [branch, status, diff, untrackedFiles, upstream, remotes, ghVersion, pr] =
+      await Promise.all(remainingGitStatePromises);
+    if (!shouldApplyRefreshResult()) {
+      return;
+    }
 
     const files = [
       ...parseGitNumstatFiles(diff.stdout),
@@ -9819,9 +9914,9 @@ async function refreshGitState(): Promise<void> {
       behindCount: Number(upstreamParts[1] || 0) || 0,
       branch: branch.stdout.trim() || null,
       deletions: totals.deletions,
+      hasCheckedGitHubRemote: true,
       hasGitHubCli: ghVersion.exitCode === 0,
-      hasGitHubRemote:
-        originRemote.exitCode === 0 && normalizeGitHubRemoteUrl(originRemote.stdout) !== undefined,
+      hasGitHubRemote,
       hasOriginRemote: remotes.stdout.split(/\s+/).includes("origin"),
       hasUpstream: upstream.exitCode === 0,
       hasWorkingTreeChanges: status.stdout.trim().length > 0,
@@ -9833,7 +9928,16 @@ async function refreshGitState(): Promise<void> {
       worktreeName: project.worktree?.name,
     };
   } catch (error) {
-    gitState = { ...baseState, isBusy: false, isRepo: false };
+    if (!shouldApplyRefreshResult()) {
+      return;
+    }
+    gitState = {
+      ...baseState,
+      hasCheckedGitHubRemote: hasCompletedGitHubRemoteProbe,
+      hasGitHubRemote: hasCompletedGitHubRemoteProbe ? probedHasGitHubRemote : false,
+      isBusy: false,
+      isRepo: hasCompletedGitHubRemoteProbe,
+    };
     showNativeMessage(
       "error",
       error instanceof Error ? error.message : "Failed to refresh git state.",
@@ -10130,7 +10234,7 @@ async function readRemoteSidebarGitState(
   );
   const repoCheck = await runRemoteGxserverGitAction(remoteReference, { action: "isInsideWorkTree" });
   if (repoCheck.exitCode !== 0 || repoCheck.stdout.trim() !== "true") {
-    return { ...baseState, isRepo: false };
+    return { ...baseState, hasCheckedGitHubRemote: true, isRepo: false };
   }
   /*
    * CDXC:RemoteGit 2026-06-03-00:24:
@@ -10179,6 +10283,7 @@ async function readRemoteSidebarGitState(
     behindCount: Number(upstreamParts[1] || 0) || 0,
     branch: branch.stdout.trim() || null,
     deletions: totals.deletions,
+    hasCheckedGitHubRemote: true,
     hasGitHubCli: ghVersion.exitCode === 0,
     hasGitHubRemote:
       originRemote.exitCode === 0 && normalizeGitHubRemoteUrl(originRemote.stdout) !== undefined,
@@ -10862,6 +10967,90 @@ function promptSidebarGitActionReview(action: SidebarGitAction): void {
   publish();
 }
 
+type WorktreeDeleteBranchMetadata = {
+  branch: string | null;
+  canDeleteLocalBranch: boolean;
+  localBranchName?: string;
+  remoteBranchDisabledReason?: string;
+  remoteBranchExists: boolean;
+  remoteBranchName?: string;
+  remoteName?: string;
+};
+
+function normalizeWorktreeDeleteBranchName(
+  currentBranch: string | null | undefined,
+  fallbackBranch: string | null | undefined,
+): string | undefined {
+  for (const candidate of [currentBranch, fallbackBranch]) {
+    const branch = candidate?.trim();
+    if (branch && branch !== "HEAD" && branch !== "detached") {
+      return branch;
+    }
+  }
+  return undefined;
+}
+
+async function resolveWorktreeDeleteBranchMetadata(
+  branchName: string | undefined,
+  checkRemoteBranch: (remoteName: string, remoteBranchName: string) => Promise<GxserverTypedOperationResult>,
+): Promise<WorktreeDeleteBranchMetadata> {
+  const remoteName = "origin";
+  if (!branchName) {
+    return {
+      branch: null,
+      canDeleteLocalBranch: false,
+      remoteBranchDisabledReason: "No local branch is checked out for this worktree.",
+      remoteBranchExists: false,
+      remoteName,
+    };
+  }
+  const remoteBranch = await checkRemoteBranch(remoteName, branchName);
+  const remoteBranchExists = remoteBranch.exitCode === 0;
+  return {
+    branch: branchName,
+    canDeleteLocalBranch: true,
+    localBranchName: branchName,
+    remoteBranchDisabledReason: remoteBranchExists
+      ? undefined
+      : `No ${remoteName}/${branchName} remote branch exists.`,
+    remoteBranchExists,
+    remoteBranchName: branchName,
+    remoteName,
+  };
+}
+
+function showGxserverWorktreeDeleteWarnings(result: GxserverDeleteWorktreeProjectResult): void {
+  for (const warning of result.warnings) {
+    switch (warning.kind) {
+      case "localBranchDeleteFailed":
+      case "localBranchNotResolved":
+        showAppToast("warning", "Worktree deleted, but local branch was not deleted", warning.message);
+        break;
+      case "remoteBranchDeleteFailed":
+      case "remoteBranchNotResolved":
+        showAppToast("warning", "Worktree deleted, but remote branch was not deleted", warning.message);
+        break;
+      case "pruneFailed":
+        showAppToast("warning", "Worktree deleted, but stale metadata was not pruned", warning.message);
+        break;
+    }
+  }
+}
+
+function gxserverProjectIdForWorktreeDeletion(project: NativeProject): GxserverProjectId {
+  /*
+  CDXC:WorktreeDelete 2026-06-10-22:56:
+  Worktree checkout deletion is shared gxserver behavior. Refuse legacy local
+  project ids at the client boundary instead of falling back to native Git
+  deletion, so direct delete, merge cleanup, Git-action cleanup, and automation
+  cleanup all use one server-owned implementation.
+  */
+  if (!GXSERVER_CANONICAL_PROJECT_ID_PATTERN.test(project.projectId)) {
+    throw new Error("This worktree is not registered with gxserver. Reopen it from the project list and try again.");
+  }
+  return project.projectId as GxserverProjectId;
+}
+
 async function promptDeleteWorktreeForGroup(groupId: string): Promise<void> {
   if (await promptDeleteRemoteWorktreeForGroup(groupId)) {
     return;
@@ -10884,17 +11073,32 @@ async function promptDeleteWorktreeForGroup(groupId: string): Promise<void> {
         gxserverGitTypedOperationFailureMessage(status.exitCode !== 0 ? status : branch, "Could not read worktree status."),
       );
     }
+    const branchName = normalizeWorktreeDeleteBranchName(branch.stdout, worktree.branch);
+    const branchMetadata = await resolveWorktreeDeleteBranchMetadata(
+      branchName,
+      (remoteName, remoteBranchName) =>
+        runGxserverGitActionForNativeProject(project, {
+          action: "remoteBranchExists",
+          branch: remoteBranchName,
+          remoteName,
+        }),
+    );
 
     /**
      * CDXC:WorktreeDelete 2026-06-02-11:55:
      * Delete Worktree opens only after gxserver collects fresh Git status. Dirty checkouts must show that summary and offer a Commit button before the destructive removal can run, while native remains responsible for the modal layout and selected action.
+     *
+     * CDXC:WorktreeDelete 2026-06-10-22:56:
+     * Before opening the destructive modal, resolve the checked-out branch and
+     * verify whether origin has the same branch so branch-delete checkboxes can
+     * start disabled instead of failing after confirmation.
      */
     postAppModalHostMessage(
       {
         modal: "deleteWorktree",
         type: "open",
         worktreeDeleteDraft: {
-          branch: branch.stdout.trim() || worktree.branch || null,
+          ...branchMetadata,
           groupId,
           hasChanges: hasGxserverShortStatusChanges(status.stdout),
           projectId: project.projectId,
@@ -10913,8 +11117,11 @@ async function promptDeleteWorktreeForGroup(groupId: string): Promise<void> {
   }
 }
 
-async function deleteWorktreeProject(projectId: string): Promise<void> {
-  if (await deleteRemoteWorktreeProject(projectId)) {
+async function deleteWorktreeProject(
+  projectId: string,
+  options: { deleteLocalBranch?: boolean; deleteRemoteBranch?: boolean } = {},
+): Promise<void> {
+  if (await deleteRemoteWorktreeProject(projectId, options)) {
     return;
   }
   const project = findProject(projectId);
@@ -10927,27 +11134,26 @@ async function deleteWorktreeProject(projectId: string): Promise<void> {
     createNativeProjectFromWorktreeParent(project.worktree, project);
   let toastId: string | undefined;
   try {
-    const status = await runGxserverGitActionForNativeProject(project, { action: "status" });
-    if (status.exitCode !== 0) {
-      throw new Error(gxserverGitTypedOperationFailureMessage(status, "Could not read worktree status."));
-    }
     /**
      * CDXC:GitActionToasts 2026-05-30-06:01:
      * Delete Worktree is a destructive native operation, so it should use the
      * same persistent running toast as Git actions instead of a transient
      * "Deleting worktree" notice that can disappear before removal finishes.
+     *
+     * CDXC:WorktreeDelete 2026-06-10-22:56:
+     * Direct delete uses gxserver's shared worktree-project delete operation.
+     * gxserver owns status recheck, submodule force retry, branch cleanup,
+     * worktree prune, canonical project removal, and presentation deltas; native
+     * only updates local pane/sidebar state and renders returned warnings.
      */
     toastId = showRunningAppToast("Deleting worktree", project.name);
-    const removeResult = await runGxserverWorktreeActionForNativeProject(parentProject, {
-      action: "remove",
-      force: hasGxserverShortStatusChanges(status.stdout),
-      worktreePath: project.path,
+    const result = await gxserverClient.deleteWorktreeProject({
+      deleteLocalBranch: options.deleteLocalBranch,
+      deleteRemoteBranch: options.deleteRemoteBranch,
+      projectId: gxserverProjectIdForWorktreeDeletion(project),
     });
-    if (removeResult.exitCode !== 0) {
-      throw new Error(gxserverTypedOperationFailureMessage(removeResult, "git worktree remove failed."));
-    }
-    removeWorktreeProjectRecord(project, findProject(project.worktree.parentProjectId), "deleteWorktree");
-    await pruneGxserverWorktreesForNativeProject(parentProject, "deleteWorktree");
+    removeWorktreeProjectRecord(project, parentProject, "deleteWorktree", { syncGxserver: false });
+    showGxserverWorktreeDeleteWarnings(result);
     finishRunningAppToast(toastId, "success", "Worktree deleted", project.name);
   } catch (error) {
     finishRunningAppToast(
@@ -10982,19 +11188,34 @@ async function promptDeleteRemoteWorktreeForGroup(groupId: string): Promise<bool
         gxserverGitTypedOperationFailureMessage(status.exitCode !== 0 ? status : branch, "Could not read remote worktree status."),
       );
     }
+    const branchName = normalizeWorktreeDeleteBranchName(branch.stdout, worktree.branch);
+    const branchMetadata = await resolveWorktreeDeleteBranchMetadata(
+      branchName,
+      (remoteName, remoteBranchName) =>
+        runRemoteGxserverGitAction(remoteReference, {
+          action: "remoteBranchExists",
+          branch: remoteBranchName,
+          remoteName,
+        }),
+    );
     /*
      * CDXC:RemoteWorktrees 2026-06-03-00:51:
      * Remote worktree deletion should use the same confirmation modal as local
      * deletion, but every inspection comes from the owning machine's gxserver.
      * Carry the scoped remote project id through the modal so confirmation
      * cannot accidentally delete a local project with the same P-id.
+     *
+     * CDXC:WorktreeDelete 2026-06-10-22:56:
+     * Remote worktree delete prompts use the same branch metadata as local
+     * prompts. The branch operations still run through the owning machine's
+     * gxserver, so origin branch cleanup is scoped to the remote checkout.
      */
     postAppModalHostMessage(
       {
         modal: "deleteWorktree",
         type: "open",
         worktreeDeleteDraft: {
-          branch: branch.stdout.trim() || worktree.branch || null,
+          ...branchMetadata,
           groupId,
           hasChanges: hasGxserverShortStatusChanges(status.stdout),
           projectId: createRemotePresentationProjectId(remoteReference.machineId, remoteReference.projectId),
@@ -11016,7 +11237,12 @@ async function promptDeleteRemoteWorktreeForGroup(groupId: string): Promise<bool
 
 async function deleteRemoteWorktreeProject(
   projectId: string,
-  options: { suppressToast?: boolean; throwOnFailure?: boolean } = {},
+  options: {
+    deleteLocalBranch?: boolean;
+    deleteRemoteBranch?: boolean;
+    suppressToast?: boolean;
+    throwOnFailure?: boolean;
+  } = {},
 ): Promise<boolean> {
   const remoteReference = parseRemotePresentationProjectId(projectId);
   if (!remoteReference) {
@@ -11033,46 +11259,23 @@ async function deleteRemoteWorktreeProject(
     showAppToast("warning", "Remote worktree unavailable", message);
     return true;
   }
-  const parentProject = presentation.projects.find((candidate) => candidate.projectId === worktree.parentProjectId);
-  const parentReference = {
-    machineId: remoteReference.machineId,
-    projectId: parentProject?.projectId ?? worktree.parentProjectId,
-  };
   let toastId: string | undefined;
   try {
-    const status = await runRemoteGxserverGitAction(remoteReference, { action: "status" });
-    if (status.exitCode !== 0) {
-      throw new Error(gxserverGitTypedOperationFailureMessage(status, "Could not read remote worktree status."));
-    }
     toastId = options.suppressToast
       ? undefined
       : showRunningAppToast("Deleting remote worktree", project.title);
-    const removeResult = await runRemoteGxserverWorktreeAction(parentReference, {
-      action: "remove",
-      force: hasGxserverShortStatusChanges(status.stdout),
-      worktreePath: project.path,
-    });
-    if (removeResult.exitCode !== 0) {
-      throw new Error(gxserverTypedOperationFailureMessage(removeResult, "git worktree remove failed."));
-    }
-    await requestRemoteGxserver<{ project: GxserverProjectDomainState }>(
+    const response = await requestRemoteGxserver<Record<string, unknown>>(
       remoteReference.machineId,
-      "/api/removeProject",
+      "/api/deleteWorktreeProject",
       {
         params: {
+          deleteLocalBranch: options.deleteLocalBranch,
+          deleteRemoteBranch: options.deleteRemoteBranch,
           projectId: remoteReference.projectId,
         },
       },
-    );
-    const pruneResult = await runRemoteGxserverWorktreeAction(parentReference, { action: "prune" });
-    if (pruneResult.exitCode !== 0) {
-      appendSidebarRefreshDebugLog("nativeSidebar.remoteWorktree.pruneFailed", {
-        errorCode: pruneResult.error?.code,
-        exitCode: pruneResult.exitCode,
-        machineKnown: settings.remoteMachines.some((machine) => machine.id === remoteReference.machineId),
-      });
-    }
-    void refreshRemoteGxserverPresentationSnapshot(remoteReference.machineId, "delete-remote-worktree");
+    ) as { result: GxserverDeleteWorktreeProjectResult };
+    showGxserverWorktreeDeleteWarnings(response.result);
     if (!options.suppressToast) {
       finishRunningAppToast(toastId, "success", "Remote worktree deleted", project.title);
     }
@@ -11090,6 +11293,7 @@ function removeWorktreeProjectRecord(
   worktreeProject: NativeProject,
   parentProject: NativeProject | undefined,
   reason: string,
+  options: { syncGxserver?: boolean } = {},
 ): void {
   const parentProjectId = worktreeProject.worktree?.parentProjectId;
   projects = projects.filter((candidate) => candidate.projectId !== worktreeProject.projectId);
@@ -11104,7 +11308,9 @@ function removeWorktreeProjectRecord(
   }
   writeStoredProjects(reason);
   publish();
-  removeGxserverProjectAfterLocalRemoval(worktreeProject, reason);
+  if (options.syncGxserver !== false) {
+    removeGxserverProjectAfterLocalRemoval(worktreeProject, reason);
+  }
 }
 
 function resolveSidebarGitConfirmLabel(action: SidebarGitAction, hasCommit: boolean): string {
@@ -11618,23 +11824,18 @@ async function shouldBypassMissingBeadsDatabasePreCommitHook(
 
   /**
    * CDXC:NativeSidebarGit 2026-05-30-03:35
-   * Beads installs a shared Git pre-commit hook that runs `bd sync --flush-only`
-   * whenever `.beads` exists. A fresh Git worktree can have the tracked JSONL
-	   * files without a local SQLite database, so that hook fails before Ghostex can
-	   * commit ordinary code changes. Only bypass hooks for this precise missing-db
-	   * state; initialized Beads workspaces and unrelated hook failures still run
-	   * through normal Git verification.
-	   *
-	   * CDXC:NativeSidebarGit 2026-06-02-13:09:
-	   * The missing-Beads pre-commit probe uses gxserver's typed Beads `status`
-	   * operation. Native decides only whether to request `--no-verify` for this
-	   * UI commit attempt; gxserver owns Beads command execution.
-	   *
-	   * CDXC:NativeSidebarGit 2026-06-02-12:14:
-	   * The `.beads` storage existence probe is also gxserver-owned project
-	   * inspection. Native must not shell out to `/bin/test` against the shared
-	   * repository path before deciding whether to request `--no-verify`.
-	   */
+   * The UI commit path can still encounter older or partially initialized Beads workspaces outside the Project-board worktree creation flow. Only bypass hooks for the precise missing-db state; Ghostex-prepared worktrees should use the bundled-bd hooks and initialized Beads workspaces or unrelated hook failures still run through normal Git verification.
+   *
+   * CDXC:NativeSidebarGit 2026-06-02-13:09:
+   * The missing-Beads pre-commit probe uses gxserver's typed Beads `status`
+   * operation. Native decides only whether to request `--no-verify` for this
+   * UI commit attempt; gxserver owns Beads command execution.
+   *
+   * CDXC:NativeSidebarGit 2026-06-02-12:14:
+   * The `.beads` storage existence probe is also gxserver-owned project
+   * inspection. Native must not shell out to `/bin/test` against the shared
+   * repository path before deciding whether to request `--no-verify`.
+   */
   return isMissingBeadsDatabaseError(`${status.stderr}\n${status.stdout}`);
 }
 
@@ -12413,24 +12614,32 @@ async function removeWorktreeProjectAfterSuccessfulDirectMerge(
   parentProject: NativeProject,
 ): Promise<void> {
   showAppToast("info", "Removing worktree", worktreeProject.name);
-  const removeResult = await runGxserverWorktreeActionForNativeProject(parentProject, {
-    action: "remove",
-    worktreePath: worktreeProject.path,
-  });
-  if (removeResult.exitCode !== 0) {
+  try {
+    /*
+    CDXC:WorktreeDelete 2026-06-10-22:56:
+    Delete-after-direct-merge is a checkout deletion path too. Use gxserver's
+    shared worktree-project delete operation so status recheck, initialized
+    submodule retry, prune, project removal, and presentation deltas remain
+    shared across clients.
+    */
+    const result = await gxserverClient.deleteWorktreeProject({
+      deleteLocalBranch: false,
+      deleteRemoteBranch: false,
+      projectId: gxserverProjectIdForWorktreeDeletion(worktreeProject),
+    });
+    showGxserverWorktreeDeleteWarnings(result);
+  } catch (error) {
     showAppToast(
       "error",
       "Could not remove worktree",
-      gxserverTypedOperationFailureMessage(removeResult, "git worktree remove failed."),
+      error instanceof Error ? error.message : "git worktree remove failed.",
     );
     return;
   }
   projects = projects.filter((candidate) => candidate.projectId !== worktreeProject.projectId);
   activeProjectId = parentProject.projectId;
   writeStoredProjects("removeWorktreeAfterDirectMerge");
-  await pruneGxserverWorktreesForNativeProject(parentProject, "removeWorktreeAfterDirectMerge");
   publish();
-  removeGxserverProjectAfterLocalRemoval(worktreeProject, "removeWorktreeAfterDirectMerge");
   showAppToast("success", "Worktree removed", worktreeProject.name);
 }
 
@@ -12480,18 +12689,28 @@ async function removeActiveWorktreeProjectAfterGitAction(): Promise<void> {
   if (!project.worktree) {
     return;
   }
-  const parentProject = findProject(project.worktree.parentProjectId);
-  const gitCommandProject = parentProject ?? project;
+  const parentProject =
+    findProject(project.worktree.parentProjectId) ??
+    createNativeProjectFromWorktreeParent(project.worktree, project);
   showAppToast("info", "Removing worktree", project.name);
-  const removeResult = await runGxserverWorktreeActionForNativeProject(gitCommandProject, {
-    action: "remove",
-    worktreePath: project.path,
-  });
-  if (removeResult.exitCode !== 0) {
+  try {
+    /*
+    CDXC:WorktreeDelete 2026-06-10-22:56:
+    Delete-after-git-action must use gxserver's shared worktree-project delete
+    operation, matching the explicit modal while leaving native responsible only
+    for local active-project and pane/sidebar state.
+    */
+    const result = await gxserverClient.deleteWorktreeProject({
+      deleteLocalBranch: false,
+      deleteRemoteBranch: false,
+      projectId: gxserverProjectIdForWorktreeDeletion(project),
+    });
+    showGxserverWorktreeDeleteWarnings(result);
+  } catch (error) {
     showAppToast(
       "error",
       "Could not remove worktree",
-      gxserverTypedOperationFailureMessage(removeResult, "git worktree remove failed."),
+      error instanceof Error ? error.message : "git worktree remove failed.",
     );
     return;
   }
@@ -12501,9 +12720,7 @@ async function removeActiveWorktreeProjectAfterGitAction(): Promise<void> {
     ? parentProjectId
     : (projects[0]?.projectId ?? activeProjectId);
   writeStoredProjects("removeWorktreeAfterGitAction");
-  await pruneGxserverWorktreesForNativeProject(parentProject ?? activeProject(), "removeWorktreeAfterGitAction");
   publish();
-  removeGxserverProjectAfterLocalRemoval(project, "removeWorktreeAfterGitAction");
   showAppToast("success", "Worktree removed", project.name);
 }
 
@@ -18145,6 +18362,73 @@ function getNativeActivitySuppressedUntil(sessionId: string): number | undefined
   return suppressedUntil;
 }
 
+function suppressNativeDoneAfterTerminalEscape(sessionId: string): boolean {
+  const suppressedUntil = Date.now() + NATIVE_ESCAPE_DONE_SUPPRESSION_MS;
+  nativeDoneSuppressedUntilBySessionId.set(sessionId, suppressedUntil);
+  const terminalState = terminalStateById.get(sessionId);
+  const previousActivity = terminalState?.activity;
+  const presentationActivity = getGxserverPresentationActivityForSidebarSession(sessionId);
+  let didChange = false;
+  if (terminalState?.activity === "attention") {
+    terminalState.activity = "idle";
+    persistTerminalSessionRestoreActivity(sessionId, undefined);
+    markNativeAttentionEventLocallyAcknowledged(
+      sessionId,
+      nativeAttentionEventIdBySessionId.get(sessionId),
+    );
+    if (terminalState.sessionStateFilePath) {
+      void persistNativeSessionAttentionAcknowledged(
+        terminalState.sessionStateFilePath,
+        new Date().toISOString(),
+        sessionId,
+        "terminal-escape",
+      );
+    }
+    clearNativeSessionAttentionTracking(sessionId);
+    didChange = true;
+  }
+  if (presentationActivity === "attention") {
+    didChange = setGxserverPresentationSessionActivityLocally(
+      sessionId,
+      "idle",
+      "terminal-escape",
+    ) || didChange;
+  }
+  /*
+   * CDXC:SessionStatus 2026-06-11-08:46:
+   * Escape is a user cancellation signal sent through terminal input. Mirror a
+   * short done-only suppression immediately in native UI while gxserver stores
+   * the durable attentionSuppressedUntil window. Keep working sessions working
+   * until a later title or hook event reports that the agent stopped.
+   */
+  appendAgentDetectionDebugLog("nativeSidebar.escapeDoneSuppression.started", {
+    agentName: terminalState?.agentName,
+    didChange,
+    presentationActivity,
+    previousActivity,
+    sessionId,
+    suppressedUntil: new Date(suppressedUntil).toISOString(),
+  });
+  return didChange;
+}
+
+function getNativeDoneSuppressedUntil(sessionId: string): number | undefined {
+  const suppressedUntil = nativeDoneSuppressedUntilBySessionId.get(sessionId);
+  if (
+    suppressedUntil !== undefined &&
+    Number.isFinite(suppressedUntil) &&
+    suppressedUntil <= Date.now()
+  ) {
+    nativeDoneSuppressedUntilBySessionId.delete(sessionId);
+    appendAgentDetectionDebugLog("nativeSidebar.escapeDoneSuppression.expired", {
+      sessionId,
+      suppressedUntil: new Date(suppressedUntil).toISOString(),
+    });
+    return undefined;
+  }
+  return suppressedUntil;
+}
+
 function buildNativeRestoredTerminalInitialInput(session: TerminalSessionRecord): string {
   return readGxserverAgentResumePlanSync(session)?.startupText ?? "";
 }
@@ -20377,6 +20661,7 @@ function applyGxserverSessionActivityResult(
   let didChange = false;
   const reportedActivity = result.activity.activity;
   const attentionEventId = getNativeGxserverAttentionEventId(result.activity);
+  const previousActivity = terminalState.activity;
   /*
   CDXC:SessionAttention 2026-06-07-03:40:
   gxserver and hook files can briefly re-publish an attention event after the
@@ -20388,8 +20673,12 @@ function applyGxserverSessionActivityResult(
     reportedActivity === "attention" &&
     isNativeAttentionEventLocallyAcknowledged(sessionId, attentionEventId)
       ? "idle"
+      : reportedActivity === "attention" &&
+          getNativeDoneSuppressedUntil(sessionId) !== undefined
+        ? previousActivity === "working"
+          ? "working"
+          : "idle"
       : reportedActivity;
-  const previousActivity = terminalState.activity;
   if (result.activity.agentName && terminalState.agentName !== result.activity.agentName) {
     terminalState.agentName = result.activity.agentName;
     setTerminalSessionAgentName(sessionId, result.activity.agentName);
@@ -27899,6 +28188,17 @@ function buildRemoteGhostexAttachCommand(target: RemoteAttachTarget): string {
   if (target.projectId.trim()) {
     parts.push("--project-id", quoteNativeShellArg(target.projectId));
   }
+  if (currentZmxPromptEditorAttachMode() === "monaco") {
+    /*
+    CDXC:RemoteAttach 2026-06-11-18:24:
+    macOS/Electron remote attach runs `ghostex attach` inside SSH, where the
+    remote login shell cannot inherit the local app's prompt-editor Settings.
+    Pass the same explicit zmx capability as local gxserver attach so Ctrl+G can
+    open Monaco from desktop remote panes while mobile/TUI commands omit the flag
+    and remain on gte.
+    */
+    parts.push("--prompt-editor", "monaco");
+  }
   return parts.join(" ");
 }
 
@@ -29095,26 +29395,6 @@ function hasGxserverShortStatusChanges(stdout: string): boolean {
     });
 }
 
-async function pruneGxserverWorktreesForNativeProject(project: NativeProject, reason: string): Promise<void> {
-  try {
-    const result = await runGxserverWorktreeActionForNativeProject(project, { action: "prune" });
-    if (result.exitCode !== 0) {
-      appendSidebarRefreshDebugLog("nativeSidebar.gxserver.worktreePruneFailed", {
-        commandBuilt: result.command !== undefined,
-        errorCode: result.error?.code,
-        exitCode: result.exitCode,
-        reason,
-      });
-    }
-  } catch (error) {
-    appendSidebarRefreshDebugLog("nativeSidebar.gxserver.worktreePruneFailed", {
-      errorType: error instanceof Error ? error.name : typeof error,
-      hasMessage: (error instanceof Error ? error.message : String(error)).length > 0,
-      reason,
-    });
-  }
-}
-
 async function requestProjectWorktrees(
   message: Extract<SidebarToExtensionMessage, { type: "requestProjectWorktrees" }>,
 ): Promise<void> {
@@ -29469,6 +29749,17 @@ async function createNativeWorktreeForAgentPrompt(input: {
   });
 
   /*
+  CDXC:WorktreeBeads 2026-06-10-22:37:
+  New Project-board worktrees must be commit-ready for Beads before an agent starts editing code. Ask gxserver to install common-git-dir hooks that use Ghostex's bundled bd and the parent Beads database so commits from linked worktrees do not fail on stale PATH hooks.
+  */
+  const beadsHooksResult = await runGxserverWorktreeActionForNativeProject(nextWorktreeProject, {
+    action: "ensureBeadsHooks",
+  });
+  if (beadsHooksResult.exitCode !== 0) {
+    throw new Error(gxserverTypedOperationFailureMessage(beadsHooksResult, "Could not prepare Beads hooks for this worktree."));
+  }
+
+  /*
   CDXC:WorktreeProjectRegistration 2026-06-02-15:31:
   The post-create worktree setup command is gxserver-owned Git/project metadata after the cutoff. Read it from the gxserver project row registered for this creation flow, not from the native project cache, so stale WK storage cannot run an old setup command after gxserver has reconciled the project.
 
@@ -29623,6 +29914,17 @@ async function openExistingRemoteWorktreeProject(input: {
   if (!worktree) {
     throw new Error(`${normalizedPath} is not a registered remote worktree.`);
   }
+  /*
+   * CDXC:WorktreeBeads 2026-06-10-22:37:
+   * Opening an existing remote worktree should repair the same common-git-dir Beads hooks used by new remote worktrees, so older linked checkouts stop inheriting stale PATH bd hook scripts.
+   */
+  const beadsHooksResult = await runRemoteGxserverWorktreeAction(
+    { machineId: input.remoteReference.machineId, projectId: response.result.project.projectId },
+    { action: "ensureBeadsHooks" },
+  );
+  if (beadsHooksResult.exitCode !== 0) {
+    throw new Error(gxserverTypedOperationFailureMessage(beadsHooksResult, "Could not prepare Beads hooks for this remote worktree."));
+  }
   void refreshRemoteGxserverPresentationSnapshot(input.remoteReference.machineId, "open-existing-remote-worktree");
   showAppToast("success", "Remote worktree ready", response.result.project.name || projectName);
 }
@@ -29700,6 +30002,18 @@ async function createRemoteWorktreeForAgentPrompt(input: {
   const worktree = normalizeNativeProjectWorktreeMetadata(worktreeProject.worktree);
   if (!worktree) {
     throw new Error("gxserver did not register the new remote checkout as a worktree project.");
+  }
+
+  /*
+   * CDXC:WorktreeBeads 2026-06-10-22:37:
+   * Remote Project-board worktrees need the same Beads hook preparation as local worktrees before setup commands or agents can make commits. Install hooks through the owning gxserver so the remote common Git directory points at that machine's bundled bd.
+   */
+  const beadsHooksResult = await runRemoteGxserverWorktreeAction(
+    { machineId: remoteReference.machineId, projectId: worktreeProject.projectId },
+    { action: "ensureBeadsHooks" },
+  );
+  if (beadsHooksResult.exitCode !== 0) {
+    throw new Error(gxserverTypedOperationFailureMessage(beadsHooksResult, "Could not prepare Beads hooks for this remote worktree."));
   }
 
   /*
@@ -29932,6 +30246,19 @@ async function openExistingNativeWorktreeProject(input: {
   );
   if (!worktreeOpenMetadata) {
     throw new Error(`${normalizedPath} is not a registered worktree for ${input.sourceProject.name}.`);
+  }
+
+  /*
+   * CDXC:WorktreeBeads 2026-06-10-22:37:
+   * Opening an existing Project-board worktree should also repair Beads commit hooks for the shared worktree family. The common Git hooks path applies to every linked checkout, so preparing it here helps older worktrees that were created before Ghostex installed bundled-bd hooks.
+   */
+  const beadsHooksResult = await gxserverClient.runWorktreeAction({
+    action: "ensureBeadsHooks",
+    projectId: gxserverProject.projectId,
+    projectPath: normalizedPath,
+  });
+  if (beadsHooksResult.exitCode !== 0) {
+    throw new Error(gxserverTypedOperationFailureMessage(beadsHooksResult, "Could not prepare Beads hooks for this worktree."));
   }
 
   /*
@@ -32811,16 +33138,22 @@ async function removeAutomationRunWorktree(project: NativeProject, runId: string
   /*
   CDXC:ProjectAutomations 2026-06-08-22:10:
   Automation run archive cleanup must use gxserver's typed worktree mutation boundary, matching the rest of the post-cutover worktree flows. Remove the generated worktree and prune stale metadata without force-deleting the branch through an untyped native shellout.
+
+  CDXC:WorktreeDelete 2026-06-10-22:56:
+  Automation cleanup uses gxserver's shared worktree-project delete operation
+  so archived runs with clean initialized submodules are removed through Git's
+  forced worktree retry, then the canonical project row and presentation delta
+  are handled by gxserver.
   */
-  const removeResult = await runGxserverWorktreeActionForNativeProject(sourceProject, {
-    action: "remove",
-    worktreePath: worktree.path,
+  const result = await gxserverClient.deleteWorktreeProject({
+    deleteLocalBranch: false,
+    deleteRemoteBranch: false,
+    projectId: gxserverProjectIdForWorktreeDeletion(worktreeProject),
   });
-  if (removeResult.exitCode !== 0) {
-    throw new Error(gxserverTypedOperationFailureMessage(removeResult, "git worktree remove failed."));
-  }
-  await pruneGxserverWorktreesForNativeProject(sourceProject, "archiveAutomationRunRemoveWorktree");
-  removeWorktreeProjectRecord(worktreeProject, sourceProject, "archiveAutomationRunRemoveWorktree");
+  showGxserverWorktreeDeleteWarnings(result);
+  removeWorktreeProjectRecord(worktreeProject, sourceProject, "archiveAutomationRunRemoveWorktree", {
+    syncGxserver: false,
+  });
 }
 
 function saveProjectAutomation(project: NativeProject, automation: AutomationDefinition): NativeProject {
@@ -37254,7 +37587,10 @@ function handleSidebarMessage(message: SidebarToExtensionMessage): void {
       void runSidebarGitAction("commit", { groupId: message.groupId, forceCommitReview: true });
       return;
     case "confirmDeleteWorktree":
-      void deleteWorktreeProject(message.projectId);
+      void deleteWorktreeProject(message.projectId, {
+        deleteLocalBranch: message.deleteLocalBranch,
+        deleteRemoteBranch: message.deleteRemoteBranch,
+      });
       return;
     case "openSidebarGitChangedFile":
       openNativeWorkspaceInSelectedIde(resolveActiveProjectRelativePath(message.filePath));
@@ -39643,6 +39979,17 @@ window.addEventListener("ghostex-native-host-event", (event) => {
       ) {
         return;
       }
+    } else if (hostEvent.type === "terminalEscapePressed") {
+      const didChange = suppressNativeDoneAfterTerminalEscape(sidebarSessionId);
+      void syncNativeSessionActivityWithGxserver(
+        sidebarSessionId,
+        { event: "escape" },
+        "terminal-escape",
+      );
+      if (didChange) {
+        publish();
+      }
+      return;
     } else if (hostEvent.type === "terminalExited") {
       if (consumeNativeInPlaceReloadCloseEvent(sidebarSessionId, hostEvent.sessionId)) {
         appendTerminalLaunchDebugLog("nativeSidebar.fullReloadSession.closeEventConsumed", {
@@ -40622,6 +40969,54 @@ function handleNativeTerminalTitleBarAction(
   }
 }
 
+let latestNativeSidebarPointerInside = true;
+let sidebarDomHoverSuppressed = false;
+
+function applySidebarPointerGate(): void {
+  const isInside = latestNativeSidebarPointerInside && !sidebarDomHoverSuppressed;
+  document.body.dataset.nativePointerInside = isInside ? "true" : "false";
+  if (isInside) {
+    delete document.body.dataset.sidebarTooltipsSuppressed;
+    return;
+  }
+  document.body.dataset.sidebarTooltipsSuppressed = "true";
+}
+
+function setNativeSidebarPointerInside(isInside: boolean): void {
+  /*
+   * CDXC:SidebarHover 2026-06-10-23:44:
+   * AppKit owns the reliable sidebar pointer boundary. When native reports the
+   * pointer outside, mark the root as non-interactive so stale WebKit :hover
+   * targets cannot keep hover highlights or delayed tooltips alive.
+   *
+   * CDXC:SidebarHover 2026-06-11-10:23:
+   * Keep native pointer state separate from DOM-level tooltip suppression.
+   * WebKit can still emit stale pointer movement while AppKit owns the native
+   * resize rail, so DOM re-entry may clear only the DOM suppression flag; it
+   * must not override a native outside state.
+   */
+  if (isInside) {
+    latestNativeSidebarPointerInside = true;
+    sidebarDomHoverSuppressed = false;
+    applySidebarPointerGate();
+    return;
+  }
+  latestNativeSidebarPointerInside = false;
+  sidebarDomHoverSuppressed = true;
+  applySidebarPointerGate();
+  dismissSidebarTooltips();
+}
+
+function suppressSidebarHoverFromDom(): void {
+  sidebarDomHoverSuppressed = true;
+  applySidebarPointerGate();
+  dismissSidebarTooltips();
+}
+
+function enableSidebarHoverFromDom(): void {
+  sidebarDomHoverSuppressed = false;
+  applySidebarPointerGate();
+}
 
 window.__ghostex_NATIVE_SIDEBAR__ = {
   dismissSidebarContextMenu: dismissAllSidebarContextMenus,
@@ -40650,6 +41045,7 @@ window.__ghostex_NATIVE_SIDEBAR__ = {
   toggleCommandsPanelFromTitlebar,
   runSidebarCommandFromTitlebar,
   runSidebarGitActionFromTitlebar,
+  setNativePointerInside: setNativeSidebarPointerInside,
 };
 
 window.__ghostex_NATIVE_CLI__ = {
@@ -40697,12 +41093,23 @@ function NativeSidebarRoot() {
       /*
        * CDXC:SidebarTooltips 2026-05-25-07:16:
        * WKWebView can leave React and CSS hover tooltips visible when the user alt-tabs, clicks another app, or exits the sidebar without a normal trigger-level leave event. Suppress every sidebar tooltip surface until pointer movement re-enters this sidebar document.
+       *
+       * CDXC:SidebarHover 2026-06-10-23:44:
+       * The same lost-leave path can leave the actual browser :hover target
+       * stuck. Route DOM-level exits through the native pointer flag too, so the
+       * root pointer-events gate and tooltip dismissal stay synchronized.
+       *
+       * CDXC:SidebarHover 2026-06-11-10:23:
+       * DOM pointer movement can be stale while AppKit owns the sidebar resize
+       * rail. DOM events may clear only DOM-level suppression; the native
+       * pointer bridge remains the authority for whether sidebar hover can turn
+       * back on, so the resize-rail path cannot resurrect a session row hover
+       * after the pointer left the sidebar.
        */
-      document.body.dataset.sidebarTooltipsSuppressed = "true";
-      dismissSidebarTooltips();
+      suppressSidebarHoverFromDom();
     };
     const enableSidebarTooltips = () => {
-      delete document.body.dataset.sidebarTooltipsSuppressed;
+      enableSidebarHoverFromDom();
     };
     const suppressWhenHidden = () => {
       if (document.visibilityState !== "visible") {
@@ -40736,7 +41143,7 @@ function NativeSidebarRoot() {
       document.removeEventListener("mouseenter", enableSidebarTooltips, true);
       document.removeEventListener("pointerenter", enableSidebarTooltips, true);
       document.removeEventListener("pointermove", enableSidebarTooltips, true);
-      enableSidebarTooltips();
+      delete document.body.dataset.nativePointerInside;
     };
   }, []);
 
