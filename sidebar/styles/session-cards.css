@@ -1536,6 +1536,19 @@
   visibility: hidden;
 }
 
+body.native-sidebar-body[data-native-pointer-inside="false"]
+  .session:has(.session-card-close-button):hover:not(:focus-visible):not(:focus-within)
+  .session-card-close-button {
+  /*
+   * CDXC:SidebarHover 2026-06-11-09:23:
+   * The native-outside state must also hide hover-only session row actions; the
+   * browser can keep :hover active long enough to reveal Close after the pointer
+   * has already left the sidebar.
+   */
+  opacity: 0;
+  pointer-events: none;
+}
+
 .session-frame:has(.session-card-close-button):is(:hover, :focus-within)
   > .session-status-dot-inline {
   opacity: 0;
@@ -2234,6 +2247,37 @@
     .session-status-dot-inline {
     display: block;
   }
+}
+
+/*
+ * CDXC:SidebarHover 2026-06-11-09:23:
+ * WKWebView can keep the last session row in CSS :hover after AppKit has moved
+ * the pointer outside the sidebar. Native owns the real pointer boundary; when
+ * it reports outside, remove only hover-derived session visuals while preserving
+ * actual focused, keyboard-focused, and search-selected state.
+ *
+ * CDXC:SidebarHover 2026-06-11-09:34:
+ * Keep this native-outside hover reset after reference-sidebar styling. The
+ * macOS sidebar paints row hover through a later ::after surface, so the stale
+ * WebKit hover state must be neutralized at the end of the session-card cascade
+ * to avoid showing both the focused row and the last hovered row as active.
+ */
+body.native-sidebar-body[data-native-pointer-inside="false"]
+  .session:not(:focus-visible):not([data-focused="true"]):not([data-search-selected="true"]):hover {
+  border-color: transparent;
+  box-shadow: none;
+  outline-color: transparent;
+}
+
+body.native-sidebar-body[data-native-pointer-inside="false"]
+  .session:not(:focus-visible):not([data-focused="true"]):not(
+    [data-search-selected="true"]
+  ):hover::before,
+body.native-sidebar-body[data-native-pointer-inside="false"]
+  .session:not(:focus-visible):not([data-focused="true"]):not(
+    [data-search-selected="true"]
+  ):hover::after {
+  opacity: 0;
 }
 
 @keyframes reference-sidebar-working-spin {

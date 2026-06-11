@@ -5158,9 +5158,50 @@ final class AppModalHostWebView: WKWebView {
 final class SidebarWebView: WKWebView {
   var resizeHitExclusionSide: SidebarSide = .left
   var resizeHitExclusionWidth: CGFloat = 0
+  var onNativePointerInsideChanged: ((Bool) -> Void)?
+  private var nativePointerInside: Bool?
+  private var nativePointerTrackingArea: NSTrackingArea?
+
+  override func updateTrackingAreas() {
+    super.updateTrackingAreas()
+    if let nativePointerTrackingArea {
+      removeTrackingArea(nativePointerTrackingArea)
+    }
+    /*
+     CDXC:SidebarHover 2026-06-10-23:44:
+     Sidebar hover state must follow AppKit's effective WebView boundary, not only
+     WebKit's last mouse target. Track mouse movement in native code so crossing
+     into the resize-excluded strip or leaving the sidebar can invalidate stale
+     CSS :hover before delayed tooltips open.
+     */
+    let trackingArea = NSTrackingArea(
+      rect: .zero,
+      options: [.activeAlways, .inVisibleRect, .mouseEnteredAndExited, .mouseMoved],
+      owner: self,
+      userInfo: nil
+    )
+    nativePointerTrackingArea = trackingArea
+    addTrackingArea(trackingArea)
+  }
+
+  override func mouseEntered(with event: NSEvent) {
+    updateNativePointerInside(for: event)
+    super.mouseEntered(with: event)
+  }
+
+  override func mouseMoved(with event: NSEvent) {
+    updateNativePointerInside(for: event)
+    super.mouseMoved(with: event)
+  }
+
+  override func mouseExited(with event: NSEvent) {
+    setNativePointerInside(false)
+    super.mouseExited(with: event)
+  }
 
   override func hitTest(_ point: NSPoint) -> NSView? {
     guard bounds.contains(point) else {
+      setNativePointerInside(false)
       return nil
     }
     /**
@@ -5175,15 +5216,51 @@ final class SidebarWebView: WKWebView {
       switch resizeHitExclusionSide {
       case .left:
         if point.x >= bounds.maxX - excludedWidth {
+          setNativePointerInside(false)
           return nil
         }
       case .right:
         if point.x <= bounds.minX + excludedWidth {
+          setNativePointerInside(false)
           return nil
         }
       }
     }
+    setNativePointerInside(true)
     return super.hitTest(point)
+  }
+
+  private func updateNativePointerInside(for event: NSEvent) {
+    setNativePointerInside(isInteractivePoint(convert(event.locationInWindow, from: nil)))
+  }
+
+  private func isInteractivePoint(_ point: NSPoint) -> Bool {
+    guard bounds.contains(point) else {
+      return false
+    }
+    let excludedWidth = min(max(resizeHitExclusionWidth, 0), bounds.width)
+    guard excludedWidth > 0 else {
+      return true
+    }
+    switch resizeHitExclusionSide {
+    case .left:
+      return point.x < bounds.maxX - excludedWidth
+    case .right:
+      return point.x > bounds.minX + excludedWidth
+    }
+  }
+
+  private func setNativePointerInside(_ isInside: Bool) {
+    guard nativePointerInside != isInside else {
+      return
+    }
+    nativePointerInside = isInside
+    onNativePointerInsideChanged?(isInside)
+  }
+
+  func forceNativePointerInside(_ isInside: Bool) {
+    nativePointerInside = isInside
+    onNativePointerInsideChanged?(isInside)
   }
 }
 
@@ -5812,6 +5889,20 @@ final class ghostexRootView: NSView {
     divider.onDoubleClick = { [weak self] in
       self?.resetSidebarWidth()
     }
+    divider.onPointerEntered = { [weak self] in
+      /*
+       CDXC:SidebarHover 2026-06-11-10:23:
+       Hovering the native sidebar resize rail is outside the React sidebar even
+       though the rail sits over the sidebar webview edge. Force the sidebar
+       hover gate off when AppKit routes pointer ownership to the divider so a
+       previously hovered session row cannot remain highlighted while the user
+       moves from the rail into the workspace.
+       */
+      self?.sidebarView.forceNativePointerInside(false)
+    }
+    sidebarView.onNativePointerInsideChanged = { [weak self] isInside in
+      self?.setSidebarNativePointerInside(isInside)
+    }
 
     wantsLayer = true
     layer?.backgroundColor = ghostexReferenceSidebarChromeBackgroundColor.cgColor
@@ -5956,6 +6047,21 @@ final class ghostexRootView: NSView {
       self.titlebarChromeView.closeOpenDropdowns()
       return event
     }
+  }
+
+  private func setSidebarNativePointerInside(_ isInside: Bool) {
+    /*
+     CDXC:SidebarHover 2026-06-10-23:44:
+     WKWebView can keep a stale CSS :hover target after AppKit routes the pointer
+     out through native sidebar chrome. Native owns the true sidebar boundary, so
+     tell React when the pointer is outside and let the sidebar root ignore hover
+     hit testing until native reports entry again.
+     */
+    sidebarView.evaluateJavaScript(
+      """
+      window.__ghostex_NATIVE_SIDEBAR__?.setNativePointerInside?.(\(isInside ? "true" : "false"));
+      undefined;
+      """)
   }
 
   func handleWindowMouseDownBeforeDispatch(_ event: NSEvent) {
@@ -7219,6 +7325,7 @@ final class ghostexRootView: NSView {
           ] as [String: Any]
         },
         "generateCommitBody": git.generateCommitBody,
+        "hasCheckedGitHubRemote": git.hasCheckedGitHubRemote,
         "hasGitHubCli": git.hasGitHubCli,
         "hasGitHubRemote": git.hasGitHubRemote,
         "hasOriginRemote": git.hasOriginRemote,
@@ -11573,6 +11680,7 @@ final class PaneResizeHandleView: NSView {
   var onDrag: ((CGFloat) -> Void)?
   var onDragEnded: (() -> Void)?
   var onDoubleClick: (() -> Void)?
+  var onPointerEntered: (() -> Void)?
   var separatorColor: NSColor = .clear {
     didSet {
       needsDisplay = true
@@ -11612,6 +11720,7 @@ final class PaneResizeHandleView: NSView {
   }
 
   override func mouseEntered(with event: NSEvent) {
+    onPointerEntered?()
     resizeHoverIndicator.mouseEntered(in: self)
   }
 
@@ -11664,6 +11773,7 @@ final class PaneResizeHandleView: NSView {
   }
 
   override func mouseDown(with event: NSEvent) {
+    onPointerEntered?()
     if event.clickCount >= 2 {
       onDoubleClick?()
       return
@@ -11783,6 +11893,8 @@ final class ReactTitlebarChromeView: NSView {
   private var lastWebViewFootprintLogSignature = ""
   private var windowStateObserverTokens: [NSObjectProtocol] = []
   private var terminalPaneDropForwardingActive = false
+  private var nativePointerInside: Bool?
+  private var nativePointerTrackingArea: NSTrackingArea?
 
   var hitRegionCount: Int {
     hitRegions.count
@@ -11818,11 +11930,50 @@ final class ReactTitlebarChromeView: NSView {
     super.viewDidMoveToWindow()
     installWindowStateObservers()
     updateTitlebarWebViewFrame(reason: "viewDidMoveToWindow")
+    refreshNativePointerInside()
   }
 
   override func layout() {
     super.layout()
     updateTitlebarWebViewFrame(reason: "layout")
+    refreshNativePointerInside()
+  }
+
+  override func updateTrackingAreas() {
+    super.updateTrackingAreas()
+    if let nativePointerTrackingArea {
+      removeTrackingArea(nativePointerTrackingArea)
+    }
+    /*
+     CDXC:ReactTitlebar 2026-06-10-23:44:
+     The titlebar WKWebView is intentionally full-window for portals, so WebKit's
+     raw hover target can stay active after AppKit routes the pointer to blank
+     titlebar or workspace pixels. Track native pointer movement on the wrapper
+     and only mark hover active inside measured React hit regions.
+     */
+    let trackingArea = NSTrackingArea(
+      rect: .zero,
+      options: [.activeAlways, .inVisibleRect, .mouseEnteredAndExited, .mouseMoved],
+      owner: self,
+      userInfo: nil
+    )
+    nativePointerTrackingArea = trackingArea
+    addTrackingArea(trackingArea)
+  }
+
+  override func mouseEntered(with event: NSEvent) {
+    updateNativePointerInside(for: event)
+    super.mouseEntered(with: event)
+  }
+
+  override func mouseMoved(with event: NSEvent) {
+    updateNativePointerInside(for: event)
+    super.mouseMoved(with: event)
+  }
+
+  override func mouseExited(with event: NSEvent) {
+    setNativePointerInside(false)
+    super.mouseExited(with: event)
   }
 
   func configureTerminalPaneDropForwarding(
@@ -11881,6 +12032,7 @@ final class ReactTitlebarChromeView: NSView {
      */
     needsLayout = true
     updateTitlebarWebViewFrame(reason: "hitRegionsUpdated")
+    refreshNativePointerInside()
   }
 
   func containsInteractiveHitRegion(_ point: NSPoint) -> Bool {
@@ -11901,21 +12053,50 @@ final class ReactTitlebarChromeView: NSView {
       """)
   }
 
+  private func updateNativePointerInside(for event: NSEvent) {
+    setNativePointerInside(containsInteractiveHitRegion(convert(event.locationInWindow, from: nil)))
+  }
+
+  private func refreshNativePointerInside() {
+    guard let window else {
+      setNativePointerInside(false)
+      return
+    }
+    setNativePointerInside(
+      containsInteractiveHitRegion(convert(window.mouseLocationOutsideOfEventStream, from: nil)))
+  }
+
+  private func setNativePointerInside(_ isInside: Bool) {
+    guard nativePointerInside != isInside else {
+      return
+    }
+    nativePointerInside = isInside
+    webView.evaluateJavaScript(
+      """
+      window.__ghostex_TITLEBAR__?.setNativePointerInside?.(\(isInside ? "true" : "false"));
+      undefined;
+      """)
+  }
+
   override func hitTest(_ point: NSPoint) -> NSView? {
     guard bounds.contains(point) else {
+      setNativePointerInside(false)
       return nil
     }
     if shouldForwardTerminalPaneDropHitTest(point) {
+      setNativePointerInside(false)
       setTerminalPaneDropForwardingActive(true, reason: "hitTest")
       logTerminalPaneDropHitTestForwarder(point: point)
       return self
     }
     setTerminalPaneDropForwardingActive(false, reason: "normalHitTest")
     if containsInteractiveHitRegion(point) {
+      setNativePointerInside(true)
       let hitView = webView.hitTest(convert(point, to: webView))
       logTitlebarHitTestRoute(point: point, route: "webView", hitViewFound: hitView != nil)
       return hitView
     }
+    setNativePointerInside(false)
     if isPointInFixedTitlebarStrip(point) {
       logTitlebarHitTestRoute(point: point, route: "blankTitlebarStrip", hitViewFound: true)
       return self
@@ -12124,6 +12305,7 @@ final class ReactTitlebarChromeView: NSView {
         queue: .main
       ) { [weak self] _ in
         self?.updateTitlebarWebViewFrame(reason: "windowDidBecomeKey")
+        self?.refreshNativePointerInside()
       })
       windowStateObserverTokens.append(center.addObserver(
         forName: NSWindow.didResignKeyNotification,
@@ -12131,6 +12313,7 @@ final class ReactTitlebarChromeView: NSView {
         queue: .main
       ) { [weak self] _ in
         self?.updateTitlebarWebViewFrame(reason: "windowDidResignKey")
+        self?.setNativePointerInside(false)
       })
     }
     windowStateObserverTokens.append(center.addObserver(
@@ -12139,6 +12322,7 @@ final class ReactTitlebarChromeView: NSView {
       queue: .main
     ) { [weak self] _ in
       self?.updateTitlebarWebViewFrame(reason: "appDidBecomeActive")
+      self?.refreshNativePointerInside()
     })
     windowStateObserverTokens.append(center.addObserver(
       forName: NSApplication.didResignActiveNotification,
@@ -12146,6 +12330,7 @@ final class ReactTitlebarChromeView: NSView {
       queue: .main
     ) { [weak self] _ in
       self?.updateTitlebarWebViewFrame(reason: "appDidResignActive")
+      self?.setNativePointerInside(false)
     })
   }
 

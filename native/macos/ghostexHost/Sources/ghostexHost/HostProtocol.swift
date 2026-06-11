@@ -771,6 +771,7 @@ struct TitlebarGitState: Decodable {
   let deletions: Int
   let files: [TitlebarGitChangedFile]
   let generateCommitBody: Bool
+  let hasCheckedGitHubRemote: Bool
   let hasGitHubCli: Bool
   let hasGitHubRemote: Bool
   let hasOriginRemote: Bool
@@ -1245,6 +1246,7 @@ enum HostEvent: Encodable {
   case terminalCwdChanged(sessionId: String, cwd: String)
   case terminalExited(sessionId: String, exitCode: Int?, text: String?)
   case terminalFocused(sessionId: String)
+  case terminalEscapePressed(sessionId: String)
   case terminalBell(sessionId: String)
   case firstPromptAutoRenameCancelled(sessionId: String)
   case nativeSessionSurfaceMissing(sessionId: String)
@@ -1442,6 +1444,15 @@ enum HostEvent: Encodable {
       try container.encodeIfPresent(text, forKey: .text)
     case .terminalFocused(let sessionId):
       try container.encode("terminalFocused", forKey: .type)
+      try container.encode(sessionId, forKey: .sessionId)
+    case .terminalEscapePressed(let sessionId):
+      /**
+       CDXC:SessionStatus 2026-06-11-08:46:
+       Escape suppression must be tied to terminal input, not sidebar/modal
+       Escape handling. Report this event only after Ghostty's surface keyDown
+       decides the Escape key is going to the terminal process.
+       */
+      try container.encode("terminalEscapePressed", forKey: .type)
       try container.encode(sessionId, forKey: .sessionId)
     case .terminalBell(let sessionId):
       try container.encode("terminalBell", forKey: .type)

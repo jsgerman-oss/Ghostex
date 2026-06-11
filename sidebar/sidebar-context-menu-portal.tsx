@@ -26,6 +26,7 @@ type GhostexNativeSidebarBridge = {
   dismissSidebarContextMenu: () => void;
   notifySidebarContextMenuClosed: () => void;
   notifySidebarContextMenuOpened: () => void;
+  setNativePointerInside: (isInside: boolean) => void;
   openActiveProjectEditorFromTitlebar: () => void;
   exitFocusModeFromTitlebar: () => void;
   focusSessionFromPromptEditorClose: (nativeSessionId: string) => void;

@@ -431,6 +431,17 @@ export type NativeGhosttyHostEvent =
       type: "terminalFocused";
     }
   | {
+      /**
+       * CDXC:SessionStatus 2026-06-11-08:46:
+       * Escape is reported only from the native Ghostty keyDown path when the
+       * terminal surface is the input receiver and the key is forwarded to the
+       * PTY. The sidebar uses this as a narrow done-status suppression signal,
+       * not as a generic modal/search Escape event.
+       */
+      sessionId: string;
+      type: "terminalEscapePressed";
+    }
+  | {
       sessionId: string;
       type: "terminalBell";
     }

@@ -10,6 +10,17 @@ body.native-sidebar-body #root {
   display: block;
 }
 
+/*
+CDXC:SidebarHover 2026-06-10-23:44:
+Native AppKit reports the effective sidebar pointer boundary because WKWebView
+can keep stale CSS :hover after mouse exit. When native says the pointer is
+outside, disable root hit testing so existing hover selectors stop matching
+without rewriting every sidebar hover rule.
+*/
+body.native-sidebar-body[data-native-pointer-inside="false"] #root {
+  pointer-events: none;
+}
+
 .native-sidebar-shell {
   display: grid;
   grid-template-columns: minmax(0, 1fr);

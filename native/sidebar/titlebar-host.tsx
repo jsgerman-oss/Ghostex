@@ -349,6 +349,7 @@ declare global {
     __ghostex_TITLEBAR__?: {
       closeOpenDropdowns: () => void;
       setActiveProjectState: (state: Partial<TitlebarProjectState>) => void;
+      setNativePointerInside: (isInside: boolean) => void;
     };
   }
 }
@@ -367,6 +368,13 @@ const KEEP_AWAKE_ADMIN_PROCESS_TIMEOUT_MS = 120_000;
  */
 const TITLEBAR_HEIGHT = 35;
 const TITLEBAR_CONTROL_HEIGHT = TITLEBAR_HEIGHT - 1;
+/**
+ * CDXC:ProjectEditorCompanion 2026-06-11-12:18:
+ * Expand and Collapse Companion Sidepane controls must share one 14x14 Tabler
+ * glyph footprint so the titlebar restore button and native pane close button
+ * read as the same icon size.
+ */
+const COMPANION_SIDEPANE_ICON_SIZE = 14;
 const TITLEBAR_CONTROL_TOP = 1;
 const TITLEBAR_PROJECT_TOP = TITLEBAR_CONTROL_TOP;
 const TITLEBAR_CENTER_CONTROLS_TOP = TITLEBAR_CONTROL_TOP;
@@ -606,6 +614,16 @@ const pendingProcessResults = new Map<
 
 function postNative(command: NativeTitlebarCommand): void {
   window.webkit?.messageHandlers?.ghostexNativeHost?.postMessage(command);
+}
+
+function setTitlebarNativePointerInside(isInside: boolean): void {
+  /*
+   * CDXC:ReactTitlebar 2026-06-10-23:44:
+   * AppKit owns the effective titlebar hit boundary because the WKWebView spans
+   * the window for portals. Store native pointer ownership on the body so CSS can
+   * neutralize stale WebKit :hover without changing React component state.
+   */
+  document.body.dataset.nativePointerInside = isInside ? "true" : "false";
 }
 
 function postTitlebarSidebarCommand(message: { type: "requestAgentHookStatus" } | { type: "requestGhostexCliStatus" }): void {
@@ -1765,6 +1783,7 @@ function App() {
         setResourcesMenuOpen(false);
         setTipsMenuOpen(false);
       },
+      setNativePointerInside: setTitlebarNativePointerInside,
       setActiveProjectState: (state) => {
         setProjectState((current) => ({
           ...current,
@@ -2439,12 +2458,18 @@ function App() {
    * context is Quick/projectless or when the active project has no GitHub
    * remote. Keep this as titlebar state, not a click-time warning, so full and
    * compact mode controls both present the same unavailable action.
+   *
+   * CDXC:ModeSwitcher 2026-06-10-22:39:
+   * Do not treat the default `hasGitHubRemote: false` as a final answer during
+   * project switches. The titlebar should stay enabled until the sidebar has
+   * completed the GitHub remote probe and can prove the active project is not a
+   * GitHub-backed project.
    */
   const githubModeDisabledReason = projectState.projectIsQuick
     ? "Quick sessions do not have a GitHub project view."
-    : projectState.git.hasGitHubRemote
-      ? undefined
-      : "Add a GitHub remote to use GitHub mode.";
+    : projectState.git.hasCheckedGitHubRemote && !projectState.git.hasGitHubRemote
+      ? "Add a GitHub remote to use GitHub mode."
+      : undefined;
   /*
    * CDXC:ModeSwitcher 2026-06-08-18:39:
    * Quick sessions are projectless work areas, so Kanban should be unavailable
@@ -2582,7 +2607,7 @@ function App() {
                   <TooltipTrigger
                     render={
                       <Button
-                        aria-label="Show Companion Sidepane"
+                        aria-label="Expand Companion Sidepane"
                         className="titlebar-session-button titlebar-companion-restore-button"
                         data-titlebar-hit-region
                         onClick={showProjectEditorCompanion}
@@ -2594,12 +2619,26 @@ function App() {
                          * The hidden companion-pane restore control is floating
                          * titlebar chrome. Keep it outside the mode switcher flow
                          * so showing the button never shifts Agents/Code/Git/Project tabs.
+
+                         * CDXC:ProjectEditorCompanion 2026-06-11-12:18:
+                         * Expand Companion Sidepane uses the same 14x14 Tabler
+                         * glyph size as the native collapse control in the companion
+                         * pane titlebar.
                          */}
-                        <IconLayoutSidebarLeftExpand aria-hidden="true" size={16} stroke={1.8} />
+                        <IconLayoutSidebarLeftExpand
+                          aria-hidden="true"
+                          size={COMPANION_SIDEPANE_ICON_SIZE}
+                          stroke={1.8}
+                          style={{
+                            flexShrink: 0,
+                            height: COMPANION_SIDEPANE_ICON_SIZE,
+                            width: COMPANION_SIDEPANE_ICON_SIZE,
+                          }}
+                        />
                       </Button>
                     }
                   />
-                  <TooltipContent>Show Companion Sidepane</TooltipContent>
+                  <TooltipContent>Expand Companion Sidepane</TooltipContent>
                 </Tooltip>
               </div>
             ) : null}
@@ -4794,6 +4833,15 @@ styleElement.textContent = `
     --titlebar-font-family: var(--font-sans, "Inter Variable", sans-serif);
     --titlebar-button-border-color: #252525;
   }
+  /*
+   * CDXC:ReactTitlebar 2026-06-10-23:44:
+   * Native AppKit reports whether the pointer is inside a measured titlebar
+   * hit region. Disable root hit testing while outside so stale WebKit :hover
+   * cannot keep titlebar buttons highlighted after mouse exit.
+   */
+  body[data-native-pointer-inside="false"] #root {
+    pointer-events: none;
+  }
   /**
    * CDXC:ReactTitlebar 2026-05-11-09:00
    * The right titlebar controls should read as flat chrome text/icons rather
@@ -4997,6 +5045,11 @@ styleElement.textContent = `
     border-left: 0 !important;
     padding: 0 12px;
     width: 42px;
+  }
+  .titlebar-session-button.titlebar-companion-restore-button svg {
+    flex-shrink: 0;
+    height: ${COMPANION_SIDEPANE_ICON_SIZE}px;
+    width: ${COMPANION_SIDEPANE_ICON_SIZE}px;
   }
   .titlebar-mode-switcher {
     /**
@@ -6072,6 +6125,52 @@ styleElement.textContent = `
     color: rgba(255,255,255,0.54);
     font: 500 12px -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif;
     padding: 10px 4px;
+  }
+  /*
+   * CDXC:ReactTitlebar 2026-06-11-09:23:
+   * Native pointer ownership must neutralize sticky WebKit :hover for the
+   * titlebar, not only prevent future hit testing. Keep keyboard focus and open
+   * menu states visible, but remove hover-only backgrounds, reveals, and tooltip
+   * portals while AppKit says the pointer is outside a measured titlebar hit
+   * region.
+   */
+  body[data-native-pointer-inside="false"] .titlebar-session-button:hover:not(:focus-visible):not([data-state="open"]) {
+    background: transparent;
+    color: rgba(255,255,255,0.84);
+  }
+  body[data-native-pointer-inside="false"] .titlebar-update-button:hover:not(:focus-visible) {
+    color: rgba(255,255,255,0.46);
+  }
+  body[data-native-pointer-inside="false"] .titlebar-mode-tab:hover:not(:focus-visible):not([data-active="true"]):not(:disabled):not([data-disabled="true"]) {
+    color: rgba(255,255,255,0.68);
+  }
+  body[data-native-pointer-inside="false"] .titlebar-exit-focus-button:hover:not(:focus-visible) {
+    background: rgba(255,255,255,0.2) !important;
+    color: rgba(255,255,255,0.98) !important;
+  }
+  body[data-native-pointer-inside="false"] .titlebar-update-button::after,
+  body[data-native-pointer-inside="false"] [data-radix-popper-content-wrapper],
+  body[data-native-pointer-inside="false"] [data-slot="tooltip-content"],
+  body[data-native-pointer-inside="false"] .titlebar-action-command-tooltip,
+  body[data-native-pointer-inside="false"] .titlebar-resource-tooltip {
+    opacity: 0 !important;
+    pointer-events: none !important;
+    visibility: hidden !important;
+  }
+  body[data-native-pointer-inside="false"] .titlebar-resources-header:hover:not(:focus-within) .titlebar-resources-action-button,
+  body[data-native-pointer-inside="false"] .titlebar-resource-section-heading:hover:not(:focus-within) .titlebar-resource-section-quit-button,
+  body[data-native-pointer-inside="false"] .titlebar-resource-row:hover:not(:focus-within) .titlebar-resource-focus-button,
+  body[data-native-pointer-inside="false"] .titlebar-resource-row:hover:not(:focus-within) .titlebar-resource-kill-button {
+    opacity: 0;
+    pointer-events: none;
+  }
+  body[data-native-pointer-inside="false"] .titlebar-resource-section-heading:hover:not(:focus-within) .titlebar-resource-section-summary,
+  body[data-native-pointer-inside="false"] .titlebar-resource-row:hover:not(:focus-within) > .titlebar-resource-metric {
+    opacity: 1;
+  }
+  body[data-native-pointer-inside="false"] .titlebar-resource-row:hover:not(:focus-within) .titlebar-resource-focus-button,
+  body[data-native-pointer-inside="false"] .titlebar-resource-row:hover:not(:focus-within) .titlebar-resource-kill-button {
+    transform: translateY(-50%) scale(0.96);
   }
 `;
 document.head.append(styleElement);
