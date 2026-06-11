@@ -14,6 +14,7 @@ import {
 import type { GxserverSessionStatusAgentName, GxserverTitleStatusSignal } from "./types.js";
 
 export const GXSERVER_INITIAL_ACTIVITY_SUPPRESSION_MS = 12_000;
+export const GXSERVER_ESCAPE_ATTENTION_SUPPRESSION_MS = 5_000;
 export const GXSERVER_MIN_WORKING_DURATION_BEFORE_ATTENTION_MS = 5_000;
 
 export function applyAgentActivityTransition(input: GxserverAgentActivityInput): GxserverAgentActivityState {
@@ -43,6 +44,25 @@ export function applyAgentActivityTransition(input: GxserverAgentActivityInput):
       activity: "idle",
       isAcknowledged: true,
       lastChangedAt: nowIso,
+    };
+  }
+  if (input.event === "escape") {
+    const agentName = normalizeStatusAgentName(input.agentId) ?? previous.agentName;
+    const attentionSuppressedUntil = new Date(nowMs + GXSERVER_ESCAPE_ATTENTION_SUPPRESSION_MS).toISOString();
+    /*
+    CDXC:SessionStatus 2026-06-11-08:46:
+    Escape is terminal input, not a lifecycle restart. Pressing Escape should suppress the current done/attention edge for this interaction without making an actively working session look idle until a later title or hook event reports that work actually stopped.
+    */
+    return {
+      ...previous,
+      activity: previousActivity === "attention" ? "idle" : previousActivity,
+      agentName,
+      attentionEventId: previousActivity === "attention" ? undefined : previous.attentionEventId,
+      attentionSuppressedUntil,
+      isAcknowledged: true,
+      lastChangedAt: previousActivity === "attention" ? nowIso : previous.lastChangedAt ?? nowIso,
+      workingSource: previousActivity === "attention" ? undefined : previous.workingSource,
+      workingStartedAt: previousActivity === "attention" ? undefined : previous.workingStartedAt,
     };
   }
 
@@ -103,6 +123,7 @@ export function applyAgentActivityTransition(input: GxserverAgentActivityInput):
     activityFromEvent(input.event) ??
     activityFromTitleSignal(titleSignal?.state, previous, titleSignal?.agentName, input.event);
   const agentName = titleSignal?.agentName ?? normalizeStatusAgentName(input.agentId) ?? previous.agentName;
+  const activeAttentionSuppressedUntil = getActiveAttentionSuppressedUntil(previous, nowMs);
 
   if (requested === "working") {
     const workingSource = input.event === "title" && titleSignal?.state === "working" ? "title" : "explicit";
@@ -123,6 +144,7 @@ export function applyAgentActivityTransition(input: GxserverAgentActivityInput):
       isAcknowledged: false,
       lastChangedAt: previousActivity === "working" ? previous.lastChangedAt ?? nowIso : nowIso,
       ...titleTransition,
+      ...(activeAttentionSuppressedUntil ? { attentionSuppressedUntil: activeAttentionSuppressedUntil } : {}),
       workingSource,
       workingStartedAt: previousActivity === "working" ? previous.workingStartedAt ?? nowIso : nowIso,
     };
@@ -133,6 +155,9 @@ export function applyAgentActivityTransition(input: GxserverAgentActivityInput):
     CDXC:SessionStatus 2026-05-31-14:36:
     gxserver owns agent status transitions for every client. Codex action-required terminal titles blink between `[ ! ] Action Required` and dot frames such as `[ . ] Action Required`; all frames stay one acknowledged attention event so renderers do not replay sounds, banners, or green borders.
     */
+    if (activeAttentionSuppressedUntil && input.event !== "bell" && input.event !== "terminalError") {
+      return stateForSuppressedAttention(previous, agentName, titleTransition, nowIso, activeAttentionSuppressedUntil);
+    }
     if (previousActivity === "attention") {
       return previous;
     }
@@ -179,6 +204,7 @@ export function applyAgentActivityTransition(input: GxserverAgentActivityInput):
     agentName,
     lastChangedAt: previousActivity === "idle" ? previous.lastChangedAt ?? nowIso : nowIso,
     ...titleTransition,
+    ...(activeAttentionSuppressedUntil ? { attentionSuppressedUntil: activeAttentionSuppressedUntil } : {}),
     workingSource: undefined,
     workingStartedAt: undefined,
   };
@@ -220,6 +246,13 @@ export function getEffectiveAgentActivityState(
   if (!isStoredTitleDerivedWorkingStale(state, nowMs)) {
     return state;
   }
+  const activeAttentionSuppressedUntil = getActiveAttentionSuppressedUntil(state, nowMs);
+  if (activeAttentionSuppressedUntil) {
+    return stateForSuppressedAttention(state, state.agentName, {
+      lastTitle: state.lastTitle,
+      lastTitleChangeAt: state.lastTitleChangeAt,
+    }, new Date(nowMs).toISOString(), activeAttentionSuppressedUntil);
+  }
   return stateForStaleTitleWorking(state, state.agentName, {
     lastTitle: state.lastTitle,
     lastTitleChangeAt: state.lastTitleChangeAt,
@@ -243,7 +276,12 @@ export function getAgentActivityStaleProjectionDelayMs(
   if (!Number.isFinite(lastTitleChangeMs)) {
     return undefined;
   }
-  return Math.max(0, lastTitleChangeMs + getTitleActivityWindowMs(state.agentName) - nowMs);
+  const titleDelayMs = Math.max(0, lastTitleChangeMs + getTitleActivityWindowMs(state.agentName) - nowMs);
+  const activeAttentionSuppressedUntilMs = getActiveAttentionSuppressedUntilMs(state, nowMs);
+  if (activeAttentionSuppressedUntilMs === undefined) {
+    return titleDelayMs;
+  }
+  return Math.max(titleDelayMs, activeAttentionSuppressedUntilMs - nowMs);
 }
 
 export function normalizeAgentActivityState(
@@ -255,6 +293,7 @@ export function normalizeAgentActivityState(
     activity: normalizeActivity(record.activity) ?? fallback.activity,
     agentName: normalizeStatusAgentName(normalizeText(record.agentName)),
     attentionEventId: normalizeText(record.attentionEventId),
+    attentionSuppressedUntil: normalizeText(record.attentionSuppressedUntil),
     hasSeenWorking: readBoolean(record.hasSeenWorking),
     isAcknowledged: readBoolean(record.isAcknowledged),
     lastChangedAt: normalizeText(record.lastChangedAt),
@@ -274,6 +313,7 @@ export function normalizeActivityEvent(value: unknown): GxserverAgentActivityEve
   return value === "launch" ||
     value === "resume" ||
     value === "wake" ||
+    value === "escape" ||
     value === "agentDetected" ||
     value === "title" ||
     value === "bell" ||
@@ -296,6 +336,21 @@ function activityFromEvent(event: GxserverAgentActivityEvent | undefined): Gxser
     return "idle";
   }
   return undefined;
+}
+
+function getActiveAttentionSuppressedUntil(
+  state: GxserverAgentActivityState,
+  nowMs: number,
+): string | undefined {
+  return getActiveAttentionSuppressedUntilMs(state, nowMs) === undefined ? undefined : state.attentionSuppressedUntil;
+}
+
+function getActiveAttentionSuppressedUntilMs(
+  state: GxserverAgentActivityState,
+  nowMs: number,
+): number | undefined {
+  const suppressedUntilMs = state.attentionSuppressedUntil ? Date.parse(state.attentionSuppressedUntil) : Number.NaN;
+  return Number.isFinite(suppressedUntilMs) && nowMs < suppressedUntilMs ? suppressedUntilMs : undefined;
 }
 
 function activityFromTitleSignal(
@@ -404,6 +459,28 @@ function stateForStaleTitleWorking(
     activity: nextActivity,
     agentName,
     lastChangedAt: previous.activity === nextActivity ? previous.lastChangedAt ?? nowIso : nowIso,
+    ...titleTransition,
+    workingSource: undefined,
+    workingStartedAt: undefined,
+  };
+}
+
+function stateForSuppressedAttention(
+  previous: GxserverAgentActivityState,
+  agentName: GxserverSessionStatusAgentName | undefined,
+  titleTransition: Pick<GxserverAgentActivityState, "lastTitle" | "lastTitleChangeAt">,
+  nowIso: string,
+  attentionSuppressedUntil: string,
+): GxserverAgentActivityState {
+  return {
+    ...previous,
+    activity: "idle",
+    agentName,
+    attentionEventId: undefined,
+    attentionSuppressedUntil,
+    hasSeenWorking: false,
+    isAcknowledged: true,
+    lastChangedAt: nowIso,
     ...titleTransition,
     workingSource: undefined,
     workingStartedAt: undefined,

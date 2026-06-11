@@ -81,6 +81,104 @@ test("wake suppression ignores title-derived attention from a resumed sleeping s
   assert.equal(wakeTitle.suppressedUntil, "2026-06-10T07:27:12.000Z");
 });
 
+test("escape suppresses done attention for five seconds without clearing working", () => {
+  const attention = applyAgentActivityTransition({
+    activity: "attention",
+    agentId: "codex",
+    nowMs: Date.parse("2026-06-11T04:46:00.000Z"),
+    previous: {
+      activity: "working",
+      agentName: "codex",
+      hasSeenWorking: true,
+      isAcknowledged: false,
+      lastChangedAt: "2026-06-11T04:45:54.000Z",
+      workingStartedAt: "2026-06-11T04:45:54.000Z",
+    },
+  });
+  assert.equal(attention.activity, "attention");
+  assert.equal(attention.attentionEventId, "attn_mq90lq2o");
+
+  const escapedAttention = applyAgentActivityTransition({
+    agentId: "codex",
+    event: "escape",
+    nowMs: Date.parse("2026-06-11T04:46:01.000Z"),
+    previous: attention,
+  });
+  assert.equal(escapedAttention.activity, "idle");
+  assert.equal(escapedAttention.attentionEventId, undefined);
+  assert.equal(escapedAttention.attentionSuppressedUntil, "2026-06-11T04:46:06.000Z");
+  assert.equal(escapedAttention.isAcknowledged, true);
+
+  const working = applyAgentActivityTransition({
+    activity: "working",
+    agentId: "codex",
+    nowMs: Date.parse("2026-06-11T04:46:10.000Z"),
+    previous: escapedAttention,
+  });
+  assert.equal(working.activity, "working");
+  assert.equal(working.attentionSuppressedUntil, undefined);
+
+  const escapedWorking = applyAgentActivityTransition({
+    agentId: "codex",
+    event: "escape",
+    nowMs: Date.parse("2026-06-11T04:46:11.000Z"),
+    previous: working,
+  });
+  assert.equal(escapedWorking.activity, "working");
+  assert.equal(escapedWorking.attentionSuppressedUntil, "2026-06-11T04:46:16.000Z");
+  assert.equal(escapedWorking.workingSource, "explicit");
+  assert.equal(escapedWorking.workingStartedAt, "2026-06-11T04:46:10.000Z");
+
+  const suppressedTitleDone = applyAgentActivityTransition({
+    agentId: "codex",
+    event: "title",
+    nowMs: Date.parse("2026-06-11T04:46:12.000Z"),
+    previous: escapedWorking,
+    title: "[ ! ] Action Required",
+  });
+  assert.equal(suppressedTitleDone.activity, "idle");
+  assert.equal(suppressedTitleDone.attentionSuppressedUntil, "2026-06-11T04:46:16.000Z");
+  assert.equal(suppressedTitleDone.hasSeenWorking, false);
+  assert.equal(suppressedTitleDone.isAcknowledged, true);
+
+  const explicitDoneAfterWindow = applyAgentActivityTransition({
+    activity: "attention",
+    agentId: "codex",
+    nowMs: Date.parse("2026-06-11T04:46:17.000Z"),
+    previous: suppressedTitleDone,
+  });
+  assert.equal(explicitDoneAfterWindow.activity, "attention");
+  assert.equal(explicitDoneAfterWindow.attentionSuppressedUntil, undefined);
+});
+
+test("escape done suppression does not suppress terminal error attention", () => {
+  const escapedWorking = applyAgentActivityTransition({
+    agentId: "codex",
+    event: "escape",
+    nowMs: Date.parse("2026-06-11T04:46:11.000Z"),
+    previous: {
+      activity: "working",
+      agentName: "codex",
+      hasSeenWorking: true,
+      isAcknowledged: false,
+      lastChangedAt: "2026-06-11T04:46:10.000Z",
+      workingSource: "explicit",
+      workingStartedAt: "2026-06-11T04:46:10.000Z",
+    },
+  });
+  assert.equal(escapedWorking.activity, "working");
+  assert.equal(escapedWorking.attentionSuppressedUntil, "2026-06-11T04:46:16.000Z");
+
+  const terminalError = applyAgentActivityTransition({
+    agentId: "codex",
+    event: "terminalError",
+    nowMs: Date.parse("2026-06-11T04:46:12.000Z"),
+    previous: escapedWorking,
+  });
+  assert.equal(terminalError.activity, "attention");
+  assert.equal(terminalError.attentionEventId, "attn_mq90lzc0");
+});
+
 test("same-title Codex spinner stop clears explicit hook working", () => {
   const titleWorking = applyAgentActivityTransition({
     agentId: "codex",
