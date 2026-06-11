@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { createReadStream, statSync } from "node:fs";
-import { stat as statFile } from "node:fs/promises";
+import { chmod, mkdir, stat as statFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import type {
@@ -29,6 +29,7 @@ export const GXSERVER_BEADS_BOARD_FILE_LIMIT_BYTES = GXSERVER_TYPED_OPERATION_ST
 export const GXSERVER_BEADS_BOARD_RESPONSE_LIMIT_BYTES = GXSERVER_TYPED_OPERATION_STDOUT_LIMIT_BYTES;
 export const GXSERVER_BEADS_BOARD_ROW_LIMIT = 5_000;
 const GXSERVER_TYPED_OPERATION_KILL_GRACE_MS = 1_000;
+const GXSERVER_BEADS_GIT_HOOK_NAMES = ["pre-commit", "post-merge", "post-checkout"] as const;
 const GXSERVER_TYPED_OPERATION_COLOR_DISABLING_ENVIRONMENT_KEYS = [
   "ANSI_COLORS_DISABLED",
   "NO_COLOR",
@@ -99,6 +100,12 @@ export function buildGitCommand(params: GxserverRunGitActionParams, cwd: string)
 
   CDXC:GitOperations 2026-06-02-12:52:
   Commit and push mutations are shared backend Git workflows after the gxserver/native split. Commit messages are user-authored content, so gxserver passes them over stdin with `git commit -F -` and returns only a redacted command summary to clients and logs.
+
+  CDXC:WorktreeDelete 2026-06-10-22:56:
+  Delete Worktree can optionally clean up the local branch and origin branch after
+  the checkout is removed. Keep those branch probes and deletions in typed Git
+  operations, use safe `branch -d`, and redact branch names from returned command
+  metadata for the new cleanup actions.
   */
   switch (action) {
     case "addAll": {
@@ -119,6 +126,25 @@ export function buildGitCommand(params: GxserverRunGitActionParams, cwd: string)
       return { args: ["checkout", normalizeGitRef(params.branch, "branch")], cwd, executable: "git" };
     case "checkoutNewBranch":
       return { args: ["checkout", "-b", normalizeGitRef(params.branch, "branch")], cwd, executable: "git" };
+    case "deleteLocalBranch": {
+      const branch = normalizeGitRef(params.branch, "branch");
+      return {
+        args: ["branch", "-d", "--", branch],
+        cwd,
+        executable: "git",
+        resultCommand: { args: ["branch", "-d", "--", "<branch>"], cwd, executable: "git" },
+      };
+    }
+    case "deleteRemoteBranch": {
+      const remoteName = normalizeGitRemoteName(params.remoteName ?? "origin");
+      const branch = normalizeGitRef(params.branch, "branch");
+      return {
+        args: ["push", remoteName, "--delete", branch],
+        cwd,
+        executable: "git",
+        resultCommand: { args: ["push", "<remote>", "--delete", "<branch>"], cwd, executable: "git" },
+      };
+    }
     case "diff":
       return { args: ["diff", "--", ...optionalRelativeFilePath(params.filePath)], cwd, executable: "git" };
     case "diffCached":
@@ -177,6 +203,16 @@ export function buildGitCommand(params: GxserverRunGitActionParams, cwd: string)
       return { args: ["push"], cwd, executable: "git" };
     case "pushSetUpstream":
       return { args: ["push", "-u", "origin", normalizeGitRef(params.branch, "branch")], cwd, executable: "git" };
+    case "remoteBranchExists": {
+      const remoteName = normalizeGitRemoteName(params.remoteName ?? "origin");
+      const branch = normalizeGitRef(params.branch, "branch");
+      return {
+        args: ["ls-remote", "--exit-code", "--heads", remoteName, branch],
+        cwd,
+        executable: "git",
+        resultCommand: { args: ["ls-remote", "--exit-code", "--heads", "<remote>", "<branch>"], cwd, executable: "git" },
+      };
+    }
     case "verifyRef":
       return { args: ["rev-parse", "--verify", normalizeGitRef(params.ref, "ref")], cwd, executable: "git" };
   }
@@ -189,6 +225,8 @@ export function buildWorktreeCommand(params: GxserverRunWorktreeActionParams, co
   Worktree create, list, remove, prune, and switch are gxserver-owned typed operations after the ownership split. Keep the allowlist here so native owns picker/layout/local-first UI but never shells out to `git worktree` for shared project mutations.
   */
   switch (action) {
+    case "ensureBeadsHooks":
+      throw new GxserverTypedOperationError("badRequest", "ensureBeadsHooks is handled by gxserver without spawning git worktree.");
     case "create": {
       const worktreePath = normalizeWorktreeTargetPath(params.worktreePath, context);
       const branch = normalizeOptionalGitRef(params.branch, "branch");
@@ -422,6 +460,9 @@ export async function runWorktreeAction(
   Worktree target-path availability is part of the shared worktree creation decision. Check candidate paths inside gxserver typed operations instead of letting native shell out with `/bin/test`, while keeping native responsible for naming attempts and UI feedback.
   */
   const action = normalizeWorktreeAction(params.action);
+  if (action === "ensureBeadsHooks") {
+    return ensureBeadsGitHooks(context);
+  }
   if (action === "pathExists") {
     const worktreePath = normalizeWorktreeTargetPath(params.worktreePath, context);
     const exists = await pathExists(worktreePath);
@@ -446,6 +487,138 @@ export async function runWorktreeAction(
       path: entry.path,
     })),
   };
+}
+
+async function ensureBeadsGitHooks(context: GxserverTypedOperationContext): Promise<GxserverTypedOperationResult> {
+  /*
+  CDXC:WorktreeBeads 2026-06-10-22:37:
+  Worktrees created from the Project board must commit with the same Beads database as the parent checkout.
+  Install local common-git-dir hooks that call Ghostex's bundled `bd hooks run` by absolute path and pin BEADS_DIR to the resolved Beads storage, so linked worktrees do not depend on stale PATH bd binaries or create split board state.
+  */
+  if (!(await beadsStorageDirectoryExists(context.cwd))) {
+    return {
+      action: "ensureBeadsHooks",
+      exitCode: 0,
+      stderr: "",
+      stdout: "skipped: no Beads workspace",
+    };
+  }
+  const bd = await requireBd(context);
+  const where = await runTypedCommand({ args: ["where", "--json"], cwd: context.cwd, executable: bd }, commandOptions(context));
+  if (where.exitCode !== 0) {
+    return {
+      action: "ensureBeadsHooks",
+      exitCode: 0,
+      stderr: "",
+      stdout: "skipped: no Beads workspace",
+    };
+  }
+  const beadsPath = await normalizeBeadsWhereDirectory(where.stdout);
+  const commonGitDir = await resolveGitCommonDirectory(context);
+  const hooksPath = path.join(commonGitDir, "ghostex-hooks");
+  await mkdir(hooksPath, { recursive: true });
+  for (const hookName of GXSERVER_BEADS_GIT_HOOK_NAMES) {
+    const hookPath = path.join(hooksPath, hookName);
+    await writeFile(hookPath, buildGhostexBeadsGitHookScript(hookName, bd, beadsPath), { mode: 0o755 });
+    await chmod(hookPath, 0o755);
+  }
+  const config = await runTypedCommand(
+    { args: ["config", "core.hooksPath", hooksPath], cwd: context.cwd, executable: "git" },
+    commandOptions(context),
+  );
+  if (config.exitCode !== 0) {
+    return {
+      action: "ensureBeadsHooks",
+      exitCode: config.exitCode,
+      stderr: config.stderr,
+      stdout: config.stdout || "Could not configure Git hooks path for Beads worktree support.",
+    };
+  }
+  return {
+    action: "ensureBeadsHooks",
+    exitCode: 0,
+    stderr: "",
+    stdout: "installed",
+  };
+}
+
+async function resolveGitCommonDirectory(context: GxserverTypedOperationContext): Promise<string> {
+  const result = await runTypedCommand(
+    { args: ["rev-parse", "--git-common-dir"], cwd: context.cwd, executable: "git" },
+    commandOptions(context),
+  );
+  if (result.exitCode !== 0 || !result.stdout.trim()) {
+    throw new GxserverTypedOperationError("badRequest", result.stderr || "Could not resolve Git common directory.");
+  }
+  return path.resolve(context.cwd, result.stdout.trim());
+}
+
+async function normalizeBeadsWhereDirectory(stdout: string): Promise<string> {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(stdout.trim());
+  } catch {
+    throw new GxserverTypedOperationError("badRequest", "Beads where output was not valid JSON.");
+  }
+  const beadsPath = isRecord(parsed) && typeof parsed.path === "string" ? parsed.path : "";
+  if (!path.isAbsolute(beadsPath)) {
+    throw new GxserverTypedOperationError("badRequest", "Beads where output did not include an absolute storage path.");
+  }
+  const stats = await statFile(beadsPath);
+  if (!stats.isDirectory()) {
+    throw new GxserverTypedOperationError("badRequest", "Beads storage path is not a directory.");
+  }
+  return beadsPath;
+}
+
+function buildGhostexBeadsGitHookScript(
+  hookName: (typeof GXSERVER_BEADS_GIT_HOOK_NAMES)[number],
+  bd: string,
+  beadsPath: string,
+): string {
+  return `#!/usr/bin/env sh
+# Ghostex-managed Beads hook. This local file is generated under the common Git directory.
+BD_BIN=${shellSingleQuote(bd)}
+BEADS_DIR_VALUE=${shellSingleQuote(beadsPath)}
+HOOK_NAME=${shellSingleQuote(hookName)}
+if [ ! -x "$BD_BIN" ]; then
+  echo "Warning: Ghostex bundled bd is missing; skipping Beads hook" >&2
+  exit 0
+fi
+export BEADS_DIR="$BEADS_DIR_VALUE"
+export BD_GIT_HOOK=1
+export PATH="$(dirname "$BD_BIN"):$PATH"
+run_bd_hook() {
+  _bd_timeout=\${BEADS_HOOK_TIMEOUT:-300}
+  _bd_used_perl=0
+  if command -v timeout >/dev/null 2>&1; then
+    timeout "$_bd_timeout" "$BD_BIN" hooks run "$HOOK_NAME" "$@"
+    _bd_exit=$?
+  elif command -v gtimeout >/dev/null 2>&1; then
+    gtimeout "$_bd_timeout" "$BD_BIN" hooks run "$HOOK_NAME" "$@"
+    _bd_exit=$?
+  elif command -v perl >/dev/null 2>&1; then
+    _bd_used_perl=1
+    perl -e 'alarm shift; exec @ARGV' "$_bd_timeout" "$BD_BIN" hooks run "$HOOK_NAME" "$@"
+    _bd_exit=$?
+  else
+    echo >&2 "beads: hook '$HOOK_NAME' running without timeout; install coreutils or perl to enable BEADS_HOOK_TIMEOUT"
+    "$BD_BIN" hooks run "$HOOK_NAME" "$@"
+    _bd_exit=$?
+  fi
+  if [ $_bd_exit -eq 124 ] || { [ $_bd_used_perl -eq 1 ] && [ $_bd_exit -eq 142 ]; }; then
+    echo >&2 "beads: hook '$HOOK_NAME' timed out after \${_bd_timeout}s; continuing without beads"
+    _bd_exit=0
+  fi
+  if [ $_bd_exit -eq 3 ]; then
+    echo >&2 "beads: database not initialized; skipping hook '$HOOK_NAME'"
+    _bd_exit=0
+  fi
+  return $_bd_exit
+}
+run_bd_hook "$@"
+exit $?
+`;
 }
 
 export async function runProjectSetupCommand(
@@ -1034,6 +1207,14 @@ function normalizeOptionalGitRef(input: unknown, field: string): string | undefi
   return normalizeGitRef(input, field);
 }
 
+function normalizeGitRemoteName(input: unknown): string {
+  const value = normalizeRequiredText(input, "remoteName");
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(value)) {
+    throw new GxserverTypedOperationError("badRequest", "remoteName is not an allowed Git remote name.");
+  }
+  return value;
+}
+
 function normalizeIssueId(input: unknown): string {
   const issueId = normalizeRequiredText(input, "issueId");
   if (!/^[A-Za-z0-9][A-Za-z0-9._:-]*$/.test(issueId)) {
@@ -1076,6 +1257,8 @@ function normalizeGitAction(action: unknown): GxserverGitAction {
     action === "countFileLines" ||
     action === "checkout" ||
     action === "checkoutNewBranch" ||
+    action === "deleteLocalBranch" ||
+    action === "deleteRemoteBranch" ||
     action === "diff" ||
     action === "diffCached" ||
     action === "diffCachedNoExt" ||
@@ -1092,6 +1275,7 @@ function normalizeGitAction(action: unknown): GxserverGitAction {
     action === "merge" ||
     action === "push" ||
     action === "pushSetUpstream" ||
+    action === "remoteBranchExists" ||
     action === "status" ||
     action === "statusPorcelain" ||
     action === "upstreamCounts" ||
@@ -1157,6 +1341,7 @@ function normalizeGitHubAction(action: unknown): GxserverGitHubAction {
 function normalizeWorktreeAction(action: unknown): GxserverWorktreeAction {
   if (
     action === "create" ||
+    action === "ensureBeadsHooks" ||
     action === "list" ||
     action === "pathExists" ||
     action === "prune" ||
@@ -1166,6 +1351,10 @@ function normalizeWorktreeAction(action: unknown): GxserverWorktreeAction {
     return action;
   }
   throw new GxserverTypedOperationError("badRequest", `Unsupported worktree action: ${String(action)}`);
+}
+
+function shellSingleQuote(value: string): string {
+  return `'${value.replace(/'/g, "'\\''")}'`;
 }
 
 async function pathExists(candidatePath: string): Promise<boolean> {

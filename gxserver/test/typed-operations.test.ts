@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { spawnSync } from "node:child_process";
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import {
@@ -92,8 +93,26 @@ test("Git command construction is allowlisted and keeps file paths project-relat
   const checkoutNewBranch = buildGitCommand({ action: "checkoutNewBranch", branch: "feature/a", projectPath: "/repo" }, "/repo");
   assert.deepEqual(checkoutNewBranch.args, ["checkout", "-b", "feature/a"]);
 
+  const deleteLocalBranch = buildGitCommand({ action: "deleteLocalBranch", branch: "feature/a", projectPath: "/repo" }, "/repo");
+  assert.deepEqual(deleteLocalBranch.args, ["branch", "-d", "--", "feature/a"]);
+  assert.deepEqual(deleteLocalBranch.resultCommand?.args, ["branch", "-d", "--", "<branch>"]);
+
+  const deleteRemoteBranch = buildGitCommand(
+    { action: "deleteRemoteBranch", branch: "feature/a", projectPath: "/repo", remoteName: "origin" },
+    "/repo",
+  );
+  assert.deepEqual(deleteRemoteBranch.args, ["push", "origin", "--delete", "feature/a"]);
+  assert.deepEqual(deleteRemoteBranch.resultCommand?.args, ["push", "<remote>", "--delete", "<branch>"]);
+
   const merge = buildGitCommand({ action: "merge", branch: "feature/a", projectPath: "/repo" }, "/repo");
   assert.deepEqual(merge.args, ["merge", "feature/a"]);
+
+  const remoteBranchExists = buildGitCommand(
+    { action: "remoteBranchExists", branch: "feature/a", projectPath: "/repo", remoteName: "origin" },
+    "/repo",
+  );
+  assert.deepEqual(remoteBranchExists.args, ["ls-remote", "--exit-code", "--heads", "origin", "feature/a"]);
+  assert.deepEqual(remoteBranchExists.resultCommand?.args, ["ls-remote", "--exit-code", "--heads", "<remote>", "<branch>"]);
 
   assert.throws(
     () => buildGitCommand({ action: "diff", filePath: "../secret", projectPath: "/repo" }, "/repo"),
@@ -110,6 +129,10 @@ test("Git command construction is allowlisted and keeps file paths project-relat
   assert.throws(
     () => buildGitCommand({ action: "merge", branch: "../bad", projectPath: "/repo" }, "/repo"),
     /not an allowed Git ref/,
+  );
+  assert.throws(
+    () => buildGitCommand({ action: "remoteBranchExists", branch: "feature/a", projectPath: "/repo", remoteName: "../bad" }, "/repo"),
+    /remoteName is not an allowed Git remote name/,
   );
   assert.throws(() => buildGitCommand({ action: "archive" as never, projectPath: "/repo" }, "/repo"), /Unsupported Git action/);
 });
@@ -260,6 +283,87 @@ test("typed worktree pathExists checks target availability inside gxserver", asy
         ),
       /must stay inside the source project worktree family directory/,
     );
+  } finally {
+    await rm(root, { force: true, recursive: true });
+  }
+});
+
+test("typed worktree ensureBeadsHooks installs bundled bd hooks in the common git directory", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "gxserver-worktree-beads-hooks-"));
+  try {
+    const repo = path.join(root, "repo");
+    const appWebRoot = path.join(root, "app-web");
+    const gxserverRoot = path.join(appWebRoot, "gxserver");
+    const bd = path.join(appWebRoot, "bin", "bd");
+    const beadsPath = path.join(repo, ".beads");
+    const hookLog = path.join(root, "hook.log");
+    await mkdir(beadsPath, { recursive: true });
+    runGitForTypedOperationsTest(repo, ["init"]);
+    await makeExecutable(
+      bd,
+      `#!/bin/sh
+if [ "$1" = "where" ]; then
+  printf '%s\\n' '{"path":"${beadsPath}"}'
+  exit 0
+fi
+if [ "$1" = "hooks" ] && [ "$2" = "run" ]; then
+  printf '%s\\n' "$BEADS_DIR|$BD_GIT_HOOK|$3" >> ${shellSingleQuoteForTypedOperationsTest(hookLog)}
+  exit 0
+fi
+exit 0
+`,
+    );
+
+    const result = await runWorktreeAction(
+      { action: "ensureBeadsHooks", projectPath: repo },
+      {
+        cwd: repo,
+        projects: [project("P3a91", repo)],
+        toolchain: { gxserverRoot, repoRoot: path.join(root, "source-root") },
+      },
+    );
+
+    assert.equal(result.exitCode, 0);
+    assert.equal(result.stdout, "installed");
+    const hooksPath = path.join(repo, ".git", "ghostex-hooks");
+    assert.equal(runGitForTypedOperationsTest(repo, ["config", "--get", "core.hooksPath"]).trim(), hooksPath);
+    const preCommit = await readFile(path.join(hooksPath, "pre-commit"), "utf8");
+    assert.match(preCommit, /BD_BIN=/);
+    assert.match(preCommit, /BEADS_DIR_VALUE=/);
+    assert.match(preCommit, /hooks run "\$HOOK_NAME"/);
+    assert.match(preCommit, /HOOK_NAME='pre-commit'/);
+    assert.doesNotMatch(preCommit, /bd sync|sync --flush-only/);
+    assert.doesNotMatch(preCommit, /export -o \.beads\/issues\.jsonl/);
+    assert.equal(preCommit.includes(bd), true);
+    assert.equal(preCommit.includes(beadsPath), true);
+    const postMerge = await readFile(path.join(hooksPath, "post-merge"), "utf8");
+    assert.match(postMerge, /HOOK_NAME='post-merge'/);
+    assert.match(postMerge, /hooks run "\$HOOK_NAME"/);
+    assert.doesNotMatch(postMerge, /import -i \.beads\/issues\.jsonl/);
+    const hookRun = spawnSync(path.join(hooksPath, "pre-commit"), [], { cwd: repo, encoding: "utf8" });
+    assert.equal(hookRun.status, 0, hookRun.stderr || hookRun.stdout);
+    assert.equal((await readFile(hookLog, "utf8")).trim(), `${beadsPath}|1|pre-commit`);
+  } finally {
+    await rm(root, { force: true, recursive: true });
+  }
+});
+
+test("typed worktree ensureBeadsHooks skips non-Beads repositories before resolving bd", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "gxserver-worktree-beads-skip-"));
+  try {
+    const repo = path.join(root, "repo");
+    await mkdir(repo, { recursive: true });
+    runGitForTypedOperationsTest(repo, ["init"]);
+    const result = await runWorktreeAction(
+      { action: "ensureBeadsHooks", projectPath: repo },
+      {
+        cwd: repo,
+        projects: [project("P3a92", repo)],
+        toolchain: { gxserverRoot: path.join(root, "missing-gxserver"), repoRoot: path.join(root, "missing-source") },
+      },
+    );
+    assert.equal(result.exitCode, 0);
+    assert.equal(result.stdout, "skipped: no Beads workspace");
   } finally {
     await rm(root, { force: true, recursive: true });
   }
@@ -807,4 +911,14 @@ async function makeExecutable(executablePath: string, contents = "#!/bin/sh\npri
   await mkdir(path.dirname(executablePath), { recursive: true });
   await writeFile(executablePath, contents);
   await chmod(executablePath, 0o755);
+}
+
+function runGitForTypedOperationsTest(cwd: string, args: readonly string[]): string {
+  const result = spawnSync("git", [...args], { cwd, encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  return result.stdout;
+}
+
+function shellSingleQuoteForTypedOperationsTest(value: string): string {
+  return `'${value.replace(/'/g, "'\\''")}'`;
 }
