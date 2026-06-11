@@ -4236,7 +4236,7 @@ function SidebarReferenceSectionHeader({
    * Quick and Projects section-header actions use the same local left-side
    * tooltip treatment as the reference-sidebar hover icons because portaled
    * Radix tooltips mis-anchor in the native sidebar webview. Quick exposes
-   * Quick Browser Tab and Quick Terminal actions beside the section label.
+   * filter, browser, terminal, and agent-picker actions beside the section label.
    *
    * CDXC:SidebarStickyHeaders 2026-05-20-09:55:
    * Section headers need a stable section key in the DOM so spacing can be
@@ -4250,10 +4250,11 @@ function SidebarReferenceSectionHeader({
    * user-defined row order.
    *
    * CDXC:QuickAgents 2026-06-08-18:25:
-   * Quick exposes the same selected-agent split picker as project headers, but
-   * keeps Browser and Terminal as separate section-header actions. The main
-   * agent half launches the selected provider and the chevron opens the shared
-   * agent list plus Configure.
+   * Quick exposes the same selected-agent split picker as project headers, with
+   * Browser and Terminal as separate section-header actions to its left. Keep
+   * the agent picker at the far right of the Quick header cluster so it aligns
+   * with project-header agent placement. The main agent half launches the
+   * selected provider and the chevron opens the shared agent list plus Configure.
    *
    * CDXC:RemoteMachines 2026-06-10-09:54:
    * Remote machine headers need a Tabler edit action immediately to the right
@@ -4355,6 +4356,28 @@ function SidebarReferenceSectionHeader({
               <IconFilter2 aria-hidden="true" size={14} stroke={1.9} />
             </button>
           ) : null}
+          {onCreateBrowserChat ? (
+            <button
+              aria-label="Quick Browser Tab"
+              className="reference-sidebar-section-action reference-sidebar-hover-action-tooltip"
+              data-tooltip="Quick Browser Tab"
+              onClick={onCreateBrowserChat}
+              type="button"
+            >
+              <IconWorld aria-hidden="true" size={15} stroke={1.9} />
+            </button>
+          ) : null}
+          {onCreateChat ? (
+            <button
+              aria-label="Quick Terminal"
+              className="reference-sidebar-section-action reference-sidebar-hover-action-tooltip"
+              data-tooltip="Quick Terminal"
+              onClick={onCreateChat}
+              type="button"
+            >
+              <IconTerminal2 aria-hidden="true" size={14} stroke={2} />
+            </button>
+          ) : null}
           {onRunAgent || onConfigureAgents ? (
             <div
               className="group-agent-split-button reference-sidebar-section-agent-picker"
@@ -4382,28 +4405,6 @@ function SidebarReferenceSectionHeader({
                 <IconChevronDown aria-hidden="true" size={13} stroke={2} />
               </button>
             </div>
-          ) : null}
-          {onCreateBrowserChat ? (
-            <button
-              aria-label="Quick Browser Tab"
-              className="reference-sidebar-section-action reference-sidebar-hover-action-tooltip"
-              data-tooltip="Quick Browser Tab"
-              onClick={onCreateBrowserChat}
-              type="button"
-            >
-              <IconWorld aria-hidden="true" size={15} stroke={1.9} />
-            </button>
-          ) : null}
-          {onCreateChat ? (
-            <button
-              aria-label="Quick Terminal"
-              className="reference-sidebar-section-action reference-sidebar-hover-action-tooltip"
-              data-tooltip="Quick Terminal"
-              onClick={onCreateChat}
-              type="button"
-            >
-              <IconTerminal2 aria-hidden="true" size={14} stroke={2} />
-            </button>
           ) : null}
           {onBulkProjectToggle && bulkActionLabel ? (
             <button

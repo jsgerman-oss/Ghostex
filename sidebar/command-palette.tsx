@@ -266,7 +266,12 @@ export function CommandPalette({
           command and open the same full-window clone modal as the Projects
           header button, without going through configurable project actions. */}
       <Command>
-        <CommandInput placeholder="Search Ghostex commands..." />
+        {/*
+         * CDXC:CommandPalette 2026-06-11-09:14:
+         * CommandInput sits inside InputGroup without an inline-start addon, so
+         * add pl-3 so the query text aligns with command-row icons below.
+         */}
+        <CommandInput className="pl-3" placeholder="Search Ghostex commands..." />
         <CommandList className="ghostex-command-palette-list">
           <CommandEmpty>No commands found.</CommandEmpty>
           <CommandGroup heading="Ghostex">
