@@ -30,6 +30,28 @@ private func nativePaneImage(fromDataUrl dataUrl: String?, isTemplate: Bool = fa
   return image
 }
 
+private func nativeTemplateImage(atPointSize pointSize: CGFloat, fromDataUrl dataUrl: String?) -> NSImage? {
+  guard pointSize > 0,
+    let source = nativePaneImage(fromDataUrl: dataUrl, isTemplate: true)
+  else {
+    return nil
+  }
+  let targetSize = NSSize(width: pointSize, height: pointSize)
+  let output = NSImage(size: targetSize)
+  output.lockFocus()
+  NSGraphicsContext.current?.imageInterpolation = .high
+  source.draw(
+    in: NSRect(origin: .zero, size: targetSize),
+    from: NSRect(origin: .zero, size: source.size),
+    operation: .sourceOver,
+    fraction: 1.0,
+    respectFlipped: false,
+    hints: nil)
+  output.unlockFocus()
+  output.isTemplate = true
+  return output
+}
+
 private func nativePaneColor(fromHex hex: String?) -> NSColor? {
   guard let hex else {
     return nil
@@ -2792,6 +2814,15 @@ final class TerminalWorkspaceView: NSView {
     var lastHoverLogEventTime: TimeInterval
   }
 
+  private struct SourceCEFDragDiagnosticsState {
+    let chromiumView: GhostexCEFBrowserView
+    let projectId: String
+    let startWindowPoint: CGPoint
+    var didCrossDragThreshold: Bool
+    var lastLogEventTime: TimeInterval
+    var lastLogWindowPoint: CGPoint?
+  }
+
   /**
    CDXC:PaneTabs 2026-05-15-12:00:
    Workspace pane tabs are 36pt tall, so the non-command titlebar must use the
@@ -2905,6 +2936,7 @@ final class TerminalWorkspaceView: NSView {
   private static let cefNativeDragHoverInterval: TimeInterval = 1.0 / 30.0
   private static let cefNativeDragStationaryHoverInterval: TimeInterval = 0.12
   private static let cefNativeDragHoverMinimumDistance: CGFloat = 3
+  private static let sourceCEFDragDiagnosticConsolePrefix = "__GHOSTEX_SOURCE_CEF_DND_DIAGNOSTIC__"
   private static let browserPaneApplicationNameForUserAgent = "Version/18.4 Safari/605.1.15"
   private static let floatingEditorMargin: CGFloat = 24
   private static let floatingEditorMinimumHeight: CGFloat = 260
@@ -2993,6 +3025,8 @@ final class TerminalWorkspaceView: NSView {
   private var cefNativeDragSourceRelease: CEFNativeDragSourceRelease?
   private var cefNativeDragSourceReleaseEventMonitor: Any?
   private var cefNativeDragHoverTimer: Timer?
+  private var sourceCEFDragDiagnostics: SourceCEFDragDiagnosticsState?
+  private var sourceCEFDragDiagnosticsEventMonitor: Any?
   private var zmxPersistenceRefreshTimer: Timer?
   private var resizeLogSignatureBySessionId = [String: String]()
   private var exitPollTimer: Timer?
@@ -3036,6 +3070,25 @@ final class TerminalWorkspaceView: NSView {
       return false
     }
     return bounds.intersects(hostFrame)
+  }
+
+  private var isActiveCodeProjectEditorCEFPaneVisibleForDragDiagnostics: Bool {
+    /**
+     CDXC:SourceCEFDragDrop 2026-06-11-07:36:
+     Source tab drag/drop diagnostics should observe only the active code-server CEF surface, not Git tabs, tasks WKWebView, hidden project editors, or stale offscreen hosts.
+     */
+    guard let activeProjectEditorId,
+      let session = projectEditorPaneSessions[activeProjectEditorId],
+      session.mode == "code",
+      session.chromiumView != nil,
+      session.hostView.superview === self,
+      !session.hostView.isHidden,
+      session.hostView.frame.width > 1,
+      session.hostView.frame.height > 1
+    else {
+      return false
+    }
+    return bounds.intersects(session.hostView.frame)
   }
 
   /**
@@ -3117,6 +3170,9 @@ final class TerminalWorkspaceView: NSView {
     if let cefNativeDragSourceReleaseEventMonitor {
       NSEvent.removeMonitor(cefNativeDragSourceReleaseEventMonitor)
     }
+    if let sourceCEFDragDiagnosticsEventMonitor {
+      NSEvent.removeMonitor(sourceCEFDragDiagnosticsEventMonitor)
+    }
     cefNativeDragHoverTimer?.invalidate()
     zmxPersistenceRefreshTimer?.invalidate()
     floatingEditorExitPollTimer?.invalidate()
@@ -3126,6 +3182,7 @@ final class TerminalWorkspaceView: NSView {
     super.viewDidMoveToWindow()
     window?.acceptsMouseMovedEvents = true
     syncCEFNativeDragSourceReleaseMonitor(reason: "viewDidMoveToWindow")
+    syncSourceCEFDragDiagnosticsMonitor(reason: "viewDidMoveToWindow")
   }
 
   func openFloatingEditor(_ command: OpenFloatingEditor) {
@@ -3933,6 +3990,9 @@ final class TerminalWorkspaceView: NSView {
     }
     surfaceView.onFirstPromptTitleGenerationCancel = { [weak self] sessionId in
       self?.sendEvent(.firstPromptAutoRenameCancelled(sessionId: sessionId))
+    }
+    surfaceView.onTerminalEscapePressed = { [weak self] sessionId in
+      self?.sendEvent(.terminalEscapePressed(sessionId: sessionId))
     }
     TerminalFocusDebugLog.append(
       event: "nativeWorkspace.createTerminal.surfaceInit.completed",
@@ -5056,6 +5116,7 @@ final class TerminalWorkspaceView: NSView {
     hostView.translatesAutoresizingMaskIntoConstraints = true
     if let chromiumView {
       configureProjectEditorChromiumCallbacks(chromiumView, projectId: projectId, reason: reason)
+      installSourceCEFDragPageDiagnosticsIfNeeded(chromiumView, projectId: projectId, reason: reason)
     }
     return ProjectEditorBrowserTab(
       tabId: tabId,
@@ -5159,6 +5220,7 @@ final class TerminalWorkspaceView: NSView {
      host is visible and ordered.
     */
     syncCEFNativeDragSourceReleaseMonitor(reason: "focusProjectEditorPane")
+    syncSourceCEFDragDiagnosticsMonitor(reason: "focusProjectEditorPane")
     _ = window?.makeFirstResponder(session.chromiumView ?? session.webView ?? session.hostView)
     needsLayout = true
     NativeT3CodePaneReproLog.append("nativeWorkspace.projectEditor.focus.applied", [
@@ -5496,6 +5558,7 @@ final class TerminalWorkspaceView: NSView {
       needsLayout = true
     }
     syncCEFNativeDragSourceReleaseMonitor(reason: "closeProjectEditorPane")
+    syncSourceCEFDragDiagnosticsMonitor(reason: "closeProjectEditorPane")
   }
 
   func closeFocusedSession(reason: String) -> Bool {
@@ -7119,6 +7182,7 @@ final class TerminalWorkspaceView: NSView {
        uninstalled when no Chromium interaction surface remains visible.
        */
       syncCEFNativeDragSourceReleaseMonitor(reason: "layout")
+      syncSourceCEFDragDiagnosticsMonitor(reason: "layout")
       layoutFloatingEditorOverlay()
     }
     paneResizeHits.removeAll()
@@ -9256,12 +9320,39 @@ final class TerminalWorkspaceView: NSView {
         "url": url,
         "windowNumber": self.window?.windowNumber ?? NSNull(),
       ])
+      if event == "loadEnd", let chromiumView {
+        self.installSourceCEFDragPageDiagnosticsIfNeeded(
+          chromiumView,
+          projectId: projectId,
+          reason: "loadEnd")
+      }
     }
     chromiumView.consoleMessageHandler = { [weak self] message, source, line in
       guard let self else {
         return
       }
       let session = self.projectEditorPaneSessions[projectId]
+      if message.hasPrefix(Self.sourceCEFDragDiagnosticConsolePrefix) {
+        var payload: [String: Any] = [
+          "activeProjectEditorId": self.activeProjectEditorId ?? NSNull(),
+          "line": line,
+          "projectId": projectId,
+          "sourcePresent": !source.isEmpty,
+          "windowNumber": self.window?.windowNumber ?? NSNull(),
+        ]
+        let json = String(message.dropFirst(Self.sourceCEFDragDiagnosticConsolePrefix.count))
+        if let data = json.data(using: .utf8),
+          let parsed = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        {
+          payload.merge(parsed) { _, incoming in incoming }
+        } else {
+          payload["parseFailed"] = true
+        }
+        NativeT3CodePaneReproLog.append(
+          "nativeWorkspace.projectEditor.cef.sourceDragDiagnostic",
+          payload)
+        return
+      }
       NativeT3CodePaneReproLog.append("nativeWorkspace.projectEditor.cef.console", [
         "activeProjectEditorId": self.activeProjectEditorId ?? NSNull(),
         "expectedUrl": session?.url ?? NSNull(),
@@ -11429,6 +11520,225 @@ final class TerminalWorkspaceView: NSView {
       }
       uninstallCEFNativeDragSourceReleaseMonitor()
     }
+  }
+
+  private func syncSourceCEFDragDiagnosticsMonitor(reason: String) {
+    let shouldMonitor = window != nil && !isHidden && isActiveCodeProjectEditorCEFPaneVisibleForDragDiagnostics
+    if shouldMonitor {
+      installSourceCEFDragDiagnosticsMonitorIfNeeded()
+      /*
+       CDXC:SourceCEFDragDrop 2026-06-11-07:36:
+       Layout can run many times per second while Source is active. Keep the passive page probe installed from focus, load, and mouse-down paths instead of reinjecting on every layout pass, so the repro log stays readable.
+       */
+      if reason != "layout",
+        let activeProjectEditorId,
+        let session = projectEditorPaneSessions[activeProjectEditorId],
+        session.mode == "code",
+        let chromiumView = session.chromiumView
+      {
+        installSourceCEFDragPageDiagnosticsIfNeeded(
+          chromiumView,
+          projectId: activeProjectEditorId,
+          reason: reason)
+      }
+      return
+    }
+    if sourceCEFDragDiagnosticsEventMonitor != nil {
+      NativeT3CodePaneReproLog.append("nativeWorkspace.projectEditor.cef.sourceDragDiagnostics.monitor.uninstallRequested", [
+        "reason": reason,
+        "windowNumber": window?.windowNumber ?? NSNull(),
+      ])
+    }
+    uninstallSourceCEFDragDiagnosticsMonitor()
+  }
+
+  private func installSourceCEFDragDiagnosticsMonitorIfNeeded() {
+    guard sourceCEFDragDiagnosticsEventMonitor == nil else {
+      return
+    }
+    /**
+     CDXC:SourceCEFDragDrop 2026-06-11-07:31:
+     Add passive native mouse diagnostics while the code-server CEF pane is active so the next repro can distinguish AppKit routing failure from in-page drag event failure without re-enabling the synthetic drag bridge.
+     */
+    sourceCEFDragDiagnosticsEventMonitor = NSEvent.addLocalMonitorForEvents(
+      matching: [.leftMouseDown, .leftMouseDragged, .leftMouseUp]
+    ) { [weak self] event in
+      self?.handleSourceCEFDragDiagnosticsMonitorEvent(event)
+      return event
+    }
+    NativeT3CodePaneReproLog.append("nativeWorkspace.projectEditor.cef.sourceDragDiagnostics.monitor.installed", [
+      "windowNumber": window?.windowNumber ?? NSNull(),
+    ])
+  }
+
+  private func uninstallSourceCEFDragDiagnosticsMonitor() {
+    sourceCEFDragDiagnostics = nil
+    guard let sourceCEFDragDiagnosticsEventMonitor else {
+      return
+    }
+    NSEvent.removeMonitor(sourceCEFDragDiagnosticsEventMonitor)
+    self.sourceCEFDragDiagnosticsEventMonitor = nil
+  }
+
+  private func handleSourceCEFDragDiagnosticsMonitorEvent(_ event: NSEvent) {
+    guard window != nil, !isHidden else {
+      sourceCEFDragDiagnostics = nil
+      return
+    }
+    guard let windowPoint = windowPoint(forCEFNativeDragEvent: event) else {
+      return
+    }
+    switch event.type {
+    case .leftMouseDown:
+      guard let target = sourceCEFDragDiagnosticsTarget(atWindowPoint: windowPoint) else {
+        sourceCEFDragDiagnostics = nil
+        return
+      }
+      sourceCEFDragDiagnostics = SourceCEFDragDiagnosticsState(
+        chromiumView: target.chromiumView,
+        projectId: target.projectId,
+        startWindowPoint: windowPoint,
+        didCrossDragThreshold: false,
+        lastLogEventTime: event.timestamp,
+        lastLogWindowPoint: windowPoint)
+      logSourceCEFNativeDragDiagnostic(
+        phase: "mouseDown",
+        projectId: target.projectId,
+        chromiumView: target.chromiumView,
+        windowPoint: windowPoint,
+        startWindowPoint: windowPoint,
+        didCrossDragThreshold: false,
+        event: event,
+        force: true)
+      installSourceCEFDragPageDiagnosticsIfNeeded(
+        target.chromiumView,
+        projectId: target.projectId,
+        reason: "mouseDown")
+    case .leftMouseDragged:
+      guard var diagnostics = sourceCEFDragDiagnostics else {
+        return
+      }
+      if !diagnostics.didCrossDragThreshold,
+        hypot(
+          windowPoint.x - diagnostics.startWindowPoint.x,
+          windowPoint.y - diagnostics.startWindowPoint.y) >= Self.paneHeaderDragThreshold
+      {
+        diagnostics.didCrossDragThreshold = true
+        logSourceCEFNativeDragDiagnostic(
+          phase: "thresholdCrossed",
+          projectId: diagnostics.projectId,
+          chromiumView: diagnostics.chromiumView,
+          windowPoint: windowPoint,
+          startWindowPoint: diagnostics.startWindowPoint,
+          didCrossDragThreshold: true,
+          event: event,
+          force: true)
+        diagnostics.lastLogEventTime = event.timestamp
+        diagnostics.lastLogWindowPoint = windowPoint
+        sourceCEFDragDiagnostics = diagnostics
+        return
+      }
+      let elapsed = event.timestamp - diagnostics.lastLogEventTime
+      let distance = diagnostics.lastLogWindowPoint.map {
+        hypot(windowPoint.x - $0.x, windowPoint.y - $0.y)
+      } ?? .greatestFiniteMagnitude
+      guard elapsed >= 0.25 || distance >= 12 else {
+        sourceCEFDragDiagnostics = diagnostics
+        return
+      }
+      logSourceCEFNativeDragDiagnostic(
+        phase: diagnostics.didCrossDragThreshold ? "dragged" : "draggedBelowThreshold",
+        projectId: diagnostics.projectId,
+        chromiumView: diagnostics.chromiumView,
+        windowPoint: windowPoint,
+        startWindowPoint: diagnostics.startWindowPoint,
+        didCrossDragThreshold: diagnostics.didCrossDragThreshold,
+        event: event,
+        force: false)
+      diagnostics.lastLogEventTime = event.timestamp
+      diagnostics.lastLogWindowPoint = windowPoint
+      sourceCEFDragDiagnostics = diagnostics
+    case .leftMouseUp:
+      guard let diagnostics = sourceCEFDragDiagnostics else {
+        return
+      }
+      logSourceCEFNativeDragDiagnostic(
+        phase: "mouseUp",
+        projectId: diagnostics.projectId,
+        chromiumView: diagnostics.chromiumView,
+        windowPoint: windowPoint,
+        startWindowPoint: diagnostics.startWindowPoint,
+        didCrossDragThreshold: diagnostics.didCrossDragThreshold,
+        event: event,
+        force: true)
+      sourceCEFDragDiagnostics = nil
+    default:
+      return
+    }
+  }
+
+  private func sourceCEFDragDiagnosticsTarget(
+    atWindowPoint windowPoint: CGPoint
+  ) -> (projectId: String, session: ProjectEditorPaneSession, chromiumView: GhostexCEFBrowserView, localPoint: CGPoint)? {
+    guard let activeProjectEditorId,
+      let session = projectEditorPaneSessions[activeProjectEditorId],
+      session.mode == "code",
+      let chromiumView = session.chromiumView,
+      session.hostView.superview === self,
+      !session.hostView.isHidden
+    else {
+      return nil
+    }
+    let localPoint = chromiumView.convert(windowPoint, from: nil)
+    guard chromiumView.bounds.contains(localPoint) else {
+      return nil
+    }
+    return (activeProjectEditorId, session, chromiumView, localPoint)
+  }
+
+  private func logSourceCEFNativeDragDiagnostic(
+    phase: String,
+    projectId: String,
+    chromiumView: GhostexCEFBrowserView,
+    windowPoint: CGPoint,
+    startWindowPoint: CGPoint,
+    didCrossDragThreshold: Bool,
+    event: NSEvent,
+    force: Bool
+  ) {
+    let localPoint = chromiumView.convert(windowPoint, from: nil)
+    let startLocalPoint = chromiumView.convert(startWindowPoint, from: nil)
+    NativeT3CodePaneReproLog.append("nativeWorkspace.projectEditor.cef.sourceDragDiagnostic.nativeMouse", [
+      "buttons": NSEvent.pressedMouseButtons,
+      "clickCount": event.clickCount,
+      "didCrossDragThreshold": didCrossDragThreshold,
+      "eventType": Self.eventTypeName(event.type),
+      "force": force,
+      "insideCEFBounds": chromiumView.bounds.contains(localPoint),
+      "localPoint": describePoint(localPoint),
+      "phase": phase,
+      "projectId": projectId,
+      "startLocalPoint": describePoint(startLocalPoint),
+      "startWindowPoint": describePoint(startWindowPoint),
+      "windowNumber": window?.windowNumber ?? NSNull(),
+      "windowPoint": describePoint(windowPoint),
+    ])
+  }
+
+  private func installSourceCEFDragPageDiagnosticsIfNeeded(
+    _ chromiumView: GhostexCEFBrowserView,
+    projectId: String,
+    reason: String
+  ) {
+    guard projectEditorPaneSessions[projectId]?.mode == "code" else {
+      return
+    }
+    chromiumView.executeJavaScript(Self.sourceCEFDragDiagnosticsScript(reason: reason))
+    NativeT3CodePaneReproLog.append("nativeWorkspace.projectEditor.cef.sourceDragDiagnostics.pageProbe.injected", [
+      "projectId": projectId,
+      "reason": reason,
+      "windowNumber": window?.windowNumber ?? NSNull(),
+    ])
   }
 
   private var hasVisibleCEFInteractionSurface: Bool {
@@ -14690,6 +15000,152 @@ final class TerminalWorkspaceView: NSView {
       """
   }
 
+  private static func sourceCEFDragDiagnosticsScript(reason: String) -> String {
+    let prefixLiteral = javascriptStringLiteral(sourceCEFDragDiagnosticConsolePrefix)
+    let reasonLiteral = javascriptStringLiteral(reason)
+    return """
+      (() => {
+        const prefix = \(prefixLiteral);
+        const installReason = \(reasonLiteral);
+        const existing = window.__ghostexSourceCEFDragDiagnostics;
+        if (existing?.installed) {
+          try {
+            console.info(prefix + JSON.stringify({
+              type: "install-skip",
+              installReason,
+              readyState: String(document.readyState || ""),
+              hasFocus: document.hasFocus(),
+              performanceNow: Math.round(performance.now())
+            }));
+          } catch {}
+          return;
+        }
+        /*
+        CDXC:SourceCEFDragDrop 2026-06-11-07:31:
+        Source CEF tab-drag diagnostics must prove whether code-server receives pointer/mouse and DOM drag events. Log only structural element metadata and event flags; never log tab text, editor content, URLs, labels, titles, or file paths.
+        */
+        const state = window.__ghostexSourceCEFDragDiagnostics = {
+          installed: true,
+          lastByType: Object.create(null)
+        };
+        const selectorChecks = [
+          ["workbench", ".monaco-workbench"],
+          ["partEditor", ".part.editor"],
+          ["editorGroups", ".editor-groups-container"],
+          ["tabsContainer", ".tabs-container"],
+          ["tab", ".tab"],
+          ["tabDraggable", ".tab[draggable='true']"],
+          ["tabBorderTop", ".tab-border-top-container"],
+          ["monacoListRow", ".monaco-list-row"],
+          ["draggable", "[draggable='true']"]
+        ];
+        const asElement = (value) => value instanceof Element ? value : value?.parentElement || null;
+        const summarizeElement = (value) => {
+          const element = asElement(value);
+          if (!element) {
+            return { tag: "none", role: "", draggable: false, classTokens: [], matches: [] };
+          }
+          const classTokens = Array.from(element.classList || [])
+            .filter((token) => /^[a-zA-Z0-9_-]{1,48}$/.test(token))
+            .slice(0, 8);
+          const matches = [];
+          for (const [name, selector] of selectorChecks) {
+            try {
+              if (element.matches(selector) || element.closest(selector)) {
+                matches.push(name);
+              }
+            } catch {}
+          }
+          return {
+            tag: String(element.tagName || "").toLowerCase(),
+            role: String(element.getAttribute("role") || ""),
+            draggable: element.draggable === true || element.getAttribute("draggable") === "true",
+            classTokens,
+            matches
+          };
+        };
+        const numeric = (value) => Number.isFinite(value) ? Math.round(value) : 0;
+        const shouldThrottle = (event) => {
+          if (!["pointermove", "mousemove", "dragover"].includes(event.type)) {
+            return false;
+          }
+          const previous = state.lastByType[event.type];
+          const now = performance.now();
+          const x = numeric(event.clientX);
+          const y = numeric(event.clientY);
+          if (previous) {
+            const elapsed = now - previous.now;
+            const distance = Math.hypot(x - previous.x, y - previous.y);
+            if (elapsed < 200 && distance < 12) {
+              return true;
+            }
+          }
+          state.lastByType[event.type] = { now, x, y };
+          return false;
+        };
+        const phaseName = (phase) => {
+          if (phase === Event.CAPTURING_PHASE) return "capture";
+          if (phase === Event.AT_TARGET) return "target";
+          if (phase === Event.BUBBLING_PHASE) return "bubble";
+          return "none";
+        };
+        const post = (event) => {
+          try {
+            if (shouldThrottle(event)) {
+              return;
+            }
+            const dataTransfer = event.dataTransfer ? {
+              dropEffect: String(event.dataTransfer.dropEffect || ""),
+              effectAllowed: String(event.dataTransfer.effectAllowed || ""),
+              typesCount: event.dataTransfer.types ? event.dataTransfer.types.length : 0
+            } : null;
+            const payload = {
+              type: event.type,
+              installReason,
+              readyState: String(document.readyState || ""),
+              hasFocus: document.hasFocus(),
+              eventPhase: phaseName(event.eventPhase),
+              button: typeof event.button === "number" ? event.button : -1,
+              buttons: typeof event.buttons === "number" ? event.buttons : 0,
+              clientX: numeric(event.clientX),
+              clientY: numeric(event.clientY),
+              defaultPrevented: event.defaultPrevented === true,
+              cancelable: event.cancelable === true,
+              dataTransfer,
+              target: summarizeElement(event.target),
+              activeElement: summarizeElement(document.activeElement),
+              performanceNow: Math.round(performance.now())
+            };
+            console.info(prefix + JSON.stringify(payload));
+          } catch {}
+        };
+        for (const type of [
+          "pointerdown",
+          "pointermove",
+          "pointerup",
+          "mousedown",
+          "mousemove",
+          "mouseup",
+          "dragstart",
+          "dragenter",
+          "dragover",
+          "dragleave",
+          "drop",
+          "dragend"
+        ]) {
+          window.addEventListener(type, post, true);
+        }
+        console.info(prefix + JSON.stringify({
+          type: "install",
+          installReason,
+          readyState: String(document.readyState || ""),
+          hasFocus: document.hasFocus(),
+          performanceNow: Math.round(performance.now())
+        }));
+      })();
+      """
+  }
+
   private static let t3WebPaneDiagnosticsScript = """
     (() => {
       const handler = window.webkit?.messageHandlers?.\(T3CodePaneDiagnosticsBridge.messageHandlerName);
@@ -15907,6 +16363,15 @@ final class TerminalWorkspaceView: NSView {
       "height": Double(size.height),
       "width": Double(size.width),
     ]
+  }
+
+  private static func eventTypeName(_ eventType: NSEvent.EventType) -> String {
+    switch eventType {
+    case .leftMouseDown: return "leftMouseDown"
+    case .leftMouseDragged: return "leftMouseDragged"
+    case .leftMouseUp: return "leftMouseUp"
+    default: return String(describing: eventType)
+    }
   }
 
   private func summarizeTerminalText(_ text: String) -> String {
@@ -17277,6 +17742,7 @@ final class GhostexGhosttySurfaceView: NSView {
   let id: UUID
   var ghostexSessionId: String?
   var onFirstPromptTitleGenerationCancel: ((String) -> Void)?
+  var onTerminalEscapePressed: ((String) -> Void)?
   var onKeyDownProbe: ((GhostexGhosttySurfaceView, NSEvent, String) -> Void)?
   var onMouseDownFocus: ((GhostexGhosttySurfaceView, NSEvent) -> Void)?
   var onTextInputProbe: ((GhostexGhosttySurfaceView, Any, NSRange) -> Void)?
@@ -17478,6 +17944,17 @@ final class GhostexGhosttySurfaceView: NSView {
     if handleControlImagePasteKeyDown(event) {
       onKeyDownProbe?(self, event, "controlImagePasteConsumed")
       return
+    }
+    if event.keyCode == 53, let ghostexSessionId {
+      /*
+       CDXC:SessionStatus 2026-06-11-08:46:
+       A normal Escape key should still reach the child process, but Ghostex
+       also needs to suppress false done status that can race in while agents
+       are cancelling. Emit the side-band signal only after overlay/search
+       consumers decline the key and immediately before forwarding to Ghostty.
+       */
+      onKeyDownProbe?(self, event, "terminalEscapeForwarded")
+      onTerminalEscapePressed?(ghostexSessionId)
     }
     sendKeyEvent(event, action: event.isARepeat ? GHOSTTY_ACTION_REPEAT : GHOSTTY_ACTION_PRESS)
     onKeyDownProbe?(self, event, "forwarded")
@@ -21476,9 +21953,9 @@ private final class TerminalSessionTitleBarView: NSView {
     configureActionMenuButton()
     configureProjectEditorCompanionButton(
       projectEditorCompanionCloseButton,
-      systemSymbolName: "xmark",
+      image: Self.projectEditorCompanionCloseButtonImage(),
       fallbackTitle: "X",
-      tooltip: "Close Session Pane",
+      tooltip: "Collapse Companion Sidepane",
       action: #selector(performProjectEditorCompanionCloseButton(_:)))
     addSubview(projectEditorCompanionCloseButton)
     hideProjectEditorCompanionButtons()
@@ -23295,9 +23772,32 @@ private final class TerminalSessionTitleBarView: NSView {
     return image.withSymbolConfiguration(configuration) ?? image
   }
 
+  /**
+   CDXC:ProjectEditorCompanion 2026-06-11-12:00:
+   Collapse Companion Sidepane must use Tabler IconLayoutSidebarLeftCollapse so
+   the companion dismiss control pairs with the floating titlebar restore glyph
+   and reads as closing the left companion pane instead of a generic X mark.
+
+   CDXC:ProjectEditorCompanion 2026-06-11-12:18:
+   Companion collapse/expand glyphs render at 14x14 so they match the titlebar
+   restore control and stay visually balanced inside pane action buttons.
+   */
+  private static let projectEditorCompanionIconSize: CGFloat = 14
+  private static let projectEditorCompanionCloseIconSvg = """
+  <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z" fill="none"/><path d="M4 6a2 2 0 0 1 2 -2h12a2 2 0 0 1 2 2v12a2 2 0 0 1 -2 2h-12a2 2 0 0 1 -2 -2l0 -12"/><path d="M9 4v16"/><path d="M15 10l-2 2l2 2"/></svg>
+  """
+
+  private static func projectEditorCompanionCloseButtonImage() -> NSImage? {
+    let dataUrl =
+      "data:image/svg+xml;base64,\(Data(projectEditorCompanionCloseIconSvg.utf8).base64EncodedString())"
+    return nativeTemplateImage(
+      atPointSize: projectEditorCompanionIconSize,
+      fromDataUrl: dataUrl)
+  }
+
   private func configureProjectEditorCompanionButton(
     _ button: TerminalTitleBarActionButton,
-    systemSymbolName: String,
+    image: NSImage?,
     fallbackTitle: String,
     tooltip: String,
     action: Selector
@@ -23305,6 +23805,7 @@ private final class TerminalSessionTitleBarView: NSView {
     button.bezelStyle = .texturedRounded
     button.isBordered = false
     button.imagePosition = .imageOnly
+    button.imageScaling = .scaleNone
     button.toolTip = tooltip
     button.target = self
     button.action = action
@@ -23317,9 +23818,13 @@ private final class TerminalSessionTitleBarView: NSView {
      CDXC:ProjectEditorCompanion 2026-05-15-15:29:
      Close is the only companion-specific button configured here; the Back to
      Agents View control is intentionally absent from code/git companion panes.
+
+     CDXC:ProjectEditorCompanion 2026-06-11-12:00:
+     Collapse Companion Sidepane renders Tabler IconLayoutSidebarLeftCollapse as
+     a native template glyph so it pairs with the titlebar restore control.
      */
     button.sendAction(on: [.leftMouseDown])
-    if let image = NSImage(systemSymbolName: systemSymbolName, accessibilityDescription: tooltip) {
+    if let image {
       button.image = image
     } else {
       button.title = fallbackTitle
