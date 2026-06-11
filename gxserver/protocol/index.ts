@@ -84,6 +84,7 @@ export type GxserverEndpointPath =
   | "/api/readProjectStatus"
   | "/api/addProjectPath"
   | "/api/removeProject"
+  | "/api/deleteWorktreeProject"
   | "/api/updateSession"
   | "/api/updateSessionOrder"
   | "/api/runGitAction"
@@ -400,6 +401,8 @@ export type GxserverGitAction =
   | "checkoutNewBranch"
   | "commit"
   | "countFileLines"
+  | "deleteLocalBranch"
+  | "deleteRemoteBranch"
   | "diff"
   | "diffCached"
   | "diffCachedNoExt"
@@ -416,11 +419,12 @@ export type GxserverGitAction =
   | "merge"
   | "push"
   | "pushSetUpstream"
+  | "remoteBranchExists"
   | "status"
   | "statusPorcelain"
   | "upstreamCounts"
   | "verifyRef";
-export type GxserverWorktreeAction = "create" | "list" | "pathExists" | "prune" | "remove" | "switch";
+export type GxserverWorktreeAction = "create" | "ensureBeadsHooks" | "list" | "pathExists" | "prune" | "remove" | "switch";
 export type GxserverBeadsAction =
   | "addLabel"
   | "board"
@@ -466,6 +470,7 @@ export interface GxserverRunGitActionParams extends GxserverProjectOperationScop
   messageSubject?: string;
   noVerify?: boolean;
   ref?: string;
+  remoteName?: string;
 }
 
 export interface GxserverRunWorktreeActionParams extends GxserverProjectOperationScope {
@@ -484,6 +489,34 @@ export interface GxserverRunProjectSetupCommandParams extends GxserverProjectOpe
   action: GxserverProjectSetupAction;
   setupCommandProjectId?: GxserverProjectId;
   setupCommandProjectPath?: string;
+}
+
+export interface GxserverDeleteWorktreeProjectParams {
+  deleteLocalBranch?: boolean;
+  deleteRemoteBranch?: boolean;
+  projectId: GxserverProjectId;
+  remoteName?: string;
+}
+
+export type GxserverDeleteWorktreeProjectWarningKind =
+  | "localBranchDeleteFailed"
+  | "localBranchNotResolved"
+  | "pruneFailed"
+  | "remoteBranchDeleteFailed"
+  | "remoteBranchNotResolved";
+
+export interface GxserverDeleteWorktreeProjectWarning {
+  kind: GxserverDeleteWorktreeProjectWarningKind;
+  message: string;
+}
+
+export interface GxserverDeleteWorktreeProjectResult {
+  checkoutRemoval: {
+    forced: boolean;
+    retriedForSubmodules: boolean;
+  };
+  project: GxserverProjectDomainState;
+  warnings: readonly GxserverDeleteWorktreeProjectWarning[];
 }
 
 export interface GxserverRunBeadsActionParams extends GxserverProjectOperationScope {
@@ -1199,6 +1232,7 @@ export interface GxserverSessionRenameRequestResult {
 }
 
 export interface GxserverAttachSessionMetadataParams extends GxserverSessionLifecycleParams {
+  promptEditor?: "monaco";
   startupText?: string;
 }
 
@@ -1241,6 +1275,7 @@ export type GxserverAgentActivityEvent =
   | "acknowledge"
   | "agentDetected"
   | "bell"
+  | "escape"
   | "launch"
   | "resume"
   | "terminalError"
@@ -1252,6 +1287,7 @@ export interface GxserverAgentActivityState {
   activity: "attention" | "idle" | "working";
   agentName?: "antigravity" | "claude" | "codex" | "copilot" | "cursor" | "gemini" | "opencode" | "pi";
   attentionEventId?: string;
+  attentionSuppressedUntil?: string;
   hasSeenWorking?: boolean;
   isAcknowledged?: boolean;
   lastChangedAt?: string;
@@ -1313,6 +1349,7 @@ export interface GxserverAttachSessionMetadataResult {
 }
 
 export interface GxserverStartSessionProviderParams extends GxserverSessionLifecycleParams {
+  promptEditor?: "monaco";
   startupText?: string;
 }
 
