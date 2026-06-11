@@ -12,6 +12,8 @@ import {
   type GxserverAttachSessionMetadataParams,
   type GxserverAttachSessionMetadataResult,
   type GxserverCreateSessionParams,
+  type GxserverDeleteWorktreeProjectParams,
+  type GxserverDeleteWorktreeProjectResult,
   type GxserverEvent,
   type GxserverForkSessionParams,
   type GxserverForkSessionResult,
@@ -551,6 +553,15 @@ export function createNativeSidebarGxserverClient(
     return project;
   }
 
+  async function deleteWorktreeProject(
+    params: GxserverDeleteWorktreeProjectParams,
+  ): Promise<GxserverDeleteWorktreeProjectResult> {
+    return rpc<GxserverDeleteWorktreeProjectResult>(
+      "/api/deleteWorktreeProject",
+      params as unknown as Record<string, unknown>,
+    );
+  }
+
   async function probeSessionProvider(
     params: Pick<GxserverAttachSessionMetadataParams, "projectId" | "sessionId">,
   ): Promise<GxserverSessionProviderProbeResponse> {
@@ -598,6 +609,7 @@ export function createNativeSidebarGxserverClient(
     fetchAgentResumePlanSync,
     fetchAttachSessionMetadata,
     fetchHealth,
+    deleteWorktreeProject,
     forkSession,
     installAgentHooks,
     fetchPresentationSnapshot,
@@ -938,6 +950,8 @@ function describeGxserverOperation(path: GxserverEndpointPath): string {
       return "load project status";
     case "/api/removeProject":
       return "remove the project";
+    case "/api/deleteWorktreeProject":
+      return "delete the worktree project";
     case "/api/updateSession":
       return "update the session";
     case "/api/updateSessionOrder":

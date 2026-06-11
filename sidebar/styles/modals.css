@@ -2426,6 +2426,11 @@
    *
    * CDXC:WorktreeDelete 2026-05-28-09:29:
    * Delete confirmation must fit its content when the worktree is clean or only has a few changed files. Do not inherit the tall Settings dialog height; constrain only the status area when the summary is long.
+   *
+   * CDXC:WorktreeDelete 2026-06-10-22:56:
+   * Branch cleanup is an opt-in part of the destructive confirmation. Show the
+   * local and origin branch checkboxes as compact rows inside the same modal,
+   * with disabled explanatory copy when native did not verify a branch target.
    */
   height: auto;
   max-height: min(560px, calc(100vh - 2rem));
@@ -2499,6 +2504,88 @@
   height: 22px;
   justify-content: center;
   width: 22px;
+}
+
+.worktree-delete-branch-options {
+  border: 1px solid color-mix(in srgb, var(--input) 62%, transparent);
+  display: grid;
+  gap: 0;
+  min-width: 0;
+}
+
+.worktree-delete-branch-option {
+  align-items: flex-start;
+  color: color-mix(in srgb, var(--foreground) 88%, var(--muted-foreground) 12%);
+  display: flex;
+  gap: 10px;
+  min-width: 0;
+  padding: 12px;
+}
+
+.worktree-delete-branch-option + .worktree-delete-branch-option {
+  border-top: 1px solid color-mix(in srgb, var(--input) 50%, transparent);
+}
+
+.worktree-delete-branch-option-disabled {
+  color: color-mix(in srgb, var(--muted-foreground) 86%, transparent);
+}
+
+.worktree-delete-branch-checkbox {
+  appearance: none;
+  background: color-mix(in srgb, var(--input) 30%, transparent);
+  border: 1px solid var(--input);
+  border-radius: 0;
+  flex: none;
+  height: 16px;
+  margin: 2px 0 0;
+  position: relative;
+  width: 16px;
+}
+
+.worktree-delete-branch-checkbox:checked {
+  background: var(--primary);
+  border-color: var(--primary);
+}
+
+.worktree-delete-branch-checkbox:checked::after {
+  border: solid var(--primary-foreground);
+  border-width: 0 2px 2px 0;
+  content: "";
+  height: 8px;
+  left: 5px;
+  position: absolute;
+  top: 2px;
+  transform: rotate(45deg);
+  width: 4px;
+}
+
+.worktree-delete-branch-checkbox:disabled {
+  opacity: 0.5;
+}
+
+.worktree-delete-branch-option-copy {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.worktree-delete-branch-option-label {
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1.4;
+}
+
+.worktree-delete-branch-option-label code {
+  color: color-mix(in srgb, var(--foreground) 94%, var(--muted-foreground) 6%);
+  font-family: var(--app-monospace-font, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.worktree-delete-branch-option-help {
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.35;
 }
 
 .worktree-delete-modal-actions {

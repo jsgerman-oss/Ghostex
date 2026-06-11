@@ -34,6 +34,7 @@ export type SidebarGitState = {
   confirmSuggestedCommit: boolean;
   deletions: number;
   generateCommitBody: boolean;
+  hasCheckedGitHubRemote: boolean;
   hasGitHubCli: boolean;
   hasGitHubRemote: boolean;
   hasOriginRemote: boolean;
@@ -79,6 +80,7 @@ export function createDefaultSidebarGitState(
     confirmSuggestedCommit,
     deletions: 0,
     generateCommitBody,
+    hasCheckedGitHubRemote: false,
     hasGitHubCli: false,
     hasGitHubRemote: false,
     hasOriginRemote: false,

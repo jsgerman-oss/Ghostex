@@ -2219,9 +2219,11 @@ function AppModalHost() {
         draft={
           worktreeDelete ?? {
             branch: null,
+            canDeleteLocalBranch: false,
             groupId: "",
             hasChanges: false,
             projectId: "",
+            remoteBranchExists: false,
             statusSummary: "",
             worktreeName: "worktree",
           }
@@ -2232,8 +2234,13 @@ function AppModalHost() {
           vscode.postMessage({ groupId, type: "commitWorktreeBeforeDelete" });
           closeModal();
         }}
-        onDelete={(projectId) => {
-          vscode.postMessage({ projectId, type: "confirmDeleteWorktree" });
+        onDelete={(projectId, options) => {
+          vscode.postMessage({
+            deleteLocalBranch: options.deleteLocalBranch,
+            deleteRemoteBranch: options.deleteRemoteBranch,
+            projectId,
+            type: "confirmDeleteWorktree",
+          });
           closeModal();
         }}
       />

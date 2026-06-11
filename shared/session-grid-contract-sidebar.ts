@@ -1649,6 +1649,14 @@ export type SidebarToExtensionMessage =
       type: "cancelSidebarGitCommit";
     }
   | {
+      /**
+       * CDXC:WorktreeDelete 2026-06-10-22:56:
+       * Delete Worktree confirmation may request branch cleanup after the
+       * checkout is removed. Keep only boolean user choices in the sidebar
+       * bridge message; native re-resolves branch names before mutating Git.
+       */
+      deleteLocalBranch?: boolean;
+      deleteRemoteBranch?: boolean;
       projectId: string;
       type: "confirmDeleteWorktree";
     }
