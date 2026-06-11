@@ -1745,7 +1745,7 @@ test("zmx lifecycle APIs attach existing sessions without replay and create miss
       probeExitCode = 0;
       const existing = await requestJson(baseUrl, "/api/attachSessionMetadata", {
         body: {
-          params: { projectId: project.projectId, sessionId: session.sessionId },
+          params: { projectId: project.projectId, promptEditor: "monaco", sessionId: session.sessionId },
           protocolVersion: GXSERVER_PROTOCOL_VERSION,
         },
         method: "POST",
@@ -1757,6 +1757,7 @@ test("zmx lifecycle APIs attach existing sessions without replay and create miss
       assert.equal(existing.body.result.attach.startupTextDisposition, "discardExistingProvider");
       assert.equal(existing.body.result.attach.startupText, undefined);
       assert.match(existing.body.result.attach.attachCommand, /^\/bin\/zsh -lc '/);
+      assert.match(existing.body.result.attach.attachCommand, /--prompt-editor=monaco/);
 
       probeExitCode = 1;
       const missing = await requestJson(baseUrl, "/api/wakeSession", {
@@ -1779,6 +1780,87 @@ test("zmx lifecycle APIs attach existing sessions without replay and create miss
       zmxLifecycle: fakeZmxLifecycle(calls, () => probeExitCode),
     },
   );
+});
+
+test("createSession suppresses fresh terminal title attention and logs safe diagnostics", async () => {
+  await withApiServer("local", async ({ baseUrl, paths, token }) => {
+    await writeNativeSidebarSettings(paths.homeDir, { debuggingMode: true });
+    await delay(1_100);
+    const project = (
+      await requestJson(baseUrl, "/api/createProject", {
+        body: { params: { name: "Ghostex", path: paths.rootDir }, protocolVersion: GXSERVER_PROTOCOL_VERSION },
+        method: "POST",
+        token,
+      })
+    ).body.result.project;
+
+    const beforeCreateMs = Date.now();
+    const created = await requestJson(baseUrl, "/api/createSession", {
+      body: {
+        params: {
+          kind: "terminal",
+          lifecycleState: "running",
+          projectId: project.projectId,
+          providerState: { lifecycleState: "exists", provider: "zmx" },
+          title: "Fresh private terminal",
+        },
+        protocolVersion: GXSERVER_PROTOCOL_VERSION,
+      },
+      method: "POST",
+      token,
+    });
+    assert.equal(created.status, 200);
+    const session = created.body.result.session;
+    assert.equal(session.runtimeSettings.agentActivity.activity, "idle");
+    assert.equal(session.runtimeSettings.agentActivity.hasSeenWorking, false);
+    assert.equal(session.runtimeSettings.agentActivity.isAcknowledged, true);
+    const createSuppressedUntil = Date.parse(session.runtimeSettings.agentActivity.suppressedUntil);
+    assert.equal(Number.isFinite(createSuppressedUntil), true);
+    assert.ok(createSuppressedUntil - beforeCreateMs > 10_000);
+
+    const title = await requestJson(baseUrl, "/api/ingestTerminalTitleEvent", {
+      body: {
+        params: {
+          agentName: "codex",
+          projectId: project.projectId,
+          rawTitle: "[ ! ] Action Required /Users/person/private?token=secret https://example.test/path?token=secret",
+          sessionId: session.sessionId,
+          sessionPersistenceProvider: "zmx",
+        },
+        protocolVersion: GXSERVER_PROTOCOL_VERSION,
+      },
+      method: "POST",
+      token,
+    });
+    assert.equal(title.status, 200);
+    assert.equal(title.body.result.activity.activity, "idle");
+    assert.equal(title.body.result.enteredAttention, false);
+    assert.equal(title.body.result.session.runtimeSettings.agentActivity.activity, "idle");
+
+    const { entry: createLog } = await waitForLogEvent(
+      paths.logFile,
+      "sessionActivity.createSuppressionStarted",
+      1_000,
+    );
+    assert.equal(createLog.level, "info");
+    assert.equal(createLog.details.changed, true);
+    assert.equal(createLog.details.lifecycleState, "running");
+    assert.equal(createLog.details.previousActivity, "idle");
+    assert.equal(createLog.details.previousHadSuppression, false);
+    assert.equal(createLog.details.sessionKind, "terminal");
+    assert.equal(typeof createLog.details.suppressedUntil, "string");
+    assert.equal(typeof createLog.details.suppressionMs, "number");
+
+    const { entry: titleLog, text: logs } = await waitForLogEvent(
+      paths.logFile,
+      "sessionTitle.terminalTitleEvent",
+      1_000,
+    );
+    assert.equal(titleLog.details.activitySuppressedByWindow, true);
+    assert.equal(typeof titleLog.details.activitySuppressionRemainingMs, "number");
+    assert.equal(titleLog.details.statusUpdateStored, false);
+    assert.doesNotMatch(logs, /Fresh private terminal|Action Required|\/Users\/person|example\.test|token=secret/u);
+  });
 });
 
 test("wakeSession suppresses wake-time title attention and logs safe diagnostics", async () => {
@@ -2332,6 +2414,164 @@ test("agent activity API updates semantic activity and last active state", async
       assert.equal(working.body.result.enteredAttention, false);
       assert.equal(working.body.result.session.runtimeSettings.agentActivity.activity, "working");
       assert.equal(working.body.result.session.lastActiveAt, "2026-05-30T12:00:13.000Z");
+    },
+    {
+      zmxLifecycle: fakeZmxLifecycle([], () => 0),
+    },
+  );
+});
+
+test("escape activity suppresses done attention and logs safe diagnostics", async () => {
+  await withApiServer(
+    "local",
+    async ({ baseUrl, paths, token }) => {
+      await writeNativeSidebarSettings(paths.homeDir, { debuggingMode: true });
+      await delay(1_100);
+      const project = (
+        await requestJson(baseUrl, "/api/createProject", {
+          body: { params: { name: "Ghostex", path: paths.rootDir }, protocolVersion: GXSERVER_PROTOCOL_VERSION },
+          method: "POST",
+          token,
+        })
+      ).body.result.project;
+      const session = (
+        await requestJson(baseUrl, "/api/createAgentSession", {
+          body: {
+            params: {
+              agentId: "codex",
+              projectId: project.projectId,
+              runtimeSettings: { titleSource: "user" },
+              title: "Private Escape Agent",
+            },
+            protocolVersion: GXSERVER_PROTOCOL_VERSION,
+          },
+          method: "POST",
+          token,
+        })
+      ).body.result.session;
+
+      const workingNowMs = Date.now();
+      const working = await requestJson(baseUrl, "/api/updateAgentActivity", {
+        body: {
+          params: {
+            activity: "working",
+            agentName: "codex",
+            nowMs: workingNowMs,
+            projectId: project.projectId,
+            sessionId: session.sessionId,
+          },
+          protocolVersion: GXSERVER_PROTOCOL_VERSION,
+        },
+        method: "POST",
+        token,
+      });
+      assert.equal(working.status, 200);
+      assert.equal(working.body.result.activity.activity, "working");
+
+      const escapeNowMs = Date.now();
+      const escape = await requestJson(baseUrl, "/api/updateAgentActivity", {
+        body: {
+          params: {
+            agentName: "codex",
+            event: "escape",
+            nowMs: escapeNowMs,
+            projectId: project.projectId,
+            sessionId: session.sessionId,
+          },
+          protocolVersion: GXSERVER_PROTOCOL_VERSION,
+        },
+        method: "POST",
+        token,
+      });
+      assert.equal(escape.status, 200);
+      assert.equal(escape.body.result.activity.activity, "working");
+      assert.equal(
+        escape.body.result.activity.attentionSuppressedUntil,
+        new Date(escapeNowMs + 5_000).toISOString(),
+      );
+      assert.equal(escape.body.result.session.runtimeSettings.agentActivity.activity, "working");
+
+      const title = await requestJson(baseUrl, "/api/ingestTerminalTitleEvent", {
+        body: {
+          params: {
+            agentName: "codex",
+            projectId: project.projectId,
+            rawTitle: "[ ! ] Action Required /Users/person/private?token=secret https://example.test/path?token=secret",
+            sessionId: session.sessionId,
+            sessionPersistenceProvider: "zmx",
+          },
+          protocolVersion: GXSERVER_PROTOCOL_VERSION,
+        },
+        method: "POST",
+        token,
+      });
+      assert.equal(title.status, 200);
+      assert.equal(title.body.result.activity.activity, "idle");
+      assert.equal(title.body.result.enteredAttention, false);
+      assert.equal(title.body.result.session.runtimeSettings.agentActivity.activity, "idle");
+      assert.equal(
+        title.body.result.session.runtimeSettings.agentActivity.attentionSuppressedUntil,
+        new Date(escapeNowMs + 5_000).toISOString(),
+      );
+
+      const hook = await requestJson(baseUrl, "/api/ingestAgentHookEvent", {
+        body: {
+          params: {
+            agentName: "codex",
+            eventName: "Stop",
+            projectId: project.projectId,
+            rawEventName: "Stop",
+            sessionId: session.sessionId,
+            status: "attention",
+            statusUpdatedAt: new Date(Date.now()).toISOString(),
+          },
+          protocolVersion: GXSERVER_PROTOCOL_VERSION,
+        },
+        method: "POST",
+        token,
+      });
+      assert.equal(hook.status, 200);
+      assert.equal(hook.body.result.activity.activity, "idle");
+      assert.equal(hook.body.result.enteredAttention, false);
+
+      const { entry: escapeLog } = await waitForLogEvent(
+        paths.logFile,
+        "sessionActivity.escapeSuppressionStarted",
+        1_000,
+      );
+      assert.equal(escapeLog.level, "info");
+      assert.equal(escapeLog.details.changed, true);
+      assert.equal(escapeLog.details.previousActivity, "working");
+      assert.equal(escapeLog.details.previousHadAttentionSuppression, false);
+      assert.equal(escapeLog.details.resultActivity, "working");
+      assert.equal(escapeLog.details.source, "terminal-escape");
+      assert.equal(typeof escapeLog.details.suppressedUntil, "string");
+      assert.equal(typeof escapeLog.details.suppressionMs, "number");
+
+      const { entry: titleLog } = await waitForLogEvent(
+        paths.logFile,
+        "sessionTitle.terminalTitleEvent",
+        1_000,
+      );
+      assert.equal(titleLog.details.attentionSuppressedByWindow, true);
+      assert.equal(typeof titleLog.details.attentionSuppressionRemainingMs, "number");
+      assert.equal(titleLog.details.statusUpdateStored, true);
+
+      const { entry: hookLog, text: logs } = await waitForLogEvent(
+        paths.logFile,
+        "sessionActivity.attentionSuppressed",
+        1_000,
+      );
+      assert.equal(hookLog.level, "info");
+      assert.equal(hookLog.details.changed, false);
+      assert.equal(hookLog.details.hasExplicitStatus, true);
+      assert.equal(hookLog.details.hasHookEventName, true);
+      assert.equal(hookLog.details.incomingActivity, "attention");
+      assert.equal(hookLog.details.previousActivity, "idle");
+      assert.equal(hookLog.details.resultActivity, "idle");
+      assert.equal(hookLog.details.source, "agent-hook");
+      assert.equal(typeof hookLog.details.suppressionRemainingMs, "number");
+      assert.doesNotMatch(logs, /Private Escape Agent|Action Required|\/Users\/person|example\.test|token=secret|https:\/\/example\.test|rawEventName/u);
     },
     {
       zmxLifecycle: fakeZmxLifecycle([], () => 0),
@@ -3310,6 +3550,7 @@ test("attach metadata promotes existing client-created providers into the macOS 
       assert.equal(attach.status, 200);
       assert.equal(attach.body.result.attach.providerState.lifecycleState, "exists");
       assert.equal(attach.body.result.attach.session.lifecycleState, "running");
+      assert.doesNotMatch(attach.body.result.attach.attachCommand, /--prompt-editor=monaco/);
 
       const afterAttach = await requestJson(baseUrl, "/api/readPresentationSnapshot", {
         body: { params: {}, protocolVersion: GXSERVER_PROTOCOL_VERSION },
@@ -3378,9 +3619,10 @@ test("startSessionProvider promotes missing plain terminal providers into presen
       assert.equal(start.body.result.providerState.lifecycleState, "exists");
       assert.equal(start.body.result.session.lifecycleState, "running");
       const runScript = calls.find((script) =>
-        script.includes('run "$zmx_session" -d --initial-command /bin/zsh -li')
+        script.includes('run "$zmx_session" -d --initial-command /bin/zsh -lic "$zmx_shell_command"')
       );
       assert.ok(runScript);
+      assert.match(runScript, /ghostex_prompt_editor_wrapper="\$ghostex_prompt_editor_home\/state\/prompt-editor"/);
       assert.equal(calls.some((script) => script.includes("gxserver startSessionProvider requires startup text")), false);
 
       const presentation = await requestJson(baseUrl, "/api/readPresentationSnapshot", {

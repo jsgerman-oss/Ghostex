@@ -78,6 +78,7 @@ import { browseProjectDirectories } from "./project-directory-browser.js";
 import { GxserverProjectPathError, normalizeExistingDirectoryPath, resolveProjectOperationDirectory } from "./project-paths.js";
 import { GxserverRepositoryCloneError, GxserverRepositoryCloneJobManager } from "./repository-clone/index.js";
 import { removeRuntimeMetadata, writeRuntimeMetadata } from "./runtime.js";
+import { deleteGxserverWorktreeProject } from "./worktree-delete.js";
 import {
   createGxserverMigrationStatus,
   initializeGxserverStorage,
@@ -144,6 +145,7 @@ import type {
   GxserverPresentationDelta,
   GxserverCancelFirstPromptAutoTitleParams,
   GxserverCancelFirstPromptAutoTitleResult,
+  GxserverDeleteWorktreeProjectParams,
   GxserverResolveGitRootForPathResult,
   GxserverRemoveSessionParams,
   GxserverRunBeadsActionParams,
@@ -1057,6 +1059,43 @@ async function dispatchDomainStateEndpoint(
       });
       return { project };
     }
+    case "/api/deleteWorktreeProject": {
+      const result = await deleteGxserverWorktreeProject({
+        context: {
+          abortSignal: undefined,
+          envPath: process.env.PATH,
+        },
+        params: params as unknown as GxserverDeleteWorktreeProjectParams,
+        repository,
+      });
+      /*
+      CDXC:WorktreeDelete 2026-06-10-22:56:
+      The shared delete endpoint owns presentation refresh for every client.
+      After the helper removes the project row, this projectUpdated request
+      builds a projectRemoved delta and advances the gxserver presentation
+      revision so clients do not need local pruning fallbacks.
+      */
+      schedulePresentationProjectDelta(runtime, db, repository, {
+        projectId: result.project.projectId,
+        reason: "delete-worktree-project",
+        type: "projectUpdated",
+      });
+      if (result.warnings.length > 0) {
+        void runtime.logger.log({
+          details: {
+            forced: result.checkoutRemoval.forced,
+            retriedForSubmodules: result.checkoutRemoval.retriedForSubmodules,
+            warningCount: result.warnings.length,
+          },
+          event: "worktree.deleteProject.warning",
+          level: "warn",
+          projectId: result.project.projectId,
+          requestId,
+          serverId: runtime.metadata.serverId,
+        });
+      }
+      return result as unknown as Record<string, unknown>;
+    }
     case "/api/createSession":
     case "/api/createAgentSession": {
       const createParams =
@@ -1076,13 +1115,14 @@ async function dispatchDomainStateEndpoint(
         title: createParams.title,
         titleSource: readRuntimeText(createParams.runtimeSettings, "titleSource") as GxserverSessionStateEventParams["titleSource"],
       });
+      const suppressedSession = applyCreatedTerminalActivitySuppression(runtime, repository, presentation.session, requestId);
       const reconciled = scheduleAgentTitleMetadataCheck(runtime, repository, {
         force: true,
-        projectId: presentation.session.projectId,
+        projectId: suppressedSession.projectId,
         reason: "create-session",
-        sessionId: presentation.session.sessionId,
+        sessionId: suppressedSession.sessionId,
       });
-      const session = reconciled?.session ?? repository.getSession(presentation.session.projectId, presentation.session.sessionId) ?? presentation.session;
+      const session = reconciled?.session ?? repository.getSession(suppressedSession.projectId, suppressedSession.sessionId) ?? suppressedSession;
       observeZmxTitleForSession(runtime, session, "create-session");
       schedulePresentationSessionDelta(runtime, repository, {
         projectId: session.projectId,
@@ -1256,6 +1296,14 @@ async function dispatchDomainStateEndpoint(
       }
       let session = metadata.session;
       const hookActivityNowMs = parseAgentHookActivityTimestamp(hookEvent.statusUpdatedAt) ?? Date.now();
+      const previousHookActivityState = normalizeAgentActivityState(session.runtimeSettings.agentActivity, { activity: "idle" });
+      const previousHookAttentionSuppressedUntilMs = previousHookActivityState.attentionSuppressedUntil
+        ? Date.parse(previousHookActivityState.attentionSuppressedUntil)
+        : Number.NaN;
+      const hookAttentionSuppressedByWindow =
+        hookActivity === "attention" &&
+        Number.isFinite(previousHookAttentionSuppressedUntilMs) &&
+        hookActivityNowMs < previousHookAttentionSuppressedUntilMs;
       let activityUpdate: ReturnType<typeof updateSessionActivitySettings> | undefined;
       let activityChanged = false;
       let activityReason = hookActivity ? "activity-unchanged" : "metadata-only";
@@ -1281,6 +1329,28 @@ async function dispatchDomainStateEndpoint(
             scheduleStaleActivityPresentationRefresh(runtime, session, "agent-hook-stale-activity");
           }
           activityReason = activityChanged ? "activity-updated" : "activity-unchanged";
+          if (hookAttentionSuppressedByWindow) {
+            void runtime.logger.log({
+              details: {
+                agentName: hookEvent.agentName,
+                changed: activityChanged,
+                hasExplicitStatus: hookEvent.status !== undefined,
+                hasHookEventName: hookEvent.eventName !== undefined || hookEvent.rawEventName !== undefined,
+                incomingActivity: hookActivity,
+                previousActivity: previousHookActivityState.activity,
+                resultActivity: activityUpdate.activity.activity,
+                source: "agent-hook",
+                suppressionRemainingMs: Math.max(0, previousHookAttentionSuppressedUntilMs - hookActivityNowMs),
+                suppressedUntil: previousHookActivityState.attentionSuppressedUntil,
+              },
+              event: "sessionActivity.attentionSuppressed",
+              level: "info",
+              projectId: lifecycle.projectId,
+              requestId,
+              serverId: runtime.metadata.serverId,
+              sessionId: lifecycle.sessionId,
+            });
+          }
         }
       }
       const reconciled = scheduleAgentTitleMetadataCheck(runtime, repository, {
@@ -1438,6 +1508,9 @@ async function dispatchDomainStateEndpoint(
       const previousSuppressedUntilMs = previousActivityState.suppressedUntil
         ? Date.parse(previousActivityState.suppressedUntil)
         : Number.NaN;
+      const previousAttentionSuppressedUntilMs = previousActivityState.attentionSuppressedUntil
+        ? Date.parse(previousActivityState.attentionSuppressedUntil)
+        : Number.NaN;
       const statusUpdate = updateSessionActivitySettings(presentedSession, {
         agentName: titleEvent.agentName,
         event: "title",
@@ -1448,6 +1521,8 @@ async function dispatchDomainStateEndpoint(
       });
       const activitySuppressedByWindow =
         Number.isFinite(previousSuppressedUntilMs) && titleActivityNowMs < previousSuppressedUntilMs;
+      const attentionSuppressedByWindow =
+        Number.isFinite(previousAttentionSuppressedUntilMs) && titleActivityNowMs < previousAttentionSuppressedUntilMs;
       /*
       CDXC:GxserverSessionTitles 2026-06-06-07:09:
       zmx title streams can produce many repeated spinner frames. Preserve title-derived working detection by storing real activity-window changes, but do not rewrite the session row, force metadata checks, or broadcast sidebar presentation deltas when a terminal-title event leaves both stored status and projected session chrome unchanged.
@@ -1519,6 +1594,11 @@ async function dispatchDomainStateEndpoint(
           activitySuppressionRemainingMs: activitySuppressedByWindow
             ? Math.max(0, previousSuppressedUntilMs - titleActivityNowMs)
             : undefined,
+          attentionSuppressedByWindow,
+          attentionSuppressedUntil: previousActivityState.attentionSuppressedUntil,
+          attentionSuppressionRemainingMs: attentionSuppressedByWindow
+            ? Math.max(0, previousAttentionSuppressedUntilMs - titleActivityNowMs)
+            : undefined,
           changed: response.changed,
           decisionChanged: decision.changed,
           decisionReason: decision.reason,
@@ -1570,6 +1650,7 @@ async function dispatchDomainStateEndpoint(
           session: current,
         } satisfies Record<string, unknown> & GxserverUpdateAgentActivityResult;
       }
+      const previousActivityState = normalizeAgentActivityState(current.runtimeSettings.agentActivity, { activity: "idle" });
       const update = updateSessionActivitySettings(current, activity);
       const session = repository.updateSession({
         lastActiveAt: update.lastActiveAt,
@@ -1589,6 +1670,30 @@ async function dispatchDomainStateEndpoint(
         reason: "agent-activity",
         sessionId: lifecycle.sessionId,
       });
+      if (activity.event === "escape") {
+        const suppressedUntilMs = update.activity.attentionSuppressedUntil
+          ? Date.parse(update.activity.attentionSuppressedUntil)
+          : Number.NaN;
+        const changed = shouldPersistSessionStatusUpdate(current, update);
+        void runtime.logger.log({
+          details: {
+            agentName: activity.agentName,
+            changed,
+            previousActivity: previousActivityState.activity,
+            previousHadAttentionSuppression: previousActivityState.attentionSuppressedUntil !== undefined,
+            resultActivity: update.activity.activity,
+            source: "terminal-escape",
+            suppressedUntil: update.activity.attentionSuppressedUntil,
+            suppressionMs: Number.isFinite(suppressedUntilMs) ? Math.max(0, suppressedUntilMs - Date.now()) : undefined,
+          },
+          event: "sessionActivity.escapeSuppressionStarted",
+          level: "info",
+          projectId: lifecycle.projectId,
+          requestId,
+          serverId: runtime.metadata.serverId,
+          sessionId: lifecycle.sessionId,
+        });
+      }
       return {
         activity: update.activity,
         enteredAttention: update.enteredAttention,
@@ -2226,6 +2331,7 @@ function persistableAgentActivitySnapshot(value: unknown): Record<string, unknow
     activity,
     agentName: value.agentName,
     attentionEventId: value.attentionEventId,
+    attentionSuppressedUntil: value.attentionSuppressedUntil,
     hasSeenWorking: value.hasSeenWorking,
     isAcknowledged: value.isAcknowledged,
     lastTitle: value.lastTitle,
@@ -2774,6 +2880,56 @@ async function dispatchZmxLifecycleEndpoint(
     default:
       throw new GxserverDomainStateError("notFound", `${endpointPath} is not a gxserver zmx lifecycle endpoint.`);
   }
+}
+
+function applyCreatedTerminalActivitySuppression(
+  runtime: GxserverApiRuntime,
+  repository: GxserverDomainRepository,
+  session: GxserverSessionDomainState,
+  requestId: string,
+): GxserverSessionDomainState {
+  if (session.kind !== "terminal" || session.lifecycleState !== "running") {
+    return session;
+  }
+  const previous = normalizeAgentActivityState(session.runtimeSettings.agentActivity, { activity: "idle" });
+  const update = updateSessionActivitySettings(session, {
+    event: "launch",
+    projectId: session.projectId,
+    sessionId: session.sessionId,
+  });
+  const changed = shouldPersistSessionStatusUpdate(session, update);
+  const suppressedUntilMs = update.activity.suppressedUntil ? Date.parse(update.activity.suppressedUntil) : Number.NaN;
+  const nowMs = update.activity.lastChangedAt ? Date.parse(update.activity.lastChangedAt) : Date.now();
+  const updatedSession = changed
+    ? repository.updateSession({
+        lastActiveAt: update.lastActiveAt,
+        projectId: session.projectId,
+        runtimeSettings: update.runtimeSettings,
+        sessionId: session.sessionId,
+      })
+    : session;
+  /*
+  CDXC:GxserverSessionStatus 2026-06-11-08:32:
+  Freshly-created running terminal sessions can emit stale zmx terminal-title status before the shell or foreground process has produced new activity. Apply the shared gxserver launch suppression before title observation starts so macOS, remote, CLI/TUI, and mobile clients do not play false done status from create-time title replay.
+  */
+  void runtime.logger.log({
+    details: {
+      changed,
+      lifecycleState: session.lifecycleState,
+      previousActivity: update.previousActivity,
+      previousHadSuppression: previous.suppressedUntil !== undefined,
+      sessionKind: session.kind,
+      suppressedUntil: update.activity.suppressedUntil,
+      suppressionMs: Number.isFinite(suppressedUntilMs) ? Math.max(0, suppressedUntilMs - nowMs) : undefined,
+    },
+    event: "sessionActivity.createSuppressionStarted",
+    level: "info",
+    projectId: session.projectId,
+    requestId,
+    serverId: runtime.metadata.serverId,
+    sessionId: session.sessionId,
+  });
+  return updatedSession;
 }
 
 function applyWakeSessionActivitySuppression(
@@ -3768,6 +3924,7 @@ async function createAttachSessionMetadata(
       gxserverAuthTokenFile: runtime.paths.authTokenFile,
       gxserverBaseUrl: `http://${GXSERVER_LOCAL_API_HOST}:${GXSERVER_LOCAL_API_PORT}`,
       gxserverProtocolVersion: GXSERVER_PROTOCOL_VERSION,
+      promptEditor: normalizePromptEditorAttachMode(params.promptEditor),
       sessionName: zmxSessionName,
       title: probedSession.title,
       zmxExecutablePath: zmx.executablePath,
@@ -3785,6 +3942,10 @@ async function createAttachSessionMetadata(
 
 function normalizeOptionalStartupText(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() ? value : undefined;
+}
+
+function normalizePromptEditorAttachMode(value: unknown): "monaco" | undefined {
+  return value === "monaco" ? "monaco" : undefined;
 }
 
 async function probeAndCacheSessionProvider(
@@ -4067,6 +4228,7 @@ function isDomainStateEndpoint(path: GxserverEndpointPath): boolean {
     path === "/api/readProjectStatus" ||
     path === "/api/addProjectPath" ||
     path === "/api/removeProject" ||
+    path === "/api/deleteWorktreeProject" ||
     path === "/api/createSession" ||
     path === "/api/createAgentSession" ||
     path === "/api/forkSession" ||
