@@ -36,8 +36,9 @@ You can also download the latest DMG from GitHub Releases.
 
 Use the mobile apps to connect live to your Ghostex agent CLI sessions. APKs are in Releases. Join discord for iOS app.
 
-<!-- CDXC:AndroidDistribution 2026-06-09-23:55: The public README Android badge must point at the current Ghostex release APK asset so users do not install an older mobile package after a desktop release ships with a matching Android build. -->
 [![Download Android APK](https://img.shields.io/badge/Android-APK-3DDC84?logo=android&logoColor=white)](https://github.com/maddada/Ghostex/releases/download/v4.1.0/ghostex-android.apk) [![iPhone App Discord](https://img.shields.io/badge/iPhone-Test%20Flight-000000?logo=apple&logoColor=white)](https://discord.gg/df7b3G92CS)
+
+<img width="3326" height="1514" alt="2026-06-12_Google Chrome_23-43-07@2x" src="https://github.com/user-attachments/assets/ecc84149-a9fc-4ec8-a387-af5ce35aa7be" />
 
 <p>
   <img width="250" alt="Ghostex Android companion app" src="https://github.com/user-attachments/assets/e7af9c54-e8ef-4e0b-a934-8b2f9ea56c70" />
