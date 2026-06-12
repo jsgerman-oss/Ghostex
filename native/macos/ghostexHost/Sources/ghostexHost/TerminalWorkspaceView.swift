@@ -2682,7 +2682,6 @@ final class TerminalWorkspaceView: NSView {
     guard lastProjectEditorFocusOwnerState != nil else {
       return
     }
-    projectEditorFocusOwnerRevision += 1
     let previousState = lastProjectEditorFocusOwnerState
     lastProjectEditorFocusOwnerState = nil
     TerminalFocusDebugLog.append(
@@ -4490,11 +4489,15 @@ final class TerminalWorkspaceView: NSView {
     focusedSessionId = sessionId
     orderWebPaneViewsToFront(session)
     updateAllTerminalBorders()
+    let didFocusWebPane: Bool
     if let controller = poppedOutPaneControllers[sessionId] {
       controller.window?.makeKeyAndOrderFront(nil)
-      _ = controller.window?.makeFirstResponder(view)
+      didFocusWebPane = controller.window?.makeFirstResponder(view) ?? false
     } else {
-      _ = window?.makeFirstResponder(view)
+      didFocusWebPane = window?.makeFirstResponder(view) ?? false
+    }
+    if didFocusWebPane || view.window?.firstResponder === view {
+      clearProjectEditorFocusOwner(reason: "focusWebPane.\(reason)")
     }
     NativeT3CodePaneReproLog.append("nativeWorkspace.t3WebPane.focus.applied", [
       "currentUrl": session.currentURLString ?? NSNull(),
@@ -4681,6 +4684,10 @@ final class TerminalWorkspaceView: NSView {
         self?.handleProjectBeadsBridgeRequest(request, webView: webView)
       }
       let projectBoardBridge = ProjectBoardBridge { [weak self] request in
+        if request.action == "projectEditorFocusOwnerChanged" {
+          self?.handleProjectBoardFocusOwnerChanged(request)
+          return
+        }
         self?.sendEvent(.projectBoardRequest(request))
       }
       let projectBoardImageBridge = ProjectBoardImageBridge { [weak self] request, webView in
@@ -4819,8 +4826,16 @@ final class TerminalWorkspaceView: NSView {
      Do not re-run host visibility, ordering, companion sync, AppKit layout, or CEF first-responder work when the active project editor is already settled; redundant focus layouts can cause Chromium's internal compositor layer to drift while native frames stay fixed.
      */
     if !didSwitchProjectEditor && companionStateSettled && activeHostSettled && activeTitleBarSettled {
+      markProjectEditorFocusOwner(
+        projectEditorId: projectId,
+        event: "firstResponder",
+        reason: reason)
       return
     }
+    markProjectEditorFocusOwner(
+      projectEditorId: projectId,
+      event: "firstResponder",
+      reason: reason)
     activeProjectEditorId = projectId
     if projectEditorCompanionPaneHidden {
       projectEditorCompanionIsVisible = false
@@ -4862,7 +4877,7 @@ final class TerminalWorkspaceView: NSView {
     */
     syncCEFNativeDragSourceReleaseMonitor(reason: "focusProjectEditorPane")
     syncSourceCEFDragDiagnosticsMonitor(reason: "focusProjectEditorPane")
-    _ = window?.makeFirstResponder(session.chromiumView ?? session.webView ?? session.hostView)
+    _ = window?.makeFirstResponder(projectEditorFocusTargetResponder(for: session))
     needsLayout = true
     NativeT3CodePaneReproLog.append("nativeWorkspace.projectEditor.focus.applied", [
       "projectId": projectId,
@@ -5513,6 +5528,7 @@ final class TerminalWorkspaceView: NSView {
     programmaticFocusDepth -= 1
     if makeFirstResponderResult || targetWindow?.firstResponder === view {
       rememberTerminalFirstResponderSessionId(sessionId)
+      clearProjectEditorFocusOwner(reason: "focusTerminal.\(reason)")
     }
     let responderAfter = responderSnapshot()
     logFocusSurfaceState(
@@ -5939,9 +5955,17 @@ final class TerminalWorkspaceView: NSView {
      not just the later terminalFocused event. Persist each AppKit-originated
      responder handoff while debugging so key-route logs can be correlated with
      the exact responder that existed before the user typed.
-     */
+    */
     let responderSessionId = sessionId(containing: responder)
     rememberTerminalFirstResponderSessionId(responderSessionId)
+    if let projectEditorId = projectEditorId(containing: responder) {
+      markProjectEditorFocusOwner(
+        projectEditorId: projectEditorId,
+        event: "firstResponder",
+        reason: reason)
+    } else if responderSessionId != nil {
+      clearProjectEditorFocusOwner(reason: "windowFirstResponderChanged.\(reason)")
+    }
     TerminalFocusDebugLog.append(
       event: "nativeFocusTrace.windowFirstResponderChanged",
       details: [
@@ -7728,6 +7752,9 @@ final class TerminalWorkspaceView: NSView {
     } else {
       makeFirstResponderResult = false
     }
+    if makeFirstResponderResult || targetResponder.map({ window?.firstResponder === $0 }) == true {
+      clearProjectEditorFocusOwner(reason: "projectEditorCompanion.\(reason)")
+    }
     let responderAfterFocus = responderSnapshot()
     TerminalFocusDebugLog.append(
       event: "nativeFocusTrace.projectEditorCompanionFocusResult",
@@ -7745,7 +7772,9 @@ final class TerminalWorkspaceView: NSView {
         "windowIsKey": window?.isKeyWindow ?? false,
       ])
     if reason == "sidebarFocusCommand" {
-      scheduleDelayedProjectEditorCompanionClick(sessionId: sessionId)
+      scheduleDelayedProjectEditorCompanionClick(
+        sessionId: sessionId,
+        focusOwnerRevision: projectEditorFocusOwnerRevision)
     }
     NativeT3CodePaneReproLog.append("nativeWorkspace.projectEditor.companion.focus", [
       "reason": reason,
@@ -7839,7 +7868,10 @@ final class TerminalWorkspaceView: NSView {
     return true
   }
 
-  private func scheduleDelayedProjectEditorCompanionClick(sessionId: String) {
+  private func scheduleDelayedProjectEditorCompanionClick(
+    sessionId: String,
+    focusOwnerRevision: UInt64
+  ) {
     /**
      CDXC:SidebarSessionFocus 2026-05-15-17:41:
      WebKit can keep the sidebar as first responder after a sidebar card click
@@ -7851,13 +7883,31 @@ final class TerminalWorkspaceView: NSView {
      Send the synthetic mouse event through the NSWindow event path so normal
      hit-testing reaches the focused terminal or web pane child view instead of
      calling the companion container directly.
-     */
+    */
     DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(180)) { [weak self] in
-      self?.performDelayedProjectEditorCompanionClick(sessionId: sessionId)
+      self?.performDelayedProjectEditorCompanionClick(
+        sessionId: sessionId,
+        focusOwnerRevision: focusOwnerRevision)
     }
   }
 
-  private func performDelayedProjectEditorCompanionClick(sessionId: String) {
+  private func performDelayedProjectEditorCompanionClick(
+    sessionId: String,
+    focusOwnerRevision: UInt64
+  ) {
+    guard !hasProjectEditorFocusOwnerChanged(since: focusOwnerRevision) else {
+      TerminalFocusDebugLog.append(
+        event: "nativeFocusTrace.projectEditorCompanionDelayedClickSkipped",
+        details: [
+          "activeProjectEditorId": nullableString(activeProjectEditorId),
+          "latestFocusOwnerRevision": projectEditorFocusOwnerRevision,
+          "requestedFocusOwnerRevision": focusOwnerRevision,
+          "requestedSessionId": sessionId,
+          "responder": responderSnapshot(),
+          "skipReason": "projectEditorFocusOwnerChanged",
+        ])
+      return
+    }
     guard
       activeProjectEditorId != nil,
       projectEditorCompanionIsVisible,
@@ -8510,6 +8560,19 @@ final class TerminalWorkspaceView: NSView {
         Self.dispatchProjectBeadsBridgeResponse(response, to: webView)
       }
     }
+  }
+
+  private func handleProjectBoardFocusOwnerChanged(_ request: ProjectBoardBridgeRequest) {
+    guard request.action == "projectEditorFocusOwnerChanged",
+      let projectEditorId = request.projectEditorId?.trimmingCharacters(in: .whitespacesAndNewlines),
+      !projectEditorId.isEmpty
+    else {
+      return
+    }
+    markProjectEditorFocusOwner(
+      projectEditorId: projectEditorId,
+      event: request.event ?? "unknown",
+      reason: "projectBoardBridge")
   }
 
   private static func runProjectBeadsBridgeRequest(
@@ -15366,6 +15429,22 @@ final class TerminalWorkspaceView: NSView {
         || responderView === contentView || responderView.isDescendant(of: contentView)
       {
         return sessionId
+      }
+    }
+    return nil
+  }
+
+  private func projectEditorId(containing responder: NSResponder) -> String? {
+    guard let responderView = responder as? NSView else {
+      return nil
+    }
+    for (projectEditorId, session) in projectEditorPaneSessions {
+      let targetResponder = projectEditorFocusTargetResponder(for: session)
+      let targetView = targetResponder as? NSView
+      if responderView === session.hostView || responderView.isDescendant(of: session.hostView)
+        || targetView.map({ responderView === $0 || responderView.isDescendant(of: $0) }) == true
+      {
+        return projectEditorId
       }
     }
     return nil

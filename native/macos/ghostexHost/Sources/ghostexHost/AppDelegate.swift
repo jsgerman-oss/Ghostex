@@ -5661,6 +5661,14 @@ final class ghostexRootView: NSView {
     guard activeAppModalKind == nil, activeNativeAppModalKind == nil, !appModalPresentationPending else {
       return false
     }
+    if workspaceView.restoreProjectEditorFocusAfterPassiveSidebarFirstResponder(now: now) {
+      /*
+       CDXC:ProjectBoardFocus 2026-06-12-08:44:
+       Passive sidebar WKWebView hydration must not convert active Project/Kanban typing into companion-terminal focus.
+       Restore the recent project-editor first responder before considering terminal recovery so board text entry remains the focus owner during sidebar refresh churn.
+       */
+      return true
+    }
     guard let restoreSessionId = workspaceView.passiveSidebarReturnFocusTerminalSessionId() else {
       return false
     }
@@ -8076,6 +8084,8 @@ final class ghostexRootView: NSView {
   ) {
     sidebarWorkspaceFocusRequestId += 1
     let focusRequestId = sidebarWorkspaceFocusRequestId
+    let projectEditorFocusOwnerRevisionBeforeQueue =
+      workspaceView.currentProjectEditorFocusOwnerRevision()
     /**
      CDXC:SidebarSessionFocus 2026-05-15-17:20:
      Sidebar session-card clicks run inside WebKit's click dispatch, and WebKit
@@ -8097,6 +8107,10 @@ final class ghostexRootView: NSView {
 
      CDXC:PromptEditor 2026-06-09-10:43:
      Sidebar clicks while the Ctrl+G Monaco prompt editor is open may change sidebar selection and native layout behind the editor, but they must not close the editor or move keyboard focus away from it. Skip the explicit native focus command until the editor save/cancel path runs return-focus routing.
+
+     CDXC:ProjectBoardFocus 2026-06-12-08:44:
+     Deferred sidebar focus commands must lose to newer Project/Kanban editor input.
+     Capture the project-editor focus-owner revision before queueing and skip dispatch/reinforcement if the editor reports focus after this command was requested, while still allowing deliberate session clicks when no newer board input occurs.
      */
     guard !isFloatingPromptEditorActiveForUserInput else {
       TerminalFocusDebugLog.append(
@@ -8116,6 +8130,7 @@ final class ghostexRootView: NSView {
       details: [
         "focusRequestId": focusRequestId,
         "kind": kind.debugName,
+        "projectEditorFocusOwnerRevisionBeforeQueue": projectEditorFocusOwnerRevisionBeforeQueue,
         "responderBeforeQueue": responderSnapshot(),
         "sessionId": sessionId,
         "webChromeFirstResponder": isWebChromeFirstResponder(),
@@ -8135,6 +8150,23 @@ final class ghostexRootView: NSView {
             "kind": kind.debugName,
             "sessionId": sessionId,
             "skipReason": "floatingPromptEditorActiveAfterQueue",
+          ])
+        return
+      }
+      guard !self.workspaceView.hasProjectEditorFocusOwnerChanged(
+        since: projectEditorFocusOwnerRevisionBeforeQueue)
+      else {
+        let latestProjectEditorFocusOwnerRevision =
+          self.workspaceView.currentProjectEditorFocusOwnerRevision()
+        TerminalFocusDebugLog.append(
+          event: "nativeFocusTrace.sidebarFocusCommandSkipped",
+          details: [
+            "focusRequestId": focusRequestId,
+            "kind": kind.debugName,
+            "latestProjectEditorFocusOwnerRevision": latestProjectEditorFocusOwnerRevision,
+            "projectEditorFocusOwnerRevisionBeforeQueue": projectEditorFocusOwnerRevisionBeforeQueue,
+            "sessionId": sessionId,
+            "skipReason": "projectEditorFocusOwnerChangedAfterQueue",
           ])
         return
       }
@@ -8175,14 +8207,16 @@ final class ghostexRootView: NSView {
       self.scheduleSidebarWorkspaceFocusReinforcement(
         sessionId: sessionId,
         kind: kind,
-        focusRequestId: focusRequestId)
+        focusRequestId: focusRequestId,
+        projectEditorFocusOwnerRevisionBeforeQueue: projectEditorFocusOwnerRevisionBeforeQueue)
     }
   }
 
   private func scheduleSidebarWorkspaceFocusReinforcement(
     sessionId: String,
     kind: SidebarWorkspaceFocusKind,
-    focusRequestId: UInt64
+    focusRequestId: UInt64,
+    projectEditorFocusOwnerRevisionBeforeQueue: UInt64
   ) {
     DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(140)) { [weak self] in
       guard let self else {
@@ -8198,6 +8232,23 @@ final class ghostexRootView: NSView {
             "kind": kind.debugName,
             "sessionId": sessionId,
             "skipReason": "floatingPromptEditorActive",
+          ])
+        return
+      }
+      guard !self.workspaceView.hasProjectEditorFocusOwnerChanged(
+        since: projectEditorFocusOwnerRevisionBeforeQueue)
+      else {
+        let latestProjectEditorFocusOwnerRevision =
+          self.workspaceView.currentProjectEditorFocusOwnerRevision()
+        TerminalFocusDebugLog.append(
+          event: "nativeFocusTrace.sidebarFocusReinforcementSkipped",
+          details: [
+            "focusRequestId": focusRequestId,
+            "kind": kind.debugName,
+            "latestProjectEditorFocusOwnerRevision": latestProjectEditorFocusOwnerRevision,
+            "projectEditorFocusOwnerRevisionBeforeQueue": projectEditorFocusOwnerRevisionBeforeQueue,
+            "sessionId": sessionId,
+            "skipReason": "projectEditorFocusOwnerChangedAfterQueue",
           ])
         return
       }
