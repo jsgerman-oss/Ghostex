@@ -152,6 +152,10 @@ describe("T3 runtime packaging", () => {
     expect(startGhostexSource).toContain("CONFIGURATION: configuration");
     expect(configurationResolver).toContain('return "Release"');
     expect(startGhostexSource).toContain("await validateMacosAppBundle({ appName, appPath: installedApp, arch })");
+    expect(startGhostexSource).toContain("CDXC:LocalStartGxserver 2026-06-12-09:58");
+    expect(startGhostexSource).toContain("resolveBundledNodeForGxserverPreflight(appPath, runtime)");
+    expect(startGhostexSource).toContain("runtime.nodeVersion || `v${runtime.nodeMajor}.0.0`");
+    expect(startGhostexSource).not.toContain("preflightNativeNodeModuleLoad");
     expect(startGhostexSource).toContain("clearLaunchServicesDevelopmentEnvironment");
     expect(startGhostexSource).toContain('"VSMUX_T3CODE_REPO_ROOT"');
     expect(startGhostexSource).toContain("validateStartArguments(process.argv.slice(2), process.env.GHOSTEX_APP_VARIANT)");
@@ -190,8 +194,12 @@ describe("T3 runtime packaging", () => {
 
     expect(releaseGhostexSource).toContain("import { validateMacosAppBundle } from \"./validate-macos-app-bundle.mjs\"");
     expect(releaseGhostexSource).toContain("await validateMacosAppBundle({ appName: config.appName, appPath: entry.appPath, arch: entry.arch })");
-    expect(bundleValidatorSource).toContain("T3 Code --help smoke test");
-    expect(bundleValidatorSource).toContain("T3 Code node-pty");
+    expect(bundleValidatorSource).toContain("CDXC:LocalStartRuntimePolicy 2026-06-12-09:58");
+    expect(bundleValidatorSource).not.toContain("T3 Code --help smoke test");
+    expect(bundleValidatorSource).not.toContain("assertNativeModuleLoads");
+    expect(bundleValidatorSource).toContain("nativeRuntime.nodeModuleVersion");
+    expect(bundleValidatorSource).toContain('path.join(t3NodePtyPrebuildRoot, "pty.node")');
+    expect(bundleValidatorSource).toContain('path.join(t3NodePtyPrebuildRoot, "spawn-helper")');
     expect(bundleValidatorSource).toContain('path.join(codeServerRoot, "lib", "vscode", "node_modules", "@vscode", "ripgrep", "bin", "rg")');
     expect(bundleValidatorSource).toContain("VS Code ripgrep --version smoke test");
     expect(bundleValidatorSource).toContain("Expected only");

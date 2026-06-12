@@ -29,9 +29,9 @@ export async function validateMacosAppBundle({ appPath, arch, appName = "Ghostex
     path.join(appPath, "Contents", "Frameworks", "Chromium Embedded Framework.framework", "Chromium Embedded Framework"),
     arch,
   );
-  const codeServerNode = await validateBundledCodeServerRuntime({ appPath, arch, resourcesRoot });
+  await validateBundledCodeServerRuntime({ arch, resourcesRoot });
   await validateBundledResourceShape({ arch, resourcesRoot, expectedNodePtyPrebuild });
-  await validateBundledT3Runtime({ arch, codeServerNode, resourcesRoot, expectedNodePtyPrebuild });
+  await validateBundledT3Runtime({ arch, resourcesRoot, expectedNodePtyPrebuild });
 }
 
 function expectedNodePtyPrebuildForArch(arch) {
@@ -44,7 +44,7 @@ function expectedNodePtyPrebuildForArch(arch) {
   throw new MacosAppBundleValidationError(`Unsupported macOS app architecture: ${arch}`);
 }
 
-async function validateBundledCodeServerRuntime({ appPath, arch, resourcesRoot }) {
+async function validateBundledCodeServerRuntime({ arch, resourcesRoot }) {
   const codeServerRoot = path.join(resourcesRoot, "code-server");
   const codeServerNode = path.join(codeServerRoot, "lib", "node");
   const codeServerEntrypoint = path.join(codeServerRoot, "out", "node", "entry.js");
@@ -70,26 +70,31 @@ async function validateBundledCodeServerRuntime({ appPath, arch, resourcesRoot }
       `${arch} app still bundles duplicate Node at ${obsoleteWebNode}; gxserver must reuse Web/code-server/lib/node.`,
     );
   }
+  /*
+   CDXC:LocalStartRuntimePolicy 2026-06-12-09:58:
+   macOS policy assessment can hang when a Node/Bun validator child-executes the app-bundled Node runtime. Validate bundle shape from Mach-O slices and package-time native-runtime.json metadata here; package builders own runtime smoke tests before resources are sealed into the app.
+   */
   await assertMachOContainsArch(codeServerNode, arch);
-  const nodeMajor = runFile(codeServerNode, ["-p", 'process.versions.node.split(".")[0]']).stdout.trim();
-  if (nodeMajor !== "22") {
-    throw new MacosAppBundleValidationError(`${arch} bundled code-server Node must be major 22, got ${nodeMajor}.`);
-  }
   await assertMachOContainsArch(codeServerVscodeRipgrep, arch);
   runFile(codeServerVscodeRipgrep, ["--version"], { label: "VS Code ripgrep --version smoke test" });
 
   const nativeRuntime = JSON.parse(await readFile(gxserverRuntimePath, "utf8"));
-  if (nativeRuntime.nodeMajor !== 22 || !nativeRuntime.nativeModules?.includes?.("better-sqlite3")) {
+  if (
+    nativeRuntime.nodeMajor !== 22 ||
+    typeof nativeRuntime.nodeModuleVersion !== "string" ||
+    nativeRuntime.nodeModuleVersion.trim().length === 0 ||
+    typeof nativeRuntime.nodeVersion !== "string" ||
+    nativeRuntime.nodeVersion.trim().length === 0 ||
+    !nativeRuntime.nativeModules?.includes?.("better-sqlite3")
+  ) {
     throw new MacosAppBundleValidationError(
-      `${arch} gxserver native-runtime.json must target bundled Node 22 and include better-sqlite3.`,
+      `${arch} gxserver native-runtime.json must target bundled Node 22, record NODE_MODULE_VERSION, and include better-sqlite3.`,
     );
   }
-  await assertNativeModuleLoads(
-    codeServerNode,
+  await assertMachOContainsArch(
     path.join(resourcesRoot, "gxserver", "node_modules", "better-sqlite3", "build", "Release", "better_sqlite3.node"),
-    "gxserver better-sqlite3",
+    arch,
   );
-  return codeServerNode;
 }
 
 async function validateBundledResourceShape({ arch, resourcesRoot, expectedNodePtyPrebuild }) {
@@ -114,12 +119,13 @@ async function validateBundledResourceShape({ arch, resourcesRoot, expectedNodeP
   );
 }
 
-async function validateBundledT3Runtime({ arch, codeServerNode, resourcesRoot, expectedNodePtyPrebuild }) {
+async function validateBundledT3Runtime({ arch, resourcesRoot, expectedNodePtyPrebuild }) {
   const t3Root = path.join(resourcesRoot, "t3code-server");
   const t3Entrypoint = path.join(t3Root, "dist", "bin.mjs");
   const t3PackageJson = path.join(t3Root, "package.json");
   const t3NodeModules = path.join(t3Root, "node_modules");
   const t3NodePtyRoot = path.join(t3NodeModules, "node-pty");
+  const t3NodePtyPrebuildRoot = path.join(t3NodePtyRoot, "prebuilds", expectedNodePtyPrebuild);
 
   await assertRequiredPaths(arch, "bundled T3 Code runtime resource", [
     t3Root,
@@ -133,8 +139,8 @@ async function validateBundledT3Runtime({ arch, codeServerNode, resourcesRoot, e
     path.join(t3NodePtyRoot, "prebuilds"),
     expectedNodePtyPrebuild,
   );
-  runFile(codeServerNode, [t3Entrypoint, "--help"], { cwd: t3Root, label: "T3 Code --help smoke test" });
-  await assertNativeModuleLoads(codeServerNode, t3NodePtyRoot, "T3 Code node-pty");
+  await assertMachOContainsArch(path.join(t3NodePtyPrebuildRoot, "pty.node"), arch);
+  await assertMachOContainsArch(path.join(t3NodePtyPrebuildRoot, "spawn-helper"), arch);
 
   const t3SourceMap = findFirstFileWithExtension(t3Root, ".map");
   if (t3SourceMap) {
@@ -159,19 +165,6 @@ async function assertMachOContainsArch(binaryPath, arch) {
   if (!archs.includes(arch)) {
     throw new MacosAppBundleValidationError(`${binaryPath} does not contain required ${arch} slice. Found: ${archs.join(", ") || "none"}.`);
   }
-}
-
-async function assertNativeModuleLoads(nodePath, modulePath, label) {
-  await assertRequiredPaths("macOS", `${label} native module`, [modulePath]);
-  runFile(
-    nodePath,
-    [
-      "-e",
-      "try { require(process.argv[1]); } catch (error) { console.error(error && error.stack ? error.stack : String(error)); process.exit(1); }",
-      modulePath,
-    ],
-    { label: `${label} load preflight` },
-  );
 }
 
 async function assertOnlyExpectedNodePtyPrebuilds(arch, prebuildsRoot, expectedNodePtyPrebuild) {

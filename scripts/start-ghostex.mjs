@@ -583,14 +583,12 @@ function preflightInstalledGxserverBundle(appPath) {
   }
   verifyInstalledAppCodeSignature(appPath);
   const runtime = readBundledGxserverNativeRuntime(appPath);
-  const nodeResolution = resolveBundledNodeForGxserverPreflight(appPath);
+  const nodeResolution = resolveBundledNodeForGxserverPreflight(appPath, runtime);
   const dependencyError = gxserverNodeDependencyError(nodeResolution, runtime);
   if (dependencyError) {
     throw new Error(dependencyError);
   }
-  for (const modulePath of bundledNativeModulePreflightPaths(gxserverRoot, runtime)) {
-    preflightNativeNodeModuleLoad(modulePath, nodeResolution, appPath);
-  }
+  bundledNativeModulePreflightPaths(gxserverRoot, runtime);
 }
 
 function verifyInstalledAppCodeSignature(appPath) {
@@ -642,6 +640,7 @@ function readBundledGxserverNativeRuntime(appPath) {
       : [],
     nodeMajor,
     nodeModuleVersion,
+    nodeVersion: typeof parsed.nodeVersion === "string" ? parsed.nodeVersion.trim() : "",
     nodeRequirement: typeof parsed.nodeRequirement === "string" ? parsed.nodeRequirement : undefined,
   };
 }
@@ -668,14 +667,25 @@ function bundledNativeModulePreflightPaths(gxserverRoot, runtime) {
   return modulePaths;
 }
 
-function resolveBundledNodeForGxserverPreflight(appPath) {
+function resolveBundledNodeForGxserverPreflight(appPath, runtime) {
   /*
   CDXC:LocalStartGxserver 2026-06-08-12:17:
-  The macOS app reuses code-server's bundled Node 22 runtime for gxserver. Local-start preflight must load native modules with Contents/Resources/Web/code-server/lib/node, not a developer-installed Node, so app launches cannot later show a system-Node missing or ABI-mismatch error.
+  The macOS app reuses code-server's bundled Node 22 runtime for gxserver. Local-start preflight must validate Contents/Resources/Web/code-server/lib/node, not a developer-installed Node, so app launches cannot later show a system-Node missing or ABI-mismatch error.
+
+  CDXC:LocalStartGxserver 2026-06-12-09:58:
+  macOS policy assessment can hang when a Bun/Node local-start script child-executes the app-bundled Node runtime. Once gxserver/native-runtime.json exists, use that package-time ABI metadata as the validation source and leave runtime execution to the native app's bounded Swift probe.
   */
   const nodePath = path.join(appPath, "Contents", "Resources", "Web", "code-server", "lib", "node");
   if (!existsSync(nodePath)) {
     return { moduleVersion: "", path: "", source: "app bundle", version: "" };
+  }
+  if (runtime) {
+    return {
+      moduleVersion: runtime.nodeModuleVersion,
+      path: nodePath,
+      source: "gxserver native-runtime.json",
+      version: runtime.nodeVersion || `v${runtime.nodeMajor}.0.0`,
+    };
   }
   return probeNode(nodePath, "app bundle") ?? { moduleVersion: "", path: nodePath, source: "app bundle", version: "" };
 }
@@ -689,6 +699,7 @@ function probeNode(nodePath, source) {
     encoding: "utf8",
     env: startEnvironment,
     stdio: ["ignore", "pipe", "ignore"],
+    timeout: 3000,
   });
   if (result.status !== 0 || !result.stdout.trim()) {
     return undefined;
@@ -741,35 +752,6 @@ function nodeVersionMajor(version) {
   const normalized = version.startsWith("v") ? version.slice(1) : version;
   const major = Number(normalized.split(".")[0]);
   return Number.isInteger(major) ? major : undefined;
-}
-
-function preflightNativeNodeModuleLoad(modulePath, nodeResolution, appPath) {
-  const probeScript = `
-const modulePath = process.argv[1];
-try {
-  require(modulePath);
-} catch (error) {
-  const rawMessage = error && typeof error.message === "string" ? error.message : String(error);
-  const scrubbedMessage = rawMessage.split(modulePath).join("[native-module]");
-  console.error(JSON.stringify({ code: error && error.code, message: scrubbedMessage, name: error && error.name }));
-  process.exit(1);
-}
-`;
-  const result = spawnSync(nodeResolution.path, ["-e", probeScript, modulePath], {
-    cwd: repoRoot,
-    encoding: "utf8",
-    env: startEnvironment,
-    stdio: ["ignore", "pipe", "pipe"],
-  });
-  if (result.error) {
-    throw result.error;
-  }
-  if (result.status !== 0) {
-    const output = sanitizePreflightOutput(`${result.stderr}\n${result.stdout}`, appPath);
-    throw new Error(
-      `Installed gxserver native-module preflight failed with ${nodeResolution.version} (NODE_MODULE_VERSION ${nodeResolution.moduleVersion}).${output ? ` ${output}` : ""}`,
-    );
-  }
 }
 
 function sanitizePreflightOutput(value, appPath) {
