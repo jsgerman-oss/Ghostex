@@ -8,6 +8,33 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
         <link>https://github.com/maddada/Ghostex/releases</link>
         <description>Sparkle appcast for Ghostex macOS releases.</description>
         <item>
+            <title>4.10.0</title>
+            <pubDate>Fri, 12 Jun 2026 12:56:40 +0400</pubDate>
+            <sparkle:fullReleaseNotesLink>https://github.com/maddada/Ghostex/releases/tag/v4.10.0</sparkle:fullReleaseNotesLink>
+            <sparkle:version>41000</sparkle:version>
+            <sparkle:shortVersionString>4.10.0</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <description sparkle:format="markdown"><![CDATA[# Ghostex 4.10.0
+
+- Native workspace panes, direct project-tab titlebars, app modal windows, and toast routing are better integrated with the macOS host, reducing click-routing misses and titlebar/sidebar focus churn.
+- Passive sidebar terminal restore and workspace-pane materialization preserve split layouts instead of merging restored panes while the sidebar catches up.
+- Project Board and GitHub mode focus are steadier during passive refreshes, and directly mounted project tab titlebars route clicks to the intended workspace surface.
+- Worktree deletion can clean up related branch metadata from the UI, while prompt-editor capability routing and terminal Escape reporting reduce stale agent attention after dismissed work.
+- The titlebar adds a compact sidebar collapse button beside the project name, hides empty Tips unread sections, and makes Resources recovery clearer with Restart plus Reload App when gxserver is off.
+- Add Worktree, Git Commit, and other native child-window modals have tighter macOS sizing and padding so compact dialogs stay compact while commit review gains room on the right diff side.
+- The `ghostex` and `gx` CLI commands use gxserver session inventory, add a sidebar toggle, and install as wrapper commands outside `Ghostex.app` so macOS policy assessment does not kill direct app-bundled script execution.
+- Agent support expands with Kiro CLI and OMP hook sidecars, mobile session status ingestion, Claude bare `/rename` staging for first-prompt titles, path-based live-process identity repair, and a default Accept All mode setting.
+- App Shots now stage captured desktop context in the focused or recent live agent session instead of being Codex-only, and create the configured default prompt-agent session only when no agent target is available.
+- Sidebar and settings polish includes a collapse command/hotkey, Copy Session Details, Ghostty settings folded into the main settings sections, and Agent Hub file contents loaded only when opened.
+- Android, iOS, Electron, TUI, and zehn integrations are refreshed for gxserver status, shared app toasts, status colors, grouped history search, and iOS refresh indicators that stay tied to active refresh requests.
+- Packaged macOS runtime validation now checks the bundled code-server Node 22 runtime, ripgrep, T3 Code native helpers, Beads, and source-map pruning without executing sealed native modules during validation.
+
+[Full release notes](https://github.com/maddada/Ghostex/releases/tag/v4.10.0)
+]]></description>
+            <enclosure url="https://github.com/maddada/Ghostex/releases/download/v4.10.0/ghostex-4.10.0-arm64.dmg" length="563078102" type="application/octet-stream" sparkle:edSignature="H2oWq//fNdStEBJfNXb7S9n/W8Mvr1jKIboP871BYB9oCQG2EEj/1N7N1BfNoCysztxGtuEqW9UPUih/zl0DBg=="/>
+        </item>
+        <item>
             <title>4.1.5</title>
             <pubDate>Wed, 10 Jun 2026 21:10:30 +0400</pubDate>
             <sparkle:fullReleaseNotesLink>https://github.com/maddada/Ghostex/releases/tag/v4.1.5</sparkle:fullReleaseNotesLink>
@@ -129,16 +156,6 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
             <enclosure url="https://github.com/maddada/Ghostex/releases/download/v4.0.1/ghostex-4.0.1-arm64.dmg" length="337904526" type="application/octet-stream" sparkle:edSignature="aohBFqhcBYIPpgV1X18pJC4Lr6e2lRGPzCZ4+fo7gtdS4t75iJHHAy4NITGe68h5FlSwaOqGSESrpgLheaEeAA=="/>
         </item>
         <item>
-            <title>4.0.0</title>
-            <pubDate>Mon, 08 Jun 2026 08:26:28 +0400</pubDate>
-            <sparkle:fullReleaseNotesLink>https://github.com/maddada/Ghostex/releases/tag/v4.0.0</sparkle:fullReleaseNotesLink>
-            <sparkle:version>40000</sparkle:version>
-            <sparkle:shortVersionString>4.0.0</sparkle:shortVersionString>
-            <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
-            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
-            <enclosure url="https://github.com/maddada/Ghostex/releases/download/v4.0.0/ghostex-4.0.0-arm64.dmg" length="337287279" type="application/octet-stream" sparkle:edSignature="e/hEWazOEUh1AVCF2xeHWIdlI/MhJT6J5/NRS3KyJs0MH6ojhSnklYJAJGv5LPUd3e/zd9LRLjtMW9C0kdaJCw=="/>
-        </item>
-        <item>
             <title>3.26.1</title>
             <pubDate>Mon, 01 Jun 2026 18:43:20 +0400</pubDate>
             <sparkle:fullReleaseNotesLink>https://github.com/maddada/Ghostex/releases/tag/v3.26.1</sparkle:fullReleaseNotesLink>
@@ -150,6 +167,6 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
     </channel>
 </rss>
 <!-- sparkle-signatures:
-edSignature: yxhhmcvi/dDJYZxIv9rLt3aslmjCuK+C2aVlHAsemOComZ+6+5gwNhLOXPeMnRAntALO4L/lodtf6HOAMq9sCQ==
-length: 15665
+edSignature: BM9J8Alt/zGe9b3rqkBMH76sjKIGsBV5sHFt9MijmuvamcC/ynOFG19xNFY4F2kfxpfAACI+BLKyYnXODEyJAQ==
+length: 18243
 -->
