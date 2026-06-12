@@ -28,7 +28,9 @@ describe("native sidebar Quick Git state", () => {
 
     expect(quickGuardIndex).toBeGreaterThanOrEqual(0);
     expect(gitProbeIndex).toBeGreaterThan(quickGuardIndex);
-    expect(gitRefreshSource).toContain("gitState = { ...baseState, isBusy: false, isRepo: false };");
+    expect(gitRefreshSource).toContain(
+      "gitState = { ...baseState, hasCheckedGitHubRemote: true, isBusy: false, isRepo: false };",
+    );
 
     const visibleDiffSource = sourceBetween(
       "async function refreshVisibleProjectDiffStats()",
