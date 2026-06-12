@@ -1,13 +1,16 @@
 
 ## All features:
 
-- 4.10.0 improves native workspace and titlebar integration, preserves split panes during passive restore, adds safer `ghostex`/`gx` command wrappers, expands agent and mobile status support, refreshes sidebar/settings workflows, and strengthens packaged runtime validation for Apple Silicon releases.
+- 4.10.0 improves native workspace and titlebar integration, preserves split panes during passive restore, adds safer `ghostex`/`gx` command wrappers, expands agent/mobile/App Shots support, refreshes sidebar/settings/titlebar workflows, and strengthens packaged runtime validation for Apple Silicon releases.
 - Native workspace panes, directly mounted project-tab titlebars, app modal windows, and toast routing are integrated with the macOS host for more reliable click routing and focus behavior.
 - Passive sidebar terminal restore preserves workspace split layouts instead of merging panes while session rows and pane tabs resync.
 - Project Board and GitHub workspace focus remains steadier while passive sidebar refreshes restore or retarget terminal sessions.
 - Worktree deletion can clean up related branch metadata from the UI, and terminal Escape reporting helps clear stale agent attention after dismissed work.
+- The titlebar includes a compact sidebar collapse button beside the project name, hides empty Tips unread sections, and keeps Resources daemon recovery focused on Restart plus Reload App when gxserver is off.
+- Add Worktree, Git Commit, and other native child-window modals use tighter macOS sizing and padding so compact dialogs stay compact while commit review gains room on the right diff side.
 - The `ghostex` and `gx` CLI commands use gxserver session inventory, include a sidebar toggle, and install as wrapper commands outside `Ghostex.app` so macOS policy assessment does not kill direct app-bundled script execution.
-- Kiro CLI and OMP can report hook-backed agent status, mobile clients can ingest hook sidecar status, and Claude bare `/rename` flows stage first-prompt titles more reliably.
+- Kiro CLI and OMP can report hook-backed agent status, mobile clients can ingest hook sidecar status, Claude bare `/rename` flows stage first-prompt titles more reliably, and live-process identity repair recognizes path-based agent executables.
+- App Shots can stage captured desktop context in the focused or recent live agent session instead of only Codex, and create the configured default prompt-agent session only when no agent target is available.
 - Sidebar and settings workflows include a collapse command/hotkey, Copy Session Details, Ghostty settings folded into the main settings sections, lazy Agent Hub file loading, and a default Accept All mode setting.
 - Android, iOS, Electron, TUI, and zehn integrations are refreshed for gxserver status, shared app toasts, status colors, grouped history search, and active-request iOS refresh indicators.
 - Packaged macOS runtime validation checks the bundled code-server Node 22 runtime, ripgrep, T3 Code native helpers, Beads, and source-map pruning without executing sealed native modules during validation.

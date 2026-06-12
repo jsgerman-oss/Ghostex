@@ -15,6 +15,7 @@
 <!-- CDXC:Distribution 2026-06-09-23:55: Release notes for 4.1.0 must cover the reused public version, new Android APK link, remote SSH password auth, session identity protections, prompt-editor focus repair, sidebar live-update stability, TUI refresh, and packaged editor runtime fixes without exposing implementation-only release details. -->
 <!-- CDXC:Distribution 2026-06-10-21:05: Release notes for 4.1.5 must cover bundled-runtime hook reliability, Claude wake recovery for migrated sessions, sidebar sleep semantics, project-board Beads prefix alignment, Chromium zoom controls, Show less/Close menu settings, remote edit entry points, stale zmx wake activity suppression, and arm64-only macOS distribution without implementation-only bullets. -->
 <!-- CDXC:Distribution 2026-06-12-10:48: Release notes for 4.10.0 must summarize user-facing changes since the latest public 4.1.5 release, including native workspace/titlebar reliability, pane restore stability, CLI wrapper install safety, agent/mobile status updates, settings/sidebar polish, and packaged runtime validation while excluding implementation-only release mechanics. -->
+<!-- CDXC:Distribution 2026-06-12-12:13: The final 4.10.0 release notes also need the late native chrome and App Shots work: titlebar sidebar collapse, Resources daemon/recovery controls, tighter native modal sizing, App Shots targeting any focused/recent agent, and live-process identity repair for path-based agent executables. -->
 
 ## 4.10.0 - 2026-06-12
 
@@ -22,8 +23,11 @@
 - Passive sidebar terminal restore and workspace-pane materialization preserve split layouts instead of merging restored panes while the sidebar catches up.
 - Project Board and GitHub mode focus are steadier during passive refreshes, and directly mounted project tab titlebars route clicks to the intended workspace surface.
 - Worktree deletion can clean up related branch metadata from the UI, while prompt-editor capability routing and terminal Escape reporting reduce stale agent attention after dismissed work.
+- The titlebar adds a compact sidebar collapse button beside the project name, hides empty Tips unread sections, and makes Resources recovery clearer with Restart plus Reload App when gxserver is off.
+- Add Worktree, Git Commit, and other native child-window modals have tighter macOS sizing and padding so compact dialogs stay compact while commit review gains room on the right diff side.
 - The `ghostex` and `gx` CLI commands use gxserver session inventory, add a sidebar toggle, and install as wrapper commands outside `Ghostex.app` so macOS policy assessment does not kill direct app-bundled script execution.
-- Agent support expands with Kiro CLI and OMP hook sidecars, mobile session status ingestion, Claude bare `/rename` staging for first-prompt titles, and a default Accept All mode setting.
+- Agent support expands with Kiro CLI and OMP hook sidecars, mobile session status ingestion, Claude bare `/rename` staging for first-prompt titles, path-based live-process identity repair, and a default Accept All mode setting.
+- App Shots now stage captured desktop context in the focused or recent live agent session instead of being Codex-only, and create the configured default prompt-agent session only when no agent target is available.
 - Sidebar and settings polish includes a collapse command/hotkey, Copy Session Details, Ghostty settings folded into the main settings sections, and Agent Hub file contents loaded only when opened.
 - Android, iOS, Electron, TUI, and zehn integrations are refreshed for gxserver status, shared app toasts, status colors, grouped history search, and iOS refresh indicators that stay tied to active refresh requests.
 - Packaged macOS runtime validation now checks the bundled code-server Node 22 runtime, ripgrep, T3 Code native helpers, Beads, and source-map pruning without executing sealed native modules during validation.
