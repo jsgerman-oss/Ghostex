@@ -725,17 +725,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
       handleOSIntegrationURL(url)
     }
     if !filePaths.isEmpty {
-      dispatchApplicationFileOpenPaths(filePaths, operationSource: "applicationOpenURLs")
+      dispatchOSIntegrationFileOpenPaths(filePaths)
     }
   }
 
   @MainActor func application(_ sender: NSApplication, openFiles filenames: [String]) {
-    dispatchApplicationFileOpenPaths(filenames, operationSource: "applicationOpenFiles")
+    dispatchOSIntegrationFileOpenPaths(filenames)
     sender.reply(toOpenOrPrint: .success)
   }
 
   @MainActor func application(_ sender: NSApplication, openFile filename: String) -> Bool {
-    dispatchApplicationFileOpenPaths([filename], operationSource: "applicationOpenFile")
+    dispatchOSIntegrationFileOpenPaths([filename])
     return true
   }
 
@@ -1022,26 +1022,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
     let recordedAgeMs = payload["recordedAgeMs"].map { "\($0)" } ?? "<unknown>"
     let hitView = payload["hitView"] as? String ?? "<unknown>"
     return "\(type) phase=\(phase) eventNumber=\(eventNumber) ageMs=\(recordedAgeMs) hitView=\(hitView)"
-  }
-
-  @MainActor
-  private func terminalPaneDropRecentLocalInputAgeMs() -> Int? {
-    lastNativeInputEventRecordedAt.map { Int(Date().timeIntervalSince($0) * 1000) }
-  }
-
-  @MainActor
-  private func shouldSuppressTerminalPaneDropActivationForRecentLocalInput(
-    recentLocalInputAgeMs: Int?
-  ) -> Bool {
-    if let event = NSApp.currentEvent,
-      Self.isNativeMouseActivationBoundaryEvent(event.type)
-    {
-      return true
-    }
-    guard let recentLocalInputAgeMs else {
-      return false
-    }
-    return recentLocalInputAgeMs >= 0 && recentLocalInputAgeMs <= 750
   }
 
   private static func hitViewDescription(for event: NSEvent, in window: NSWindow?) -> String {
@@ -1503,64 +1483,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
       "windowDidResignKey windowVisible=\(window?.isVisible ?? false) keyWindow=\(window?.isKeyWindow ?? false) mainWindow=\(window?.isMainWindow ?? false) frontmost=\(NSWorkspace.shared.frontmostApplication?.localizedName ?? "<missing>") lastActivationRequest=\(describeLastNativeActivationRequest()) recentInput=\(describeRecentNativeInputEvent()) workspace=\(describeWorkspaceActivationSnapshot())"
     )
     logNativeActivationLifecycleEvent("nativeHost.window.didResignKey")
-  }
-
-  /*
-   CDXC:TerminalImageDrop 2026-06-08-03:57:
-   The 03:53 Dock-stack repro showed `NSWindow.registerForDraggedTypes` was active but no `window.entered` or `window.perform` events fired. AppKit's NSWindow drag registration forwards NSDraggingDestination messages to the window delegate, so route those delegate callbacks here instead of relying only on subclass methods on the custom window.
-
-   CDXC:TerminalImageDrop 2026-06-08-03:59:
-   The 03:59 repro still showed no `window.entered` event after delegate routing was added. NSWindow discovers these drag methods by Objective-C selector lookup rather than the NSWindowDelegate protocol, so expose them explicitly with `@objc` to make `responds(to:)` succeed.
-
-   CDXC:TerminalImageDrop 2026-06-08-04:49:
-   Window drag registration is now disabled after the 04:45 Dock-stack repro, but these delegate methods stay wired for diagnostics if AppKit ever routes an already-selected window drag destination through the historical callbacks.
-   */
-  @objc(draggingEntered:)
-  func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
-    routeTerminalPaneDropWindowDelegateDragOperation(sender, phase: "entered")
-  }
-
-  @objc(draggingUpdated:)
-  func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
-    routeTerminalPaneDropWindowDelegateDragOperation(sender, phase: "updated")
-  }
-
-  @objc(draggingExited:)
-  func draggingExited(_ sender: NSDraggingInfo?) {
-    guard isMainTerminalPaneDropDestination(sender) else {
-      return
-    }
-    (window as? ghostexFocusReportingWindow)?.onTerminalPaneDropDraggingExited?(sender)
-  }
-
-  @objc(prepareForDragOperation:)
-  func prepareForDragOperation(_ sender: NSDraggingInfo) -> Bool {
-    routeTerminalPaneDropWindowDelegateDragOperation(sender, phase: "prepare") == .copy
-  }
-
-  @objc(performDragOperation:)
-  func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
-    guard isMainTerminalPaneDropDestination(sender) else {
-      return false
-    }
-    return (window as? ghostexFocusReportingWindow)?.onTerminalPaneDropPerform?(sender) ?? false
-  }
-
-  private func routeTerminalPaneDropWindowDelegateDragOperation(
-    _ sender: NSDraggingInfo,
-    phase: String
-  ) -> NSDragOperation {
-    guard isMainTerminalPaneDropDestination(sender) else {
-      return []
-    }
-    return (window as? ghostexFocusReportingWindow)?.onTerminalPaneDropDragOperation?(sender, phase) ?? []
-  }
-
-  private func isMainTerminalPaneDropDestination(_ sender: NSDraggingInfo?) -> Bool {
-    guard let destinationWindow = sender?.draggingDestinationWindow else {
-      return true
-    }
-    return destinationWindow === window
   }
 
   func windowDidBecomeMain(_ notification: Notification) {
@@ -2197,47 +2119,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
     window.onKeyEquivalent = { [weak root] event in
       root?.handleHotkeyEquivalent(event) ?? false
     }
+    window.onTitlebarMouseEvent = { [weak root] event in
+      root?.routeTitlebarMouseEventFromWindow(event) ?? false
+    }
     window.onActivationBoundaryEvent = { [weak self, weak root] event, phase in
       if phase == "windowSendEvent.beforeSuper" {
         root?.handleWindowMouseDownBeforeDispatch(event)
       }
       self?.logNativeActivationBoundaryInputEvent(event, phase: phase)
     }
-    /*
-     CDXC:TerminalImageDrop 2026-06-07-16:58:
-     The 16:56 image-drop repro tried registering the NSWindow itself as a high-water drag destination because child AppKit/CEF surfaces could prevent content/root views from becoming the selected drag receiver.
-
-     CDXC:TerminalImageDrop 2026-06-08-04:49:
-     The 04:45 Dock-stack repro showed the window/root registrations still did not receive `NSDraggingInfo`, while the release mouse hit test reached the terminal surface. Disable window-level file-drop registration so AppKit can select the concrete terminal NSView directly.
-     */
-    window.unregisterDraggedTypes()
-    root.workspaceView.logTerminalPaneDropRegistrationDisabled(operationSource: "window")
-    window.onTerminalPaneDropDragOperation = { [weak root] sender, phase in
-      guard let root else { return [] }
-      return root.workspaceView.terminalPaneRootDragOperation(
-        for: sender,
-        rootView: root,
-        phase: phase,
-        operationSource: "window")
-    }
-    window.onTerminalPaneDropDraggingExited = { [weak root] sender in
-      guard let root else { return }
-      root.workspaceView.terminalPaneRootDraggingExited(
-        sender,
-        rootView: root,
-        operationSource: "window")
-    }
-    window.onTerminalPaneDropPerform = { [weak root] sender in
-      guard let root else { return false }
-      return root.workspaceView.performTerminalPaneRootDrop(
-        for: sender,
-        rootView: root,
-        operationSource: "window")
-    }
     window.title = "Ghostex"
     window.titleVisibility = .hidden
     window.titlebarAppearsTransparent = true
     window.isMovableByWindowBackground = false
+    window.acceptsMouseMovedEvents = true
     window.minSize = ghostexMainWindowMinimumSize
     window.backgroundColor = ghostexReferenceSidebarChromeBackgroundColor
     window.contentView = root
@@ -2249,6 +2144,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
     recordNativeActivationRequest(reason: "startup.makeWindow")
     NSApp.activate(ignoringOtherApps: true)
     scheduleMainWindowTrafficLightPositioning(on: window)
+    root.scheduleFloatingPromptEditorPrewarmAfterLaunch()
   }
 
   @MainActor
@@ -2260,7 +2156,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
      host event bus so AppKit chrome and webview/sidebar state stay decoupled.
      CDXC:SessionStatusIndicators 2026-05-09-17:30
      Floating and menu bar badges intentionally share this event so visibility
-     settings do not fork green attention or orange working navigation behavior.
+     settings do not fork #95d7f6 attention or orange working navigation behavior.
      */
     let event = HostEvent.sessionStatusIndicatorClicked(status: status)
     window?.makeKeyAndOrderFront(nil)
@@ -3216,16 +3112,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
       workspaceView?.showBrowserImportSettings(sessionId: command.sessionId)
     case .setSidebarSide(let command):
       (window?.contentView as? ghostexRootView)?.setSidebarSide(command.side)
+    case .toggleSidebarCollapsed:
+      (window?.contentView as? ghostexRootView)?.toggleSidebarCollapsed()
     case .setReactTitlebarHitRegions(let command):
       (window?.contentView as? ghostexRootView)?.setReactTitlebarHitRegions(
         command.regions, overlayOpen: command.overlayOpen)
+    case .showTitlebarDropdownPanel(let command):
+      (window?.contentView as? ghostexRootView)?.showTitlebarDropdownPanel(command)
+    case .closeTitlebarDropdownPanel:
+      (window?.contentView as? ghostexRootView)?.closeTitlebarDropdownPanel()
+    case .resizeTitlebarDropdownPanel(let command):
+      (window?.contentView as? ghostexRootView)?.resizeTitlebarDropdownPanel(command)
+    case .titlebarDropdownPanelReady(let command):
+      (window?.contentView as? ghostexRootView)?.titlebarDropdownPanelReady(command)
     case .openActiveProjectEditorFromTitlebar:
       break
     case .openAgentsModeFromTitlebar:
       break
     case .openGitHubProjectFromTitlebar:
       break
-    case .showProjectEditorCompanionFromTitlebar:
+    case .toggleProjectEditorCompanionFromTitlebar:
       break
     case .openTasksPlaceholderFromTitlebar:
       break
@@ -3821,30 +3727,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
           "targets": editPaths.map { ["path": $0, "raw": $0] },
         ])
     }
-  }
-
-  @discardableResult
-  @MainActor private func dispatchApplicationFileOpenPaths(
-    _ paths: [String],
-    operationSource: String
-  ) -> Bool {
-    /*
-     CDXC:TerminalImageDrop 2026-06-08-04:09:
-     The 04:06 Dock-stack repro tested Launch Services file-open callbacks as a terminal-drop fallback when no AppKit drag callback arrived.
-
-     CDXC:TerminalImageDrop 2026-06-08-06:27:
-     Drag/drop must not depend on global mouse monitors or armed file-open fallbacks, because those paths inspect cross-app drag state outside AppKit's scoped `NSDraggingInfo` callback and can trigger repeated macOS app-data permission prompts. Keep application file-open routing separate from terminal drop insertion.
-     */
-    TerminalFocusDebugLog.append(
-      event: "nativeWorkspace.terminalDrop.\(operationSource).inspect",
-      details: [
-        "didRouteTerminalDrop": false,
-        "operationSource": operationSource,
-        "pathCount": paths.count,
-      ],
-      force: true)
-    dispatchOSIntegrationFileOpenPaths(paths)
-    return false
   }
 
   @MainActor private func presentScriptOpenDialogIfNeeded(path: String) -> Bool {
@@ -4571,10 +4453,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
       let stderrHandle = stderrPipe.fileHandleForReading
       /**
        CDXC:AgentsHub 2026-05-14-08:43
-       Agents Hub catalog discovery can return megabytes of real profile, skill,
-       hook, and config metadata. Drain process output while the command is
-       running so large stdout/stderr payloads cannot fill the pipe and block
-       the scanner before native posts processResult back to the webview.
+       Agents Hub process helpers can return real profile, skill, hook, and
+       config data. Drain output while the command is running so stdout/stderr
+       cannot fill the pipe and block the helper before native posts
+       processResult back to the webview.
+
+       CDXC:AgentsHub 2026-06-12-02:53
+       The catalog helper now returns metadata only, while selected file
+       contents use a separate smaller request. Keep pipe draining here because
+       save/read helpers still return user-editable buffers and diagnostics.
        */
       stdoutHandle.readabilityHandler = { handle in
         let data = handle.availableData
@@ -4701,7 +4588,11 @@ private final class NativeSettingsStore {
     "focusUp": "cmd+alt+up",
     "forkSession": "ctrl+shift+f",
     "mergeAllTabs": "ctrl+shift+m",
-    "moveSidebar": "cmd+b",
+    /**
+     CDXC:SidebarCollapse 2026-06-12-02:23:
+     Cmd+B toggles complete sidebar collapse from terminal focus. Sidebar side switching remains an available command, but it is unset by default so it cannot move the sidebar when users expect collapse.
+     */
+    "moveSidebar": "",
     /**
      CDXC:CommandPalette 2026-05-15-20:38:
      Cmd+K opens the shadcn command palette even while terminal panes own first
@@ -4754,6 +4645,7 @@ private final class NativeSettingsStore {
     "switchSourceView": "alt+2",
     "switchGitHubView": "alt+3",
     "switchKanbanView": "alt+4",
+    "toggleSidebarCollapsed": "cmd+b",
   ]
   fileprivate static let defaultHotkeyAliases: [String: [String]] = [
     "focusNextSession": ["cmd+shift+]"],
@@ -4769,6 +4661,7 @@ private final class NativeSettingsStore {
     "focusPreviousSession": ["cmd+["],
     "focusRight": ["cmd+right"],
     "focusUp": ["cmd+up"],
+    "moveSidebar": ["cmd+b"],
     "openBrowserPane": ["ctrl+shift+b"],
   ]
   private static let shiftedDigitHotkeyTextKeys: [String: String] = [
@@ -5108,50 +5001,25 @@ private final class NativeSettingsStore {
   }
 }
 
-final class AppModalHostWebView: WKWebView {
-  private var topLeftHitRegions: [CGRect]?
-  private var capturesAllHitTesting = false
-
-  func setTopLeftHitRegions(_ regions: [CGRect]?, capturesAllHitTesting: Bool = false) {
-    topLeftHitRegions = regions
-    self.capturesAllHitTesting = capturesAllHitTesting
+final class TitlebarChromeWebView: WKWebView {
+  override var mouseDownCanMoveWindow: Bool {
+    /*
+     CDXC:ReactTitlebar 2026-06-11-22:10:
+     Titlebar controls live inside the full-size content titlebar strip, where
+     AppKit may otherwise treat mouse-down targets as draggable window chrome.
+     The visible titlebar WKWebView owns actual controls, so it must never opt
+     into window dragging; blank strip dragging is handled by ReactTitlebarChromeView.
+     */
+    false
   }
 
-  override func hitTest(_ point: NSPoint) -> NSView? {
-    guard bounds.contains(point) else {
-      return nil
-    }
-    if capturesAllHitTesting {
-      return super.hitTest(point) ?? self
-    }
-    guard let topLeftHitRegions else {
-      return super.hitTest(point)
-    }
-    /**
-     CDXC:PromptEditor 2026-05-15-12:42:
-     The floating prompt editor renders in a transparent full-window WKWebView,
-     but only the visible editor pane should intercept AppKit events. Compare
-     against React-published top-left hit regions so clicks, scrolls, and pin
-     interactions outside the panel pass through to the terminal workspace.
-
-     CDXC:PromptEditor 2026-05-15-13:42:
-     WKWebView hit-test coordinates can arrive flipped depending on the AppKit
-     view path. Accept both direct and inverted y coordinates, with a small
-     rounding margin, so the editor panel itself remains clickable and resizable
-     while transparent space still passes through.
+  override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
+    /*
+     CDXC:ReactTitlebar 2026-06-11-22:10:
+     A titlebar control click should activate Ghostex and press the control in
+     the same gesture, matching the native sidebar's behavior.
      */
-    let directPoint = CGPoint(x: point.x, y: point.y)
-    let invertedPoint = CGPoint(x: point.x, y: bounds.height - point.y)
-    let candidatePoints = isFlipped ? [directPoint, invertedPoint] : [invertedPoint, directPoint]
-    let isInsideHitRegion = candidatePoints.contains { candidate in
-      topLeftHitRegions.contains { region in
-        region.insetBy(dx: -2, dy: -2).contains(candidate)
-      }
-    }
-    if isInsideHitRegion {
-      return super.hitTest(point) ?? self
-    }
-    return nil
+    true
   }
 }
 
@@ -5297,290 +5165,11 @@ final class SidebarModalBackdropView: NSView {
   }
 }
 
-final class WorkspaceInteractionShieldView: NSView {
-  override init(frame frameRect: NSRect) {
-    super.init(frame: frameRect)
-    wantsLayer = true
-    layer?.backgroundColor = NSColor.clear.cgColor
-  }
-
-  required init?(coder: NSCoder) {
-    fatalError("init(coder:) is not supported")
-  }
-
-  override func hitTest(_ point: NSPoint) -> NSView? {
-    guard !isHidden, alphaValue > 0, bounds.contains(point) else {
-      return nil
-    }
-    return self
-  }
-
-  override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
-    true
-  }
-
-  override func mouseDown(with event: NSEvent) {}
-
-  override func rightMouseDown(with event: NSEvent) {}
-
-  override func otherMouseDown(with event: NSEvent) {}
-}
-
-final class TerminalPaneDropOverlayView: NSView {
-  private weak var workspaceView: TerminalWorkspaceView?
-  private var lastHitTestSignature: String?
-  private var isForwardingMouseEvent = false
-
-  override var acceptsFirstResponder: Bool { false }
-
-  init(workspaceView: TerminalWorkspaceView) {
-    self.workspaceView = workspaceView
-    super.init(frame: .zero)
-    wantsLayer = true
-    layer?.backgroundColor = NSColor.clear.cgColor
-    /*
-     CDXC:TerminalImageDrop 2026-06-08-04:50:
-     The 04:37 Dock-stack repro still never reached AppKit `NSDraggingInfo`
-     callbacks after geometry-only hit testing was passed through. Keep this
-     transparent view out of drag-destination registration entirely so the real
-     terminal surface/root/window destinations are the only candidates AppKit can
-     choose for file URL drops.
-     */
-    unregisterDraggedTypes()
-  }
-
-  required init?(coder: NSCoder) {
-    fatalError("init(coder:) is not supported")
-  }
-
-  func logRegistration() {
-    workspaceView?.logTerminalPaneDropOverlayVisualOnly()
-  }
-
-  override func hitTest(_ point: NSPoint) -> NSView? {
-    guard !isHidden, bounds.contains(point), let workspaceView else {
-      return nil
-    }
-    let eventType = NSApp.currentEvent?.type
-    let eventTypeName = Self.eventTypeName(eventType)
-    /*
-     CDXC:TerminalImageDrop 2026-06-08-03:51:
-     The 03:48 Dock-stack repro showed pane hover feedback but no paste because the geometry-only inactive monitor drew the target while the drag pasteboard stayed empty and AppKit never chose a terminal drop destination. That led to testing whether the transparent overlay should participate in drag hit testing, but later repros showed that approach still hid the real terminal destination.
-
-     CDXC:TerminalImageDrop 2026-06-08-04:42:
-     The 04:22 and 04:30 Dock-stack repros showed the overlay becoming the hit-test target from inactive-window drag geometry while the drag pasteboard advertised zero types. That drew the hover indicator but could prevent the registered terminal/root destination from receiving the real AppKit drop. Keep geometry hover diagnostics, but pass through geometry-only hit tests unless the pasteboard already has a relevant file/string URL payload.
-
-     CDXC:TerminalImageDrop 2026-06-08-04:50:
-     The 04:37 Dock-stack repro still never delivered AppKit drag callbacks after
-     geometry-only pass-through, so this overlay must never become the selected
-     hit-test view during a file drag. It remains only a diagnostic observer; the
-     terminal surface/root/window own the actual drag destination behavior.
-
-     CDXC:TerminalImageDrop 2026-06-08-06:27:
-     The repeated macOS app-data prompt is caused by reading global drag pasteboard
-     content outside AppKit's scoped `NSDraggingInfo` callbacks. The overlay now
-     logs geometry only and never asks `NSPasteboard.drag` for types or payloads.
-     */
-    let shouldCaptureInactiveGeometryDrag =
-      window?.isKeyWindow == false
-      && Self.isDragMouseEvent(eventType)
-      && bounds.contains(point)
-    let shouldLogHitTest =
-      shouldCaptureInactiveGeometryDrag || lastHitTestSignature != nil
-
-    guard shouldLogHitTest else {
-      return nil
-    }
-
-    let signature = [
-      eventTypeName,
-      "capture=false",
-      "inactiveGeometry=\(shouldCaptureInactiveGeometryDrag)",
-    ].joined(separator: "|")
-    if signature != lastHitTestSignature {
-      workspaceView.logTerminalPaneDropOverlayHitTest(
-        eventTypeName: eventTypeName,
-        dragPasteboardTypes: nil,
-        shouldCapture: false,
-        details: [
-          "geometryDragPassedThrough": true,
-          "hasRelevantPayload": false,
-          "overlayDragDestinationRegistered": false,
-          "readsGlobalDragPasteboard": false,
-          "shouldCaptureInactiveGeometryDestination": false,
-          "shouldCaptureInactiveGeometryDrag": shouldCaptureInactiveGeometryDrag,
-          "windowIsKey": window?.isKeyWindow ?? false,
-          "windowIsVisible": window?.isVisible ?? false,
-        ])
-      lastHitTestSignature = signature
-    }
-
-    return nil
-  }
-
-  /*
-   CDXC:TerminalImageDrop 2026-06-07-17:08:
-   Logs from the 17:07 repro tested whether the transparent overlay should complete a synthetic file drop after AppKit skipped a drag-destination callback.
-
-   CDXC:TerminalImageDrop 2026-06-08-06:27:
-   The overlay must not read global drag pasteboard data or synthesize terminal drops. It only forwards mouse events, while actual file/image insertion is owned by AppKit `NSDraggingInfo` callbacks on terminal/native chrome views.
-   */
-  override func mouseDragged(with event: NSEvent) {
-    forwardMouseEvent(event)
-  }
-
-  override func rightMouseDragged(with event: NSEvent) {
-    forwardMouseEvent(event)
-  }
-
-  override func otherMouseDragged(with event: NSEvent) {
-    forwardMouseEvent(event)
-  }
-
-  override func mouseUp(with event: NSEvent) {
-    forwardMouseEvent(event)
-  }
-
-  override func rightMouseUp(with event: NSEvent) {
-    forwardMouseEvent(event)
-  }
-
-  override func otherMouseUp(with event: NSEvent) {
-    forwardMouseEvent(event)
-  }
-
-  override func draggingEntered(_ sender: any NSDraggingInfo) -> NSDragOperation {
-    routeDragOperation(sender, phase: "entered")
-  }
-
-  override func draggingUpdated(_ sender: any NSDraggingInfo) -> NSDragOperation {
-    routeDragOperation(sender, phase: "updated")
-  }
-
-  override func draggingExited(_ sender: (any NSDraggingInfo)?) {
-    guard let workspaceView, let rootView = superview else {
-      return
-    }
-    workspaceView.terminalPaneRootDraggingExited(
-      sender,
-      rootView: rootView,
-      operationSource: "overlay")
-  }
-
-  override func prepareForDragOperation(_ sender: any NSDraggingInfo) -> Bool {
-    routeDragOperation(sender, phase: "prepare") == .copy
-  }
-
-  override func performDragOperation(_ sender: any NSDraggingInfo) -> Bool {
-    guard let workspaceView, let rootView = superview else {
-      return false
-    }
-    return workspaceView.performTerminalPaneRootDrop(
-      for: sender,
-      rootView: rootView,
-      operationSource: "overlay")
-  }
-
-  private func forwardMouseEvent(_ event: NSEvent) {
-    guard !isForwardingMouseEvent else { return }
-    guard let window, let contentView = window.contentView else { return }
-
-    isForwardingMouseEvent = true
-    isHidden = true
-    defer {
-      isHidden = false
-      isForwardingMouseEvent = false
-    }
-
-    let point = contentView.convert(event.locationInWindow, from: nil)
-    guard let target = contentView.hitTest(point), target !== self else {
-      return
-    }
-    switch event.type {
-    case .leftMouseDragged:
-      target.mouseDragged(with: event)
-    case .rightMouseDragged:
-      target.rightMouseDragged(with: event)
-    case .otherMouseDragged:
-      target.otherMouseDragged(with: event)
-    case .leftMouseUp:
-      target.mouseUp(with: event)
-    case .rightMouseUp:
-      target.rightMouseUp(with: event)
-    case .otherMouseUp:
-      target.otherMouseUp(with: event)
-    default:
-      break
-    }
-  }
-
-  private func routeDragOperation(_ sender: any NSDraggingInfo, phase: String) -> NSDragOperation {
-    guard let workspaceView, let rootView = superview else {
-      return []
-    }
-    return workspaceView.terminalPaneRootDragOperation(
-      for: sender,
-      rootView: rootView,
-      phase: phase,
-      operationSource: "overlay")
-  }
-
-  private static func isDragMouseEvent(_ eventType: NSEvent.EventType?) -> Bool {
-    switch eventType {
-    case .leftMouseDragged, .rightMouseDragged, .otherMouseDragged:
-      return true
-    default:
-      return false
-    }
-  }
-
-  private static func eventTypeName(_ eventType: NSEvent.EventType?) -> String {
-    guard let eventType else { return "none" }
-    switch eventType {
-    case .leftMouseDragged:
-      return "leftMouseDragged"
-    case .rightMouseDragged:
-      return "rightMouseDragged"
-    case .otherMouseDragged:
-      return "otherMouseDragged"
-    case .leftMouseUp:
-      return "leftMouseUp"
-    case .rightMouseUp:
-      return "rightMouseUp"
-    case .otherMouseUp:
-      return "otherMouseUp"
-    case .leftMouseDown:
-      return "leftMouseDown"
-    case .rightMouseDown:
-      return "rightMouseDown"
-    case .otherMouseDown:
-      return "otherMouseDown"
-    case .scrollWheel:
-      return "scrollWheel"
-    case .mouseMoved:
-      return "mouseMoved"
-    case .cursorUpdate:
-      return "cursorUpdate"
-    case .appKitDefined:
-      return "appKitDefined"
-    case .systemDefined:
-      return "systemDefined"
-    case .applicationDefined:
-      return "applicationDefined"
-    case .periodic:
-      return "periodic"
-    default:
-      return "other(\(eventType.rawValue))"
-    }
-  }
-}
-
 final class ghostexRootView: NSView {
   private static let logger = Logger(subsystem: "com.madda.ghostex.host", category: "webview")
 
   private struct RootLayoutFrames {
     var divider: CGRect
-    var modalHost: CGRect
     var sidebar: CGRect
     var sidebarWorkareaBorder: CGRect
     var titlebarChrome: CGRect
@@ -5640,6 +5229,11 @@ final class ghostexRootView: NSView {
   private static let startupOverlayIconSize: CGFloat = 132
   private static let floatingPromptEditorFrameDefaultsKey = "ghostex.floatingPromptEditor.frame.v1"
   private static let floatingPromptEditorPrewarmRequestId = "ghostex-floating-prompt-editor-prewarm"
+  private static let floatingPromptEditorPrewarmDelay: TimeInterval = 0.75
+
+  private static func promptEditorMonotonicMilliseconds() -> Int {
+    Int((ProcessInfo.processInfo.systemUptime * 1000).rounded())
+  }
 
   private static func javascriptStringLiteral(_ value: String) -> String? {
     guard let data = try? JSONEncoder().encode(value) else {
@@ -5651,10 +5245,7 @@ final class ghostexRootView: NSView {
   let workspaceView: TerminalWorkspaceView
   var sidebarWebView: WKWebView { sidebarView }
   private let sidebarView: SidebarWebView
-  private let modalHostView: AppModalHostWebView
   private let sidebarModalBackdropView = SidebarModalBackdropView(frame: .zero)
-  private let workspaceInteractionShieldView = WorkspaceInteractionShieldView(frame: .zero)
-  private let terminalPaneDropOverlayView: TerminalPaneDropOverlayView
   private let titlebarChromeView: ReactTitlebarChromeView
   private let titlebarChromeWebView: WKWebView
   private let startupOverlayView = NSView(frame: .zero)
@@ -5681,16 +5272,18 @@ final class ghostexRootView: NSView {
   private let setGxserverAlwaysStartFromTitlebar: (Bool) -> Void
   private let sendHostEvent: (HostEvent) -> Void
   private let nativeSettingsStore = NativeSettingsStore()
-  private var isModalHostReady = false
   private var activeAppModalKind: String?
   private var appModalPresentationPending = false
+  private var activeNativeAppModalKind: String?
+  private var nativeAppModalWindowController: AppModalWindowController?
+  private var nativeToastController: NativeAppToastController?
   private var sidebarWorkspaceFocusRequestId: UInt64 = 0
   private var floatingPromptEditorReturnFocusRequestId: UInt64 = 0
   private var appModalReturnFocusSessionId: String?
-  private var pendingModalHostOpenMessage: [String: Any]?
   private var latestModalHostSidebarState: [String: Any]?
   private var activeFloatingPromptEditor: ActiveFloatingPromptEditor?
   private var hasPrewarmedFloatingPromptEditor = false
+  private var hasScheduledFloatingPromptEditorPrewarm = false
   private var isPrewarmingFloatingPromptEditor = false
   private var floatingPromptEditorPrewarmTempFileURL: URL?
   private var isFloatingPromptEditorActiveForUserInput: Bool {
@@ -5709,6 +5302,9 @@ final class ghostexRootView: NSView {
   private var codeServerRuntimeProcess: Process?
   private var codeServerRuntimeStartedAt: Date?
   private var titlebarOutsideClickMonitor: Any?
+  private var titlebarBootstrapScriptSource: String?
+  private var titlebarDropdownPanelController: TitlebarDropdownPanelController?
+  private var latestReactTitlebarProjectStateJson: String?
   private var isTitlebarOverlayOpen = false
   private var lastWorkspaceInteractionShieldLogKey: String?
   private var sidebarContextMenuOpenCount = 0
@@ -5716,6 +5312,7 @@ final class ghostexRootView: NSView {
     SessionAttentionNotificationController { [weak self] sessionId in
       self?.handleSessionAttentionNotificationClick(sessionId)
     }
+  private var isSidebarCollapsed = false
   private var sidebarWidth: CGFloat
   private var sidebarSide: SidebarSide = .left
   private var lastSidebarFirstResponderIntentAt: Date?
@@ -5772,7 +5369,6 @@ final class ghostexRootView: NSView {
         settingsStore.persistProjectEditorCompanionWidthRatio(widthRatio)
       }
     )
-    self.terminalPaneDropOverlayView = TerminalPaneDropOverlayView(workspaceView: workspaceView)
     self.scriptBridge = SidebarScriptBridge(router: sidebarCommandRouter)
     self.syncGhosttyTerminalSettings = syncGhosttyTerminalSettings
     self.applyGhosttyConfigSettings = applyGhosttyConfigSettings
@@ -5795,8 +5391,6 @@ final class ghostexRootView: NSView {
     configuration.userContentController.add(scriptBridge, name: "ghostexNativeHost")
     configuration.userContentController.add(scriptBridge, name: "ghostexAppModalHost")
     configuration.userContentController.add(scriptBridge, name: "ghostexNativeHostDiagnostics")
-    let modalHostConfiguration = WKWebViewConfiguration()
-    modalHostConfiguration.userContentController.add(scriptBridge, name: "ghostexAppModalHost")
     let titlebarConfiguration = WKWebViewConfiguration()
     titlebarConfiguration.userContentController.add(scriptBridge, name: "ghostexNativeHost")
     titlebarConfiguration.userContentController.add(scriptBridge, name: "ghostexAppModalHost")
@@ -5819,17 +5413,19 @@ final class ghostexRootView: NSView {
     if let data = try? JSONSerialization.data(withJSONObject: bootstrap),
       let json = String(data: data, encoding: .utf8)
     {
+      let bootstrapScriptSource = "window.__ghostex_NATIVE_HOST__ = \(json);"
+      self.titlebarBootstrapScriptSource = bootstrapScriptSource
       let bootstrapScript = WKUserScript(
-        source: "window.__ghostex_NATIVE_HOST__ = \(json);",
+        source: bootstrapScriptSource,
         injectionTime: .atDocumentStart,
         forMainFrameOnly: true
       )
       /**
        CDXC:AccessibilityPermissions 2026-04-28-16:57
-       Settings are rendered in the full-window modal host, while the sidebar
-       state lives in the sidebar webview. Inject the native Accessibility
-       grant state into both webviews so settings can show a short disabled
-       notice without asking the React layer to infer macOS privacy state.
+       Settings render in native child-window modal hosts, while the sidebar
+       state lives in the sidebar webview. Keep the native Accessibility grant
+       state in web bootstrap so settings can show a short disabled notice
+       without asking the React layer to infer macOS privacy state.
 
        CDXC:CliInstall 2026-06-07-13:53:
        Include the bundle identifier in the native bootstrap so the sidebar's
@@ -5843,7 +5439,6 @@ final class ghostexRootView: NSView {
        appcast probe.
        */
       configuration.userContentController.addUserScript(bootstrapScript)
-      modalHostConfiguration.userContentController.addUserScript(bootstrapScript)
       titlebarConfiguration.userContentController.addUserScript(bootstrapScript)
     }
     configuration.userContentController.addUserScript(
@@ -5859,13 +5454,25 @@ final class ghostexRootView: NSView {
         forMainFrameOnly: true
       ))
     self.sidebarView = SidebarWebView(frame: .zero, configuration: configuration)
-    self.modalHostView = AppModalHostWebView(frame: .zero, configuration: modalHostConfiguration)
-    self.titlebarChromeWebView = WKWebView(frame: .zero, configuration: titlebarConfiguration)
+    self.titlebarChromeWebView = TitlebarChromeWebView(frame: .zero, configuration: titlebarConfiguration)
     self.titlebarChromeView = ReactTitlebarChromeView(webView: titlebarChromeWebView)
     self.divider = PaneResizeHandleView()
     super.init(frame: .zero)
+    nativeToastController = NativeAppToastController { [weak self] sidebarMessage in
+      self?.dispatchSidebarModalCommand(sidebarMessage)
+    }
+    workspaceView.sourceCEFDragOverlaySnapshotProvider = { [weak self] in
+      self?.sourceCEFDragOverlaySnapshot() ?? [:]
+    }
     workspaceView.setSidebarSide(sidebarSide)
-    configureTitlebarTerminalPaneDropForwarding()
+    /*
+     CDXC:ReactTitlebar 2026-06-11-13:22:
+     Titlebar dropdowns now use native child windows and the titlebar webview is
+     clipped to the fixed 35px strip, so the titlebar wrapper must not register
+     as a workspace drag destination. Keeping it registered can make AppKit
+     choose the titlebar layer during editor tab drags before CEF/WKWebView sees
+     VS Code's drag stream.
+     */
     workspaceView.onManagedT3PaneRuntimeStateChanged = { [weak self] state in
       self?.setT3CodeRuntimePaneState(state)
     }
@@ -5906,37 +5513,11 @@ final class ghostexRootView: NSView {
 
     wantsLayer = true
     layer?.backgroundColor = ghostexReferenceSidebarChromeBackgroundColor.cgColor
-    /*
-     CDXC:TerminalImageDrop 2026-06-07-16:55:
-     Some macOS image drags did not select the nested Ghostty surface as the AppKit drag destination even though terminal clicks hit that surface, so the root content view was temporarily registered for the same terminal drop types.
-
-     CDXC:TerminalImageDrop 2026-06-08-04:49:
-     The 04:45 Dock-stack repro still bypassed root/window drag callbacks, and keeping the root as a registered destination adds another candidate above the terminal surface. Disable root-level file-drop registration and let the terminal surface own the direct AppKit drop path.
-     */
-    unregisterDraggedTypes()
-    workspaceView.logTerminalPaneDropRegistrationDisabled(operationSource: "root")
-    terminalPaneDropOverlayView.logRegistration()
     sidebarView.setValue(false, forKey: "drawsBackground")
-    modalHostView.setValue(false, forKey: "drawsBackground")
     titlebarChromeWebView.setValue(false, forKey: "drawsBackground")
-    modalHostView.isHidden = true
     sidebarModalBackdropView.isHidden = true
-    workspaceInteractionShieldView.isHidden = true
     sidebarView.navigationDelegate = self
     addSubview(workspaceView)
-    /**
-     CDXC:OverlayInteractivity 2026-05-25-07:02:
-     Backdrop modals and titlebar dropdowns visually cover native workspace
-     tabs, so the workspace needs a native event sink while those overlays are
-     open. This clear shield blocks hover, tooltip, and click delivery to
-     AppKit pane chrome without changing the visible layering.
-     */
-    addSubview(workspaceInteractionShieldView)
-    /*
-     CDXC:TerminalImageDrop 2026-06-07-17:03:
-     Root and window drag registration still missed the 17:01 image drop because embedded terminal/browser views can win AppKit drag-destination hit testing before the workspace router is considered. Keep a transparent workspace-only overlay above those panes during file/image drags and forward accepted drops into the same terminal insertion path.
-     */
-    addSubview(terminalPaneDropOverlayView)
     /**
      CDXC:NativeWorkspaceChrome 2026-04-26-05:40
      Ghostty surfaces can keep native subviews/layers that draw and receive
@@ -5955,26 +5536,27 @@ final class ghostexRootView: NSView {
     workareaTitlebarBorderView.lineColor = Self.workareaSeparatorColor
     addSubview(sidebarWorkareaBorderView)
     addSubview(workareaTitlebarBorderView)
-    /**
-     CDXC:AppModals 2026-04-26-15:10
-     Sidebar dialogs need a full-window React host because WKWebView portals
-     cannot escape the sidebar's frame. Keep this transparent overlay above
-     terminal chrome, and show it only while a modal is active.
+    /*
+     CDXC:AppModals 2026-06-11-23:07:
+     No app-modal WKWebView may be mounted over the main workspace. The Source
+     drag/drop harness proved that even hidden sibling WKWebViews above CEF/WK
+     editor panes can prevent VS Code tab drag/drop from reaching browser-native
+     drop targets, so all rich modal content now renders in native child windows.
      */
-    addSubview(modalHostView)
     addSubview(sidebarModalBackdropView)
     /**
      CDXC:ReactTitlebar 2026-05-12-09:58
-     Titlebar controls, tooltips, and dropdowns are React-rendered in one
-     transparent WKWebView so Radix portals have enough visual canvas. Native
-     hit-testing, not the view frame, decides which pixels are interactive so
-     workspace clicks still pass through below the fixed titlebar strip.
+     Titlebar controls are React-rendered in a transparent WKWebView.
+
+     CDXC:ReactTitlebar 2026-06-11-13:22:
+     Dropdown content now renders in native child windows, so the main titlebar
+     WKWebView is clipped to the titlebar strip instead of using a full-window
+     transparent portal surface above the workspace.
      */
     addSubview(titlebarChromeView)
     promoteSidebarChrome()
     installStartupOverlay()
     loadSidebar()
-    loadModalHost()
     loadTitlebarChrome()
     installTitlebarOutsideClickMonitor()
   }
@@ -5983,44 +5565,9 @@ final class ghostexRootView: NSView {
     if let titlebarOutsideClickMonitor {
       NSEvent.removeMonitor(titlebarOutsideClickMonitor)
     }
-  }
-
-  private func configureTitlebarTerminalPaneDropForwarding() {
-    /*
-     CDXC:TerminalImageDrop 2026-06-08-05:26:
-     Dock-stack image drags still reached the terminal as activation clicks at 05:22 with no `NSDraggingInfo` on the terminal surface or terminal wrappers.
-     The React titlebar uses a full-window transparent wrapper above the workspace for portals, so register that native chrome layer as a forwarding destination and route accepted file/string drags into the existing terminal root drop parser.
-
-     CDXC:TerminalImageDrop 2026-06-08-05:34:
-     The 05:31 Dock-stack repro crashed when the embedded titlebar WKWebView became the drag destination and terminal diagnostics tried to inspect the AppKit drag mask.
-     Keep drag registration on native AppKit views only; WebKit must not own terminal file-drop routing.
-     */
-    let operationSource = "titlebarChrome"
-    titlebarChromeView.configureTerminalPaneDropForwarding(
-      registeredTypes: workspaceView.terminalPaneDropRegisteredTypes,
-      operationSource: operationSource,
-      dragOperation: { [weak self] sender, phase in
-        guard let self else { return [] }
-        return self.workspaceView.terminalPaneRootDragOperation(
-          for: sender,
-          rootView: self,
-          phase: phase,
-          operationSource: operationSource)
-      },
-      draggingExited: { [weak self] sender in
-        guard let self else { return }
-        self.workspaceView.terminalPaneRootDraggingExited(
-          sender,
-          rootView: self,
-          operationSource: operationSource)
-      },
-      perform: { [weak self] sender in
-        guard let self else { return false }
-        return self.workspaceView.performTerminalPaneRootDrop(
-          for: sender,
-          rootView: self,
-          operationSource: operationSource)
-      })
+    titlebarDropdownPanelController?.close()
+    nativeAppModalWindowController?.close(sendReactClose: false)
+    nativeToastController?.closeAll()
   }
 
   private func installTitlebarOutsideClickMonitor() {
@@ -6032,9 +5579,9 @@ final class ghostexRootView: NSView {
       }
       let point = self.convert(event.locationInWindow, from: nil)
       self.dismissSidebarContextMenuForOutsideClick(at: point)
-      if self.titlebarChromeView.containsInteractiveHitRegion(
-        self.titlebarChromeView.convert(point, from: self)
-      ) {
+      let titlebarPoint = self.titlebarChromeView.convert(point, from: self)
+      let titlebarContainsInteractiveRegion = self.titlebarChromeView.containsInteractiveHitRegion(titlebarPoint)
+      if titlebarContainsInteractiveRegion {
         return event
       }
       /**
@@ -6043,6 +5590,10 @@ final class ghostexRootView: NSView {
        titlebar document. Close Resources, Actions, and Open menus from a native
        local mouse monitor before the original click continues to the sidebar or
        workspace target.
+
+       CDXC:ReactTitlebar 2026-06-11-13:22:
+       The close hook now dismisses the native child dropdown panel instead of
+       toggling Radix menu state inside the titlebar WKWebView.
        */
       self.titlebarChromeView.closeOpenDropdowns()
       return event
@@ -6107,7 +5658,7 @@ final class ghostexRootView: NSView {
     guard !hasRecentSidebarFirstResponderIntent(now: now) else {
       return false
     }
-    guard modalHostView.isHidden && activeAppModalKind == nil else {
+    guard activeAppModalKind == nil, activeNativeAppModalKind == nil, !appModalPresentationPending else {
       return false
     }
     guard let restoreSessionId = workspaceView.passiveSidebarReturnFocusTerminalSessionId() else {
@@ -6125,7 +5676,7 @@ final class ghostexRootView: NSView {
       event: "nativeFocusTrace.passiveSidebarFirstResponderRestored",
       details: [
         "intentAgeMs": intentAgeMs,
-        "modalHostHidden": modalHostView.isHidden,
+        "rootModalHostMounted": false,
         "requestedSessionId": restoreSessionId,
         "responder": responder.map { String(describing: type(of: $0)) } ?? "nil",
       ])
@@ -6279,17 +5830,35 @@ final class ghostexRootView: NSView {
     openFloatingPromptEditor(command)
   }
 
+  func scheduleFloatingPromptEditorPrewarmAfterLaunch() {
+    guard !hasScheduledFloatingPromptEditorPrewarm else {
+      return
+    }
+    hasScheduledFloatingPromptEditorPrewarm = true
+    /**
+     CDXC:PromptEditor 2026-06-12-04:37:
+     The first Ctrl+G prompt editor open should not pay the full native
+     child-window, WKWebView, React, and Monaco cold-start cost. Schedule a
+     real hidden prompt-editor native window after the main window is visible
+     so startup chrome can settle before WebKit prewarm work begins.
+     */
+    DispatchQueue.main.asyncAfter(deadline: .now() + Self.floatingPromptEditorPrewarmDelay) {
+      [weak self] in
+      self?.prewarmFloatingPromptEditorIfNeeded()
+    }
+  }
+
   func closeTerminal(sessionId: String, preservePersistenceSession: Bool = false) {
     if activeFloatingPromptEditor?.originatingSessionId == sessionId {
       /**
        CDXC:PromptEditor 2026-05-13-09:48
        Closing the terminal that launched Ctrl+G prompt editing should close
        the floating prompt editor and persist the current Monaco buffer first.
-       Ask the modal-host editor for its live text instead of marking the
-       status cancelled, because the source terminal going away is not a user
-       discard action.
+       Ask the native prompt-editor window for its live text instead of marking
+       the status cancelled, because the source terminal going away is not a
+       user discard action.
        */
-      dispatchModalHostMessage([
+      dispatchFloatingPromptEditorHostMessage([
         "requestId": activeFloatingPromptEditor?.requestId ?? "",
         "type": "floatingPromptEditorCloseAndSave",
       ])
@@ -6302,8 +5871,9 @@ final class ghostexRootView: NSView {
   private func openFloatingPromptEditor(_ command: OpenFloatingEditor) {
     let interruptedPrewarm = isPrewarmingFloatingPromptEditor
     if interruptedPrewarm {
-      finishFloatingPromptEditorPrewarm()
+      promoteFloatingPromptEditorPrewarmToUserOpen()
     }
+    let openStartedAtMs = Self.promptEditorMonotonicMilliseconds()
     let requestId = command.requestId ?? "floating-monaco-editor-\(UUID().uuidString)"
     guard let filePath = command.filePath?.trimmingCharacters(in: .whitespacesAndNewlines),
       !filePath.isEmpty
@@ -6324,111 +5894,209 @@ final class ghostexRootView: NSView {
       statusFile: command.statusFile
     )
     /**
-     CDXC:PromptEditor 2026-05-13-09:48
-     Monaco prompt editing uses the same full-window modal WKWebView as other
-     app dialogs. Native still owns reading the requested temp file, status
-     writes, and final save/cancel semantics so the CLI bridge contract remains
-     independent from React rendering.
+     CDXC:PromptEditor 2026-05-13-09:48:
+     Native owns reading the requested temp file, status writes, and final
+     save/cancel semantics so the CLI bridge contract remains independent from
+     React rendering.
 
-     CDXC:PromptEditor 2026-05-13-10:22
+     CDXC:PromptEditor 2026-05-13-10:22:
      Ctrl+G prompt editing is always Markdown and opens as a narrow wrapped
-     writing pane. Ignore caller language hints so the modal host consistently
-     uses Markdown tokenization and text wrapping for prompt composition.
+     writing pane. Ignore caller language hints so the React prompt editor
+     consistently uses Markdown tokenization and text wrapping for prompt
+     composition.
+
+     CDXC:PromptEditor 2026-06-11-22:51:
+     The rich prompt editor must not float inside the full-workspace overlay.
+     Open the existing React/Monaco component in a native child window so
+     AppKit owns movement, resizing, focus, and hit testing without placing a
+     transparent web layer above the workspace.
      */
     let initialFrame = floatingPromptEditorInitialFrame(originatingSessionId: originatingSessionId)
-    updateFloatingPromptEditorHitRegion(frame: initialFrame)
     PromptEditorDebugLog.append(
       event: "native.open",
       details: [
-        "filePath": filePath,
         "initialTextLength": initialText.count,
         "interruptedPrewarm": interruptedPrewarm,
-        "modalHostHidden": modalHostView.isHidden,
-        "originatingSessionId": originatingSessionId ?? "",
+        "nativeWindow": true,
+        "openStartedAtMs": openStartedAtMs,
         "requestId": requestId,
+        "rootModalHostMounted": false,
         "startupOverlayVisible": startupOverlayView.superview === self && startupOverlayView.alphaValue > 0,
       ]
     )
-    dispatchModalHostOpenMessage([
+    let openMessage: [String: Any] = [
       "filePath": filePath,
       "initialFrame": initialFrame,
       "initialText": initialText,
       "language": language,
       "modal": "floatingPromptEditor",
+      "nativeOpenStartedAtMs": openStartedAtMs,
       "requestId": requestId,
       "statusFile": command.statusFile ?? "",
       "title": command.title?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
         ? command.title!
         : "Prompt Editor",
       "type": "open",
-    ])
-  }
-
-  private func dispatchModalHostOpenMessage(_ message: [String: Any]) {
-    guard isModalHostReady else {
-      pendingModalHostOpenMessage = message
-      return
+    ]
+    let opened = openNativeAppModalWindow(
+      message: openMessage,
+      modal: "floatingPromptEditor",
+      preferredContentFrame: floatingPromptEditorScreenContentFrame(fromTopLeftFrame: initialFrame))
+    if !opened {
+      writeFloatingPromptEditorStatusFile(command.statusFile, status: "cancelled")
+      activeFloatingPromptEditor = nil
     }
-    dispatchModalHostMessage(message)
   }
 
   /**
-   CDXC:PromptEditor 2026-05-19-10:05:
-   The first real Ctrl+G prompt-editor open is slow because Monaco and the
-   modal host pay one-time startup costs. Open and close one hidden editor
-   session as soon as the modal host is ready, ideally while the macOS startup
-   overlay is still visible, so later launches reuse the warmed Monaco runtime.
+   CDXC:PromptEditor 2026-06-11-22:51:
+   The rich prompt editor now opens in its own native child WKWebView instead
+   of the full-window modal overlay. Do not create a hidden prompt-editor
+   session in the overlay for prewarm; that would keep the old overlay path
+   alive without warming the child-window editor instance that users interact
+   with.
+
+   CDXC:PromptEditor 2026-06-12-04:37:
+   Prewarm the actual native child-window prompt host instead of the removed
+   overlay. Keep the window hidden, load the same React modal host and Monaco
+   path used by Ctrl+G, and leave the reusable WKWebView available for the
+   first real prompt open.
    */
   private func prewarmFloatingPromptEditorIfNeeded() {
-    guard !hasPrewarmedFloatingPromptEditor,
-      !isPrewarmingFloatingPromptEditor,
-      activeFloatingPromptEditor == nil
+    guard !hasPrewarmedFloatingPromptEditor, !isPrewarmingFloatingPromptEditor else {
+      PromptEditorDebugLog.append(
+        event: "native.prewarm.skipped",
+        details: [
+          "hasPrewarmed": hasPrewarmedFloatingPromptEditor,
+          "isPrewarming": isPrewarmingFloatingPromptEditor,
+          "reason": "alreadyStarted",
+          "requestId": Self.floatingPromptEditorPrewarmRequestId,
+        ])
+      return
+    }
+    guard activeFloatingPromptEditor == nil,
+      activeNativeAppModalKind == nil,
+      !appModalPresentationPending
     else {
+      PromptEditorDebugLog.append(
+        event: "native.prewarm.skipped",
+        details: [
+          "activeNativeAppModalKind": activeNativeAppModalKind ?? "",
+          "appModalPresentationPending": appModalPresentationPending,
+          "hasActiveFloatingPromptEditor": activeFloatingPromptEditor != nil,
+          "reason": "modalBusy",
+          "requestId": Self.floatingPromptEditorPrewarmRequestId,
+        ])
+      return
+    }
+    guard window != nil else {
+      PromptEditorDebugLog.append(
+        event: "native.prewarm.skipped",
+        details: [
+          "reason": "missingWindow",
+          "requestId": Self.floatingPromptEditorPrewarmRequestId,
+        ])
       return
     }
 
-    isPrewarmingFloatingPromptEditor = true
-    let tempURL = FileManager.default.temporaryDirectory
-      .appendingPathComponent("ghostex-prompt-editor-prewarm-\(UUID().uuidString).md")
+    let tempDirectory = FileManager.default.temporaryDirectory
+      .appendingPathComponent("ghostex-floating-prompt-editor-prewarm-\(UUID().uuidString)", isDirectory: true)
+    let tempFileURL = tempDirectory.appendingPathComponent("prompt.md", isDirectory: false)
     do {
-      try "".write(to: tempURL, atomically: true, encoding: .utf8)
+      try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
+      try "".write(to: tempFileURL, atomically: true, encoding: .utf8)
     } catch {
-      isPrewarmingFloatingPromptEditor = false
       PromptEditorDebugLog.append(
-        event: "native.prewarm.tempFileFailed",
-        details: ["error": error.localizedDescription]
-      )
+        event: "native.prewarm.skipped",
+        details: [
+          "error": error.localizedDescription,
+          "reason": "tempFileFailed",
+          "requestId": Self.floatingPromptEditorPrewarmRequestId,
+        ])
       return
     }
-    PromptEditorDebugLog.append(
-      event: "native.prewarm.start",
-      details: [
-        "modalHostHidden": modalHostView.isHidden,
-        "modalHostReady": isModalHostReady,
-        "startupOverlayVisible": startupOverlayView.superview === self && startupOverlayView.alphaValue > 0,
-      ]
-    )
-    floatingPromptEditorPrewarmTempFileURL = tempURL
+
+    floatingPromptEditorPrewarmTempFileURL = tempFileURL
+    isPrewarmingFloatingPromptEditor = true
     activeFloatingPromptEditor = ActiveFloatingPromptEditor(
-      filePath: tempURL.path,
+      filePath: tempFileURL.path,
       originatingSessionId: nil,
       requestId: Self.floatingPromptEditorPrewarmRequestId,
       statusFile: nil
     )
+    let prewarmStartedAtMs = Self.promptEditorMonotonicMilliseconds()
     let initialFrame = floatingPromptEditorInitialFrame(originatingSessionId: nil)
-    updateFloatingPromptEditorHitRegion(frame: initialFrame)
-    dispatchModalHostOpenMessage([
-      "filePath": tempURL.path,
+    PromptEditorDebugLog.append(
+      event: "native.prewarm.start",
+      details: [
+        "nativeWindow": true,
+        "prewarmStartedAtMs": prewarmStartedAtMs,
+        "requestId": Self.floatingPromptEditorPrewarmRequestId,
+      ])
+    let openMessage: [String: Any] = [
+      "filePath": tempFileURL.path,
       "initialFrame": initialFrame,
       "initialText": "",
       "language": "markdown",
       "modal": "floatingPromptEditor",
+      "nativeOpenStartedAtMs": prewarmStartedAtMs,
       "prewarm": true,
       "requestId": Self.floatingPromptEditorPrewarmRequestId,
       "statusFile": "",
       "title": "Prompt Editor",
       "type": "open",
-    ])
+    ]
+    let opened = openNativeAppModalWindow(
+      message: openMessage,
+      modal: "floatingPromptEditor",
+      preferredContentFrame: floatingPromptEditorScreenContentFrame(fromTopLeftFrame: initialFrame))
+    if !opened {
+      PromptEditorDebugLog.append(
+        event: "native.prewarm.failed",
+        details: [
+          "reason": "openNativeWindowFailed",
+          "requestId": Self.floatingPromptEditorPrewarmRequestId,
+        ])
+      cleanupFloatingPromptEditorPrewarmTempFile()
+      isPrewarmingFloatingPromptEditor = false
+      activeFloatingPromptEditor = nil
+    }
+  }
+
+  private func promoteFloatingPromptEditorPrewarmToUserOpen() {
+    guard isPrewarmingFloatingPromptEditor else {
+      return
+    }
+    /**
+     CDXC:PromptEditor 2026-06-12-04:37:
+     A user Ctrl+G can arrive while startup prewarm is still loading. Promote
+     the in-flight native prompt host instead of closing it, so the first real
+     open can reuse whatever WebKit/React/Monaco work has already completed.
+     */
+    PromptEditorDebugLog.append(
+      event: "native.prewarm.promote",
+      details: [
+        "requestId": Self.floatingPromptEditorPrewarmRequestId,
+      ])
+    isPrewarmingFloatingPromptEditor = false
+    activeFloatingPromptEditor = nil
+    cleanupFloatingPromptEditorPrewarmTempFile()
+  }
+
+  private func cancelFloatingPromptEditorPrewarm(reason: String) {
+    guard isPrewarmingFloatingPromptEditor else {
+      return
+    }
+    PromptEditorDebugLog.append(
+      event: "native.prewarm.cancel",
+      details: [
+        "reason": reason,
+        "requestId": Self.floatingPromptEditorPrewarmRequestId,
+      ])
+    isPrewarmingFloatingPromptEditor = false
+    activeFloatingPromptEditor = nil
+    appModalPresentationPending = false
+    cleanupFloatingPromptEditorPrewarmTempFile()
   }
 
   private func finishFloatingPromptEditorPrewarm() {
@@ -6438,20 +6106,25 @@ final class ghostexRootView: NSView {
     PromptEditorDebugLog.append(
       event: "native.prewarm.finish",
       details: [
-        "modalHostHidden": modalHostView.isHidden,
+        "rootModalHostMounted": false,
         "requestId": Self.floatingPromptEditorPrewarmRequestId,
       ]
     )
     hasPrewarmedFloatingPromptEditor = true
     isPrewarmingFloatingPromptEditor = false
     activeFloatingPromptEditor = nil
-    modalHostView.setTopLeftHitRegions(nil)
-    dispatchModalHostMessage(["type": "close"])
-    modalHostView.isHidden = true
-    if let tempURL = floatingPromptEditorPrewarmTempFileURL {
-      try? FileManager.default.removeItem(at: tempURL)
-      floatingPromptEditorPrewarmTempFileURL = nil
+    appModalPresentationPending = false
+    nativeAppModalWindowController?.hideReusablePromptEditor(sendReactClose: true)
+    cleanupFloatingPromptEditorPrewarmTempFile()
+    updateSidebarModalBackdrop()
+  }
+
+  private func cleanupFloatingPromptEditorPrewarmTempFile() {
+    guard let tempURL = floatingPromptEditorPrewarmTempFileURL else {
+      return
     }
+    try? FileManager.default.removeItem(at: tempURL.deletingLastPathComponent())
+    floatingPromptEditorPrewarmTempFileURL = nil
   }
 
   private func floatingPromptEditorInitialFrame(originatingSessionId: String?) -> [String: CGFloat] {
@@ -6531,7 +6204,13 @@ final class ghostexRootView: NSView {
   private func clampedFloatingPromptEditorFrame(_ frame: [String: CGFloat]) -> [String: CGFloat] {
     let margin: CGFloat = 16
     let availableWidth = max(CGFloat(240), bounds.width - margin * 2)
-    let maxWidth = min(CGFloat(700), availableWidth)
+    /*
+     CDXC:PromptEditor 2026-06-11-23:06:
+     Native prompt-editor windows can be resized by AppKit edge drags, so
+     persistence should preserve the user's chosen width across restarts rather
+     than shrinking it back to the old 700px overlay maximum.
+     */
+    let maxWidth = availableWidth
     let minWidth = min(CGFloat(180), maxWidth)
     let minHeight = min(CGFloat(260), max(CGFloat(180), bounds.height - margin * 2))
     let width = min(max(frame["width"] ?? 400, minWidth), maxWidth)
@@ -6547,6 +6226,39 @@ final class ghostexRootView: NSView {
     ]
   }
 
+  private func floatingPromptEditorScreenContentFrame(
+    fromTopLeftFrame frame: [String: CGFloat]
+  ) -> CGRect? {
+    guard let window,
+      let left = frame["left"],
+      let top = frame["top"],
+      let width = frame["width"],
+      let height = frame["height"]
+    else {
+      return nil
+    }
+    let rootFrame = CGRect(
+      x: left,
+      y: bounds.height - top - height,
+      width: width,
+      height: height)
+    return window.convertToScreen(convert(rootFrame, to: nil))
+  }
+
+  private func persistFloatingPromptEditorContentScreenFrame(_ contentScreenFrame: CGRect) {
+    guard let window else {
+      return
+    }
+    let windowFrame = window.convertFromScreen(contentScreenFrame)
+    let rootFrame = convert(windowFrame, from: nil)
+    persistFloatingPromptEditorFrame([
+      "height": rootFrame.height,
+      "left": rootFrame.minX,
+      "top": bounds.height - rootFrame.maxY,
+      "width": rootFrame.width,
+    ])
+  }
+
   private func updateFloatingPromptEditorHitRegion(
     frame: [String: CGFloat],
     imagePreviewOpen: Bool = false
@@ -6556,21 +6268,22 @@ final class ghostexRootView: NSView {
       let width = frame["width"],
       let height = frame["height"]
     else {
-      modalHostView.setTopLeftHitRegions([])
       return
     }
-    let region = CGRect(x: left, y: top, width: width, height: height)
-    modalHostView.setTopLeftHitRegions([region], capturesAllHitTesting: imagePreviewOpen)
+    /*
+     CDXC:PromptEditor 2026-06-11-23:07:
+     Prompt-editor hit regions are no longer applied to a transparent root
+     WKWebView. The native child window owns its AppKit frame, so these bridge
+     messages are retained only for frame persistence and diagnostics.
+     */
     PromptEditorDebugLog.append(
-      event: "native.hitRegion.applied",
+      event: "native.hitRegion.rootHostSkipped",
       details: [
         "height": height,
         "imagePreviewOpen": imagePreviewOpen,
         "left": left,
-        "modalHostBoundsHeight": modalHostView.bounds.height,
-        "modalHostBoundsWidth": modalHostView.bounds.width,
-        "modalHostHidden": modalHostView.isHidden,
         "requestId": activeFloatingPromptEditor?.requestId ?? "",
+        "rootModalHostMounted": false,
         "top": top,
         "width": width,
       ]
@@ -6653,7 +6366,7 @@ final class ghostexRootView: NSView {
 
     do {
       let imagePath = try resolveFloatingPromptEditorClipboardImagePath()
-      dispatchModalHostMessage([
+      dispatchFloatingPromptEditorHostMessage([
         "imagePath": imagePath,
         "pasteRequestId": pasteRequestId,
         "requestId": active.requestId,
@@ -6665,7 +6378,7 @@ final class ghostexRootView: NSView {
         message: error.localizedDescription,
         stack: nil
       )
-      dispatchModalHostMessage([
+      dispatchFloatingPromptEditorHostMessage([
         "error": error.localizedDescription,
         "pasteRequestId": pasteRequestId,
         "requestId": active.requestId,
@@ -6769,7 +6482,7 @@ final class ghostexRootView: NSView {
 
     do {
       let dataUrl = try Self.floatingPromptEditorImagePreviewDataURL(path: path)
-      dispatchModalHostMessage([
+      dispatchFloatingPromptEditorHostMessage([
         "dataUrl": dataUrl,
         "path": path,
         "previewRequestId": previewRequestId,
@@ -6782,7 +6495,7 @@ final class ghostexRootView: NSView {
         message: error.localizedDescription,
         stack: nil
       )
-      dispatchModalHostMessage([
+      dispatchFloatingPromptEditorHostMessage([
         "error": error.localizedDescription,
         "path": path,
         "previewRequestId": previewRequestId,
@@ -6947,11 +6660,15 @@ final class ghostexRootView: NSView {
     finishFloatingPromptEditor(reason: "cancelled")
   }
 
-  private func finishFloatingPromptEditor(reason: String) {
+  private func finishFloatingPromptEditor(reason: String, closeNativeWindow: Bool = true) {
     let returnFocusSessionId = activeFloatingPromptEditor?.originatingSessionId
+    let isNativePromptWindow =
+      activeNativeAppModalKind == "floatingPromptEditor"
+      || nativeAppModalWindowController?.currentModalKind == "floatingPromptEditor"
     PromptEditorDebugLog.append(
       event: "native.finish",
       details: [
+        "nativeWindow": isNativePromptWindow,
         "reason": reason,
         "requestId": activeFloatingPromptEditor?.requestId ?? "",
         "returnFocusSessionId": returnFocusSessionId ?? "",
@@ -6961,10 +6678,15 @@ final class ghostexRootView: NSView {
     if activeAppModalKind == "floatingPromptEditor" {
       activeAppModalKind = nil
     }
+    if activeNativeAppModalKind == "floatingPromptEditor" {
+      activeNativeAppModalKind = nil
+    }
     appModalPresentationPending = false
-    modalHostView.setTopLeftHitRegions(nil)
-    dispatchModalHostMessage(["type": "close"])
-    modalHostView.isHidden = true
+    if isNativePromptWindow {
+      if closeNativeWindow {
+        nativeAppModalWindowController?.hideReusablePromptEditor(sendReactClose: true)
+      }
+    }
     updateSidebarModalBackdrop()
     if let returnFocusSessionId {
       restoreFloatingPromptEditorReturnFocus(sessionId: returnFocusSessionId, reason: reason)
@@ -7012,17 +6734,18 @@ final class ghostexRootView: NSView {
       }
       guard self.activeFloatingPromptEditor == nil,
         self.activeAppModalKind == nil,
-        !self.appModalPresentationPending,
-        self.modalHostView.isHidden
+        self.activeNativeAppModalKind == nil,
+        !self.appModalPresentationPending
       else {
         TerminalFocusDebugLog.append(
           event: "nativeFocusTrace.floatingPromptEditorReturnFocusSkipped",
           details: [
             "activeAppModalKind": self.activeAppModalKind ?? "<none>",
+            "activeNativeAppModalKind": self.activeNativeAppModalKind ?? "<none>",
             "appModalPresentationPending": self.appModalPresentationPending,
             "focusRequestId": focusRequestId,
             "hasActiveFloatingPromptEditor": self.activeFloatingPromptEditor != nil,
-            "modalHostHidden": self.modalHostView.isHidden,
+            "rootModalHostMounted": false,
             "reason": reason,
             "sessionId": sessionId,
             "skipReason": "modalStillActive",
@@ -7146,17 +6869,18 @@ final class ghostexRootView: NSView {
       }
       guard self.activeFloatingPromptEditor == nil,
         self.activeAppModalKind == nil,
-        !self.appModalPresentationPending,
-        self.modalHostView.isHidden
+        self.activeNativeAppModalKind == nil,
+        !self.appModalPresentationPending
       else {
         TerminalFocusDebugLog.append(
           event: "nativeFocusTrace.floatingPromptEditorReturnFocusReinforcementSkipped",
           details: [
             "activeAppModalKind": self.activeAppModalKind ?? "<none>",
+            "activeNativeAppModalKind": self.activeNativeAppModalKind ?? "<none>",
             "appModalPresentationPending": self.appModalPresentationPending,
             "focusRequestId": focusRequestId,
             "hasActiveFloatingPromptEditor": self.activeFloatingPromptEditor != nil,
-            "modalHostHidden": self.modalHostView.isHidden,
+            "rootModalHostMounted": false,
             "reason": reason,
             "sessionId": sessionId,
             "skipReason": "modalStillActive",
@@ -7227,6 +6951,7 @@ final class ghostexRootView: NSView {
      used by the sidebar, while shared Git state remains gxserver-owned.
      */
     titlebarChromeWebView.evaluateJavaScript(script)
+    titlebarDropdownPanelController?.dispatchHostEventScript(script)
   }
 
   private func handleSessionAttentionNotificationClick(_ sessionId: String) {
@@ -7548,18 +7273,176 @@ final class ghostexRootView: NSView {
     else {
       return
     }
+    latestReactTitlebarProjectStateJson = json
+    dispatchReactTitlebarProjectState(json)
+  }
+
+  private func dispatchReactTitlebarProjectState(_ json: String) {
     titlebarChromeWebView.evaluateJavaScript(
       """
       window.__ghostex_TITLEBAR__?.setActiveProjectState(\(json));
       undefined;
       """)
+    titlebarDropdownPanelController?.setActiveProjectState(json)
   }
 
   func setReactTitlebarHitRegions(_ regions: [ReactTitlebarHitRegion], overlayOpen: Bool) {
-    titlebarChromeView.setHitRegions(regions, overlayOpen: overlayOpen)
-    isTitlebarOverlayOpen = overlayOpen
+    /*
+     CDXC:ReactTitlebar 2026-06-11-13:22:
+     Main-window titlebar dropdown content has moved to native child panels, so
+     Swift must ignore any below-strip overlay-open state from the titlebar
+     document and keep the workspace interaction shield off for titlebar menus.
+     */
+    titlebarChromeView.setHitRegions(regions, overlayOpen: false)
+    isTitlebarOverlayOpen = false
     updateWorkspaceInteractionShield()
     needsLayout = true
+  }
+
+  func routeTitlebarMouseEventFromWindow(_ event: NSEvent) -> Bool {
+    /*
+     CDXC:NativePaneTabClicks 2026-06-12-07:11:
+     The GitHub project tab Add button can sit in a top workspace band where
+     AppKit window-chrome dispatch bypasses root/content hit testing entirely.
+     Route pane-titlebar mouse streams from the NSWindow boundary before React
+     titlebar routing so the visible native titlebar owns Add, Close, activation,
+     and drag by its current AppKit geometry.
+     */
+    if routeWorkspacePaneTitleBarMouseEventFromWindow(event) {
+      return true
+    }
+    return titlebarChromeView.routeWindowMouseEvent(event)
+  }
+
+  private func routeWorkspacePaneTitleBarMouseEventFromWindow(_ event: NSEvent) -> Bool {
+    guard Self.isWorkspacePaneTitleBarWindowMouseEvent(event.type),
+      event.window === window,
+      !workspaceView.isHidden
+    else {
+      return false
+    }
+    let point = convert(event.locationInWindow, from: nil)
+    guard workspaceView.frame.contains(point) else {
+      return false
+    }
+    let workspacePoint = convert(point, to: workspaceView)
+    let source = "windowPaneTitleBarPrepass"
+    guard workspaceView.routePaneTitleBarMouseEvent(event, at: workspacePoint, source: source) else {
+      return false
+    }
+    NativePaneTabDragReproLog.append(event: "nativePaneTabs.root.windowMouseEvent.titleBarPrepass", details: [
+      "eventType": Self.workspacePaneTitleBarWindowMouseEventTypeName(event.type),
+      "rootPoint": ["x": Double(point.x), "y": Double(point.y)],
+      "source": source,
+      "workspaceFrame": [
+        "height": Double(workspaceView.frame.height),
+        "maxX": Double(workspaceView.frame.maxX),
+        "maxY": Double(workspaceView.frame.maxY),
+        "minX": Double(workspaceView.frame.minX),
+        "minY": Double(workspaceView.frame.minY),
+        "width": Double(workspaceView.frame.width),
+      ],
+      "workspacePoint": ["x": Double(workspacePoint.x), "y": Double(workspacePoint.y)],
+    ])
+    return true
+  }
+
+  private static func isWorkspacePaneTitleBarWindowMouseEvent(_ eventType: NSEvent.EventType) -> Bool {
+    switch eventType {
+    case .leftMouseDown, .leftMouseDragged, .leftMouseUp:
+      return true
+    default:
+      return false
+    }
+  }
+
+  private static func workspacePaneTitleBarWindowMouseEventTypeName(_ eventType: NSEvent.EventType) -> String {
+    switch eventType {
+    case .leftMouseDown:
+      return "leftMouseDown"
+    case .leftMouseDragged:
+      return "leftMouseDragged"
+    case .leftMouseUp:
+      return "leftMouseUp"
+    default:
+      return "other"
+    }
+  }
+
+  func showTitlebarDropdownPanel(_ command: ShowTitlebarDropdownPanel) {
+    guard let window,
+      let anchorScreenRect = titlebarDropdownAnchorScreenRect(command.anchorRect)
+    else {
+      return
+    }
+    if titlebarDropdownPanelController == nil {
+      titlebarDropdownPanelController = TitlebarDropdownPanelController(
+        scriptBridge: scriptBridge,
+        bootstrapScriptSource: titlebarBootstrapScriptSource,
+        diagnosticsScript: Self.diagnosticsScript,
+        shouldLetTitlebarHandleOutsideMouseEvent: { [weak self] event in
+          guard let self, event.window === self.window else {
+            return false
+          }
+          let point = self.convert(event.locationInWindow, from: nil)
+          let titlebarPoint = self.titlebarChromeView.convert(point, from: self)
+          return self.titlebarChromeView.containsInteractiveHitRegion(titlebarPoint)
+        }
+      ) { [weak self] kind in
+        self?.titlebarChromeView.setNativeDropdownOpen(kind)
+      }
+    }
+    titlebarDropdownPanelController?.show(
+      kind: command.kind,
+      anchorScreenRect: anchorScreenRect,
+      parentWindow: window,
+      preferredSize: command.preferredSize.map {
+        CGSize(width: CGFloat($0.width), height: CGFloat($0.height))
+      },
+      webAssets: Self.resolveWebAssets(),
+      latestStateJson: latestReactTitlebarProjectStateJson)
+  }
+
+  func closeTitlebarDropdownPanel() {
+    titlebarDropdownPanelController?.close()
+  }
+
+  func resizeTitlebarDropdownPanel(_ command: ResizeTitlebarDropdownPanel) {
+    titlebarDropdownPanelController?.resize(
+      kind: command.kind,
+      width: CGFloat(command.width),
+      height: CGFloat(command.height))
+  }
+
+  func titlebarDropdownPanelReady(_ command: TitlebarDropdownPanelReady) {
+    titlebarDropdownPanelController?.showWhenReady(kind: command.kind)
+  }
+
+  private func titlebarDropdownAnchorScreenRect(
+    _ anchor: TitlebarDropdownAnchorRect
+  ) -> CGRect? {
+    guard let window else {
+      return nil
+    }
+    /*
+     CDXC:ReactTitlebar 2026-06-11-13:22:
+     React reports dropdown anchors in the titlebar webview's top-left CSS
+     coordinate space. Convert to AppKit's bottom-left local coordinates before
+     producing the screen rect used by the native child dropdown panel.
+     */
+    let height = CGFloat(anchor.height)
+    let width = CGFloat(anchor.width)
+    guard width > 0, height > 0 else {
+      return nil
+    }
+    let titlebarHeight = max(titlebarChromeView.bounds.height, 1)
+    let rectInTitlebar = CGRect(
+      x: CGFloat(anchor.x),
+      y: max(titlebarHeight - CGFloat(anchor.y) - height, 0),
+      width: width,
+      height: height
+    )
+    return window.convertToScreen(titlebarChromeView.convert(rectInTitlebar, to: nil))
   }
 
   func setTitlebarUpdateAvailable(_ available: Bool) {
@@ -7588,6 +7471,7 @@ final class ghostexRootView: NSView {
       window.__ghostex_TITLEBAR__?.setActiveProjectState(\(json));
       undefined;
       """)
+    titlebarDropdownPanelController?.setActiveProjectState(json)
   }
 
   private func openActiveProjectEditorFromTitlebar() {
@@ -7658,14 +7542,17 @@ final class ghostexRootView: NSView {
       """)
   }
 
-  private func showProjectEditorCompanionFromTitlebar() {
+  private func toggleProjectEditorCompanionFromTitlebar() {
     /**
-     CDXC:ProjectEditorCompanion 2026-06-02-15:27:
-     The titlebar restore button updates macOS current-window companion-pane preference before native reopens the agent side pane. Forward through React state so Code, Git, and Project modes continue sharing one local value.
+     CDXC:ProjectEditorCompanion 2026-06-12-03:18:
+     The titlebar companion control now toggles the project-owned hidden
+     preference instead of only restoring it. Forward through React sidebar
+     state so Code, GitHub, and Kanban modes keep one shared local value before
+     native AppKit applies layout.
      */
     sidebarView.evaluateJavaScript(
       """
-      window.__ghostex_NATIVE_SIDEBAR__?.showProjectEditorCompanionFromTitlebar?.();
+      window.__ghostex_NATIVE_SIDEBAR__?.toggleProjectEditorCompanionFromTitlebar?.();
       undefined;
       """)
   }
@@ -8092,6 +7979,8 @@ final class ghostexRootView: NSView {
       workspaceView.showBrowserImportSettings(sessionId: command.sessionId)
     case .setSidebarSide(let command):
       setSidebarSide(command.side)
+    case .toggleSidebarCollapsed:
+      toggleSidebarCollapsed()
     case .setReactTitlebarHitRegions(let command):
       /**
        CDXC:ReactTitlebar 2026-05-11-20:24
@@ -8101,6 +7990,14 @@ final class ghostexRootView: NSView {
        the titlebar strip plus any open dropdown bounds.
        */
       setReactTitlebarHitRegions(command.regions, overlayOpen: command.overlayOpen)
+    case .showTitlebarDropdownPanel(let command):
+      showTitlebarDropdownPanel(command)
+    case .closeTitlebarDropdownPanel:
+      closeTitlebarDropdownPanel()
+    case .resizeTitlebarDropdownPanel(let command):
+      resizeTitlebarDropdownPanel(command)
+    case .titlebarDropdownPanelReady(let command):
+      titlebarDropdownPanelReady(command)
     case .openActiveProjectEditorFromTitlebar:
       openActiveProjectEditorFromTitlebar()
     case .exitFocusModeFromTitlebar:
@@ -8109,8 +8006,8 @@ final class ghostexRootView: NSView {
       openAgentsModeFromTitlebar()
     case .openGitHubProjectFromTitlebar:
       openGitHubProjectFromTitlebar()
-    case .showProjectEditorCompanionFromTitlebar:
-      showProjectEditorCompanionFromTitlebar()
+    case .toggleProjectEditorCompanionFromTitlebar:
+      toggleProjectEditorCompanionFromTitlebar()
     case .openTasksPlaceholderFromTitlebar:
       openTasksPlaceholderFromTitlebar()
     case .refreshWorkspaceOpenTargetAvailabilityFromTitlebar:
@@ -8345,14 +8242,12 @@ final class ghostexRootView: NSView {
     let responderView = responder as? NSView
     let isSidebarResponder =
       responderView.map { $0 === sidebarView || $0.isDescendant(of: sidebarView) } ?? false
-    let isModalHostResponder =
-      responderView.map { $0 === modalHostView || $0.isDescendant(of: modalHostView) } ?? false
     let isTitlebarResponder =
       responderView.map { $0 === titlebarChromeWebView || $0.isDescendant(of: titlebarChromeWebView) }
       ?? false
     return [
       "className": String(describing: type(of: responder)),
-      "isModalHostResponder": isModalHostResponder,
+      "isModalHostResponder": false,
       "isSidebarResponder": isSidebarResponder,
       "isTitlebarResponder": isTitlebarResponder,
     ]
@@ -8837,17 +8732,6 @@ final class ghostexRootView: NSView {
     guard event.type == .keyDown else {
       return false
     }
-    if shouldCloseAppModalHostOnEscape(event) {
-      /**
-       CDXC:AppModals 2026-05-22-16:55:
-       Full-window app modals such as Previous Sessions must close on Escape
-       even when keyboard focus remains in a terminal, titlebar, or another
-       native responder instead of the modal-host WKWebView. Keep Ctrl+G prompt
-       editor Escape handling in React because it has a two-step cancel flow.
-       */
-      closeAppModalHost(reason: "keyboardEscape")
-      return true
-    }
     if workspaceView.handleFocusedChromiumZoomShortcut(event) {
       /**
        CDXC:ChromiumBrowserPanes 2026-06-10-15:55:
@@ -8856,13 +8740,21 @@ final class ghostexRootView: NSView {
       return true
     }
     let hotkeyText = Self.hotkeyText(for: event)
+    if Self.isAppQuitHotkeyText(hotkeyText) {
+      /**
+       CDXC:MacQuit 2026-06-12-03:09:
+       Cmd+Q is a reserved macOS app command, not a configurable Ghostex workspace hotkey. Handle it at the native key boundary so focused terminal, browser, sidebar, or modal responders cannot swallow the standard app-quit shortcut before the menu item runs.
+       */
+      NSApp.terminate(nil)
+      return true
+    }
     if Self.isSessionNavigationHotkeyText(hotkeyText) {
       logNativeHotkeyNavigationRepro(
         "appKitObserved",
         [
           "hotkey": hotkeyText ?? "",
           "keyCode": String(event.keyCode),
-          "modalActive": String(!modalHostView.isHidden || activeAppModalKind != nil),
+          "modalActive": String(activeAppModalKind != nil || activeNativeAppModalKind != nil),
           "nativeEditable": String(isNativeEditableFirstResponder()),
           "webChromeFirstResponder": String(isWebChromeFirstResponder()),
         ])
@@ -8913,8 +8805,13 @@ final class ghostexRootView: NSView {
        CDXC:Hotkeys 2026-06-07-14:24:
        Cmd+Tab, Cmd+Shift+Tab, Cmd+Shift+[ and Cmd+Shift+] must work even when
        the native sidebar webview owns focus. WebKit does not reliably deliver
-       those app-navigation chords, so AppKit may handle only the next/previous
+       those app-navigation chords, so AppKit may handle those next/previous
        session actions here when no modal/recorder surface is open.
+
+       CDXC:SidebarCollapse 2026-06-12-02:23:
+       Cmd+B should also collapse or expand the whole native sidebar from
+       sidebar focus, because the collapsed state can hide the WebView that
+       would otherwise receive the DOM hotkey path.
        */
       if let hotkeyText,
         let actionId = matchedHotkeyActionId(for: hotkeyText)
@@ -8925,7 +8822,7 @@ final class ghostexRootView: NSView {
             "actionId": actionId,
             "hotkey": hotkeyText,
             "keyCode": String(event.keyCode),
-            "modalActive": String(!modalHostView.isHidden || activeAppModalKind != nil),
+            "modalActive": String(activeAppModalKind != nil || activeNativeAppModalKind != nil),
           ])
         if shouldHandleHotkeyWhileWebChromeOwnsFocus(actionId: actionId) {
           logNativeHotkeyNavigationRepro(
@@ -8981,25 +8878,151 @@ final class ghostexRootView: NSView {
     return true
   }
 
-  private func shouldCloseAppModalHostOnEscape(_ event: NSEvent) -> Bool {
-    guard !modalHostView.isHidden,
-      activeAppModalKind != nil,
-      activeFloatingPromptEditor == nil,
-      !isPrewarmingFloatingPromptEditor,
-      event.charactersIgnoringModifiers == "\u{1b}"
-    else {
+  private func shouldUseNativeAppModalWindow(for modal: String?) -> Bool {
+    guard let modal else {
       return false
     }
-    return event.modifierFlags
-      .intersection([.command, .control, .option, .shift])
-      .isEmpty
+    return !modal.isEmpty
+  }
+
+  private func shouldRouteAppModalOpenIntoActiveNativeWindow(modal: String?) -> Bool {
+    guard modal == "gitFileDiff" else {
+      return false
+    }
+    /*
+     CDXC:TitlebarGit 2026-06-11-20:13:
+     Git commit review requests file diffs immediately after opening so the
+     right-hand inline diff pane can populate. Do not treat those gitFileDiff
+     bridge messages as a new app modal window while gitCommit owns the active
+     native modal host, or the child-window router tears down commit review as
+     soon as the first diff arrives.
+     */
+    return activeNativeAppModalKind == "gitCommit"
+      || nativeAppModalWindowController?.currentModalKind == "gitCommit"
+  }
+
+  private func nativeAppModalWindowControllerIfNeeded() -> AppModalWindowController {
+    if let nativeAppModalWindowController {
+      return nativeAppModalWindowController
+    }
+    /*
+     CDXC:AppModals 2026-06-11-19:46:
+     Settings, Agents Hub, Previous Sessions, and other app dialogs must render in owned native windows instead of a transparent WKWebView over the workspace. Keep one reusable controller that loads the existing React modal host in an AppKit child window.
+
+     CDXC:PromptEditor 2026-06-11-22:51:
+     The rich prompt editor now uses this same native modal-window host, with a
+     prompt-specific titled/resizable chrome configuration, so no prompt editor
+     overlay remains above the main workspace.
+     */
+    let controller = AppModalWindowController(
+      scriptBridge: scriptBridge,
+      bootstrapScriptSource: titlebarBootstrapScriptSource,
+      diagnosticsScript: Self.diagnosticsScript,
+      onClosed: { [weak self] reason, modal in
+        self?.nativeAppModalWindowDidClose(reason: reason, modal: modal)
+      },
+      onContentFrameChanged: { [weak self] modal, contentScreenFrame in
+        guard modal == "floatingPromptEditor" else {
+          return
+        }
+        self?.persistFloatingPromptEditorContentScreenFrame(contentScreenFrame)
+      })
+    nativeAppModalWindowController = controller
+    return controller
+  }
+
+  @discardableResult
+  private func openNativeAppModalWindow(
+    message: [String: Any],
+    modal: String,
+    preferredContentFrame: CGRect? = nil
+  ) -> Bool {
+    guard let window else {
+      AppDelegate.appendAppModalErrorLog(
+        area: "AppModals:nativeWindow",
+        message: "Cannot open native app modal window without a parent window.",
+        stack: nil
+      )
+      return false
+    }
+    if modal != "floatingPromptEditor", isPrewarmingFloatingPromptEditor {
+      cancelFloatingPromptEditorPrewarm(reason: "replacedByAppModal")
+    }
+    rememberAppModalReturnFocusTarget(modal: modal)
+    appModalPresentationPending = true
+    activeNativeAppModalKind = nil
+    let controller = nativeAppModalWindowControllerIfNeeded()
+    controller.open(
+      modal: modal,
+      message: message,
+      parentWindow: window,
+      webAssets: Self.resolveWebAssets(),
+      latestSidebarState: latestModalHostSidebarState,
+      preferredContentFrame: preferredContentFrame)
+    updateSidebarModalBackdrop()
+    return true
+  }
+
+  private func closeNativeAppModalWindow(reason: String, sendReactClose: Bool) {
+    if activeNativeAppModalKind == "floatingPromptEditor"
+      || nativeAppModalWindowController?.currentModalKind == "floatingPromptEditor"
+    {
+      if let active = activeFloatingPromptEditor {
+        writeFloatingPromptEditorStatusFile(active.statusFile, status: "cancelled")
+      }
+      finishFloatingPromptEditor(reason: reason)
+      return
+    }
+    let returnFocusSessionId = appModalReturnFocusSessionId
+    AppDelegate.appendAgentDetectionDebugLog(
+      event: "nativeBridge.appModal.nativeWindow.close",
+      details: "reason=\(reason) modal=\(activeNativeAppModalKind ?? "<none>") sendReactClose=\(sendReactClose)"
+    )
+    nativeAppModalWindowController?.close(sendReactClose: sendReactClose)
+    activeNativeAppModalKind = nil
+    appModalPresentationPending = false
+    updateSidebarModalBackdrop()
+    restoreAppModalReturnFocusIfNeeded(sessionId: returnFocusSessionId, reason: reason)
+  }
+
+  private func nativeAppModalWindowDidClose(reason: String, modal: String?) {
+    if modal == "floatingPromptEditor" {
+      if let active = activeFloatingPromptEditor {
+        writeFloatingPromptEditorStatusFile(active.statusFile, status: "cancelled")
+      }
+      finishFloatingPromptEditor(reason: reason, closeNativeWindow: false)
+      return
+    }
+    let returnFocusSessionId = appModalReturnFocusSessionId
+    activeNativeAppModalKind = nil
+    appModalPresentationPending = false
+    updateSidebarModalBackdrop()
+    restoreAppModalReturnFocusIfNeeded(sessionId: returnFocusSessionId, reason: reason)
+  }
+
+  private func dispatchNativeAppModalWindowMessage(_ message: [String: Any]) {
+    nativeAppModalWindowController?.dispatch(message)
+  }
+
+  private func dispatchActiveAppModalWindowMessage(_ message: [String: Any]) {
+    if nativeAppModalWindowController?.canReceiveMessages == true {
+      dispatchNativeAppModalWindowMessage(message)
+    }
+  }
+
+  private func dispatchFloatingPromptEditorHostMessage(_ message: [String: Any]) {
+    if activeNativeAppModalKind == "floatingPromptEditor"
+      || nativeAppModalWindowController?.currentModalKind == "floatingPromptEditor"
+    {
+      dispatchNativeAppModalWindowMessage(message)
+    }
   }
 
   private func closeAppModalHost(reason: String) {
     let returnFocusSessionId = appModalReturnFocusSessionId
     AppDelegate.appendAgentDetectionDebugLog(
       event: "nativeBridge.appModal.close.received",
-      details: "reason=\(reason) returnFocusSessionId=\(returnFocusSessionId ?? "<none>") wasHidden=\(modalHostView.isHidden)"
+      details: "reason=\(reason) returnFocusSessionId=\(returnFocusSessionId ?? "<none>") rootModalHostMounted=false"
     )
     guard !isFloatingPromptEditorActiveForUserInput else {
       /*
@@ -9015,12 +9038,10 @@ final class ghostexRootView: NSView {
         ])
       return
     }
-    dispatchModalHostMessage(["type": "close"])
     activeAppModalKind = nil
+    activeNativeAppModalKind = nil
     appModalPresentationPending = false
-    pendingModalHostOpenMessage = nil
-    modalHostView.setTopLeftHitRegions(nil)
-    modalHostView.isHidden = true
+    nativeAppModalWindowController?.close(sendReactClose: true)
     updateSidebarModalBackdrop()
     restoreAppModalReturnFocusIfNeeded(sessionId: returnFocusSessionId, reason: reason)
   }
@@ -9035,7 +9056,14 @@ final class ghostexRootView: NSView {
     appModalReturnFocusSessionId = workspaceView.appModalReturnFocusTerminalSessionId()
     /**
      CDXC:AppModals 2026-05-28-14:52:
-     Backdrop modals run in a transparent WKWebView that becomes first responder while open. Capture the currently focused terminal before presenting that webview so Escape, backdrop clicks, close buttons, and React-driven dismissals can return typing focus to the pane the user was using.
+     App modals can take first responder while open. Capture the currently
+     focused terminal before presenting so Escape, close buttons, and
+     React-driven dismissals can return typing focus to the pane the user was
+     using.
+
+     CDXC:AppModals 2026-06-11-23:07:
+     This return-focus contract now belongs to native child windows only; the
+     main workspace no longer mounts a transparent modal-host WKWebView.
      */
     AppDelegate.appendAgentDetectionDebugLog(
       event: "nativeBridge.appModal.returnFocusCaptured",
@@ -9053,12 +9081,12 @@ final class ghostexRootView: NSView {
         return
       }
       guard self.activeAppModalKind == nil,
-        !self.appModalPresentationPending,
-        self.modalHostView.isHidden
+        self.activeNativeAppModalKind == nil,
+        !self.appModalPresentationPending
       else {
         AppDelegate.appendAgentDetectionDebugLog(
           event: "nativeBridge.appModal.returnFocusDeferred",
-          details: "reason=\(reason) returnFocusSessionId=\(sessionId) activeAppModalKind=\(self.activeAppModalKind ?? "<none>") presentationPending=\(self.appModalPresentationPending) modalHostHidden=\(self.modalHostView.isHidden)"
+          details: "reason=\(reason) returnFocusSessionId=\(sessionId) activeAppModalKind=\(self.activeAppModalKind ?? "<none>") activeNativeAppModalKind=\(self.activeNativeAppModalKind ?? "<none>") presentationPending=\(self.appModalPresentationPending) rootModalHostMounted=false"
         )
         return
       }
@@ -9070,11 +9098,25 @@ final class ghostexRootView: NSView {
   private func updateSidebarModalBackdrop() {
     /**
      CDXC:SidebarLayering 2026-05-23-12:20:
-     Toasts keep the modal host visible without an active modal, and the
-     floating prompt editor publishes its own hit regions instead of showing a
-     backdrop. Only true backdrop modals should cover and block the sidebar.
+     Only true backdrop modals should cover and block the sidebar.
+
+     CDXC:AppModals 2026-06-11-19:46:
+     Non-prompt modals are native child windows now, not root-view backdrops.
+     Do not show the sidebar backdrop or workspace shield for those windows;
+     their AppKit window frame owns its own input without covering the workspace.
+
+     CDXC:AppModals 2026-06-11-23:07:
+     With the main-window modal host removed, keep the old sidebar backdrop
+     hidden as well so root chrome never contributes an overlay while a CEF/WK
+     editor pane is handling native drag/drop.
      */
-    let shouldShowBackdrop = activeAppModalKind != nil && activeAppModalKind != "floatingPromptEditor"
+    /*
+     CDXC:OverlayInteractivity 2026-06-11-21:10:
+     Backdrop blocking now belongs to native child windows instead of the main
+     root view. Keep the old sidebar backdrop hidden so no root-level overlay
+     participates in editor drag/drop hit testing.
+     */
+    let shouldShowBackdrop = false
     sidebarModalBackdropView.isHidden = !shouldShowBackdrop
     updateWorkspaceInteractionShield()
   }
@@ -9083,20 +9125,22 @@ final class ghostexRootView: NSView {
     /**
      CDXC:OverlayInteractivity 2026-05-25-07:02:
      Native pane tabs must not hover, show AppKit tooltips, or receive clicks
-     behind Settings-style backdrop modals or React titlebar dropdown panels.
-     Keep the shield off for toast-only modal-host visibility and for the
-     floating prompt editor, which intentionally publishes scoped hit regions.
+     behind Settings-style backdrop modals. Native child windows and native
+     toast panels own their exact frames, so keep this root-view shield disabled
+     outside surfaces that explicitly publish scoped hit regions.
 
      CDXC:OverlayInteractivity 2026-05-25-10:09:
-     Terminal panes must remain clickable after titlebar dropdowns close. React
-     now publishes explicit dropdown/menu open state, so stale measured hit
-     regions below the titlebar cannot keep the workspace shield active.
+     Terminal panes must remain clickable while titlebar dropdown child windows
+     are open because those windows no longer cover the workspace.
+
+     CDXC:OverlayInteractivity 2026-06-11-21:10:
+     The Source drag/drop harness works without any transparent AppKit layer
+     above the embedded browser. Keep this former shield path as a no-op so
+     native child windows, not the root view, own modal and dropdown blocking.
      */
     let backdropModalActive = isBackdropAppModalActive()
-    let shouldShieldWorkspace =
-      backdropModalActive || isTitlebarOverlayOpen
-    workspaceInteractionShieldView.isHidden = !shouldShieldWorkspace
-    workspaceView.setNativeChromeInteractivitySuppressed(shouldShieldWorkspace)
+    let shouldShieldWorkspace = false
+    workspaceView.setNativeChromeInteractivitySuppressed(false)
     logWorkspaceInteractionShieldStateIfNeeded(
       shouldShieldWorkspace: shouldShieldWorkspace,
       backdropModalActive: backdropModalActive
@@ -9108,15 +9152,52 @@ final class ghostexRootView: NSView {
     backdropModalActive: Bool
   ) {
     let modalKind = activeAppModalKind ?? "<none>"
+    let nativeModalKind = activeNativeAppModalKind ?? "<none>"
     let logKey =
-      "shield=\(shouldShieldWorkspace)|modal=\(modalKind)|backdrop=\(backdropModalActive)|titlebarOverlay=\(isTitlebarOverlayOpen)|regions=\(titlebarChromeView.hitRegionCount)|belowTitlebarRegions=\(titlebarChromeView.belowTitlebarHitRegionCount)"
+      "shield=\(shouldShieldWorkspace)|modal=\(modalKind)|nativeModal=\(nativeModalKind)|backdrop=\(backdropModalActive)|titlebarOverlay=\(isTitlebarOverlayOpen)|regions=\(titlebarChromeView.hitRegionCount)|belowTitlebarRegions=\(titlebarChromeView.belowTitlebarHitRegionCount)"
     guard logKey != lastWorkspaceInteractionShieldLogKey else {
       return
     }
     lastWorkspaceInteractionShieldLogKey = logKey
     AppDelegate.appendNativeHostLifecycleLog(
-      "workspaceInteractionShield.state shouldShield=\(shouldShieldWorkspace) backdropModalActive=\(backdropModalActive) activeAppModalKind=\(modalKind) titlebarOverlayOpen=\(isTitlebarOverlayOpen) titlebarHitRegionCount=\(titlebarChromeView.hitRegionCount) titlebarBelowTitlebarHitRegionCount=\(titlebarChromeView.belowTitlebarHitRegionCount) modalHostHidden=\(modalHostView.isHidden)"
+      "workspaceInteractionShield.state shouldShield=\(shouldShieldWorkspace) backdropModalActive=\(backdropModalActive) activeAppModalKind=\(modalKind) activeNativeAppModalKind=\(nativeModalKind) titlebarOverlayOpen=\(isTitlebarOverlayOpen) titlebarHitRegionCount=\(titlebarChromeView.hitRegionCount) titlebarBelowTitlebarHitRegionCount=\(titlebarChromeView.belowTitlebarHitRegionCount) rootModalHostMounted=false"
     )
+  }
+
+  private func sourceCEFDragOverlaySnapshot() -> [String: Any] {
+    /*
+     CDXC:SourceCEFDragDrop 2026-06-11-19:40:
+     VS Code tab drag/drop works in the isolated CEF/WKWebView repro app but loses `dragover/drop` in the full Ghostex macOS window. Snapshot only overlay visibility, hit-region counts, child-window presence, and geometry at native drag time so diagnostics can rule in or out a remaining transparent overlay without logging user content.
+     */
+    let childWindows = window?.childWindows ?? []
+    return [
+      "activeAppModalKind": activeAppModalKind ?? "<none>",
+      "activeNativeAppModalKind": activeNativeAppModalKind ?? "<none>",
+      "appModalPresentationPending": appModalPresentationPending,
+      "childWindowCount": childWindows.count,
+      "childWindows": childWindows.map { childWindow in
+        [
+          "frame": Self.describeFrame(childWindow.frame),
+          "isKeyWindow": childWindow.isKeyWindow,
+          "isVisible": childWindow.isVisible,
+          "level": Int(childWindow.level.rawValue),
+          "windowNumber": childWindow.windowNumber,
+        ] as [String: Any]
+      },
+      "isTitlebarOverlayOpen": isTitlebarOverlayOpen,
+      "rootModalHostMounted": false,
+      "sidebarContextMenuOpenCount": sidebarContextMenuOpenCount,
+      "sidebarModalBackdropFrame": Self.describeFrame(sidebarModalBackdropView.frame),
+      "sidebarModalBackdropHidden": sidebarModalBackdropView.isHidden,
+      "titlebarBelowTitlebarHitRegionCount": titlebarChromeView.belowTitlebarHitRegionCount,
+      "titlebarChromeFrame": Self.describeFrame(titlebarChromeView.frame),
+      "titlebarDropdownPanel": titlebarDropdownPanelController?.debugSnapshot() ?? ["present": false],
+      "titlebarHitRegionCount": titlebarChromeView.hitRegionCount,
+      "windowIsKey": window?.isKeyWindow ?? false,
+      "windowNumber": window?.windowNumber ?? NSNull(),
+      "workspaceInteractionShieldFrame": Self.describeFrame(.zero),
+      "workspaceInteractionShieldHidden": true,
+    ]
   }
 
   private func isBackdropAppModalActive() -> Bool {
@@ -9129,8 +9210,6 @@ final class ghostexRootView: NSView {
     }
     return responderView === sidebarView
       || responderView.isDescendant(of: sidebarView)
-      || responderView === modalHostView
-      || responderView.isDescendant(of: modalHostView)
   }
 
   private func isNativeEditableFirstResponder() -> Bool {
@@ -9228,15 +9307,43 @@ final class ghostexRootView: NSView {
      Emit a typed host event through the same native event bus as terminal
      focus/title updates so hotkeys cannot disappear at an optional JS bridge.
      */
+    if actionId == "toggleSidebarCollapsed" {
+      (window?.contentView as? ghostexRootView)?.toggleSidebarCollapsed()
+      return
+    }
+    if actionId == "openCommandPalette", isCommandPaletteNativeModalOpenOrPending() {
+      /*
+       CDXC:CommandPalette 2026-06-12-05:45:
+       Cmd+K/F12 should toggle the native command palette. Once the palette has
+       created its child-window host, repeat openCommandPalette hotkeys close
+       that host instead of dispatching another open event into React.
+       */
+      logNativeHotkeyDebug(
+        "nativeHotkeys.commandPaletteToggleClose",
+        [
+          "activeNativeAppModalKind": activeNativeAppModalKind ?? "",
+          "controllerModal": nativeAppModalWindowController?.currentModalKind ?? "",
+        ])
+      closeNativeAppModalWindow(reason: "commandPaletteHotkeyToggle", sendReactClose: true)
+      return
+    }
     logNativeHotkeyDebug("nativeHotkeys.dispatchHostEvent", ["actionId": actionId])
     sendHostEvent(.nativeHotkey(actionId: actionId))
   }
 
+  private func isCommandPaletteNativeModalOpenOrPending() -> Bool {
+    activeNativeAppModalKind == "commandPalette"
+      || nativeAppModalWindowController?.currentModalKind == "commandPalette"
+  }
+
   private func shouldHandleHotkeyWhileWebChromeOwnsFocus(actionId: String) -> Bool {
-    guard modalHostView.isHidden && activeAppModalKind == nil else {
+    if actionId == "openCommandPalette", isCommandPaletteNativeModalOpenOrPending() {
+      return true
+    }
+    guard activeAppModalKind == nil && activeNativeAppModalKind == nil else {
       return false
     }
-    return Self.isSessionNavigationHotkeyActionId(actionId)
+    return actionId == "toggleSidebarCollapsed" || Self.isSessionNavigationHotkeyActionId(actionId)
   }
 
   private func logNativeHotkeyDebug(_ event: String, _ details: [String: String]) {
@@ -9320,6 +9427,10 @@ final class ghostexRootView: NSView {
     return hotkeyText == "cmd+tab" || hotkeyText == "cmd+shift+tab"
       || hotkeyText == "cmd+shift+[" || hotkeyText == "cmd+shift+]"
       || hotkeyText == "cmd+shift+{" || hotkeyText == "cmd+shift+}"
+  }
+
+  private static func isAppQuitHotkeyText(_ hotkeyText: String?) -> Bool {
+    hotkeyText == "cmd+q"
   }
 
   private static func normalizedHotkeyKey(_ event: NSEvent) -> String? {
@@ -9605,32 +9716,20 @@ final class ghostexRootView: NSView {
   func presentAppToast(level: String, title: String, description: String? = nil, interactive: Bool = false) {
     /**
      CDXC:AppToasts 2026-06-07-12:20:
-     Native-host status feedback that previously used blocking NSAlert sheets should render through the shared bottom-center modal-host toast layer so Settings, OS Integration, and workspace actions stay non-modal like the sidebar webview.
+     Native-host status feedback that previously used blocking NSAlert sheets
+     should render through non-modal app toasts so Settings, OS Integration, and
+     workspace actions stay non-blocking like the sidebar webview.
+
+     CDXC:AppToasts 2026-06-11-21:04:
+     Native-host status feedback now renders through AppKit toast panels instead
+     of the modal-host WKWebView, so app status messages do not create a web
+     overlay above the CEF/WKWebView workspace.
      */
-    guard isModalHostReady else {
-      return
-    }
-    var payload: [String: Any] = [
-      "type": "toast",
-      "level": level,
-      "title": title,
-    ]
-    if let description, !description.isEmpty {
-      payload["description"] = description
-    }
-    if interactive {
-      payload["interactive"] = true
-    }
-    dispatchModalHostMessage(payload)
-    if activeAppModalKind == nil {
-      if interactive {
-        modalHostView.setTopLeftHitRegions(appModalToastHitRegions())
-      } else {
-        modalHostView.setTopLeftHitRegions([])
-      }
-    }
-    modalHostView.isHidden = false
-    updateSidebarModalBackdrop()
+    nativeToastController?.show(
+      NativeAppToastRequest(
+        level: NativeAppToastLevel(rawValue: level),
+        title: title,
+        description: description.flatMap { $0.isEmpty ? nil : $0 }))
   }
 
   private static func appToastLevel(for level: MessageLevel) -> String {
@@ -9652,6 +9751,22 @@ final class ghostexRootView: NSView {
     sidebarSide = side
     workspaceView.setSidebarSide(side)
     needsLayout = true
+  }
+
+  func toggleSidebarCollapsed() {
+    /**
+     CDXC:SidebarCollapse 2026-06-12-02:23:
+     The Cmd+B sidebar toggle must collapse the entire native sidebar chrome,
+     including the WKWebView, resize divider, and workarea border. Preserve the
+     expanded sidebarWidth so the next toggle restores the user's resized width
+     instead of treating collapse as a zero-width resize.
+     */
+    isSidebarCollapsed.toggle()
+    if isSidebarCollapsed {
+      sidebarView.forceNativePointerInside(false)
+    }
+    needsLayout = true
+    workspaceView.scheduleZmxPersistenceRefreshForSurfacedTerminalsAfterResize(reason: "sidebarCollapseToggle")
   }
 
   required init?(coder: NSCoder) {
@@ -9687,14 +9802,17 @@ final class ghostexRootView: NSView {
     sidebarView.resizeHitExclusionWidth = sidebarResizeHitWidth
     divider.frame = frames.divider
     divider.separatorFrame = dividerSeparatorFrame(for: frames)
+    sidebarView.isHidden = isSidebarCollapsed
+    divider.isHidden = isSidebarCollapsed
     window?.invalidateCursorRects(for: self)
     window?.invalidateCursorRects(for: divider)
     workspaceView.frame = frames.workspace
-    workspaceInteractionShieldView.frame = frames.workspace
-    terminalPaneDropOverlayView.frame = frames.workspace
-    modalHostView.frame = frames.modalHost
-    sidebarModalBackdropView.frame = frames.sidebar.union(frames.divider)
+    nativeToastController?.setLayout(parentWindow: window, rootView: self, anchorFrame: frames.workspace)
+    sidebarModalBackdropView.frame = isSidebarCollapsed ? .zero : frames.sidebar.union(frames.divider)
     sidebarWorkareaBorderView.frame = frames.sidebarWorkareaBorder
+    if isSidebarCollapsed {
+      sidebarWorkareaBorderView.isHidden = true
+    }
     workareaTitlebarBorderView.frame = frames.workareaTitlebarBorder
     titlebarChromeView.frame = frames.titlebarChrome
     promoteSidebarChrome()
@@ -9752,10 +9870,10 @@ final class ghostexRootView: NSView {
   private func promoteSidebarChrome() {
     /**
      CDXC:SidebarLayering 2026-05-23-01:51:
-     Toasts and app-modal portals render through a full-window transparent
+     App-modal portals historically rendered through a full-window transparent
      WKWebView, but no app overlay should cover the sidebar. Keep the sidebar
-     and its resize divider visually above modal/titlebar web layers so session
-     cards remain clickable while bottom-center toasts are visible.
+     and its resize divider visually above modal/titlebar web layers; app
+     toasts now use separate native child panels instead of this z-order path.
 
      CDXC:NativeSidebarChrome 2026-06-05-05:01:
      The #252525 sidebar/workarea separator must remain visible on the
@@ -9788,138 +9906,66 @@ final class ghostexRootView: NSView {
     addCursorRect(divider.frame, cursor: .resizeLeftRight)
   }
 
+  /*
+   CDXC:RootHitBoundaries 2026-06-11-21:10:
+   The root view intentionally relies on AppKit's default hit-test traversal
+   instead of manually routing workspace, titlebar, modal, and sidebar hits.
+   Browser-native drag/drop in Source should see the same ordinary view
+   ownership model as the minimal CEF/WKWebView harness.
+
+   CDXC:NativePaneResize 2026-06-12-03:18:
+   The 03:15 companion resize repro still showed the five-point rail receiving
+   hover while root hit testing selected CEF/Ghostty descendants on mouseDown.
+   Let the root view ask TerminalWorkspaceView's mounted resize-handle views
+   before ordinary child traversal so the concrete rail owns drag start without
+   widening the rail or routing by cached pane geometry.
+
+   CDXC:NativePaneTabClicks 2026-06-12-06:33:
+   Split-pane tab bars can be visible and AX-visible while a sibling embedded
+   surface wins root hit testing before TerminalWorkspaceView gets to enforce
+   pane-titlebar ownership. Give mounted workspace titlebars the same root
+   pre-pass as resize rails so tab activation, tab Close, and tab-bar action
+   buttons are owned by the visible native titlebar under the pointer.
+   */
   override func hitTest(_ point: NSPoint) -> NSView? {
-    guard bounds.contains(point) else {
-      return nil
+    if let resizeHandleHitView = workspaceResizeHandleHitView(at: point) {
+      return resizeHandleHitView
     }
-    /**
-     CDXC:RootHitBoundaries 2026-05-12-10:55
-     Full-frame transparent WKWebViews are allowed for titlebar portals and
-     app modals, but pane chrome must still receive native AppKit clicks in the
-     workspace frame. Route root hit testing by the resolved layout bands so a
-     narrow right-side pane tab cannot be intercepted by sidebar/titlebar web
-     surfaces that visually pass through.
-     */
-    if startupOverlayView.superview === self,
-      startupOverlayView.alphaValue > 0,
-      startupOverlayView.frame.contains(point)
-    {
-      return startupOverlayView
-    }
-    if let hitView = sidebarModalBackdropView.hitTest(convert(point, to: sidebarModalBackdropView))
-    {
-      /**
-       CDXC:SidebarLayering 2026-05-23-12:20:
-       The sidebar stays above normal webview layers so toasts cannot steal
-       session-card clicks. Real backdrop modals are the exception: mirror the
-       work-area scrim over sidebar chrome and let that click dismiss the same
-       modal.
-       */
-      return hitView
-    }
-    if divider.frame.contains(point) {
-      /**
-       CDXC:NativeSidebarChrome 2026-06-04-22:20:
-       The resize divider is a transparent native overlay above a sidebar
-       webview that now paints beneath it. Return the divider directly for its
-       frame so AppKit resize dragging cannot fall through to WebKit hit
-       testing in the same pixels.
-       */
-      return divider
-    }
-    if sidebarView.frame.contains(point),
-      let hitView = sidebarView.hitTest(convert(point, to: sidebarView))
-    {
-      /**
-       CDXC:SidebarLayering 2026-05-23-01:51:
-       Sidebar input must not pass through modal-host or titlebar WKWebViews.
-       Bottom-center toast overlays can remain visible over the work area, but
-       project/session navigation in the sidebar always owns its frame first.
-      */
-      return hitView
-    }
-    if !modalHostView.isHidden {
-      let modalPoint = convert(point, to: modalHostView)
-      if let hitView = modalHostView.hitTest(modalPoint) {
-        /**
-         CDXC:AppModals 2026-05-23-13:05:
-         Real app modals must beat all workspace chrome hit targets. Otherwise
-         narrow Settings/Agents Hub layouts can visually cover native pane tabs
-         while AppKit still lets those tabs receive clicks behind the modal.
-         Toast-only hosts still pass through here because their hit regions are
-         explicitly empty.
-         */
-        return hitView
-      }
-      if isBackdropAppModalActive(), modalHostView.bounds.contains(modalPoint) {
-        /**
-         CDXC:AppModals 2026-05-25-12:10:
-         Settings and other backdrop modals are never pass-through surfaces. If
-         WebKit returns nil for transparent dialog/backdrop pixels, keep the
-         click inside the modal host instead of letting terminal panes behind it
-         receive the event.
-         */
-        return modalHostView
-      }
-    }
-    if let hitView = titlebarChromeView.hitTest(convert(point, to: titlebarChromeView)) {
-      /**
-       CDXC:ReactTitlebar 2026-05-24-14:35:
-       Open titlebar dropdowns are rendered in the full-window React titlebar
-       WKWebView and can visually cover native pane tabs. Give reported
-       titlebar/dropdown hit regions priority over workspace chrome so clicks
-       land on visible dropdown items instead of the pane tab bar behind them.
-      */
-      return hitView
-    }
-    if let hitView = workspaceInteractionShieldView.hitTest(convert(point, to: workspaceInteractionShieldView))
-    {
-      /**
-       CDXC:OverlayInteractivity 2026-05-25-07:02:
-       When a modal or dropdown is open, transparent workspace pixels are still
-       part of that overlay interaction model. Swallow them here so AppKit title
-       tabs behind the overlay cannot react to hover, click, or tooltip lookup.
-       */
-      return hitView
-    }
-    if workspaceView.frame.contains(point),
-      let hitView = terminalPaneDropOverlayView.hitTest(convert(point, to: terminalPaneDropOverlayView))
-    {
-      return hitView
-    }
-    if workspaceView.frame.contains(point),
-      let nativeChromeHitView = workspaceView.nativeChromeHitView(at: convert(point, to: workspaceView))
-    {
-      /**
-       CDXC:RootHitBoundaries 2026-05-22-22:48:
-       Visible native workspace chrome should beat transparent webview space,
-       but only after active modal and titlebar/dropdown hit regions had the
-       first chance above.
-       */
-      return nativeChromeHitView
-    }
-    if workspaceView.frame.contains(point),
-      let hitView = workspaceView.hitTest(convert(point, to: workspaceView))
-    {
-      return hitView
+    if let paneTitleBarHitView = workspacePaneTitleBarHitView(at: point) {
+      return paneTitleBarHitView
     }
     return super.hitTest(point)
   }
 
-  override func draggingEntered(_ sender: any NSDraggingInfo) -> NSDragOperation {
-    workspaceView.terminalPaneRootDragOperation(for: sender, rootView: self, phase: "entered")
+  private func workspaceResizeHandleHitView(at point: NSPoint) -> NSView? {
+    guard !workspaceView.isHidden, workspaceView.frame.contains(point) else {
+      return nil
+    }
+    return workspaceView.resizeHandleHitView(at: convert(point, to: workspaceView))
   }
 
-  override func draggingUpdated(_ sender: any NSDraggingInfo) -> NSDragOperation {
-    workspaceView.terminalPaneRootDragOperation(for: sender, rootView: self, phase: "updated")
-  }
-
-  override func draggingExited(_ sender: (any NSDraggingInfo)?) {
-    workspaceView.terminalPaneRootDraggingExited(sender, rootView: self)
-  }
-
-  override func performDragOperation(_ sender: any NSDraggingInfo) -> Bool {
-    workspaceView.performTerminalPaneRootDrop(for: sender, rootView: self)
+  private func workspacePaneTitleBarHitView(at point: NSPoint) -> NSView? {
+    guard !workspaceView.isHidden, workspaceView.frame.contains(point) else {
+      return nil
+    }
+    let workspacePoint = convert(point, to: workspaceView)
+    guard let hitView = workspaceView.paneTitleBarHitView(at: workspacePoint) else {
+      return nil
+    }
+    NativePaneTabDragReproLog.append(event: "nativePaneTabs.root.hitTest.titleBarPrepass", details: [
+      "hitView": String(describing: type(of: hitView)),
+      "rootPoint": ["x": Double(point.x), "y": Double(point.y)],
+      "workspaceFrame": [
+        "height": Double(workspaceView.frame.height),
+        "maxX": Double(workspaceView.frame.maxX),
+        "maxY": Double(workspaceView.frame.maxY),
+        "minX": Double(workspaceView.frame.minX),
+        "minY": Double(workspaceView.frame.minY),
+        "width": Double(workspaceView.frame.width),
+      ],
+      "workspacePoint": ["x": Double(workspacePoint.x), "y": Double(workspacePoint.y)],
+    ])
+    return hitView
   }
 
   private func rootLayoutFrames() -> RootLayoutFrames {
@@ -9929,6 +9975,37 @@ final class ghostexRootView: NSView {
     self.sidebarWidth = sidebarWidth
     let workspaceBarWidth = currentWorkspaceBarWidth()
     let contentHeight = max(bounds.height - Self.reactTitlebarHeight, 1)
+    let titlebarChromeFrame = CGRect(
+      x: bounds.minX,
+      y: max(bounds.maxY - Self.reactTitlebarHeight, bounds.minY),
+      width: bounds.width,
+      height: min(Self.reactTitlebarHeight, max(bounds.height, 0)))
+    if isSidebarCollapsed {
+      /**
+       CDXC:SidebarCollapse 2026-06-12-02:23:
+       Collapsed sidebar layout must reserve no sidebar, divider, or workarea-border width. Keep only the titlebar strip and let the workspace fill the whole content width.
+       */
+      let workspaceFrame = CGRect(
+        x: bounds.minX,
+        y: 0,
+        width: max(bounds.width, 1),
+        height: contentHeight
+      )
+      let separatorWidth = Self.workareaSeparatorWidth
+      let workareaTitlebarBorderFrame = CGRect(
+        x: workspaceFrame.minX,
+        y: max(workspaceFrame.maxY - separatorWidth, workspaceFrame.minY),
+        width: workspaceFrame.width,
+        height: min(separatorWidth, workspaceFrame.height)
+      )
+      return RootLayoutFrames(
+        divider: .zero,
+        sidebar: .zero,
+        sidebarWorkareaBorder: .zero,
+        titlebarChrome: titlebarChromeFrame,
+        workareaTitlebarBorder: workareaTitlebarBorderFrame,
+        workspace: workspaceFrame)
+    }
     let chromeWidth = workspaceBarWidth + sidebarWidth + Self.dividerWidth
     let chromeX: CGFloat = sidebarSide == .left ? 0 : max(bounds.width - chromeWidth, 0)
     let workspaceX: CGFloat = sidebarSide == .left ? chromeWidth : 0
@@ -10017,23 +10094,17 @@ final class ghostexRootView: NSView {
     )
     /**
      CDXC:RootHitBoundaries 2026-05-12-09:58
-     The titlebar WKWebView keeps a full-window visual frame so portaled
-     tooltips and dropdowns are not clipped. Its NSView hitTest remains the
-     click boundary: only reported React controls/menus and the fixed titlebar
-     drag strip consume events; all other workspace pixels pass through.
+     The titlebar WKWebView originally kept a full-window visual frame so
+     portaled tooltips and dropdowns were not clipped. Native hit-testing was
+     the click boundary.
+
+     CDXC:ReactTitlebar 2026-06-11-13:22:
+     Titlebar dropdowns now render in native child windows, so the main
+     titlebar WKWebView must be clipped to the fixed titlebar strip and never
+     cover the CEF/WKWebView workspace during editor drag/drop.
      */
-    /**
-     CDXC:SidebarLayering 2026-05-23-12:20:
-     App modals should occupy the work area, not the sidebar band. A separate
-     native sidebar backdrop mirrors modal blocking over sidebar chrome only
-     while true backdrop modals are active, which keeps toast-only modal-host
-     visibility from ever covering sidebar clicks.
-     */
-    let modalHostFrame = workspaceFrame
-    let titlebarChromeFrame = bounds
     return RootLayoutFrames(
       divider: dividerFrame,
-      modalHost: modalHostFrame,
       sidebar: sidebarFrame,
       sidebarWorkareaBorder: sidebarWorkareaBorderFrame,
       titlebarChrome: titlebarChromeFrame,
@@ -10064,7 +10135,6 @@ final class ghostexRootView: NSView {
       NativeT3CodePaneReproLog.append("nativeRoot.layout.unexpectedOverlap", [
         "bounds": Self.describeFrame(bounds),
         "divider": Self.describeFrame(frames.divider),
-        "modalHost": Self.describeFrame(frames.modalHost),
         "sidebar": Self.describeFrame(frames.sidebar),
         "titlebarChrome": Self.describeFrame(frames.titlebarChrome),
         "workspace": Self.describeFrame(frames.workspace),
@@ -10183,7 +10253,15 @@ final class ghostexRootView: NSView {
       AppDelegate.appendAgentDetectionDebugLog(event: "nativeBridge.appModal.\(event)", details: details)
     case "promptEditorDebugLog":
       let event = message["event"] as? String ?? "modalHost.promptEditor.unknown"
-      if let details = message["details"] as? String, !details.isEmpty {
+      /*
+       CDXC:PromptEditor 2026-06-12-04:37:
+       React prompt-editor speed diagnostics are emitted as JSON with
+       privacy-safe fields such as request ids, durations, booleans, and text
+       lengths. Parse that JSON before writing so the native sanitizer can
+       preserve useful structured timings instead of redacting the whole
+       details string as opaque user text.
+       */
+      if let details = promptEditorDebugLogDetails(from: message["details"]) {
         PromptEditorDebugLog.append(event: "modalHost.\(event)", details: details)
       } else {
         PromptEditorDebugLog.append(event: "modalHost.\(event)")
@@ -10221,32 +10299,30 @@ final class ghostexRootView: NSView {
       finishFloatingPromptEditorPrewarm()
     case "ready":
       AppDelegate.appendAgentDetectionDebugLog(
-        event: "nativeBridge.appModal.ready",
-        details: "hasLatestState=\(latestModalHostSidebarState != nil) hasPendingOpen=\(pendingModalHostOpenMessage != nil)"
+        event: "nativeBridge.appModal.nativeWindow.ready",
+        details: "hasLatestState=\(latestModalHostSidebarState != nil)"
       )
-      isModalHostReady = true
-      if let latestModalHostSidebarState {
-        dispatchModalHostMessage(latestModalHostSidebarState)
-      }
-      if let pendingModalHostOpenMessage {
-        dispatchModalHostMessage(pendingModalHostOpenMessage)
-        self.pendingModalHostOpenMessage = nil
-      }
-      prewarmFloatingPromptEditorIfNeeded()
+      nativeAppModalWindowController?.hostReady(latestSidebarState: latestModalHostSidebarState)
     case "open":
       /**
        CDXC:AppModals 2026-04-28-12:06
-       Persistent helper mode was removed, so full-window modal presentation no
-       longer pauses or resurfaces external terminal windows. The modal host
-       only needs to show its overlay above the embedded terminal view.
+       Persistent helper mode was removed, so modal presentation no longer
+       pauses or resurfaces external terminal windows.
+
+       CDXC:AppModals 2026-06-11-23:07:
+       App modal opens must create native child windows only. Do not queue or
+       dispatch into a transparent root WKWebView above the workspace because
+       that sibling overlay breaks browser-native VS Code tab drag/drop in CEF
+       and WKWebView editor panes.
        */
+      let requestedModal = message["modal"] as? String
       AppDelegate.appendAgentDetectionDebugLog(
         event: "nativeBridge.appModal.open.received",
         details:
-          "modal=\(message["modal"] as? String ?? "unknown") ready=\(isModalHostReady) hasLatestState=\(latestModalHostSidebarState != nil) wasHidden=\(modalHostView.isHidden)"
+          "modal=\(requestedModal ?? "unknown") hasLatestState=\(latestModalHostSidebarState != nil) rootModalHostMounted=false"
       )
       if isFloatingPromptEditorActiveForUserInput,
-        (message["modal"] as? String) != "floatingPromptEditor"
+        requestedModal != "floatingPromptEditor"
       {
         /*
          CDXC:PromptEditor 2026-06-09-10:43:
@@ -10257,40 +10333,53 @@ final class ghostexRootView: NSView {
           details: [
             "activeAppModalKind": activeAppModalKind ?? "",
             "hasActiveFloatingPromptEditor": activeFloatingPromptEditor != nil,
-            "requestedModal": message["modal"] as? String ?? "unknown",
+            "requestedModal": requestedModal ?? "unknown",
           ])
         return
       }
-      rememberAppModalReturnFocusTarget(modal: message["modal"] as? String)
-      if !isModalHostReady {
-        appModalPresentationPending = true
-        pendingModalHostOpenMessage = message
+      if shouldRouteAppModalOpenIntoActiveNativeWindow(modal: requestedModal) {
+        AppDelegate.appendAgentDetectionDebugLog(
+          event: "nativeBridge.appModal.open.routeActiveNativeWindow",
+          details: "modal=\(requestedModal ?? "unknown") activeNativeAppModalKind=\(activeNativeAppModalKind ?? "<none>")"
+        )
+        dispatchNativeAppModalWindowMessage(message)
         return
       }
-      appModalPresentationPending = true
-      pendingModalHostOpenMessage = nil
-      if (message["modal"] as? String) != "floatingPromptEditor" {
-        modalHostView.setTopLeftHitRegions(nil)
+      if shouldUseNativeAppModalWindow(for: requestedModal), let requestedModal {
+        openNativeAppModalWindow(message: message, modal: requestedModal)
+        return
       }
-      if let latestModalHostSidebarState {
-        dispatchModalHostMessage(latestModalHostSidebarState)
-      }
-      AppDelegate.appendAgentDetectionDebugLog(
-        event: "nativeBridge.appModal.open.dispatch",
-        details: "modal=\(message["modal"] as? String ?? "unknown")"
+      AppDelegate.appendAppModalErrorLog(
+        area: "AppModals:nativeBridge",
+        message: "Ignored app modal open without a native-window modal id.",
+        stack: nil
       )
-      dispatchModalHostMessage(message)
     case "presented":
+      let modal = message["modal"] as? String
+      let requestId = message["requestId"] as? String
       AppDelegate.appendAgentDetectionDebugLog(
-        event: "nativeBridge.appModal.presented",
-        details: "modal=\(message["modal"] as? String ?? "unknown") wasHidden=\(modalHostView.isHidden)"
+        event: "nativeBridge.appModal.nativeWindow.presented",
+        details: "modal=\(modal ?? "unknown")"
       )
-      if (message["modal"] as? String) == "floatingPromptEditor" {
+      if modal == "floatingPromptEditor" {
+        if let requestId,
+          activeFloatingPromptEditor?.requestId != requestId
+        {
+          PromptEditorDebugLog.append(
+            event: "native.presented.ignored",
+            details: [
+              "activeRequestId": activeFloatingPromptEditor?.requestId ?? "",
+              "messageRequestId": requestId,
+              "reason": "staleRequest",
+            ]
+          )
+          return
+        }
         PromptEditorDebugLog.append(
           event: "native.presented",
           details: [
             "isPrewarming": isPrewarmingFloatingPromptEditor,
-            "modalHostHiddenBefore": modalHostView.isHidden,
+            "rootModalHostMounted": false,
             "requestId": activeFloatingPromptEditor?.requestId ?? "",
           ]
         )
@@ -10299,52 +10388,32 @@ final class ghostexRootView: NSView {
         return
       }
       appModalPresentationPending = false
-      activeAppModalKind = message["modal"] as? String
-      if activeAppModalKind != "floatingPromptEditor" {
-        modalHostView.setTopLeftHitRegions(nil)
-      }
-      modalHostView.isHidden = false
+      activeNativeAppModalKind = modal
+      nativeAppModalWindowController?.presentIfCurrent(modal: modal)
       updateSidebarModalBackdrop()
-      if (message["modal"] as? String) == "floatingPromptEditor" {
-        PromptEditorDebugLog.append(
-          event: "native.presented.modalHostShown",
-          details: [
-            "modalHostHiddenAfter": modalHostView.isHidden,
-            "requestId": activeFloatingPromptEditor?.requestId ?? "",
-          ]
-        )
-      }
     case "close":
-      closeAppModalHost(reason: "bridgeMessage")
+      closeNativeAppModalWindow(reason: "bridgeMessage", sendReactClose: false)
     case "toast":
       /**
        CDXC:Worktrees 2026-05-18-23:07:
-       Worktree and git progress messages are transient app-modal toasts. Keep the transparent modal host visible only while a toast or real modal is active so terminal panes are not covered by an idle overlay.
+       Worktree and git progress messages are transient app toasts. They should
+       remain non-modal status feedback instead of blocking terminal panes.
 
        CDXC:AppModals 2026-05-23-01:51:
-       Toast-only modal-host visibility must be visual, not interactive. When
-       no real app modal is open, constrain the modal host to an empty hit
-       region so bottom-center delayed-send/status toasts cannot steal clicks
-       from terminal panes or other workspace surfaces.
+       Historical toast-only modal-host visibility had to be visual, not
+       interactive. Native toasts remove that web overlay entirely; normal toast
+       panels ignore mouse events and action panels are exact-sized.
+
+       CDXC:AppToasts 2026-06-11-21:04:
+       Toast bridge messages now terminate in the native toast controller. Do
+       not dispatch them into the modal-host WKWebView or reveal that overlay;
+       only the exact-sized NSPanel toast should sit above the workspace.
        */
-      if !isModalHostReady {
-        return
+      if let request = NativeAppToastRequest(message: message) {
+        nativeToastController?.show(request)
       }
-      dispatchModalHostMessage(message)
-      if activeAppModalKind == nil {
-        if (message["interactive"] as? Bool) == true {
-          modalHostView.setTopLeftHitRegions(appModalToastHitRegions())
-        } else {
-          modalHostView.setTopLeftHitRegions([])
-        }
-      }
-      modalHostView.isHidden = false
       updateSidebarModalBackdrop()
     case "toastDismissed":
-      if (message["keepOpen"] as? Bool) != true {
-        modalHostView.setTopLeftHitRegions(nil)
-        modalHostView.isHidden = true
-      }
       updateSidebarModalBackdrop()
     case "pickRepositoryFolder":
       presentRepositoryFolderPicker(initialPath: message["initialPath"] as? String)
@@ -10352,8 +10421,9 @@ final class ghostexRootView: NSView {
       presentWorktreeImagePicker()
     case "sidebarState":
       latestModalHostSidebarState = message
-      dispatchModalHostMessage(message)
-    case "projectWorktreesResult":
+      dispatchNativeAppModalWindowMessage(message)
+    case "projectWorktreesResult", "repositoryCloneResult", "repositoryClonePreviewResult",
+      "remoteProjectDirectoryBrowseResult", "remoteProjectAddResult":
       /**
        CDXC:WorktreeProjectRegistration 2026-06-01-21:33:
        The Add Worktree modal asks the sidebar webview to list existing Git
@@ -10362,7 +10432,7 @@ final class ghostexRootView: NSView {
        it as an unknown bridge command, otherwise the Open Existing selector
        remains stuck in its loading state.
        */
-      dispatchModalHostMessage(message)
+      dispatchActiveAppModalWindowMessage(message)
     case "sidebarCommand":
       guard let sidebarMessage = message["message"] else {
         AppDelegate.appendAppModalErrorLog(
@@ -10392,53 +10462,39 @@ final class ghostexRootView: NSView {
     }
   }
 
-  private func dispatchModalHostMessage(_ message: [String: Any]) {
-    guard JSONSerialization.isValidJSONObject(message),
-      let data = try? JSONSerialization.data(withJSONObject: message),
-      let json = String(data: data, encoding: .utf8)
+  private func promptEditorDebugLogDetails(from rawDetails: Any?) -> [String: Any]? {
+    guard let details = rawDetails as? String,
+      !details.isEmpty,
+      let data = details.data(using: .utf8),
+      let payload = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
     else {
-      AppDelegate.appendAppModalErrorLog(
-        area: "AppModals:nativeBridge",
-        message: "Failed to serialize modal host message: \(message)",
-        stack: nil
-      )
-      return
+      return nil
     }
-    modalHostView.evaluateJavaScript(
-      """
-      window.dispatchEvent(new CustomEvent('ghostex-app-modal-host-message', { detail: \(json) }));
-      /**
-       CDXC:AppModals 2026-04-29-22:03
-       WKWebView reports a successful dispatch as an error when the evaluated
-       script returns the CustomEvent object. Return undefined so only actual
-       modal bridge failures reach the app-modal error log.
-       */
-      undefined;
-      """
-    ) { _, error in
-      if let error {
-        AppDelegate.appendAppModalErrorLog(
-          area: "AppModals:nativeBridge",
-          message: "Failed to dispatch modal host message: \(error.localizedDescription)",
-          stack: nil
-        )
-      }
-    }
+    return normalizePromptEditorDebugLogPayload(payload)
   }
 
-  private func appModalToastHitRegions() -> [CGRect] {
-    /**
-     CDXC:AddRepository 2026-06-01-10:33:
-     Clone progress toasts have a real Cancel action. Toast-only modal hosts
-     normally pass clicks through to the workspace, so interactive toasts need a
-     narrow bottom-center hit region that covers Sonner's toast without making
-     the full transparent WKWebView block terminal panes.
-     */
-    let width = min(CGFloat(520), max(CGFloat(280), modalHostView.bounds.width - 32))
-    let height = CGFloat(150)
-    let left = max(CGFloat(16), (modalHostView.bounds.width - width) / 2)
-    let top = max(CGFloat(16), modalHostView.bounds.height - height - 16)
-    return [CGRect(x: left, y: top, width: width, height: height)]
+  private func normalizePromptEditorDebugLogPayload(_ payload: [String: Any]) -> [String: Any] {
+    payload.mapValues { normalizePromptEditorDebugLogValue($0) }
+  }
+
+  private func normalizePromptEditorDebugLogValue(_ value: Any) -> Any {
+    if let number = value as? NSNumber {
+      if CFGetTypeID(number) == CFBooleanGetTypeID() {
+        return number.boolValue
+      }
+      let doubleValue = number.doubleValue
+      if doubleValue.rounded(.towardZero) == doubleValue {
+        return Int64(doubleValue)
+      }
+      return doubleValue
+    }
+    if let array = value as? [Any] {
+      return array.map { normalizePromptEditorDebugLogValue($0) }
+    }
+    if let dictionary = value as? [String: Any] {
+      return normalizePromptEditorDebugLogPayload(dictionary)
+    }
+    return value
   }
 
   private func dispatchSidebarModalCommand(_ message: Any) {
@@ -10522,14 +10578,14 @@ final class ghostexRootView: NSView {
       guard response == .OK else {
         return
       }
-      self?.dispatchModalHostMessage([
+      self?.dispatchAppModalResponse([
         "paths": panel.urls.map(\.path),
         "type": "worktreeImageFilesPicked",
       ])
     }
 
-    if let window {
-      panel.beginSheetModal(for: window, completionHandler: completion)
+    if let sheetWindow = appModalSheetWindow() {
+      panel.beginSheetModal(for: sheetWindow, completionHandler: completion)
     } else {
       completion(panel.runModal())
     }
@@ -10569,17 +10625,25 @@ final class ghostexRootView: NSView {
       else {
         return
       }
-      self?.dispatchModalHostMessage([
+      self?.dispatchAppModalResponse([
         "path": url.path,
         "type": "repositoryFolderPicked",
       ])
     }
 
-    if let window {
-      panel.beginSheetModal(for: window, completionHandler: completion)
+    if let sheetWindow = appModalSheetWindow() {
+      panel.beginSheetModal(for: sheetWindow, completionHandler: completion)
     } else {
       completion(panel.runModal())
     }
+  }
+
+  private func appModalSheetWindow() -> NSWindow? {
+    nativeAppModalWindowController?.window ?? window
+  }
+
+  private func dispatchAppModalResponse(_ message: [String: Any]) {
+    dispatchNativeAppModalWindowMessage(message)
   }
 
   private func addWorkspaceProject(path: String, name: String) {
@@ -10707,10 +10771,15 @@ final class ghostexRootView: NSView {
       let stderrHandle = stderrPipe.fileHandleForReading
       /**
        CDXC:AgentsHub 2026-05-14-08:43
-       Agents Hub catalog discovery can return megabytes of real profile, skill,
-       hook, and config metadata. Drain process output while the command is
-       running so large stdout/stderr payloads cannot fill the pipe and block
-       the scanner before native posts processResult back to the webview.
+       Agents Hub process helpers can return real profile, skill, hook, and
+       config data. Drain output while the command is running so stdout/stderr
+       cannot fill the pipe and block the helper before native posts
+       processResult back to the webview.
+
+       CDXC:AgentsHub 2026-06-12-02:53
+       The catalog helper now returns metadata only, while selected file
+       contents use a separate smaller request. Keep pipe draining here because
+       save/read helpers still return user-editable buffers and diagnostics.
        */
       stdoutHandle.readabilityHandler = { handle in
         let data = handle.availableData
@@ -10836,30 +10905,6 @@ final class ghostexRootView: NSView {
       </html>
       """
     sidebarView.loadHTMLString(html, baseURL: repoRoot)
-  }
-
-  private func loadModalHost() {
-    let webAssets = Self.resolveWebAssets()
-    let builtModalHost = webAssets.appendingPathComponent("modal-host.html")
-    if FileManager.default.fileExists(atPath: builtModalHost.path) {
-      if NativeDebugLogging.isEnabled {
-        let sanitizedPath = NativeLogPrivacy.sanitizeLogLine(builtModalHost.path)
-        Self.logger.info("Loading modal host from \(sanitizedPath, privacy: .public)")
-      }
-      modalHostView.loadFileURL(
-        builtModalHost,
-        allowingReadAccessTo: webAssets
-      )
-      return
-    }
-
-    let sanitizedModalHostPath = NativeLogPrivacy.sanitizeLogLine(builtModalHost.path)
-    Self.logger.error("Built modal host not found at \(sanitizedModalHostPath, privacy: .public)")
-    let repoRoot = Self.resolveRepoRoot()
-    modalHostView.loadHTMLString(
-      "<!doctype html><html><body style=\"margin:0;background:transparent\"></body></html>",
-      baseURL: repoRoot
-    )
   }
 
   private func loadTitlebarChrome() {
@@ -11066,9 +11111,10 @@ final class ghostexRootView: NSView {
           }
           .indicators {
             /* CDXC:WorkspaceDock 2026-04-27-06:58: Done and working badges sit
-               together at the top-right of the workspace button, ordered green
+               together at the top-right of the workspace button, ordered #95d7f6
                then orange from left to right. The orange badge uses "working"
-               to match session-card activity and avoid overloading "active". */
+               to match session-card activity and avoid overloading "active".
+               CDXC:WorkspaceDock 2026-06-12-02:32: Done badges use #95d7f6 instead of the previous green so workspace status matches macOS sidebar, Android, and iOS done/attention indicators. */
             align-items: center;
             display: flex;
             gap: 1px;
@@ -11096,7 +11142,7 @@ final class ghostexRootView: NSView {
             background: #d08a2d;
           }
           .indicator[data-status="done"] {
-            background: #2e9d68;
+            background: #95d7f6;
           }
           .indicator[data-status="running"] {
             /* CDXC:WorkspaceDock 2026-04-27-06:27: The gray total-running
@@ -11351,10 +11397,8 @@ final class ghostexFocusReportingWindow: NSWindow {
   var onFirstResponderChanged: ((NSResponder?) -> Void)?
   var onKeyDownDispatch: ((NSEvent) -> Void)?
   var onKeyEquivalent: ((NSEvent) -> Bool)?
+  var onTitlebarMouseEvent: ((NSEvent) -> Bool)?
   var onActivationBoundaryEvent: ((NSEvent, String) -> Void)?
-  var onTerminalPaneDropDragOperation: (((any NSDraggingInfo), String) -> NSDragOperation)?
-  var onTerminalPaneDropDraggingExited: (((any NSDraggingInfo)?) -> Void)?
-  var onTerminalPaneDropPerform: (((any NSDraggingInfo)) -> Bool)?
 
   /**
    CDXC:NativeTerminalFocus 2026-04-26-21:32
@@ -11393,6 +11437,20 @@ final class ghostexFocusReportingWindow: NSWindow {
         return
       }
     }
+    /*
+     CDXC:ReactTitlebar 2026-06-11-22:10:
+     Real mouse clicks in the full-size content titlebar strip can be consumed
+     by AppKit's window-chrome dispatch before content hit-testing reaches the
+     titlebar WKWebView. Give the clipped React titlebar one narrow pre-super
+     routing hook so measured controls receive normal WebKit mouse events
+     without reinstating any workspace/CEF hit-test overlay.
+     */
+    if onTitlebarMouseEvent?(event) == true {
+      if shouldReportActivationBoundaryEvent && Self.isMouseActivationBoundaryEvent(event) {
+        onActivationBoundaryEvent?(event, "windowSendEvent.titlebarRerouted")
+      }
+      return
+    }
     super.sendEvent(event)
     if shouldReportActivationBoundaryEvent && Self.isMouseActivationBoundaryEvent(event) {
       onActivationBoundaryEvent?(event, "windowSendEvent.afterSuper")
@@ -11404,22 +11462,6 @@ final class ghostexFocusReportingWindow: NSWindow {
       return true
     }
     return super.performKeyEquivalent(with: event)
-  }
-
-  @objc func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
-    onTerminalPaneDropDragOperation?(sender, "entered") ?? []
-  }
-
-  @objc func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
-    onTerminalPaneDropDragOperation?(sender, "updated") ?? []
-  }
-
-  @objc func draggingExited(_ sender: NSDraggingInfo?) {
-    onTerminalPaneDropDraggingExited?(sender)
-  }
-
-  @objc func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
-    onTerminalPaneDropPerform?(sender) ?? false
   }
 
   private static func shouldReportActivationBoundaryEvent(_ event: NSEvent) -> Bool {
@@ -11877,22 +11919,1900 @@ private func terminalPaneChromeDropPasteboardDetails(
   ]
 }
 
+private enum NativeAppToastLevel: String {
+  case info
+  case success
+  case warning
+  case error
+
+  init(rawValue: String?) {
+    switch rawValue {
+    case Self.success.rawValue:
+      self = .success
+    case Self.warning.rawValue:
+      self = .warning
+    case Self.error.rawValue:
+      self = .error
+    default:
+      self = .info
+    }
+  }
+}
+
+private struct NativeAppToastAction {
+  let label: String
+  let sidebarMessage: Any
+}
+
+private struct NativeAppToastRequest {
+  private static let defaultDurationMs: Double = 4_200
+
+  let action: NativeAppToastAction?
+  let description: String?
+  let durationMs: Double
+  let id: String
+  let isPersistent: Bool
+  let level: NativeAppToastLevel
+  let title: String
+
+  var showsSpinner: Bool {
+    isPersistent && level == .info
+  }
+
+  init(
+    id: String = "native-toast-\(UUID().uuidString)",
+    level: NativeAppToastLevel,
+    title: String,
+    description: String? = nil,
+    isPersistent: Bool = false,
+    durationMs: Double = Self.defaultDurationMs,
+    action: NativeAppToastAction? = nil
+  ) {
+    self.action = action
+    self.description = description
+    self.durationMs = durationMs
+    self.id = id
+    self.isPersistent = isPersistent
+    self.level = level
+    self.title = title
+  }
+
+  init?(message: [String: Any]) {
+    guard let title = message["title"] as? String, !title.isEmpty else {
+      return nil
+    }
+    let action: NativeAppToastAction?
+    if let actionPayload = message["action"] as? [String: Any],
+      let label = actionPayload["label"] as? String,
+      !label.isEmpty,
+      let sidebarMessage = actionPayload["sidebarMessage"]
+    {
+      action = NativeAppToastAction(label: label, sidebarMessage: sidebarMessage)
+    } else {
+      action = nil
+    }
+    let durationMs = Self.doubleValue(message["durationMs"]) ?? Self.defaultDurationMs
+    self.init(
+      id: (message["toastId"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+        ?? "native-toast-\(UUID().uuidString)",
+      level: NativeAppToastLevel(rawValue: message["level"] as? String),
+      title: title,
+      description: (message["description"] as? String).flatMap { $0.isEmpty ? nil : $0 },
+      isPersistent: Self.boolValue(message["persistent"]),
+      durationMs: durationMs,
+      action: action)
+  }
+
+  private static func boolValue(_ value: Any?) -> Bool {
+    if let value = value as? Bool {
+      return value
+    }
+    return (value as? NSNumber)?.boolValue ?? false
+  }
+
+  private static func doubleValue(_ value: Any?) -> Double? {
+    if let value = value as? Double {
+      return value
+    }
+    if let value = value as? NSNumber {
+      return value.doubleValue
+    }
+    return nil
+  }
+}
+
+private final class NativeAppToastController {
+  private static let bottomMargin: CGFloat = 47
+  private static let gap: CGFloat = 10
+  private static let maxVisibleToasts = 4
+  private static let preferredWidth: CGFloat = 356
+  private static let minimumWidth: CGFloat = 280
+
+  private final class Item {
+    let id: String
+    let panel: NSPanel
+    let view: NativeAppToastView
+    var dismissTimer: Timer?
+
+    init(id: String, panel: NSPanel, view: NativeAppToastView) {
+      self.id = id
+      self.panel = panel
+      self.view = view
+    }
+  }
+
+  private let onAction: (Any) -> Void
+  private weak var parentWindow: NSWindow?
+  private weak var rootView: NSView?
+  private var anchorFrame = CGRect.zero
+  private var itemsById: [String: Item] = [:]
+  private var orderedIds: [String] = []
+
+  init(onAction: @escaping (Any) -> Void) {
+    self.onAction = onAction
+  }
+
+  func setLayout(parentWindow: NSWindow?, rootView: NSView, anchorFrame: CGRect) {
+    self.parentWindow = parentWindow
+    self.rootView = rootView
+    self.anchorFrame = anchorFrame
+    layoutPanels(animated: false)
+  }
+
+  func show(_ request: NativeAppToastRequest) {
+    guard let parentWindow else {
+      return
+    }
+    let item: Item
+    if let existing = itemsById[request.id] {
+      item = existing
+      item.dismissTimer?.invalidate()
+      item.view.update(request)
+      item.panel.ignoresMouseEvents = request.action == nil
+    } else {
+      item = makeItem(request)
+      itemsById[request.id] = item
+      orderedIds.append(request.id)
+      parentWindow.addChildWindow(item.panel, ordered: .above)
+      item.panel.alphaValue = 0
+      item.panel.orderFront(nil)
+      NSAnimationContext.runAnimationGroup { context in
+        context.duration = 0.16
+        item.panel.animator().alphaValue = 1
+      }
+    }
+    while orderedIds.count > Self.maxVisibleToasts, let oldestId = orderedIds.first {
+      dismiss(id: oldestId, animated: true)
+    }
+    scheduleDismissalIfNeeded(item: item, request: request)
+    layoutPanels(animated: true)
+  }
+
+  func closeAll() {
+    for id in orderedIds {
+      dismiss(id: id, animated: false)
+    }
+  }
+
+  private func makeItem(_ request: NativeAppToastRequest) -> Item {
+    /*
+     CDXC:AppToasts 2026-06-11-21:04:
+     macOS app toasts must not use the modal-host WKWebView overlay. Render the
+     shared toast contract as exact-sized borderless child panels so normal
+     toasts pass mouse events through and action toasts only capture inside the
+     visible shadcn-style card.
+     */
+    let view = NativeAppToastView(request: request, onAction: onAction)
+    let panel = NSPanel(
+      contentRect: CGRect(origin: .zero, size: view.preferredSize(forWidth: Self.preferredWidth)),
+      styleMask: [.borderless, .nonactivatingPanel],
+      backing: .buffered,
+      defer: false
+    )
+    panel.backgroundColor = .clear
+    panel.collectionBehavior = [.fullScreenAuxiliary, .transient]
+    panel.contentView = view
+    panel.hasShadow = true
+    panel.hidesOnDeactivate = false
+    panel.ignoresMouseEvents = request.action == nil
+    panel.isMovable = false
+    panel.isOpaque = false
+    panel.isReleasedWhenClosed = false
+    panel.level = parentWindow?.level ?? .normal
+    return Item(id: request.id, panel: panel, view: view)
+  }
+
+  private func scheduleDismissalIfNeeded(item: Item, request: NativeAppToastRequest) {
+    item.dismissTimer?.invalidate()
+    guard !request.isPersistent else {
+      item.dismissTimer = nil
+      return
+    }
+    item.dismissTimer = Timer.scheduledTimer(withTimeInterval: request.durationMs / 1_000, repeats: false) {
+      [weak self, weak item] _ in
+      guard let item else {
+        return
+      }
+      self?.dismiss(id: item.id, animated: true)
+    }
+  }
+
+  private func dismiss(id: String, animated: Bool) {
+    guard let item = itemsById[id] else {
+      return
+    }
+    item.dismissTimer?.invalidate()
+    itemsById[id] = nil
+    orderedIds.removeAll { $0 == id }
+    let tearDown = { [weak self, weak item] in
+      guard let item else {
+        return
+      }
+      self?.parentWindow?.removeChildWindow(item.panel)
+      item.panel.contentView = nil
+      item.panel.orderOut(nil)
+      self?.layoutPanels(animated: true)
+    }
+    guard animated else {
+      tearDown()
+      return
+    }
+    NSAnimationContext.runAnimationGroup { context in
+      context.duration = 0.14
+      item.panel.animator().alphaValue = 0
+    } completionHandler: {
+      tearDown()
+    }
+  }
+
+  private func layoutPanels(animated: Bool) {
+    guard let parentWindow,
+      let rootView,
+      !orderedIds.isEmpty
+    else {
+      return
+    }
+    let windowAnchorFrame = rootView.convert(anchorFrame, to: nil)
+    let screenAnchorFrame = parentWindow.convertToScreen(windowAnchorFrame)
+    let toastWidth = min(
+      Self.preferredWidth,
+      max(Self.minimumWidth, screenAnchorFrame.width - 32))
+    var y = screenAnchorFrame.minY + Self.bottomMargin
+    for id in orderedIds.reversed() {
+      guard let item = itemsById[id] else {
+        continue
+      }
+      let size = item.view.preferredSize(forWidth: toastWidth)
+      let frame = CGRect(
+        x: floor(screenAnchorFrame.midX - size.width / 2),
+        y: floor(y),
+        width: size.width,
+        height: size.height
+      )
+      item.view.frame = CGRect(origin: .zero, size: size)
+      if animated {
+        NSAnimationContext.runAnimationGroup { context in
+          context.duration = 0.16
+          item.panel.animator().setFrame(frame, display: true)
+        }
+      } else {
+        item.panel.setFrame(frame, display: true)
+      }
+      y += size.height + Self.gap
+    }
+  }
+}
+
+private final class NativeAppToastView: NSView {
+  private static let actionGap: CGFloat = 14
+  private static let actionHeight: CGFloat = 24
+  private static let horizontalPadding: CGFloat = 20
+  private static let iconSize: CGFloat = 18
+  private static let iconTextGap: CGFloat = 14
+
+  private let actionButton = NativeToastActionButton()
+  private let descriptionField = NSTextField(labelWithString: "")
+  private let spinnerView = NativeToastSpinnerView(frame: .zero)
+  private let titleField = NSTextField(labelWithString: "")
+  private let onAction: (Any) -> Void
+  private var request: NativeAppToastRequest
+
+  override var isFlipped: Bool { true }
+
+  init(request: NativeAppToastRequest, onAction: @escaping (Any) -> Void) {
+    self.onAction = onAction
+    self.request = request
+    super.init(frame: CGRect(origin: .zero, size: Self.preferredSize(for: request, width: 356)))
+    wantsLayer = true
+    layer?.backgroundColor = NSColor(srgbRed: 23.0 / 255.0, green: 23.0 / 255.0, blue: 23.0 / 255.0, alpha: 1).cgColor
+    layer?.borderColor = NSColor.white.withAlphaComponent(0.14).cgColor
+    layer?.borderWidth = 1
+    layer?.cornerRadius = 12
+    layer?.masksToBounds = true
+
+    titleField.font = .systemFont(ofSize: 14, weight: .semibold)
+    titleField.lineBreakMode = .byTruncatingTail
+    titleField.textColor = NSColor(srgbRed: 244.0 / 255.0, green: 244.0 / 255.0, blue: 245.0 / 255.0, alpha: 1)
+    titleField.usesSingleLineMode = true
+    descriptionField.font = .systemFont(ofSize: 14, weight: .regular)
+    descriptionField.lineBreakMode = .byTruncatingTail
+    descriptionField.maximumNumberOfLines = 2
+    descriptionField.textColor = NSColor(srgbRed: 212.0 / 255.0, green: 212.0 / 255.0, blue: 216.0 / 255.0, alpha: 1)
+
+    addSubview(spinnerView)
+    addSubview(titleField)
+    addSubview(descriptionField)
+    addSubview(actionButton)
+    update(request)
+  }
+
+  required init?(coder: NSCoder) {
+    fatalError("init(coder:) is not supported")
+  }
+
+  func update(_ request: NativeAppToastRequest) {
+    self.request = request
+    titleField.stringValue = request.title
+    descriptionField.stringValue = request.description ?? ""
+    descriptionField.isHidden = request.description == nil
+    spinnerView.isHidden = !request.showsSpinner
+    if let action = request.action {
+      actionButton.isHidden = false
+      actionButton.title = action.label
+      actionButton.onClick = { [weak self] in
+        self?.onAction(action.sidebarMessage)
+      }
+    } else {
+      actionButton.isHidden = true
+      actionButton.onClick = nil
+    }
+    needsLayout = true
+  }
+
+  func preferredSize(forWidth width: CGFloat) -> CGSize {
+    Self.preferredSize(for: request, width: width)
+  }
+
+  override func layout() {
+    super.layout()
+    let hasDescription = request.description != nil
+    let actionWidth = actionButton.isHidden ? CGFloat(0) : actionButton.preferredWidth
+    let leadingContentX = Self.horizontalPadding
+      + (request.showsSpinner ? Self.iconSize + Self.iconTextGap : 0)
+    let actionFrame = CGRect(
+      x: bounds.width - Self.horizontalPadding - actionWidth,
+      y: floor((bounds.height - Self.actionHeight) / 2),
+      width: actionWidth,
+      height: Self.actionHeight
+    )
+    actionButton.frame = actionButton.isHidden ? .zero : actionFrame
+    spinnerView.frame = request.showsSpinner
+      ? CGRect(
+        x: Self.horizontalPadding + 4,
+        y: floor((bounds.height - Self.iconSize) / 2),
+        width: Self.iconSize,
+        height: Self.iconSize)
+      : .zero
+    let textRight = actionButton.isHidden
+      ? bounds.width - Self.horizontalPadding
+      : actionFrame.minX - Self.actionGap
+    let textWidth = max(40, textRight - leadingContentX)
+    if hasDescription {
+      titleField.frame = CGRect(x: leadingContentX, y: 13, width: textWidth, height: 22)
+      descriptionField.frame = CGRect(x: leadingContentX, y: 37, width: textWidth, height: bounds.height - 49)
+    } else {
+      titleField.frame = CGRect(
+        x: leadingContentX,
+        y: floor((bounds.height - 22) / 2),
+        width: textWidth,
+        height: 22)
+      descriptionField.frame = .zero
+    }
+  }
+
+  private static func preferredSize(for request: NativeAppToastRequest, width: CGFloat) -> CGSize {
+    let hasDescription = request.description != nil
+    let baseHeight: CGFloat = hasDescription ? 72 : 52
+    return CGSize(width: width, height: baseHeight)
+  }
+}
+
+private final class NativeToastActionButton: NSView {
+  private let titleField = NSTextField(labelWithString: "")
+  private var isPressed = false
+
+  var onClick: (() -> Void)?
+  var title: String = "" {
+    didSet {
+      titleField.stringValue = title
+      needsLayout = true
+    }
+  }
+
+  var preferredWidth: CGFloat {
+    let size = (title as NSString).size(withAttributes: [
+      .font: NSFont.systemFont(ofSize: 14, weight: .medium)
+    ])
+    return min(max(ceil(size.width) + 22, 46), 128)
+  }
+
+  override var isFlipped: Bool { true }
+
+  init() {
+    super.init(frame: .zero)
+    wantsLayer = true
+    layer?.cornerRadius = 6
+    layer?.masksToBounds = true
+    titleField.alignment = .center
+    titleField.font = .systemFont(ofSize: 14, weight: .medium)
+    titleField.textColor = NSColor(srgbRed: 24.0 / 255.0, green: 24.0 / 255.0, blue: 27.0 / 255.0, alpha: 1)
+    titleField.usesSingleLineMode = true
+    addSubview(titleField)
+    updateBackground()
+  }
+
+  required init?(coder: NSCoder) {
+    fatalError("init(coder:) is not supported")
+  }
+
+  override func layout() {
+    super.layout()
+    titleField.frame = bounds.insetBy(dx: 6, dy: 2)
+  }
+
+  override func mouseDown(with event: NSEvent) {
+    isPressed = true
+    updateBackground()
+  }
+
+  override func mouseUp(with event: NSEvent) {
+    let shouldClick = bounds.contains(convert(event.locationInWindow, from: nil))
+    isPressed = false
+    updateBackground()
+    if shouldClick {
+      onClick?()
+    }
+  }
+
+  private func updateBackground() {
+    let color = isPressed
+      ? NSColor(srgbRed: 228.0 / 255.0, green: 228.0 / 255.0, blue: 231.0 / 255.0, alpha: 1)
+      : NSColor(srgbRed: 244.0 / 255.0, green: 244.0 / 255.0, blue: 245.0 / 255.0, alpha: 1)
+    layer?.backgroundColor = color.cgColor
+  }
+}
+
+private final class NativeToastSpinnerView: NSView {
+  private let spinnerLayer = CAShapeLayer()
+
+  override var isFlipped: Bool { true }
+
+  override init(frame frameRect: NSRect) {
+    super.init(frame: frameRect)
+    wantsLayer = true
+    spinnerLayer.fillColor = nil
+    spinnerLayer.lineCap = .round
+    spinnerLayer.lineWidth = 2
+    spinnerLayer.strokeColor = NSColor.white.withAlphaComponent(0.95).cgColor
+    layer?.addSublayer(spinnerLayer)
+
+    let animation = CABasicAnimation(keyPath: "transform.rotation.z")
+    animation.byValue = CGFloat.pi * 2
+    animation.duration = 0.85
+    animation.repeatCount = .infinity
+    spinnerLayer.add(animation, forKey: "nativeToastSpinner")
+  }
+
+  required init?(coder: NSCoder) {
+    fatalError("init(coder:) is not supported")
+  }
+
+  override func layout() {
+    super.layout()
+    spinnerLayer.frame = bounds
+    let insetBounds = bounds.insetBy(dx: 2, dy: 2)
+    let radius = min(insetBounds.width, insetBounds.height) / 2
+    let center = CGPoint(x: bounds.midX, y: bounds.midY)
+    let path = CGMutablePath()
+    path.addArc(
+      center: center,
+      radius: radius,
+      startAngle: -CGFloat.pi * 0.35,
+      endAngle: CGFloat.pi * 1.15,
+      clockwise: false)
+    spinnerLayer.path = path
+  }
+}
+
+private final class AppModalWindowPanel: NSPanel {
+  private struct ResizeEdges: OptionSet {
+    let rawValue: Int
+
+    static let left = ResizeEdges(rawValue: 1 << 0)
+    static let right = ResizeEdges(rawValue: 1 << 1)
+    static let bottom = ResizeEdges(rawValue: 1 << 2)
+    static let top = ResizeEdges(rawValue: 1 << 3)
+  }
+
+  var promptEditorTitleDragHeight: CGFloat = 0
+  var promptEditorTitleDragExcludedTrailingWidth: CGFloat = 0
+  var promptEditorResizeMargin: CGFloat = 0
+  var promptEditorMinimumContentSize = CGSize(width: 180, height: 260)
+
+  override var canBecomeKey: Bool { true }
+  override var canBecomeMain: Bool { true }
+
+  override func sendEvent(_ event: NSEvent) {
+    guard event.type == .leftMouseDown,
+      promptEditorTitleDragHeight > 0
+    else {
+      super.sendEvent(event)
+      return
+    }
+
+    let point = event.locationInWindow
+    let resizeEdges = promptEditorResizeEdges(for: point)
+    if !resizeEdges.isEmpty {
+      resizePromptEditorWindow(from: event, edges: resizeEdges)
+      return
+    }
+
+    let isInTitleDragBand = point.y >= frame.height - promptEditorTitleDragHeight
+    let isInTrailingControlArea =
+      point.x >= frame.width - promptEditorTitleDragExcludedTrailingWidth
+    if isInTitleDragBand, !isInTrailingControlArea {
+      performDrag(with: event)
+      return
+    }
+
+    super.sendEvent(event)
+  }
+
+  private func promptEditorResizeEdges(for point: CGPoint) -> ResizeEdges {
+    guard promptEditorResizeMargin > 0 else {
+      return []
+    }
+    var edges: ResizeEdges = []
+    if point.x <= promptEditorResizeMargin {
+      edges.insert(.left)
+    }
+    if point.x >= frame.width - promptEditorResizeMargin {
+      edges.insert(.right)
+    }
+    if point.y <= promptEditorResizeMargin {
+      edges.insert(.bottom)
+    }
+    return edges
+  }
+
+  private func resizePromptEditorWindow(from event: NSEvent, edges: ResizeEdges) {
+    let startMouse = NSEvent.mouseLocation
+    let startFrame = frame
+    while true {
+      guard let nextEvent = nextEvent(matching: [.leftMouseDragged, .leftMouseUp]) else {
+        break
+      }
+      if nextEvent.type == .leftMouseUp {
+        break
+      }
+
+      let currentMouse = NSEvent.mouseLocation
+      let delta = CGPoint(
+        x: currentMouse.x - startMouse.x,
+        y: currentMouse.y - startMouse.y)
+      setFrame(
+        promptEditorResizedFrame(from: startFrame, delta: delta, edges: edges),
+        display: true)
+    }
+  }
+
+  private func promptEditorResizedFrame(
+    from startFrame: CGRect,
+    delta: CGPoint,
+    edges: ResizeEdges
+  ) -> CGRect {
+    var nextFrame = startFrame
+    if edges.contains(.left) {
+      nextFrame.origin.x = startFrame.origin.x + delta.x
+      nextFrame.size.width = startFrame.width - delta.x
+    }
+    if edges.contains(.right) {
+      nextFrame.size.width = startFrame.width + delta.x
+    }
+    if edges.contains(.bottom) {
+      nextFrame.origin.y = startFrame.origin.y + delta.y
+      nextFrame.size.height = startFrame.height - delta.y
+    }
+    if edges.contains(.top) {
+      nextFrame.size.height = startFrame.height + delta.y
+    }
+
+    if nextFrame.width < promptEditorMinimumContentSize.width {
+      if edges.contains(.left) {
+        nextFrame.origin.x = startFrame.maxX - promptEditorMinimumContentSize.width
+      }
+      nextFrame.size.width = promptEditorMinimumContentSize.width
+    }
+    if nextFrame.height < promptEditorMinimumContentSize.height {
+      if edges.contains(.bottom) {
+        nextFrame.origin.y = startFrame.maxY - promptEditorMinimumContentSize.height
+      }
+      nextFrame.size.height = promptEditorMinimumContentSize.height
+    }
+    return nextFrame
+  }
+}
+
+private final class AppModalWindowWebView: WKWebView {
+  var nativeWindowTitleDragHeight: CGFloat = 0
+  var nativeWindowTitleDragExcludedTrailingWidth: CGFloat = 0
+
+  override func mouseDown(with event: NSEvent) {
+    guard nativeWindowTitleDragHeight > 0 else {
+      super.mouseDown(with: event)
+      return
+    }
+
+    let point = convert(event.locationInWindow, from: nil)
+    let isInTitleDragBand = point.y >= bounds.height - nativeWindowTitleDragHeight
+    let isInTrailingControlArea =
+      point.x >= bounds.width - nativeWindowTitleDragExcludedTrailingWidth
+    guard isInTitleDragBand, !isInTrailingControlArea else {
+      super.mouseDown(with: event)
+      return
+    }
+
+    guard let window else {
+      super.mouseDown(with: event)
+      return
+    }
+    window.performDrag(with: event)
+  }
+}
+
+private final class AppModalWindowController: NSObject, NSWindowDelegate, WKNavigationDelegate {
+  private static let screenMargin: CGFloat = 24
+  private static let minimumSize = CGSize(width: 520, height: 360)
+  private static let floatingPromptEditorMinimumSize = CGSize(width: 180, height: 260)
+  private static let floatingPromptEditorResizeMargin: CGFloat = 8
+  private static let floatingPromptEditorTitleDragHeight: CGFloat = 32
+  private static let floatingPromptEditorTrailingActionReserve: CGFloat = 170
+
+  private let scriptBridge: SidebarScriptBridge
+  private let bootstrapScriptSource: String?
+  private let diagnosticsScript: String
+  private let onClosed: (String, String?) -> Void
+  private let onContentFrameChanged: (String, CGRect) -> Void
+
+  private weak var parentWindow: NSWindow?
+  private var panel: AppModalWindowPanel?
+  private var webView: WKWebView?
+  private var loadedModal: String?
+  private var currentModal: String?
+  private var pendingOpenMessage: [String: Any]?
+  private var pendingMessages: [[String: Any]] = []
+  private var latestSidebarState: [String: Any]?
+  private var outsideEventMonitor: Any?
+  private var isReady = false
+  private var isProgrammaticClose = false
+  private var openStartedAtMs: Int?
+  private var webViewLoadStartedAtMs: Int?
+
+  var window: NSWindow? {
+    currentModal == nil ? nil : panel
+  }
+
+  var canReceiveMessages: Bool {
+    webView != nil && currentModal != nil
+  }
+
+  var currentModalKind: String? {
+    currentModal
+  }
+
+  private static func monotonicMilliseconds() -> Int {
+    Int((ProcessInfo.processInfo.systemUptime * 1000).rounded())
+  }
+
+  init(
+    scriptBridge: SidebarScriptBridge,
+    bootstrapScriptSource: String?,
+    diagnosticsScript: String,
+    onClosed: @escaping (String, String?) -> Void,
+    onContentFrameChanged: @escaping (String, CGRect) -> Void
+  ) {
+    self.scriptBridge = scriptBridge
+    self.bootstrapScriptSource = bootstrapScriptSource
+    self.diagnosticsScript = diagnosticsScript
+    self.onClosed = onClosed
+    self.onContentFrameChanged = onContentFrameChanged
+    super.init()
+  }
+
+  deinit {
+    close(sendReactClose: false)
+  }
+
+  func open(
+    modal: String,
+    message: [String: Any],
+    parentWindow: NSWindow,
+    webAssets: URL,
+    latestSidebarState: [String: Any]?,
+    preferredContentFrame: CGRect? = nil
+  ) {
+    /*
+     CDXC:AppModals 2026-06-11-19:46:
+     Non-prompt app modals must not create any transparent overlay above the main workspace. Present the existing React modal host inside a real AppKit child window, keep the panel hidden until React reports `presented`, and make the panel keyable so Settings search, agent forms, and previous-session filters receive normal keyboard input.
+
+     CDXC:AppModals 2026-06-11-20:46:
+     Native modal windows should look like the titlebar Tips & Tricks child
+     panel rather than macOS document windows. Use a borderless keyable panel so
+     React owns the visible close affordance and no AppKit titlebar or traffic
+     lights wrap Settings, Agents Hub, Previous Sessions, or smaller modals.
+
+     CDXC:PromptEditor 2026-06-11-22:51:
+     The rich prompt editor no longer uses the transparent full-workspace modal
+     overlay. It reuses the native modal-window host, but keeps AppKit resize
+     and move behavior through a titled/resizable child window with hidden
+     traffic-light buttons so the editor can float without covering the
+     workspace with a hit-test layer.
+
+     CDXC:PromptEditor 2026-06-11-23:06:
+     The prompt editor window should have square corners and a reliable drag
+     target across the whole React titlebar. Use a prompt-specific borderless
+     panel and intercept titlebar drag plus edge resize at the NSWindow event
+     layer, so WKWebView subviews cannot swallow the move/resize gestures.
+
+     CDXC:PromptEditor 2026-06-12-04:37:
+     Ctrl+G should be fast on first launch and subsequent launches. Reuse the
+     hidden prompt-editor native window when it already loaded the real modal
+     host, but keep other app modals on the existing fresh-open lifecycle so
+     unrelated dialogs do not inherit prompt editor state.
+     */
+    if canReusePromptEditorHost(for: modal) {
+      reusePromptEditorHost(
+        message: message,
+        parentWindow: parentWindow,
+        latestSidebarState: latestSidebarState,
+        preferredContentFrame: preferredContentFrame)
+      return
+    }
+    close(sendReactClose: false)
+    self.parentWindow = parentWindow
+    self.loadedModal = modal
+    self.currentModal = modal
+    self.pendingOpenMessage = message
+    self.pendingMessages = []
+    self.latestSidebarState = latestSidebarState
+    self.isReady = false
+    self.openStartedAtMs = Self.monotonicMilliseconds()
+    self.webViewLoadStartedAtMs = nil
+    logPromptWindowEvent(
+      "nativeWindow.open.start",
+      details: [
+        "isReusableHost": false,
+        "modal": modal,
+        "requestId": message["requestId"] as? String ?? "",
+      ])
+
+    let size = constrainedSize(
+      preferredContentFrame?.size ?? defaultSize(for: modal),
+      parentWindow: parentWindow,
+      modal: modal)
+    let contentFrame = constrainedContentFrame(
+      preferredContentFrame: preferredContentFrame,
+      size: size,
+      parentWindow: parentWindow,
+      modal: modal)
+    let panel = AppModalWindowPanel(
+      contentRect: contentFrame,
+      styleMask: appModalStyleMask(for: modal),
+      backing: .buffered,
+      defer: false
+    )
+    panel.backgroundColor = NSColor(
+      srgbRed: 14.0 / 255.0,
+      green: 14.0 / 255.0,
+      blue: 14.0 / 255.0,
+      alpha: 1.0)
+    panel.collectionBehavior = [.fullScreenAuxiliary]
+    panel.delegate = self
+    panel.hasShadow = true
+    panel.hidesOnDeactivate = false
+    /*
+     CDXC:AppModals 2026-06-11-20:43:
+     Native child-window modals must not reveal a darker #050505 backing around
+     the React dialog while WKWebView is transparent or before CSS first paints.
+     Keep the AppKit panel and WebView layer on the same #0e0e0e surface.
+     */
+    panel.isOpaque = true
+    panel.isMovable = true
+    panel.isReleasedWhenClosed = false
+    panel.level = parentWindow.level
+    panel.contentMinSize = minimumContentSize(for: modal)
+    if modal == "floatingPromptEditor" {
+      panel.promptEditorMinimumContentSize = Self.floatingPromptEditorMinimumSize
+      panel.promptEditorResizeMargin = Self.floatingPromptEditorResizeMargin
+      panel.promptEditorTitleDragHeight = Self.floatingPromptEditorTitleDragHeight
+      panel.promptEditorTitleDragExcludedTrailingWidth =
+        Self.floatingPromptEditorTrailingActionReserve
+    }
+    if shouldLockContentSize(modal: modal) {
+      panel.contentMinSize = size
+      panel.contentMaxSize = size
+    }
+    panel.title = title(for: modal)
+    configurePanelChrome(panel, modal: modal)
+
+    let webView = AppModalWindowWebView(
+      frame: CGRect(origin: .zero, size: contentFrame.size),
+      configuration: makeConfiguration())
+    if modal == "floatingPromptEditor" {
+      webView.nativeWindowTitleDragHeight = Self.floatingPromptEditorTitleDragHeight
+      webView.nativeWindowTitleDragExcludedTrailingWidth =
+        Self.floatingPromptEditorTrailingActionReserve
+    }
+    webView.autoresizingMask = [.width, .height]
+    webView.navigationDelegate = self
+    /*
+     CDXC:AppModals 2026-06-11-20:43:
+     The native modal WKWebView can be transparent before React/CSS finishes
+     painting. Give the WebView layer the same #0e0e0e backing as the panel so
+     no darker host border appears around the dialog component.
+     */
+    webView.wantsLayer = true
+    webView.layer?.backgroundColor = ghostexReferenceSidebarChromeBackgroundColor.cgColor
+    webView.setValue(false, forKey: "drawsBackground")
+    panel.contentView = webView
+
+    self.panel = panel
+    self.webView = webView
+    installOutsideEventMonitorIfNeeded(for: modal)
+    loadModalHost(webAssets: webAssets, webView: webView)
+  }
+
+  private func canReusePromptEditorHost(for modal: String) -> Bool {
+    modal == "floatingPromptEditor"
+      && loadedModal == "floatingPromptEditor"
+      && panel != nil
+      && webView != nil
+  }
+
+  private func reusePromptEditorHost(
+    message: [String: Any],
+    parentWindow: NSWindow,
+    latestSidebarState: [String: Any]?,
+    preferredContentFrame: CGRect?
+  ) {
+    self.parentWindow = parentWindow
+    self.currentModal = "floatingPromptEditor"
+    self.pendingOpenMessage = nil
+    self.pendingMessages = []
+    if let latestSidebarState {
+      self.latestSidebarState = latestSidebarState
+    }
+    self.openStartedAtMs = Self.monotonicMilliseconds()
+    logPromptWindowEvent(
+      "nativeWindow.open.reuse",
+      details: [
+        "isReady": isReady,
+        "requestId": message["requestId"] as? String ?? "",
+      ])
+
+    if let panel {
+      let size = constrainedSize(
+        preferredContentFrame?.size ?? defaultSize(for: "floatingPromptEditor"),
+        parentWindow: parentWindow,
+        modal: "floatingPromptEditor")
+      let contentFrame = constrainedContentFrame(
+        preferredContentFrame: preferredContentFrame,
+        size: size,
+        parentWindow: parentWindow)
+      panel.setFrame(panel.frameRect(forContentRect: contentFrame), display: false)
+      panel.level = parentWindow.level
+      panel.contentMinSize = minimumContentSize(for: "floatingPromptEditor")
+    }
+
+    guard isReady else {
+      pendingOpenMessage = message
+      return
+    }
+    if let latestSidebarState = self.latestSidebarState {
+      dispatch(latestSidebarState)
+    }
+    dispatch(message)
+  }
+
+  func hostReady(latestSidebarState: [String: Any]?) {
+    isReady = true
+    logPromptWindowEvent(
+      "nativeWindow.hostReady",
+      details: [
+        "msSinceOpen": elapsedSinceOpenMs(),
+      ])
+    if let latestSidebarState {
+      self.latestSidebarState = latestSidebarState
+    }
+    if let latestSidebarState = self.latestSidebarState {
+      dispatch(latestSidebarState)
+    }
+    if let pendingOpenMessage {
+      dispatch(pendingOpenMessage)
+      self.pendingOpenMessage = nil
+    }
+    let queuedMessages = pendingMessages
+    pendingMessages = []
+    queuedMessages.forEach { dispatch($0) }
+  }
+
+  func presentIfCurrent(modal: String?) {
+    guard modal == currentModal,
+      let parentWindow,
+      let panel
+    else {
+      return
+    }
+    if panel.parent !== parentWindow {
+      parentWindow.addChildWindow(panel, ordered: .above)
+    }
+    logPromptWindowEvent(
+      "nativeWindow.present",
+      details: [
+        "msSinceOpen": elapsedSinceOpenMs(),
+      ])
+    panel.makeKeyAndOrderFront(nil)
+    NSApp.activate(ignoringOtherApps: true)
+  }
+
+  func dispatch(_ message: [String: Any]) {
+    if (message["type"] as? String) == "sidebarState" {
+      latestSidebarState = message
+    }
+    guard let webView else {
+      return
+    }
+    guard isReady else {
+      /*
+       CDXC:AppModals 2026-06-11-23:07:
+       The main-window modal WKWebView fallback is gone, so fast follow-up
+       bridge messages for native child windows must queue until the child
+       WKWebView reports ready. Keep sidebar state as latest-only because it is
+       replayed separately during hostReady.
+       */
+      if (message["type"] as? String) != "sidebarState" {
+        pendingMessages.append(message)
+      }
+      return
+    }
+    if loadedModal == "floatingPromptEditor",
+      (message["modal"] as? String) == "floatingPromptEditor"
+        || (message["type"] as? String)?.hasPrefix("floatingPromptEditor") == true
+    {
+      logPromptWindowEvent(
+        "nativeWindow.dispatch",
+        details: [
+          "messageModal": message["modal"] as? String ?? "",
+          "messageType": message["type"] as? String ?? "",
+          "msSinceOpen": elapsedSinceOpenMs(),
+          "requestId": message["requestId"] as? String ?? "",
+        ])
+    }
+    guard JSONSerialization.isValidJSONObject(message),
+      let data = try? JSONSerialization.data(withJSONObject: message),
+      let json = String(data: data, encoding: .utf8)
+    else {
+      AppDelegate.appendAppModalErrorLog(
+        area: "AppModals:nativeWindow",
+        message: "Failed to serialize native-window modal host message: \(message)",
+        stack: nil
+      )
+      return
+    }
+    webView.evaluateJavaScript(
+      """
+      window.dispatchEvent(new CustomEvent('ghostex-app-modal-host-message', { detail: \(json) }));
+      undefined;
+      """
+    ) { _, error in
+      if let error {
+        AppDelegate.appendAppModalErrorLog(
+          area: "AppModals:nativeWindow",
+          message: "Failed to dispatch native-window modal host message: \(error.localizedDescription)",
+          stack: nil
+        )
+      }
+    }
+  }
+
+  func close(sendReactClose: Bool) {
+    if sendReactClose {
+      dispatch(["type": "close"])
+    }
+    isProgrammaticClose = true
+    tearDownPanel()
+    isProgrammaticClose = false
+  }
+
+  func hideReusablePromptEditor(sendReactClose: Bool) {
+    guard loadedModal == "floatingPromptEditor",
+      panel != nil,
+      webView != nil
+    else {
+      close(sendReactClose: sendReactClose)
+      return
+    }
+    /*
+     CDXC:PromptEditor 2026-06-12-04:37:
+     Prompt-editor save, cancel, and prewarm completion should clear React's
+     active prompt state but keep the native WKWebView process and loaded
+     Monaco runtime alive. Ordering the child window out preserves privacy
+     on-screen while avoiding the next Ctrl+G WebKit cold start.
+     */
+    if sendReactClose {
+      dispatch(["type": "close"])
+    }
+    publishContentFrameChanged()
+    isProgrammaticClose = true
+    parentWindow?.removeChildWindow(panel!)
+    panel?.orderOut(nil)
+    isProgrammaticClose = false
+    currentModal = nil
+    pendingOpenMessage = nil
+    pendingMessages = []
+    openStartedAtMs = nil
+    logPromptWindowEvent(
+      "nativeWindow.promptHostHidden",
+      details: [
+        "sendReactClose": sendReactClose,
+      ])
+  }
+
+  func windowWillClose(_ notification: Notification) {
+    guard !isProgrammaticClose else {
+      return
+    }
+    let closedModal = currentModal
+    tearDownPanel()
+    onClosed("nativeWindowCloseButton", closedModal)
+  }
+
+  func windowDidMove(_ notification: Notification) {
+    publishContentFrameChanged()
+  }
+
+  func windowDidResize(_ notification: Notification) {
+    publishContentFrameChanged()
+  }
+
+  private func tearDownPanel() {
+    removeOutsideEventMonitor()
+    publishContentFrameChanged()
+    if let panel {
+      parentWindow?.removeChildWindow(panel)
+      panel.delegate = nil
+      panel.orderOut(nil)
+      panel.contentView = nil
+    }
+    webView?.navigationDelegate = nil
+    webView = nil
+    panel = nil
+    loadedModal = nil
+    currentModal = nil
+    pendingOpenMessage = nil
+    pendingMessages = []
+    isReady = false
+    openStartedAtMs = nil
+    webViewLoadStartedAtMs = nil
+  }
+
+  private func installOutsideEventMonitorIfNeeded(for modal: String) {
+    removeOutsideEventMonitor()
+    guard modal == "commandPalette" else {
+      return
+    }
+    /*
+     CDXC:CommandPalette 2026-06-12-05:45:
+     The command palette is a compact native child window, so clicks in the
+     parent Ghostex window happen outside the palette WKWebView and cannot be
+     seen by Base UI's dialog backdrop. Close the palette on the next app-local
+     mouse down outside its NSPanel while letting the original click continue to
+     its target.
+     */
+    outsideEventMonitor = NSEvent.addLocalMonitorForEvents(
+      matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown]
+    ) { [weak self] event in
+      guard let self else {
+        return event
+      }
+      guard self.currentModal == "commandPalette" else {
+        return event
+      }
+      if let panel = self.panel,
+        event.window === panel
+      {
+        return event
+      }
+      self.closeFromOutsideMouseDown()
+      return event
+    }
+  }
+
+  private func closeFromOutsideMouseDown() {
+    let closedModal = currentModal
+    close(sendReactClose: true)
+    onClosed("outsideMouseDown", closedModal)
+  }
+
+  private func removeOutsideEventMonitor() {
+    if let outsideEventMonitor {
+      NSEvent.removeMonitor(outsideEventMonitor)
+      self.outsideEventMonitor = nil
+    }
+  }
+
+  private func publishContentFrameChanged() {
+    guard let currentModal,
+      currentModal == "floatingPromptEditor",
+      let panel
+    else {
+      return
+    }
+    onContentFrameChanged(currentModal, panel.contentRect(forFrameRect: panel.frame))
+  }
+
+  private func makeConfiguration() -> WKWebViewConfiguration {
+    let configuration = WKWebViewConfiguration()
+    configuration.userContentController.add(scriptBridge, name: "ghostexAppModalHost")
+    configuration.userContentController.addUserScript(
+      WKUserScript(
+        source: "window.__ghostex_APP_MODAL_HOST_SURFACE__ = \"nativeWindow\";",
+        injectionTime: .atDocumentStart,
+        forMainFrameOnly: true
+      ))
+    if let bootstrapScriptSource {
+      configuration.userContentController.addUserScript(
+        WKUserScript(
+          source: bootstrapScriptSource,
+          injectionTime: .atDocumentStart,
+          forMainFrameOnly: true
+        ))
+    }
+    configuration.userContentController.addUserScript(
+      WKUserScript(
+        source: diagnosticsScript,
+        injectionTime: .atDocumentStart,
+        forMainFrameOnly: true
+      ))
+    return configuration
+  }
+
+  private func loadModalHost(webAssets: URL, webView: WKWebView) {
+    webViewLoadStartedAtMs = Self.monotonicMilliseconds()
+    logPromptWindowEvent(
+      "nativeWindow.webView.loadStart",
+      details: [
+        "modal": loadedModal ?? "",
+      ])
+    let builtModalHost = webAssets.appendingPathComponent("modal-host.html")
+    guard FileManager.default.fileExists(atPath: builtModalHost.path) else {
+      webView.loadHTMLString(
+        "<!doctype html><html><body style=\"margin:0;background:#0e0e0e\"></body></html>",
+        baseURL: webAssets
+      )
+      return
+    }
+    webView.loadFileURL(builtModalHost, allowingReadAccessTo: webAssets)
+  }
+
+  func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+    logPromptWindowEvent(
+      "nativeWindow.webView.didFinish",
+      details: [
+        "msSinceLoadStart": elapsedSinceWebViewLoadMs(),
+        "msSinceOpen": elapsedSinceOpenMs(),
+      ])
+  }
+
+  func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
+    logPromptWindowEvent(
+      "nativeWindow.webView.failed",
+      details: [
+        "error": error.localizedDescription,
+      ])
+  }
+
+  func webView(
+    _ webView: WKWebView,
+    didFailProvisionalNavigation navigation: WKNavigation!,
+    withError error: Error
+  ) {
+    logPromptWindowEvent(
+      "nativeWindow.webView.provisionalFailed",
+      details: [
+        "error": error.localizedDescription,
+      ])
+  }
+
+  private func elapsedSinceOpenMs() -> Int {
+    guard let openStartedAtMs else {
+      return -1
+    }
+    return max(0, Self.monotonicMilliseconds() - openStartedAtMs)
+  }
+
+  private func elapsedSinceWebViewLoadMs() -> Int {
+    guard let webViewLoadStartedAtMs else {
+      return -1
+    }
+    return max(0, Self.monotonicMilliseconds() - webViewLoadStartedAtMs)
+  }
+
+  private func logPromptWindowEvent(_ event: String, details: [String: Any] = [:]) {
+    guard loadedModal == "floatingPromptEditor"
+      || currentModal == "floatingPromptEditor"
+      || (details["modal"] as? String) == "floatingPromptEditor"
+    else {
+      return
+    }
+    var payload = details
+    payload["currentModal"] = currentModal ?? ""
+    payload["loadedModal"] = loadedModal ?? ""
+    payload["source"] = "nativeWindow"
+    PromptEditorDebugLog.append(event: event, details: payload)
+  }
+
+  private func defaultSize(for modal: String) -> CGSize {
+    switch modal {
+    case "floatingPromptEditor":
+      return CGSize(width: 400, height: 320)
+    case "settings", "configureAgents", "configureActions", "openTargets", "hotkeys":
+      return CGSize(width: 1120, height: 780)
+    case "agentsHub":
+      return CGSize(width: 1120, height: 760)
+    case "firstLaunchSetup", "tipsAndTricks":
+      /*
+       CDXC:FirstLaunchSetup 2026-06-12-07:13:
+       The macOS first-launch setup child window needs 90px more vertical room so the hooks step and footer fit without clipping in the native app.
+       Keep the legacy Tips & Tricks modal id aligned because it routes to the same first-launch setup surface.
+       */
+      return CGSize(width: 1120, height: 850)
+    case "gitFileDiff":
+      return CGSize(width: 1180, height: 820)
+    case "gitCommit", "worktree":
+      return CGSize(width: 1000, height: 760)
+    case "previousSessions":
+      /*
+       CDXC:PreviousSessions 2026-06-11-20:39:
+       Previous Sessions remains a compact picker whose React shell is 546px wide inside the modal host's 12px viewport padding. Size the native child window to that fitted component instead of the generic management-modal size, and keep it fixed so users do not reveal empty #0e0e0e gutters around the React component.
+       */
+      return CGSize(width: 570, height: 568)
+    case "renameSession":
+      /*
+       CDXC:SidebarRename 2026-06-12-02:50:
+       Rename Session is a compact macOS app dialog, not a management surface. Size and lock the native child window to a fitted fixed frame so the shadcn dialog avoids the generic 640x460 gutters shown around the React form.
+
+	      CDXC:SidebarRename 2026-06-12-05:05:
+	      Rename Session needs 20px more horizontal room after the compact native-window pass. Widen the native child window to 570px so the React dialog can grow without reintroducing oversized generic modal gutters.
+
+	      CDXC:SidebarRename 2026-06-12-06:35:
+	      Rename Session needs 80px more native-window height so the generated-name controls and bottom action area are not clipped in the macOS app. Keep the 570px width while raising the fixed child window to 480px tall.
+	      */
+	      return CGSize(width: 570, height: 480)
+    case "delayedSend":
+      /*
+       CDXC:DelayedSend 2026-06-12-04:07:
+       Delayed Send is a small timer dialog. Size and lock the native child window to 472x269 so AppKit does not inherit the generic app-modal frame or clamp it back up through the shared minimum.
+       */
+      return CGSize(width: 472, height: 269)
+    case "pinnedPrompts", "daemonSessions":
+      return CGSize(width: 760, height: 680)
+    case "scratchPad", "addRepository", "remoteProjectPicker":
+      return CGSize(width: 760, height: 640)
+    case "commandPalette":
+      /*
+       CDXC:CommandPalette 2026-06-12-05:04:
+       The macOS Command Palette native window should be 15px tighter on each horizontal side than the previous 720px frame while giving the React/WebView surface 15px more vertical room at the bottom. Use a 690x535 content size so the centered palette keeps the narrower left/right footprint and has more command-list area.
+       */
+      return CGSize(width: 690, height: 535)
+    default:
+      return CGSize(width: 640, height: 460)
+    }
+  }
+
+  private func constrainedSize(_ size: CGSize, parentWindow: NSWindow) -> CGSize {
+    constrainedSize(size, parentWindow: parentWindow, modal: nil)
+  }
+
+  private func constrainedSize(
+    _ size: CGSize,
+    parentWindow: NSWindow,
+    modal: String?
+  ) -> CGSize {
+    let visibleFrame = parentWindow.screen?.visibleFrame ?? parentWindow.frame
+    let minimumSize = minimumContentSize(for: modal)
+    let maxWidth = max(minimumSize.width, visibleFrame.width - Self.screenMargin * 2)
+    let maxHeight = max(minimumSize.height, visibleFrame.height - Self.screenMargin * 2)
+    return CGSize(
+      width: min(max(size.width, minimumSize.width), maxWidth),
+      height: min(max(size.height, minimumSize.height), maxHeight)
+    )
+  }
+
+  private func centeredFrame(size: CGSize, parentWindow: NSWindow) -> CGRect {
+    let visibleFrame = parentWindow.screen?.visibleFrame ?? parentWindow.frame
+    let frame = CGRect(
+      x: parentWindow.frame.midX - size.width / 2,
+      y: parentWindow.frame.midY - size.height / 2,
+      width: size.width,
+      height: size.height
+    )
+    return clampFrameToVisibleScreen(frame, visibleFrame: visibleFrame)
+  }
+
+  private func commandPaletteContentFrame(size: CGSize, parentWindow: NSWindow) -> CGRect {
+    /*
+     CDXC:CommandPalette 2026-06-12-05:14:
+     The palette width reduction should stay centered so 15px is removed from both left and right. The new 15px of height is bottom-only, so compute placement from the old 520px centered top edge and extend the content frame downward to 535px.
+     */
+    let visibleFrame = parentWindow.screen?.visibleFrame ?? parentWindow.frame
+    let previousCenteredHeight: CGFloat = 520
+    let bottomOnlyHeightIncrease = max(0, size.height - previousCenteredHeight)
+    let frame = CGRect(
+      x: parentWindow.frame.midX - size.width / 2,
+      y: parentWindow.frame.midY - previousCenteredHeight / 2 - bottomOnlyHeightIncrease,
+      width: size.width,
+      height: size.height
+    )
+    return clampFrameToVisibleScreen(frame, visibleFrame: visibleFrame)
+  }
+
+  private func clampFrameToVisibleScreen(_ frame: CGRect, visibleFrame: CGRect) -> CGRect {
+    var frame = frame
+    frame.origin.x = min(
+      max(frame.origin.x, visibleFrame.minX + Self.screenMargin),
+      visibleFrame.maxX - frame.width - Self.screenMargin)
+    frame.origin.y = min(
+      max(frame.origin.y, visibleFrame.minY + Self.screenMargin),
+      visibleFrame.maxY - frame.height - Self.screenMargin)
+    return frame
+  }
+
+  private func constrainedContentFrame(
+    preferredContentFrame: CGRect?,
+    size: CGSize,
+    parentWindow: NSWindow,
+    modal: String? = nil
+  ) -> CGRect {
+    guard let preferredContentFrame else {
+      if modal == "commandPalette" {
+        return commandPaletteContentFrame(size: size, parentWindow: parentWindow)
+      }
+      return centeredFrame(size: size, parentWindow: parentWindow)
+    }
+    let visibleFrame = parentWindow.screen?.visibleFrame ?? parentWindow.frame
+    var frame = CGRect(origin: preferredContentFrame.origin, size: size)
+    frame.origin.x = min(
+      max(frame.origin.x, visibleFrame.minX + Self.screenMargin),
+      visibleFrame.maxX - size.width - Self.screenMargin)
+    frame.origin.y = min(
+      max(frame.origin.y, visibleFrame.minY + Self.screenMargin),
+      visibleFrame.maxY - size.height - Self.screenMargin)
+    return frame
+  }
+
+  private func shouldLockContentSize(modal: String) -> Bool {
+    modal == "previousSessions" || modal == "renameSession" || modal == "delayedSend"
+  }
+
+  private func minimumContentSize(for modal: String?) -> CGSize {
+    switch modal {
+    case "delayedSend":
+      return CGSize(width: 472, height: 269)
+    case "floatingPromptEditor":
+      return Self.floatingPromptEditorMinimumSize
+    default:
+      return Self.minimumSize
+    }
+  }
+
+  private func appModalStyleMask(for modal: String) -> NSWindow.StyleMask {
+    if modal == "floatingPromptEditor" {
+      return .borderless
+    }
+    return .borderless
+  }
+
+  private func configurePanelChrome(_ panel: NSPanel, modal: String) {
+    guard modal == "floatingPromptEditor" else {
+      return
+    }
+    panel.hasShadow = true
+    panel.isMovableByWindowBackground = false
+  }
+
+  private func title(for modal: String) -> String {
+    switch modal {
+    case "addRepository":
+      return "Clone Repository"
+    case "agentConfig", "configureAgents":
+      return "Agents"
+    case "agentsHub":
+      return "Agents Hub"
+    case "commandPalette":
+      return "Command Palette"
+    case "commandConfig", "configureActions":
+      return "Actions"
+    case "daemonSessions":
+      return "Running Sessions"
+    case "delayedSend":
+      return "Delayed Send"
+    case "findPreviousSession", "previousSessions":
+      return "Previous Sessions"
+    case "firstLaunchSetup", "tipsAndTricks":
+      return "Tips & Tricks"
+    case "firstUserMessage":
+      return "First Message"
+    case "floatingPromptEditor":
+      return "Prompt Editor"
+    case "gitCommit":
+      return "Git Commit"
+    case "gitFileDiff":
+      return "File Diff"
+    case "hotkeys":
+      return "Hotkeys"
+    case "openTargets":
+      return "Open Targets"
+    case "pinnedPrompts":
+      return "Pinned Prompts"
+    case "remoteGxserverInstall":
+      return "Remote Setup"
+    case "remoteProjectPicker":
+      return "Add Remote Project"
+    case "renameSession":
+      return "Rename Session"
+    case "scratchPad":
+      return "Scratch Pad"
+    case "settings":
+      return "Settings"
+    case "t3BrowserAccess":
+      return "Browser Access"
+    case "t3ThreadId":
+      return "Thread ID"
+    case "worktree":
+      return "Worktree"
+    case "deleteWorktree":
+      return "Delete Worktree"
+    default:
+      return "Ghostex"
+    }
+  }
+}
+
+private final class TitlebarDropdownPanelController: NSObject, NSWindowDelegate, WKNavigationDelegate {
+  private static let screenMargin: CGFloat = 8
+  private static let panelGap: CGFloat = 6
+
+  private let scriptBridge: SidebarScriptBridge
+  private let bootstrapScriptSource: String?
+  private let diagnosticsScript: String
+  private let shouldLetTitlebarHandleOutsideMouseEvent: (NSEvent) -> Bool
+  private let onNativeDropdownOpenChanged: (String?) -> Void
+
+  private weak var parentWindow: NSWindow?
+  private var panel: NSPanel?
+  private var webView: WKWebView?
+  private var currentKind: String?
+  private var currentAnchorScreenRect = CGRect.zero
+  private var latestStateJson: String?
+  private var outsideEventMonitor: Any?
+  private var appDeactivateObserver: NSObjectProtocol?
+
+  init(
+    scriptBridge: SidebarScriptBridge,
+    bootstrapScriptSource: String?,
+    diagnosticsScript: String,
+    shouldLetTitlebarHandleOutsideMouseEvent: @escaping (NSEvent) -> Bool,
+    onNativeDropdownOpenChanged: @escaping (String?) -> Void
+  ) {
+    self.scriptBridge = scriptBridge
+    self.bootstrapScriptSource = bootstrapScriptSource
+    self.diagnosticsScript = diagnosticsScript
+    self.shouldLetTitlebarHandleOutsideMouseEvent = shouldLetTitlebarHandleOutsideMouseEvent
+    self.onNativeDropdownOpenChanged = onNativeDropdownOpenChanged
+    super.init()
+  }
+
+  deinit {
+    close()
+  }
+
+  func show(
+    kind: String,
+    anchorScreenRect: CGRect,
+    parentWindow: NSWindow,
+    preferredSize: CGSize?,
+    webAssets: URL,
+    latestStateJson: String?
+  ) {
+    /*
+     CDXC:ReactTitlebar 2026-06-11-13:22:
+     Titlebar dropdowns must be native child windows that render the existing
+     React dropdown surfaces in their own WKWebView document. The main titlebar
+     WKWebView stays clipped to the 35px strip so no transparent overlay sits
+     above the CEF/WKWebView workspace during editor drag/drop.
+
+     CDXC:ReactTitlebar 2026-06-11-15:58:
+     Loading a local titlebar-host.html file with synthetic query parameters is
+     fragile during WebKit panel creation. Inject the panel kind at document
+     start and keep the loaded file URL as the real resource path.
+
+     CDXC:ReactTitlebar 2026-06-11-18:06:
+     Resources sometimes rendered with default titlebar state because the
+     post-load setActiveProjectState call could run before React installed its
+     bridge. Keep the latest payload in the document-start bootstrap so child
+     panels render current project/resource state on their first React pass.
+
+     CDXC:TitlebarResources 2026-06-11-18:13:
+     The Resources panel also waits for an async process snapshot. Load that
+     child WKWebView hidden and order the panel onscreen only after React reports
+     that the first non-loading resources view has committed.
+
+     CDXC:ReactTitlebar 2026-06-12-02:50:
+     Short titlebar dropdowns should size from their rendered option count
+     before the native child panel opens, so menus such as Git, Open In, and
+     Actions do not hide rows below a fixed compact panel fold.
+     */
+    close(notifyTitlebar: false)
+    self.parentWindow = parentWindow
+    self.currentKind = kind
+    self.currentAnchorScreenRect = anchorScreenRect
+    self.latestStateJson = latestStateJson
+
+    let size = constrainedSize(preferredSize ?? defaultSize(for: kind), parentWindow: parentWindow)
+    let frame = panelFrame(size: size, parentWindow: parentWindow)
+    let panel = NSPanel(
+      contentRect: frame,
+      styleMask: [.borderless, .nonactivatingPanel],
+      backing: .buffered,
+      defer: false
+    )
+    panel.backgroundColor = NSColor(
+      srgbRed: 14.0 / 255.0,
+      green: 14.0 / 255.0,
+      blue: 14.0 / 255.0,
+      alpha: 1.0)
+    panel.collectionBehavior = [.fullScreenAuxiliary, .transient]
+    panel.delegate = self
+    panel.hasShadow = true
+    panel.hidesOnDeactivate = false
+    panel.isMovable = false
+    panel.isOpaque = true
+    panel.isReleasedWhenClosed = false
+    panel.level = parentWindow.level
+
+    let webView = WKWebView(
+      frame: CGRect(origin: .zero, size: frame.size),
+      configuration: makeConfiguration(panelKind: kind))
+    webView.autoresizingMask = [.width, .height]
+    webView.navigationDelegate = self
+    /*
+     CDXC:ReactTitlebar 2026-06-11-20:43:
+     Native titlebar dropdown panels also render transparent WKWebView content.
+     Use the same #0e0e0e backing as modal child windows so reused React
+     dropdown surfaces cannot show a darker host border during first paint.
+     */
+    webView.wantsLayer = true
+    webView.layer?.backgroundColor = ghostexReferenceSidebarChromeBackgroundColor.cgColor
+    webView.setValue(false, forKey: "drawsBackground")
+    panel.contentView = webView
+
+    self.panel = panel
+    self.webView = webView
+    loadPanel(webAssets: webAssets, webView: webView)
+    installOutsideEventMonitors()
+    if kind == "resources" {
+      onNativeDropdownOpenChanged(kind)
+    } else {
+      showWhenReady(kind: kind)
+    }
+  }
+
+  func showWhenReady(kind: String) {
+    guard kind == currentKind,
+      let parentWindow,
+      let panel,
+      !panel.isVisible
+    else {
+      return
+    }
+    parentWindow.addChildWindow(panel, ordered: .above)
+    panel.orderFront(nil)
+    onNativeDropdownOpenChanged(kind)
+  }
+
+  func close() {
+    close(notifyTitlebar: true)
+  }
+
+  private func close(notifyTitlebar: Bool) {
+    removeOutsideEventMonitors()
+    if let panel {
+      parentWindow?.removeChildWindow(panel)
+      panel.delegate = nil
+      panel.orderOut(nil)
+      panel.contentView = nil
+    }
+    webView?.navigationDelegate = nil
+    webView = nil
+    panel = nil
+    currentKind = nil
+    if notifyTitlebar {
+      onNativeDropdownOpenChanged(nil)
+    }
+  }
+
+  func resize(kind: String, width: CGFloat, height: CGFloat) {
+    guard kind == currentKind,
+      width.isFinite,
+      height.isFinite,
+      width > 0,
+      height > 0
+    else {
+      return
+    }
+    /*
+     CDXC:ReactTitlebar 2026-06-11-16:46:
+     WebKit can briefly report viewport-coupled wrapper sizes after right-click
+     opens, and applying those values creates a ResizeObserver/AppKit feedback
+     loop that collapses the child panel until it disappears.
+
+     CDXC:ReactTitlebar 2026-06-12-02:50:
+     The native dropdown contract uses React's pre-open preferred size instead
+     of post-open DOM measurement. Ignore resize messages so WebKit content
+     layout cannot shrink the NSPanel after it opens.
+     */
+  }
+
+  func setActiveProjectState(_ json: String) {
+    latestStateJson = json
+    applyLatestState()
+  }
+
+  func dispatchHostEventScript(_ script: String) {
+    webView?.evaluateJavaScript(script)
+  }
+
+  private static func describeFrame(_ frame: CGRect) -> [String: Double] {
+    [
+      "height": Double(frame.height),
+      "maxX": Double(frame.maxX),
+      "maxY": Double(frame.maxY),
+      "minX": Double(frame.minX),
+      "minY": Double(frame.minY),
+      "width": Double(frame.width),
+    ]
+  }
+
+  func debugSnapshot() -> [String: Any] {
+    [
+      "anchorScreenRect": Self.describeFrame(currentAnchorScreenRect),
+      "currentKind": currentKind ?? "<none>",
+      "hasAppDeactivateObserver": appDeactivateObserver != nil,
+      "hasOutsideEventMonitor": outsideEventMonitor != nil,
+      "panelFrame": panel.map { Self.describeFrame($0.frame) } ?? NSNull(),
+      "panelIsVisible": panel?.isVisible ?? false,
+      "present": panel != nil,
+      "webViewFrame": webView.map { Self.describeFrame($0.frame) } ?? NSNull(),
+      "webViewHidden": webView?.isHidden ?? false,
+      "windowNumber": panel?.windowNumber ?? NSNull(),
+    ]
+  }
+
+  func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+    applyLatestState()
+  }
+
+  private func makeConfiguration(panelKind: String) -> WKWebViewConfiguration {
+    let configuration = WKWebViewConfiguration()
+    configuration.userContentController.add(scriptBridge, name: "ghostexNativeHost")
+    configuration.userContentController.add(scriptBridge, name: "ghostexAppModalHost")
+    configuration.userContentController.add(scriptBridge, name: "ghostexNativeHostDiagnostics")
+    if let panelKindScript = Self.panelKindBootstrapScript(for: panelKind) {
+      configuration.userContentController.addUserScript(
+        WKUserScript(
+          source: panelKindScript,
+          injectionTime: .atDocumentStart,
+          forMainFrameOnly: true
+        ))
+    }
+    if let bootstrapScriptSource {
+      configuration.userContentController.addUserScript(
+        WKUserScript(
+          source: bootstrapScriptSource,
+          injectionTime: .atDocumentStart,
+          forMainFrameOnly: true
+        ))
+    }
+    if let latestStateJson,
+      let latestStateBootstrapScript = Self.latestTitlebarStateBootstrapScript(
+        json: latestStateJson)
+    {
+      configuration.userContentController.addUserScript(
+        WKUserScript(
+          source: latestStateBootstrapScript,
+          injectionTime: .atDocumentStart,
+          forMainFrameOnly: true
+        ))
+    }
+    configuration.userContentController.addUserScript(
+      WKUserScript(
+        source: diagnosticsScript,
+        injectionTime: .atDocumentStart,
+        forMainFrameOnly: true
+      ))
+    return configuration
+  }
+
+  private func loadPanel(webAssets: URL, webView: WKWebView) {
+    let builtTitlebarChrome = webAssets.appendingPathComponent("titlebar-host.html")
+    guard FileManager.default.fileExists(atPath: builtTitlebarChrome.path) else {
+      webView.loadHTMLString(
+        "<!doctype html><html><body style=\"margin:0;background:#0e0e0e\"></body></html>",
+        baseURL: webAssets
+      )
+      return
+    }
+    webView.loadFileURL(builtTitlebarChrome, allowingReadAccessTo: webAssets)
+  }
+
+  private static func panelKindBootstrapScript(for kind: String) -> String? {
+    guard let kindLiteral = javascriptStringLiteral(kind) else {
+      return nil
+    }
+    return "window.__ghostex_TITLEBAR_PANEL_KIND__ = \(kindLiteral);"
+  }
+
+  private static func latestTitlebarStateBootstrapScript(json: String) -> String? {
+    guard !json.isEmpty else {
+      return nil
+    }
+    return """
+      (() => {
+        const state = \(json);
+        const host = window.__ghostex_NATIVE_HOST__ && typeof window.__ghostex_NATIVE_HOST__ === "object"
+          ? window.__ghostex_NATIVE_HOST__
+          : {};
+        window.__ghostex_NATIVE_HOST__ = Object.assign({}, host, state);
+        window.__ghostex_PENDING_TITLEBAR_PROJECT_STATE__ = state;
+      })();
+      """
+  }
+
+  private static func javascriptStringLiteral(_ value: String) -> String? {
+    guard let data = try? JSONEncoder().encode(value) else {
+      return nil
+    }
+    return String(data: data, encoding: .utf8)
+  }
+
+  private func applyLatestState() {
+    guard let latestStateJson,
+      let webView
+    else {
+      return
+    }
+    webView.evaluateJavaScript(
+      """
+      window.__ghostex_PENDING_TITLEBAR_PROJECT_STATE__ = \(latestStateJson);
+      window.__ghostex_TITLEBAR__?.setActiveProjectState(\(latestStateJson));
+      undefined;
+      """)
+  }
+
+  private func installOutsideEventMonitors() {
+    removeOutsideEventMonitors()
+    outsideEventMonitor = NSEvent.addLocalMonitorForEvents(
+      matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown, .keyDown]
+    ) { [weak self] event in
+      guard let self else {
+        return event
+      }
+      if event.type == .keyDown,
+        event.charactersIgnoringModifiers == "\u{1b}"
+      {
+        self.close()
+        return nil
+      }
+      if event.type == .keyDown {
+        return event
+      }
+      if let panel = self.panel,
+        event.window === panel
+      {
+        return event
+      }
+      /*
+       CDXC:ReactTitlebar 2026-06-11-23:24:
+       Clicking the already-open titlebar dropdown trigger must let the React
+       titlebar receive the repeat button click and close the native child
+       window. The child panel outside monitor must not pre-close titlebar
+       control clicks because that clears nativeDropdownOpen before the trigger
+       can compare the current dropdown kind.
+       */
+      if self.shouldLetTitlebarHandleOutsideMouseEvent(event) {
+        return event
+      }
+      self.close()
+      return event
+    }
+    appDeactivateObserver = NotificationCenter.default.addObserver(
+      forName: NSApplication.didResignActiveNotification,
+      object: NSApp,
+      queue: .main
+    ) { [weak self] _ in
+      self?.close()
+    }
+  }
+
+  private func removeOutsideEventMonitors() {
+    if let outsideEventMonitor {
+      NSEvent.removeMonitor(outsideEventMonitor)
+      self.outsideEventMonitor = nil
+    }
+    if let appDeactivateObserver {
+      NotificationCenter.default.removeObserver(appDeactivateObserver)
+      self.appDeactivateObserver = nil
+    }
+  }
+
+  private func panelFrame(size: CGSize, parentWindow: NSWindow) -> CGRect {
+    let visibleFrame = parentWindow.screen?.visibleFrame
+      ?? NSScreen.main?.visibleFrame
+      ?? CGRect(x: 0, y: 0, width: 1200, height: 800)
+    let width = size.width
+    let height = size.height
+    var x = currentAnchorScreenRect.maxX - width
+    x = min(
+      max(x, visibleFrame.minX + Self.screenMargin),
+      visibleFrame.maxX - width - Self.screenMargin)
+    var y = currentAnchorScreenRect.minY - height - Self.panelGap
+    if y < visibleFrame.minY + Self.screenMargin {
+      y = min(
+        currentAnchorScreenRect.maxY + Self.panelGap,
+        visibleFrame.maxY - height - Self.screenMargin)
+    }
+    return CGRect(x: x, y: y, width: width, height: height)
+  }
+
+  private func constrainedSize(_ size: CGSize, parentWindow: NSWindow) -> CGSize {
+    let visibleFrame = parentWindow.screen?.visibleFrame
+      ?? NSScreen.main?.visibleFrame
+      ?? CGRect(x: 0, y: 0, width: 1200, height: 800)
+    let maxWidth = max(160, visibleFrame.width - Self.screenMargin * 2)
+    let maxHeight = max(120, visibleFrame.height - Self.screenMargin * 2)
+    return CGSize(
+      width: min(max(size.width, 160), maxWidth),
+      height: min(max(size.height, 1), maxHeight))
+  }
+
+  private func defaultSize(for kind: String) -> CGSize {
+    switch kind {
+    case "resources", "tips":
+      return CGSize(width: 656, height: 650)
+    default:
+      return CGSize(width: 240, height: 130)
+    }
+  }
+}
+
 final class ReactTitlebarChromeView: NSView {
   var titlebarHeight: CGFloat = 30
   private let webView: WKWebView
   private var hitRegions: [CGRect] = []
   private var overlayOpen = false
   private var frameBeforeTitlebarMaximize: NSRect?
-  private var terminalPaneDropRegisteredTypes: [NSPasteboard.PasteboardType] = []
-  private var operationSource = "titlebarChrome"
-  private var onTerminalPaneDropDragOperation: (((any NSDraggingInfo), String) -> NSDragOperation)?
-  private var onTerminalPaneDropDraggingExited: (((any NSDraggingInfo)?) -> Void)?
-  private var onTerminalPaneDropPerform: (((any NSDraggingInfo)) -> Bool)?
-  private var lastHitTestRouteLogSignature = ""
-  private var lastTerminalPaneDropHitTestLogSignature = ""
-  private var lastWebViewFootprintLogSignature = ""
   private var windowStateObserverTokens: [NSObjectProtocol] = []
-  private var terminalPaneDropForwardingActive = false
   private var nativePointerInside: Bool?
   private var nativePointerTrackingArea: NSTrackingArea?
 
@@ -11912,10 +13832,6 @@ final class ReactTitlebarChromeView: NSView {
     webView.autoresizingMask = [.width, .height]
     webView.frame = bounds
     addSubview(webView)
-    disableTitlebarWebViewDropDestination()
-    DispatchQueue.main.async { [weak self] in
-      self?.disableTitlebarWebViewDropDestination()
-    }
   }
 
   deinit {
@@ -11946,10 +13862,10 @@ final class ReactTitlebarChromeView: NSView {
     }
     /*
      CDXC:ReactTitlebar 2026-06-10-23:44:
-     The titlebar WKWebView is intentionally full-window for portals, so WebKit's
-     raw hover target can stay active after AppKit routes the pointer to blank
-     titlebar or workspace pixels. Track native pointer movement on the wrapper
-     and only mark hover active inside measured React hit regions.
+     The titlebar WKWebView is now clipped to the fixed titlebar strip, so native
+     pointer ownership can follow the strip itself instead of measured React
+     hit rectangles. WebKit receives normal movement inside the strip and clears
+     hover the same way the sidebar WKWebView does.
      */
     let trackingArea = NSTrackingArea(
       rect: .zero,
@@ -11976,25 +13892,6 @@ final class ReactTitlebarChromeView: NSView {
     super.mouseExited(with: event)
   }
 
-  func configureTerminalPaneDropForwarding(
-    registeredTypes: [NSPasteboard.PasteboardType],
-    operationSource: String,
-    dragOperation: @escaping ((any NSDraggingInfo), String) -> NSDragOperation,
-    draggingExited: @escaping ((any NSDraggingInfo)?) -> Void,
-    perform: @escaping (any NSDraggingInfo) -> Bool
-  ) {
-    self.terminalPaneDropRegisteredTypes = registeredTypes
-    self.operationSource = operationSource
-    self.onTerminalPaneDropDragOperation = dragOperation
-    self.onTerminalPaneDropDraggingExited = draggingExited
-    self.onTerminalPaneDropPerform = perform
-    registerForDraggedTypes(registeredTypes)
-    disableTitlebarWebViewDropDestination()
-    updateTitlebarWebViewFrame(reason: "dropForwardingConfigured")
-    logTerminalPaneDropRegistration(registeredTypes: registeredTypes, operationSource: operationSource)
-    logTerminalPaneWebViewDropDisabled(operationSource: operationSource)
-  }
-
   func setHitRegions(_ regions: [ReactTitlebarHitRegion], overlayOpen: Bool) {
     self.overlayOpen = overlayOpen
     hitRegions = regions.map {
@@ -12008,27 +13905,17 @@ final class ReactTitlebarChromeView: NSView {
     /**
      CDXC:ReactTitlebar 2026-05-12-09:58
      DOM hit regions are measured from the top of the full titlebar document.
-     The WKWebView may render full-window for unclipped portals, but native
-     hit-testing allows events through only when a point lands inside one of
-     these reported regions or inside the fixed blank titlebar drag strip.
+     Native hit-testing allows events through only when a point lands inside one
+     of these reported regions or inside the fixed blank titlebar drag strip.
 
      CDXC:ReactTitlebar 2026-05-25-10:27:
      Below-titlebar regions are valid only while React says a titlebar dropdown
      is open. Stale dropdown measurements must not keep routing workspace clicks
      into the titlebar WKWebView after the dropdown closes.
 
-     CDXC:TerminalImageDrop 2026-06-08-05:34:
-     Dock-stack drags need the terminal surface to remain the AppKit drag owner.
-
      CDXC:ReactTitlebar 2026-06-08-06:33:
-     Titlebar controls and their portaled tooltips need the titlebar WKWebView to keep the full-window viewport. Keep drop registration on the native wrapper only, and let native hit-testing restrict normal pointer events to measured React hit regions plus the blank titlebar drag strip.
-
-     CDXC:TerminalImageDrop 2026-06-08-07:16:
-     Finder and Dock drags start while another app owns focus, so there may be no
-     Ghostex drag-motion hit test before AppKit chooses a destination. Keep the
-     titlebar WebView's AppKit footprint clipped to the titlebar strip while the
-     app/window is inactive, exposing the registered native wrapper as the
-     full-window terminal drop destination before the external drag enters.
+     Native hit-testing restricts normal pointer events to measured React hit
+     regions plus the blank titlebar drag strip.
      */
     needsLayout = true
     updateTitlebarWebViewFrame(reason: "hitRegionsUpdated")
@@ -12053,8 +13940,45 @@ final class ReactTitlebarChromeView: NSView {
       """)
   }
 
+  func setNativeDropdownOpen(_ kind: String?) {
+    let argument = kind.flatMap(Self.javascriptStringLiteral) ?? "undefined"
+    webView.evaluateJavaScript(
+      """
+      window.__ghostex_TITLEBAR__?.setNativeDropdownOpen?.(\(argument));
+      undefined;
+      """)
+  }
+
+  func routeWindowMouseEvent(_ event: NSEvent) -> Bool {
+    guard Self.isTitlebarWindowMouseEvent(event.type), event.window === window else {
+      return false
+    }
+    let point = convert(event.locationInWindow, from: nil)
+    guard isPointInFixedTitlebarStrip(point) else {
+      return false
+    }
+    setNativePointerInside(true)
+
+    let containsInteractiveRegion = containsInteractiveHitRegion(point)
+    let shouldDispatch = containsInteractiveRegion || event.type == .mouseMoved
+    guard shouldDispatch else {
+      return false
+    }
+
+    /*
+     CDXC:ReactTitlebar 2026-06-11-22:10:
+     AppKit's titled-window chrome can swallow real clicks in the 35px
+     full-size content titlebar before the titlebar WKWebView receives a normal
+     hit-test. Dispatch only measured titlebar controls directly to WebKit,
+     leaving blank titlebar drag and workspace browser drag/drop outside this route.
+     */
+    dispatchWindowMouseEventToWebView(event, point: point)
+    let shouldConsume = containsInteractiveRegion && Self.shouldConsumeTitlebarWindowMouseEvent(event.type)
+    return shouldConsume
+  }
+
   private func updateNativePointerInside(for event: NSEvent) {
-    setNativePointerInside(containsInteractiveHitRegion(convert(event.locationInWindow, from: nil)))
+    setNativePointerInside(isPointInFixedTitlebarStrip(convert(event.locationInWindow, from: nil)))
   }
 
   private func refreshNativePointerInside() {
@@ -12063,7 +13987,7 @@ final class ReactTitlebarChromeView: NSView {
       return
     }
     setNativePointerInside(
-      containsInteractiveHitRegion(convert(window.mouseLocationOutsideOfEventStream, from: nil)))
+      isPointInFixedTitlebarStrip(convert(window.mouseLocationOutsideOfEventStream, from: nil)))
   }
 
   private func setNativePointerInside(_ isInside: Bool) {
@@ -12083,68 +14007,23 @@ final class ReactTitlebarChromeView: NSView {
       setNativePointerInside(false)
       return nil
     }
-    if shouldForwardTerminalPaneDropHitTest(point) {
-      setNativePointerInside(false)
-      setTerminalPaneDropForwardingActive(true, reason: "hitTest")
-      logTerminalPaneDropHitTestForwarder(point: point)
-      return self
-    }
-    setTerminalPaneDropForwardingActive(false, reason: "normalHitTest")
-    if containsInteractiveHitRegion(point) {
+    if isPointInFixedTitlebarStrip(point) {
       setNativePointerInside(true)
-      let hitView = webView.hitTest(convert(point, to: webView))
-      logTitlebarHitTestRoute(point: point, route: "webView", hitViewFound: hitView != nil)
-      return hitView
+      if containsInteractiveHitRegion(point) {
+        /*
+         CDXC:ReactTitlebar 2026-06-11-22:10:
+         User clicks on visible titlebar controls were reaching the titlebar
+         strip but not React when AppKit targeted WebKit's private inner view in
+         the full-size window titlebar area. Return the titlebar WKWebView
+         itself for measured controls so its non-draggable mouse contract owns
+         the event path; keep blank strip pixels on the wrapper for window drag.
+         */
+        return webView
+      }
+      return self
     }
     setNativePointerInside(false)
-    if isPointInFixedTitlebarStrip(point) {
-      logTitlebarHitTestRoute(point: point, route: "blankTitlebarStrip", hitViewFound: true)
-      return self
-    }
-    logTitlebarHitTestRoute(point: point, route: "passThrough", hitViewFound: false)
     return nil
-  }
-
-  override func draggingEntered(_ sender: any NSDraggingInfo) -> NSDragOperation {
-    setTerminalPaneDropForwardingActive(true, reason: "draggingEntered")
-    return terminalPaneDropDragOperation(sender, phase: "entered")
-  }
-
-  override func draggingUpdated(_ sender: any NSDraggingInfo) -> NSDragOperation {
-    setTerminalPaneDropForwardingActive(true, reason: "draggingUpdated")
-    return terminalPaneDropDragOperation(sender, phase: "updated")
-  }
-
-  override func draggingExited(_ sender: (any NSDraggingInfo)?) {
-    TerminalFocusDebugLog.append(
-      event: "nativeWorkspace.terminalDrop.\(operationSource).exited",
-      details: [
-        "hasSender": sender != nil,
-        "operationSource": operationSource,
-      ],
-      force: true)
-    onTerminalPaneDropDraggingExited?(sender)
-    setTerminalPaneDropForwardingActive(false, reason: "draggingExited")
-  }
-
-  override func prepareForDragOperation(_ sender: any NSDraggingInfo) -> Bool {
-    setTerminalPaneDropForwardingActive(true, reason: "prepare")
-    return terminalPaneDropDragOperation(sender, phase: "prepare") == .copy
-  }
-
-  override func performDragOperation(_ sender: any NSDraggingInfo) -> Bool {
-    defer {
-      setTerminalPaneDropForwardingActive(false, reason: "perform")
-    }
-    TerminalFocusDebugLog.append(
-      event: "nativeWorkspace.terminalDrop.\(operationSource).perform.routeToRoot",
-      details: terminalPaneChromeDropPasteboardDetails(
-        pasteboard: sender.draggingPasteboard,
-        registeredTypes: terminalPaneDropRegisteredTypes,
-        operationSource: operationSource,
-        phase: "perform"),
-      force: true)
-    return onTerminalPaneDropPerform?(sender) ?? false
   }
 
   override func mouseDown(with event: NSEvent) {
@@ -12152,7 +14031,8 @@ final class ReactTitlebarChromeView: NSView {
     guard isPointInFixedTitlebarStrip(point) else {
       return
     }
-    if !containsInteractiveHitRegion(point) {
+    let isInteractive = containsInteractiveHitRegion(point)
+    if !isInteractive {
       /*
        CDXC:ProjectEditorCompanion 2026-05-27-08:42:
        The Companion Sidepane restore button repro showed clicks landing in
@@ -12176,10 +14056,10 @@ final class ReactTitlebarChromeView: NSView {
   override var mouseDownCanMoveWindow: Bool {
     /**
      CDXC:ReactTitlebar 2026-05-12-07:02
-     The React titlebar wrapper may extend below the fixed titlebar strip for
-     dropdown hit regions, so it must not globally advertise itself as movable
-     window background. Dragging and double-click maximize are allowed only by
-     mouseDown after revalidating the event is inside the fixed top strip.
+     The React titlebar wrapper is the fixed titlebar strip, but it must not
+     globally advertise itself as movable window background. Dragging and
+     double-click maximize are allowed only by mouseDown after revalidating the
+     event is inside the fixed top strip.
      */
     false
   }
@@ -12195,104 +14075,85 @@ final class ReactTitlebarChromeView: NSView {
   private func updateTitlebarWebViewFrame(reason: String) {
     /*
      CDXC:ReactTitlebar 2026-06-08-06:33:
-     The React titlebar webview is a full-window transparent portal host even when no dropdown is open. Shrinking it to the titlebar strip makes tooltip placement use the wrong viewport and can make visible controls miss native hit routing.
+     The titlebar WKWebView frame follows the native wrapper bounds.
 
-     CDXC:TerminalImageDrop 2026-06-08-07:04:
-     The 06:25 working Dock/Finder drop path selected the registered native
-     titlebar wrapper while the embedded WebView did not cover the terminal
-     workspace as an AppKit drag candidate. Keep the WebView full-window for
-     normal titlebar controls and tooltips, but temporarily shrink only its
-     AppKit footprint during external terminal-file drag forwarding so the
-     `titlebarChrome.updated -> perform` route is restored.
-
-     CDXC:TerminalImageDrop 2026-06-08-07:16:
-     The 07:13 repro showed the drag never reached a drag-motion hit test, so
-     shrinking only after `leftMouseDragged` is too late. Treat inactive app/window
-     focus as the external-drag precondition and expose the native drop wrapper
-     before AppKit performs destination selection.
+     CDXC:ReactTitlebar 2026-06-11-13:22:
+     The wrapper bounds are the fixed titlebar strip; dropdown space belongs to
+     native child panels, not a full-window titlebar portal host.
      */
     let target = titlebarWebViewFootprint()
     let didChange = !NSEqualRects(webView.frame, target.frame)
     if didChange {
       webView.frame = target.frame
     }
-    logTitlebarWebViewFootprint(reason: reason, mode: target.mode, didChange: didChange)
-  }
-
-  private func setTerminalPaneDropForwardingActive(_ isActive: Bool, reason: String) {
-    guard terminalPaneDropForwardingActive != isActive else {
-      return
-    }
-    terminalPaneDropForwardingActive = isActive
-    updateTitlebarWebViewFrame(reason: reason)
   }
 
   private func titlebarWebViewFootprint() -> (frame: NSRect, mode: String) {
-    if shouldClipTitlebarWebViewForTerminalDrop() {
-      let height = min(max(titlebarHeight, 1), max(bounds.height, 1))
-      return (
-        NSRect(
-          x: bounds.minX,
-          y: max(bounds.maxY - height, bounds.minY),
-          width: bounds.width,
-          height: height),
-        "titlebarStrip")
-    }
-    return (bounds, "fullWindow")
+    /*
+     CDXC:ReactTitlebar 2026-06-11-13:22:
+     The titlebar wrapper itself is now laid out as the fixed titlebar strip.
+     Returning bounds keeps the embedded titlebar WKWebView clipped to that
+     strip in every state; dropdown panels are separate native child windows.
+     */
+    return (bounds, "titlebarStrip")
   }
 
-  private func shouldClipTitlebarWebViewForTerminalDrop() -> Bool {
-    guard !overlayOpen, titlebarHeight > 0, !terminalPaneDropRegisteredTypes.isEmpty else {
+  @discardableResult
+  private func dispatchWindowMouseEventToWebView(_ event: NSEvent, point: NSPoint) -> NSView? {
+    let webPoint = convert(point, to: webView)
+    let target = webView.hitTest(webPoint) ?? webView
+    switch event.type {
+    case .leftMouseDown:
+      target.mouseDown(with: event)
+    case .leftMouseUp:
+      target.mouseUp(with: event)
+    case .rightMouseDown:
+      target.rightMouseDown(with: event)
+    case .rightMouseUp:
+      target.rightMouseUp(with: event)
+    case .otherMouseDown:
+      target.otherMouseDown(with: event)
+    case .otherMouseUp:
+      target.otherMouseUp(with: event)
+    case .leftMouseDragged:
+      target.mouseDragged(with: event)
+    case .rightMouseDragged:
+      target.rightMouseDragged(with: event)
+    case .otherMouseDragged:
+      target.otherMouseDragged(with: event)
+    case .mouseMoved:
+      target.mouseMoved(with: event)
+    default:
+      break
+    }
+    return target
+  }
+
+  private static func isTitlebarWindowMouseEvent(_ eventType: NSEvent.EventType) -> Bool {
+    switch eventType {
+    case .leftMouseDown, .leftMouseUp, .rightMouseDown, .rightMouseUp, .otherMouseDown,
+      .otherMouseUp, .leftMouseDragged, .rightMouseDragged, .otherMouseDragged, .mouseMoved:
+      return true
+    default:
       return false
     }
-    if terminalPaneDropForwardingActive {
-      return true
-    }
-    if !NSApp.isActive {
-      return true
-    }
-    if let window, !window.isKeyWindow {
-      return true
-    }
-    return false
   }
 
-  private func logTitlebarWebViewFootprint(
-    reason: String,
-    mode: String,
-    didChange: Bool
-  ) {
-    guard !terminalPaneDropRegisteredTypes.isEmpty else {
-      return
+  private static func shouldConsumeTitlebarWindowMouseEvent(_ eventType: NSEvent.EventType) -> Bool {
+    switch eventType {
+    case .leftMouseDown, .leftMouseUp, .rightMouseDown, .rightMouseUp, .otherMouseDown,
+      .otherMouseUp, .leftMouseDragged, .rightMouseDragged, .otherMouseDragged:
+      return true
+    default:
+      return false
     }
-    let signature = [
-      mode,
-      "appActive=\(NSApp.isActive)",
-      "didChange=\(didChange)",
-      "forwarding=\(terminalPaneDropForwardingActive)",
-      "overlay=\(overlayOpen)",
-      "windowKey=\(window?.isKeyWindow ?? false)",
-      formatRect(webView.frame),
-    ].joined(separator: "|")
-    guard signature != lastWebViewFootprintLogSignature else {
-      return
+  }
+
+  private static func javascriptStringLiteral(_ value: String) -> String? {
+    guard let data = try? JSONEncoder().encode(value) else {
+      return nil
     }
-    lastWebViewFootprintLogSignature = signature
-    TerminalFocusDebugLog.append(
-      event: "nativeWorkspace.terminalDrop.\(operationSource).webViewFootprint",
-      details: [
-        "appIsActive": NSApp.isActive,
-        "didChange": didChange,
-        "mode": mode,
-        "operationSource": operationSource,
-        "reason": reason,
-        "terminalPaneDropForwardingActive": terminalPaneDropForwardingActive,
-        "titlebarHeight": Double(titlebarHeight),
-        "webViewFrame": rectDetails(webView.frame),
-        "windowIsKey": window?.isKeyWindow ?? false,
-        "wrapperBounds": rectDetails(bounds),
-      ],
-      force: true)
+    return String(data: data, encoding: .utf8)
   }
 
   private func installWindowStateObservers() {
@@ -12340,202 +14201,6 @@ final class ReactTitlebarChromeView: NSView {
       center.removeObserver(token)
     }
     windowStateObserverTokens.removeAll()
-  }
-
-  private func shouldForwardTerminalPaneDropHitTest(_ point: NSPoint) -> Bool {
-    guard bounds.contains(point), !terminalPaneDropRegisteredTypes.isEmpty else {
-      return false
-    }
-    /*
-     CDXC:TerminalImageDrop 2026-06-08-06:53:
-     The titlebar wrapper must keep a full-window WKWebView for controls and
-     tooltips, but AppKit still chooses drag destinations through hit testing.
-     During external drag-motion events, return the native registered wrapper so
-     the scoped `NSDraggingInfo` callback reaches the terminal drop router; keep
-     ordinary mouse events on the existing titlebar-region/pass-through path.
-     */
-    return Self.isTerminalPaneDropHitTestEvent(NSApp.currentEvent?.type)
-  }
-
-  private func logTerminalPaneDropHitTestForwarder(point: NSPoint) {
-    let currentEvent = NSApp.currentEvent
-    let eventTypeName = Self.eventTypeName(currentEvent?.type)
-    let signature = [
-      eventTypeName,
-      "interactive=\(containsInteractiveHitRegion(point))",
-      "strip=\(isPointInFixedTitlebarStrip(point))",
-      "registered=\(terminalPaneDropRegisteredTypes.count)",
-    ].joined(separator: "|")
-    guard signature != lastTerminalPaneDropHitTestLogSignature else {
-      return
-    }
-    lastTerminalPaneDropHitTestLogSignature = signature
-    TerminalFocusDebugLog.append(
-      event: "nativeWorkspace.terminalDrop.\(operationSource).hitTest.forwarder",
-      details: [
-        "eventNumber": currentEvent?.eventNumber ?? NSNull(),
-        "eventType": eventTypeName,
-        "hitRegionCount": hitRegions.count,
-        "interactiveHitRegion": containsInteractiveHitRegion(point),
-        "operationSource": operationSource,
-        "point": rectPointDetails(point),
-        "registeredTypeCount": terminalPaneDropRegisteredTypes.count,
-        "registeredTypes": terminalPaneDropRegisteredTypes.map(\.rawValue).sorted(),
-        "route": "nativeWrapper",
-        "titlebarHeight": Double(titlebarHeight),
-        "titlebarStrip": isPointInFixedTitlebarStrip(point),
-        "webViewFrame": rectDetails(webView.frame),
-        "webViewDropDestination": false,
-      ],
-      force: true)
-  }
-
-  private static func isTerminalPaneDropHitTestEvent(_ eventType: NSEvent.EventType?) -> Bool {
-    switch eventType {
-    case .leftMouseDragged, .rightMouseDragged, .otherMouseDragged:
-      return true
-    default:
-      return false
-    }
-  }
-
-  private static func eventTypeName(_ eventType: NSEvent.EventType?) -> String {
-    guard let eventType else { return "none" }
-    switch eventType {
-    case .leftMouseDragged:
-      return "leftMouseDragged"
-    case .rightMouseDragged:
-      return "rightMouseDragged"
-    case .otherMouseDragged:
-      return "otherMouseDragged"
-    case .leftMouseUp:
-      return "leftMouseUp"
-    case .rightMouseUp:
-      return "rightMouseUp"
-    case .otherMouseUp:
-      return "otherMouseUp"
-    case .leftMouseDown:
-      return "leftMouseDown"
-    case .rightMouseDown:
-      return "rightMouseDown"
-    case .otherMouseDown:
-      return "otherMouseDown"
-    default:
-      return String(describing: eventType)
-    }
-  }
-
-  private func logTitlebarHitTestRoute(
-    point: NSPoint,
-    route: String,
-    hitViewFound: Bool
-  ) {
-    guard NativeDebugLogging.isEnabled, let event = NSApp.currentEvent else {
-      return
-    }
-    switch event.type {
-    case .leftMouseDown, .leftMouseUp, .rightMouseDown, .rightMouseUp, .otherMouseDown, .otherMouseUp:
-      break
-    default:
-      return
-    }
-    let signature = [
-      String(event.eventNumber),
-      String(describing: event.type),
-      route,
-      String(Int(point.x.rounded())),
-      String(Int(point.y.rounded())),
-      hitViewFound ? "hit" : "miss",
-    ].joined(separator: "|")
-    guard signature != lastHitTestRouteLogSignature else {
-      return
-    }
-    lastHitTestRouteLogSignature = signature
-    TerminalFocusDebugLog.append(
-      event: "nativeWorkspace.reactTitlebar.hitTest.route",
-      details: [
-        "eventNumber": event.eventNumber,
-        "eventType": String(describing: event.type),
-        "hitRegionCount": hitRegions.count,
-        "hitViewFound": hitViewFound,
-        "overlayOpen": overlayOpen,
-        "point": rectPointDetails(point),
-        "route": route,
-        "titlebarHeight": Double(titlebarHeight),
-        "webViewFrame": rectDetails(webView.frame),
-        "wrapperBounds": rectDetails(bounds),
-      ])
-  }
-
-  private func rectPointDetails(_ point: NSPoint) -> [String: Double] {
-    [
-      "x": Double(point.x),
-      "y": Double(point.y),
-    ]
-  }
-
-  private func rectDetails(_ rect: CGRect) -> [String: Double] {
-    [
-      "height": Double(rect.height),
-      "maxX": Double(rect.maxX),
-      "maxY": Double(rect.maxY),
-      "minX": Double(rect.minX),
-      "minY": Double(rect.minY),
-      "width": Double(rect.width),
-    ]
-  }
-
-  private func logTerminalPaneDropRegistration(
-    registeredTypes: [NSPasteboard.PasteboardType],
-    operationSource: String
-  ) {
-    TerminalFocusDebugLog.append(
-      event: "nativeWorkspace.terminalDrop.\(operationSource).registeredTypes",
-      details: terminalPaneChromeDropRegistrationDetails(
-        registeredTypes: registeredTypes,
-        operationSource: operationSource),
-      force: true)
-  }
-
-  private func logTerminalPaneWebViewDropDisabled(operationSource: String) {
-    disableTitlebarWebViewDropDestination()
-    TerminalFocusDebugLog.append(
-      event: "nativeWorkspace.terminalDrop.\(operationSource)WebView.registrationDisabled",
-      details: [
-        "operationSource": "\(operationSource)WebView",
-        "registeredTypeCount": 0,
-        "registeredTypes": [],
-        "unregisterApplied": true,
-        "usesNativeChromeDropForwarder": true,
-        "webViewDropDestination": false,
-      ],
-      force: true)
-  }
-
-  private func disableTitlebarWebViewDropDestination() {
-    unregisterDraggedTypes(in: webView)
-  }
-
-  private func unregisterDraggedTypes(in view: NSView) {
-    view.unregisterDraggedTypes()
-    for subview in view.subviews {
-      unregisterDraggedTypes(in: subview)
-    }
-  }
-
-  private func terminalPaneDropDragOperation(
-    _ sender: any NSDraggingInfo,
-    phase: String
-  ) -> NSDragOperation {
-    TerminalFocusDebugLog.append(
-      event: "nativeWorkspace.terminalDrop.\(operationSource).\(phase).routeToRoot",
-      details: terminalPaneChromeDropPasteboardDetails(
-        pasteboard: sender.draggingPasteboard,
-        registeredTypes: terminalPaneDropRegisteredTypes,
-        operationSource: operationSource,
-        phase: phase),
-      force: phase != "updated" || NativeDebugLogging.isEnabled)
-    return onTerminalPaneDropDragOperation?(sender, phase) ?? []
   }
 
   private func formatPoint(_ point: CGPoint) -> String {

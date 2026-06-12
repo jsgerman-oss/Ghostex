@@ -67,17 +67,15 @@ enum TerminalFocusDebugLog {
      attempt. Allow only nativeHotkeys.navigationRepro entries through; their
      payload is sanitized and limited to key/action/routing metadata.
 
-     CDXC:TerminalImageDrop 2026-06-07-16:15:
-     A terminal image-drop repro may fail before users can enable Debugging
-     Mode. Allow forced nativeWorkspace.terminalDrop events through in normal
-     mode so AppKit drag registration, pasteboard type classification, and
-     target routing can be diagnosed without persisting dropped paths or text.
+     CDXC:TerminalImagePaste 2026-06-11-19:12:
+     Terminal file/image drag-drop support and its forced normal-mode diagnostic
+     bypass were removed. Keep normal-mode native logging limited to important
+     diagnostics and the active hotkey repro path.
      */
     let isStartupPaneLayoutEvent = event.hasPrefix("nativePaneLayoutStartup.")
     let isHotkeyNavigationReproEvent = event.hasPrefix("nativeHotkeys.navigationRepro")
-    let isTerminalDropReproEvent = isNativePersistentTerminalDropReproEvent(event, force: force)
     let isImportantDiagnostic = isNativePersistentLogImportantDiagnostic(event)
-    guard isImportantDiagnostic || isHotkeyNavigationReproEvent || isTerminalDropReproEvent || (NativeDebugLogging.isEnabled && (force || isStartupPaneLayoutEvent || !noisyEvents.contains(event))) else {
+    guard isImportantDiagnostic || isHotkeyNavigationReproEvent || (NativeDebugLogging.isEnabled && (force || isStartupPaneLayoutEvent || !noisyEvents.contains(event))) else {
       return
     }
     let logsDirectory = GhostexAppStorage.logsDirectory
@@ -180,10 +178,6 @@ func isNativePersistentLogImportantDiagnostic(_ event: String) -> Bool {
   )
 }
 
-func isNativePersistentTerminalDropReproEvent(_ event: String, force: Bool) -> Bool {
-  force && event.hasPrefix("nativeWorkspace.terminalDrop.")
-}
-
 enum NativeLogPrivacy {
   private static let redactedText = "[redacted]"
   private static let redactedPath = "[redacted:path]"
@@ -194,8 +188,8 @@ enum NativeLogPrivacy {
    CDXC:DiagnosticsPrivacy 2026-05-30-23:56:
    Users must be able to zip and send Ghostex diagnostic log files without exposing project names, session titles, workspace paths, browser URLs with private query strings, command text, terminal text, or credentials. Sanitize all file-backed native log payloads and the remaining native system-log diagnostics at the writer boundary so individual call sites can keep logging useful IDs, counts, phases, and geometry without leaking user content.
 
-   CDXC:DiagnosticsPrivacy 2026-06-08-02:54:
-   Terminal image-drop recovery may hold prepared Markdown text in memory while waiting for the release event. If any future diagnostic payload accidentally includes that content as a string field, treat content-like keys as user text and redact them at the writer boundary.
+   CDXC:DiagnosticsPrivacy 2026-06-11-19:12:
+   Terminal image insertion is paste-only after removing drag/drop support, but future diagnostics can still accidentally include generated Markdown content. Treat content-like keys as user text and redact them at the writer boundary.
    */
   static func sanitizePayload(_ payload: [String: Any]) -> [String: Any] {
     var sanitized: [String: Any] = [:]

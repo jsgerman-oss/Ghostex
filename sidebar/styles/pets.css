@@ -167,7 +167,7 @@
 }
 
 .pet-status-indicator-item[data-status="attention"] {
-  background: linear-gradient(180deg, #256b2d 0%, #1a5f24 48%, #123f18 100%);
+  background: var(--done-attention-color, #95d7f6);
 }
 
 .pet-status-indicator-item[data-status="working"] {
@@ -210,7 +210,7 @@
 }
 
 .pet-thread-bubble[data-state="attention"] .pet-thread-status {
-  background: #22c55e;
+  background: var(--done-attention-color, #95d7f6);
 }
 
 .pet-thread-bubble[data-state="working"] .pet-thread-status {

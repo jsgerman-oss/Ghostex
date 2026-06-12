@@ -663,7 +663,7 @@ body:has(.sidebar-reference-layout[data-reference-sidebar="true"]) .stack {
   --app-card: #252525;
   --app-card-active: #2a2a2a;
   --app-button-background: #7da4f8;
-  --attention-dot: #73e79c;
+  --attention-dot: var(--done-attention-color, #95d7f6);
   background: var(--app-background);
   box-sizing: border-box;
   color: var(--app-foreground);

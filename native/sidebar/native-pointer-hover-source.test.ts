@@ -26,7 +26,8 @@ describe("native pointer hover boundary source", () => {
      * CDXC:SidebarHover 2026-06-10-23:44:
      * Sticky WebKit :hover must be neutralized at the native pointer boundary.
      * The fix is only complete when AppKit tracking, JS bridge state, and
-     * root-level pointer-events gating remain wired for sidebar and titlebar.
+     * root-level pointer-events gating remains wired for the sidebar while the
+     * titlebar keeps its DOM clickable and uses visual hover resets only.
      *
      * CDXC:SidebarHover 2026-06-11-09:23:
      * Root pointer-events gating does not clear an already-stuck WebKit :hover.
@@ -50,10 +51,23 @@ describe("native pointer hover boundary source", () => {
     expect(appDelegateSource).toContain("setSidebarNativePointerInside");
     expect(appDelegateSource).toContain("window.__ghostex_NATIVE_SIDEBAR__?.setNativePointerInside");
     expect(appDelegateSource).toContain("window.__ghostex_TITLEBAR__?.setNativePointerInside");
-    expect(appDelegateSource).toContain("containsInteractiveHitRegion(convert(event.locationInWindow, from: nil))");
+    expect(appDelegateSource).toContain("isPointInFixedTitlebarStrip(convert(event.locationInWindow, from: nil))");
+    expect(appDelegateSource).toContain("final class TitlebarChromeWebView: WKWebView");
+    expect(appDelegateSource).toContain("override var mouseDownCanMoveWindow: Bool");
+    expect(appDelegateSource).toContain("var onTitlebarMouseEvent: ((NSEvent) -> Bool)?");
+    expect(appDelegateSource).toContain("func routeTitlebarMouseEventFromWindow(_ event: NSEvent) -> Bool");
+    expect(appDelegateSource).toContain("func routeWindowMouseEvent(_ event: NSEvent) -> Bool");
+    expect(appDelegateSource).toContain("dispatchWindowMouseEventToWebView(event, point: point)");
+    expect(appDelegateSource).toContain("shouldConsumeTitlebarWindowMouseEvent");
+    expect(appDelegateSource).toContain("AppKit's titled-window chrome can swallow real clicks");
+    expect(appDelegateSource).toContain("return webView");
+    expect(appDelegateSource).toContain("return self");
     expect(appDelegateSource).toContain("divider.onPointerEntered = { [weak self] in");
     expect(appDelegateSource).toContain("self?.sidebarView.forceNativePointerInside(false)");
     expect(appDelegateSource).toContain("func forceNativePointerInside(_ isInside: Bool)");
+    expect(appDelegateSource).toContain("shouldLetTitlebarHandleOutsideMouseEvent");
+    expect(appDelegateSource).toContain("pre-close titlebar");
+    expect(appDelegateSource).toContain("containsInteractiveHitRegion(titlebarPoint)");
 
     expect(nativeSidebarSource).toContain("function setNativeSidebarPointerInside(isInside: boolean): void");
     expect(nativeSidebarSource).toContain("let latestNativeSidebarPointerInside = true");
@@ -65,11 +79,22 @@ describe("native pointer hover boundary source", () => {
 
     expect(titlebarHostSource).toContain("function setTitlebarNativePointerInside(isInside: boolean): void");
     expect(titlebarHostSource).toContain("setNativePointerInside: setTitlebarNativePointerInside");
-    expect(titlebarHostSource).toContain('body[data-native-pointer-inside="false"] #root');
+    expect(titlebarHostSource).toContain("nativeDropdownOpen === kind");
+    expect(titlebarHostSource).toContain("requesting the already-open panel closes it");
+    expect(titlebarHostSource).not.toContain('body[data-native-pointer-inside="false"] #root');
     expect(titlebarHostSource).toContain(".titlebar-session-button:hover:not(:focus-visible):not([data-state=\"open\"])");
     expect(titlebarHostSource).toContain(".titlebar-update-button::after");
     expect(titlebarHostSource).toContain("[data-radix-popper-content-wrapper]");
     expect(titlebarHostSource).toContain(".titlebar-resource-tooltip");
+    /*
+     * CDXC:TitlebarResources 2026-06-12-03:26:
+     * Resources header Sleep actions must not depend on raw CSS :hover in the
+     * native child dropdown. Stale WebKit hover can show the tooltip while
+     * leaving the buttons unable to receive clicks.
+     */
+    expect(titlebarHostSource).toContain("data-actions-active={String(resourceHeaderActionsActive)}");
+    expect(titlebarHostSource).toContain("setSleepInactiveTooltipOpen(resourceHeaderActionsActive ? open : false)");
+    expect(titlebarHostSource).not.toContain(".titlebar-resources-header:hover .titlebar-resources-action-button");
 
     expect(sessionCardsSource).toContain('body.native-sidebar-body[data-native-pointer-inside="false"]');
     expect(sessionCardsSource).toContain(".session:not(:focus-visible):not([data-focused=\"true\"]):not(");

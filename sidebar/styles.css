@@ -268,6 +268,12 @@ button,
  Filtering command results must not change the palette's actual height. Keep
  the initial modal footprint fixed and let the command list show empty space
  when fewer results match so the centered surface does not jump while typing.
+
+ CDXC:CommandPalette 2026-06-12-05:23:
+ The React command surface inside the native palette window should remove 5px
+ of empty chrome above the search bar and from the left/right inset of the
+ whole command component. Keep the override scoped to this dialog so other
+ CommandInput surfaces retain their shared padding.
 */
 .ghostex-command-palette-dialog {
   height: min(620px, calc(100vh - 2rem));
@@ -276,6 +282,19 @@ button,
   top: 50% !important;
   translate: -50% -50% !important;
   width: min(660px, calc(100vw - 1rem));
+}
+
+.ghostex-command-palette-dialog [data-slot="command"] {
+  padding: 0 0 4px;
+}
+
+.ghostex-command-palette-dialog [data-slot="command-input-wrapper"] {
+  padding: 3px 3px 0;
+}
+
+.ghostex-command-palette-dialog [data-slot="command-group"] {
+  padding-left: 3px;
+  padding-right: 3px;
 }
 
 .ghostex-command-palette-list {
@@ -307,14 +326,16 @@ button,
 }
 
 /*
- CDXC:SettingsNavigation 2026-05-13-08:05: The Settings dialog needs enough horizontal room for a main-tab section sidebar while Ghostty settings live in their own second tab.
+ CDXC:SettingsNavigation 2026-05-13-08:05: The Settings dialog needs enough horizontal room for a main-tab section sidebar and terminal settings.
  Use scoped CSS so the native modal host and Storybook share the same width without relying on newly generated utilities.
 
  CDXC:SettingsNavigation 2026-05-13-08:11: The modal should be 20% wider than the first section-sidebar layout and use a taller viewport so more settings remain visible without scrolling.
 
  CDXC:SettingsNavigation 2026-05-23-11:05: Size top tabs and section nav from the modal width, not the viewport, so narrow sidebar webviews wrap labels instead of clipping them.
 
- CDXC:SettingsNavigation 2026-05-27-10:44: Do not draw a vertical divider between the section table of contents and the settings body on Settings, Ghostty, or Hotkeys tabs.
+ CDXC:SettingsNavigation 2026-05-27-10:44: Do not draw a vertical divider between the section table of contents and the settings body on Settings or Hotkeys tabs.
+
+ CDXC:SettingsNavigation 2026-06-12-04:13: The Settings tabs and search field should end 27px from the modal's right edge while Ghostty terminal controls live inside the main Settings page.
 */
 .ghostex-settings-shadcn.settings-modal-dialog {
   container-name: settings-modal;
@@ -323,6 +344,10 @@ button,
   max-height: min(860px, calc(100vh - 1rem));
   max-width: min(1104px, calc(100vw - 1rem));
   width: min(1104px, calc(100vw - 1rem));
+}
+
+.ghostex-settings-shadcn.settings-modal-dialog .ghostex-modal-heading-bar {
+  padding-right: 27px;
 }
 
 @media (max-width: 760px) {
@@ -336,9 +361,15 @@ button,
 }
 
 .first-launch-setup-story-frame {
+  /*
+   CDXC:AppModals 2026-06-11-20:28:
+   Story-backed modal preview frames should use the same #0e0e0e background as
+   native modal windows so screenshots and local QA do not preserve the older
+   darker app-modal shell.
+   */
   background:
     radial-gradient(circle at 18% 12%, rgb(34 64 94 / 24%), transparent 32rem),
-    #050505;
+    #0e0e0e;
   height: 100vh;
   width: 100vw;
 }
@@ -1549,8 +1580,12 @@ button,
 }
 
 .ghostex-settings-shadcn .settings-modal-search-input:focus {
-  border-color: var(--ring);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--ring) 50%, transparent);
+  /*
+   CDXC:SettingsSearch 2026-06-12-05:18:
+   The active Settings/Hotkeys search field should stay subtle: use the existing input border as a white focus outline instead of adding an outer ring that reads like a terminal active-pane outline.
+   */
+  border-color: #fff;
+  box-shadow: none;
   outline: none;
 }
 

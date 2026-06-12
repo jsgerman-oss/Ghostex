@@ -5552,7 +5552,7 @@ styleElement.textContent = `
   .project-board-lane[data-tone="blue"] .project-board-lane-dot { background: #5ea4ff; }
   .project-board-lane[data-tone="amber"] .project-board-lane-dot { background: #e7b85b; }
   .project-board-lane[data-tone="violet"] .project-board-lane-dot { background: #b18cff; }
-  .project-board-lane[data-tone="green"] .project-board-lane-dot { background: #6fcf97; }
+  .project-board-lane[data-tone="green"] .project-board-lane-dot { background: #95d7f6; }
 
   .project-board-lane-scroll {
     flex: 1 1 auto;

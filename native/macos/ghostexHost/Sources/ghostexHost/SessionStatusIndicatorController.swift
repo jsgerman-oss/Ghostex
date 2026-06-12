@@ -27,8 +27,8 @@ final class SessionStatusIndicatorController {
      CDXC:SessionStatusIndicators 2026-05-09-15:48
      The menu bar indicator must be a second presentation of the floating
      status indicator, not a separate state machine. Reuse the same computed
-     visible items and click callback so green routes to attention sessions and
-     orange routes to working sessions through the existing sidebar selector.
+     visible items and click callback so #95d7f6 routes to done/attention sessions
+     and orange routes to working sessions through the existing sidebar selector.
      */
     let view = SessionStatusIndicatorView(
       onClick: { status in
@@ -115,14 +115,19 @@ final class SessionStatusIndicatorController {
      Orange status badges are `working`, not `running`. Keep native naming
      aligned with app terminology so `running` remains reserved for live
      runtime state and the gray live-idle rail count.
-     */
+
+    CDXC:SessionStatusIndicators 2026-06-12-02:32:
+    Done and attention status must use #95d7f6 instead of the previous green,
+    matching the macOS sidebar, Android drawer/notifications, and iOS Ghostex
+    sidebar status token.
+    */
     if command.attentionCount > 0 || command.workingCount > 0 {
       return [
         command.attentionCount > 0
           ? SessionStatusIndicatorItem(
             status: .attention,
             count: command.attentionCount,
-            color: NSColor(calibratedRed: 0.10, green: 0.42, blue: 0.16, alpha: 1))
+            color: NSColor(calibratedRed: 0x95 / 255, green: 0xD7 / 255, blue: 0xF6 / 255, alpha: 1))
           : nil,
         command.workingCount > 0
           ? SessionStatusIndicatorItem(

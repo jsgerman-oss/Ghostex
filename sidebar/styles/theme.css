@@ -27,7 +27,7 @@
   --working-secondary: color-mix(in srgb, #ffd27a 62%, #2f6feb 38%);
   --attention-primary: color-mix(in srgb, #5ea0ff 68%, #2f6feb 32%);
   --attention-secondary: color-mix(in srgb, #9dcbff 62%, #184896 38%);
-  --attention-dot: #73e79c;
+  --attention-dot: #95d7f6;
 }
 
 body:not([data-sidebar-theme]),
@@ -601,4 +601,18 @@ body.storybook-force-sidebar-hover .sidebar-floating-overflow-trigger,
   letter-spacing: 0.08em;
   margin-bottom: calc(10px * var(--sidebar-density-scale));
   text-transform: uppercase;
+}
+
+/*
+ * CDXC:SessionStatusIndicators 2026-06-12-02:32:
+ * Done and attention states must use #95d7f6 across macOS, Android, iOS, and TUI instead of bright green. Keep the sidebar token explicit and theme-independent so project themes cannot reintroduce the old status color.
+ */
+:root,
+body,
+.ghostex-root,
+.ghostex-settings-shadcn {
+  --done-attention-color: #95d7f6;
+  --attention-primary: var(--done-attention-color);
+  --attention-secondary: var(--done-attention-color);
+  --attention-dot: var(--done-attention-color);
 }

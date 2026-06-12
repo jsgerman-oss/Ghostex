@@ -91,253 +91,6 @@ enum NativeLogPrivacyTests {
     assertTrue(!hotkeyReproJson.contains("secret-token"), "hotkey repro logs must not include secrets")
     assertTrue(!hotkeyReproJson.contains("private?token"), "hotkey repro logs must not include full URLs or query strings")
 
-    let terminalDropPayload = NativeLogPrivacy.sanitizePayload([
-      "activeDropEventNumber": 1,
-      "commandText": "codex --ask private request",
-      "dragPasteboardChangeCount": 42,
-      "event": "nativeWorkspace.terminalDrop.surface.entered",
-      "filePath": "/Users/person/Pictures/private image.png",
-      "hasRecentReleaseOnlyDragSignal": true,
-      "phase": "entered",
-      "registeredTypes": [
-        "com.apple.finder.node",
-        "com.apple.pasteboard.promised-file-url",
-        "public.file-url",
-        "public.url",
-        "public.image",
-      ],
-      "releaseOnlyDragSignalAgeMs": 14,
-      "releaseOnlyDragSignalPasteboardChangeCount": 42,
-      "secretToken": "secret-token",
-      "surfaceSessionId": "G456",
-      "types": ["Apple URL pasteboard type", "NSFilenamesPboardType", "public.file-url", "public.url", "public.png", "public.jpeg"],
-      "url": "file:///Users/person/Pictures/private%20image.png",
-    ])
-    let terminalDropJson = serializePrivacyTestPayload(terminalDropPayload)
-
-    assertTrue(terminalDropJson.contains("nativeWorkspace.terminalDrop.surface.entered"), "terminal drop event should remain visible")
-    assertTrue(terminalDropJson.contains("G456"), "terminal drop session id should remain visible")
-    assertTrue(terminalDropJson.contains("public.file-url"), "terminal drop pasteboard type should remain visible")
-    assertTrue(terminalDropJson.contains("public.url"), "terminal drop URL pasteboard type should remain visible")
-    assertTrue(terminalDropJson.contains("public.jpeg"), "terminal drop image pasteboard type should remain visible")
-    assertTrue(terminalDropJson.contains("com.apple.finder.node"), "terminal drop Finder pasteboard type should remain visible")
-    assertTrue(terminalDropJson.contains("NSFilenamesPboardType"), "terminal drop legacy filenames pasteboard type should remain visible")
-    assertTrue(terminalDropJson.contains("releaseOnlyDragSignalAgeMs"), "terminal drop release-only signal timing should remain visible")
-    assertTrue(terminalDropJson.contains("releaseOnlyDragSignalPasteboardChangeCount"), "terminal drop release-only signal pasteboard count should remain visible")
-    assertTrue(!terminalDropJson.contains("/Users/person"), "terminal drop logs must not include dropped paths")
-    assertTrue(!terminalDropJson.contains("private image.png"), "terminal drop logs must not include dropped filenames")
-    assertTrue(!terminalDropJson.contains("codex --ask private request"), "terminal drop logs must not include command text")
-    assertTrue(!terminalDropJson.contains("secret-token"), "terminal drop logs must not include secrets")
-
-    let overlayGeometryPayload = NativeLogPrivacy.sanitizePayload([
-      "commandText": "codex --ask private request",
-      "event": "nativeWorkspace.terminalDrop.overlay.hitTest",
-      "eventType": "leftMouseDragged",
-      "filePath": "/Users/person/Pictures/private image.png",
-      "geometryDragPassedThrough": true,
-      "hasRelevantPayload": false,
-      "overlayDragDestinationRegistered": false,
-      "readsGlobalDragPasteboard": false,
-      "secretToken": "secret-token",
-      "shouldCapture": false,
-      "shouldCaptureInactiveGeometryDestination": false,
-      "shouldCaptureInactiveGeometryDrag": true,
-      "typeCount": 0,
-      "types": [],
-      "url": "file:///Users/person/Pictures/private%20image.png",
-      "windowIsKey": false,
-      "windowIsVisible": true,
-    ])
-    let overlayGeometryJson = serializePrivacyTestPayload(overlayGeometryPayload)
-
-    assertTrue(overlayGeometryJson.contains("nativeWorkspace.terminalDrop.overlay.hitTest"), "overlay hit-test event should remain visible")
-    assertTrue(overlayGeometryJson.contains("geometryDragPassedThrough"), "overlay geometry pass-through state should remain visible")
-    assertTrue(overlayGeometryJson.contains("overlayDragDestinationRegistered"), "overlay drag-destination registration state should remain visible")
-    assertTrue(overlayGeometryJson.contains("readsGlobalDragPasteboard"), "overlay global-pasteboard access state should remain visible")
-    assertTrue(overlayGeometryJson.contains("shouldCaptureInactiveGeometryDestination"), "overlay destination-capture state should remain visible")
-    assertTrue(overlayGeometryJson.contains("shouldCaptureInactiveGeometryDrag"), "overlay geometry capture state should remain visible")
-    assertTrue(overlayGeometryJson.contains("windowIsKey"), "overlay window key state should remain visible")
-    assertTrue(!overlayGeometryJson.contains("/Users/person"), "overlay geometry logs must not include dropped paths")
-    assertTrue(!overlayGeometryJson.contains("private image.png"), "overlay geometry logs must not include dropped filenames")
-    assertTrue(!overlayGeometryJson.contains("codex --ask private request"), "overlay geometry logs must not include command text")
-    assertTrue(!overlayGeometryJson.contains("secret-token"), "overlay geometry logs must not include secrets")
-
-    let overlayVisualOnlyPayload = NativeLogPrivacy.sanitizePayload([
-      "commandText": "codex --ask private request",
-      "event": "nativeWorkspace.terminalDrop.overlay.visualOnly",
-      "filePath": "/Users/person/Pictures/private image.png",
-      "operationSource": "overlay",
-      "registeredTypeCount": 0,
-      "registeredTypes": [],
-      "secretToken": "secret-token",
-      "url": "file:///Users/person/Pictures/private%20image.png",
-      "usesGeometryHoverOnly": true,
-    ])
-    let overlayVisualOnlyJson = serializePrivacyTestPayload(overlayVisualOnlyPayload)
-
-    assertTrue(overlayVisualOnlyJson.contains("nativeWorkspace.terminalDrop.overlay.visualOnly"), "overlay visual-only event should remain visible")
-    assertTrue(overlayVisualOnlyJson.contains("usesGeometryHoverOnly"), "overlay visual-only mode should remain visible")
-    assertTrue(overlayVisualOnlyJson.contains("registeredTypeCount"), "overlay visual-only registered type count should remain visible")
-    assertTrue(!overlayVisualOnlyJson.contains("/Users/person"), "overlay visual-only logs must not include dropped paths")
-    assertTrue(!overlayVisualOnlyJson.contains("private image.png"), "overlay visual-only logs must not include dropped filenames")
-    assertTrue(!overlayVisualOnlyJson.contains("codex --ask private request"), "overlay visual-only logs must not include command text")
-    assertTrue(!overlayVisualOnlyJson.contains("secret-token"), "overlay visual-only logs must not include secrets")
-
-    let registrationDisabledPayload = NativeLogPrivacy.sanitizePayload([
-      "commandText": "codex --ask private request",
-      "event": "nativeWorkspace.terminalDrop.window.registrationDisabled",
-      "filePath": "/Users/person/Pictures/private image.png",
-      "operationSource": "window",
-      "registeredTypeCount": 0,
-      "registeredTypes": [],
-      "secretToken": "secret-token",
-      "surfaceOnlyDropDestination": true,
-      "url": "file:///Users/person/Pictures/private%20image.png",
-    ])
-    let registrationDisabledJson = serializePrivacyTestPayload(registrationDisabledPayload)
-
-    assertTrue(registrationDisabledJson.contains("nativeWorkspace.terminalDrop.window.registrationDisabled"), "disabled terminal drop registration event should remain visible")
-    assertTrue(registrationDisabledJson.contains("surfaceOnlyDropDestination"), "surface-only drop registration state should remain visible")
-    assertTrue(registrationDisabledJson.contains("registeredTypeCount"), "disabled registration type count should remain visible")
-    assertTrue(!registrationDisabledJson.contains("/Users/person"), "disabled registration logs must not include dropped paths")
-    assertTrue(!registrationDisabledJson.contains("private image.png"), "disabled registration logs must not include dropped filenames")
-    assertTrue(!registrationDisabledJson.contains("codex --ask private request"), "disabled registration logs must not include command text")
-    assertTrue(!registrationDisabledJson.contains("secret-token"), "disabled registration logs must not include secrets")
-
-    let terminalWrapperRegistrationPayload = NativeLogPrivacy.sanitizePayload([
-      "commandText": "codex --ask private request",
-      "event": "nativeWorkspace.terminalDrop.terminalHost.registeredTypes",
-      "filePath": "/Users/person/Pictures/private image.png",
-      "operationSource": "terminalHost",
-      "preparedContent": "[Image #1](/Users/person/Pictures/private image.png)",
-      "registeredTypeCount": 2,
-      "registeredTypes": ["public.file-url", "public.utf8-plain-text"],
-      "secretToken": "secret-token",
-      "surfaceSessionId": "G456",
-      "url": "file:///Users/person/Pictures/private%20image.png",
-    ])
-    let terminalWrapperRegistrationJson = serializePrivacyTestPayload(terminalWrapperRegistrationPayload)
-
-    assertTrue(terminalWrapperRegistrationJson.contains("nativeWorkspace.terminalDrop.terminalHost.registeredTypes"), "terminal wrapper registration event should remain visible")
-    assertTrue(terminalWrapperRegistrationJson.contains("terminalHost"), "terminal wrapper operation source should remain visible")
-    assertTrue(terminalWrapperRegistrationJson.contains("registeredTypeCount"), "terminal wrapper registered type count should remain visible")
-    assertTrue(terminalWrapperRegistrationJson.contains("public.file-url"), "terminal wrapper registered file URL type should remain visible")
-    assertTrue(!terminalWrapperRegistrationJson.contains("/Users/person"), "terminal wrapper registration logs must not include dropped paths")
-    assertTrue(!terminalWrapperRegistrationJson.contains("private image.png"), "terminal wrapper registration logs must not include dropped filenames")
-    assertTrue(!terminalWrapperRegistrationJson.contains("[Image #1]"), "terminal wrapper registration logs must not include prepared terminal text")
-    assertTrue(!terminalWrapperRegistrationJson.contains("codex --ask private request"), "terminal wrapper registration logs must not include command text")
-    assertTrue(!terminalWrapperRegistrationJson.contains("secret-token"), "terminal wrapper registration logs must not include secrets")
-
-    let titlebarChromeDropPayload = NativeLogPrivacy.sanitizePayload([
-      "commandText": "codex --ask private request",
-      "event": "nativeWorkspace.terminalDrop.titlebarChrome.entered.routeToRoot",
-      "filePath": "/Users/person/Pictures/private image.png",
-      "operationSource": "titlebarChrome",
-      "pasteboardChangeCount": 42,
-      "phase": "entered",
-      "preparedContent": "[Image #1](/Users/person/Pictures/private image.png)",
-      "registeredTypeMatchCount": 1,
-      "registeredTypes": ["public.file-url", "public.utf8-plain-text"],
-      "secretToken": "secret-token",
-      "typeCount": 4,
-      "types": ["Apple URL pasteboard type", "NSFilenamesPboardType", "public.file-url", "public.jpeg"],
-      "url": "file:///Users/person/Pictures/private%20image.png",
-    ])
-    let titlebarChromeDropJson = serializePrivacyTestPayload(titlebarChromeDropPayload)
-
-    assertTrue(titlebarChromeDropJson.contains("nativeWorkspace.terminalDrop.titlebarChrome.entered.routeToRoot"), "titlebar chrome drop forwarding event should remain visible")
-    assertTrue(titlebarChromeDropJson.contains("titlebarChrome"), "titlebar chrome drop operation source should remain visible")
-    assertTrue(titlebarChromeDropJson.contains("registeredTypeMatchCount"), "titlebar chrome registered type match count should remain visible")
-    assertTrue(titlebarChromeDropJson.contains("public.file-url"), "titlebar chrome pasteboard type should remain visible")
-    assertTrue(!titlebarChromeDropJson.contains("/Users/person"), "titlebar chrome drop logs must not include dropped paths")
-    assertTrue(!titlebarChromeDropJson.contains("private image.png"), "titlebar chrome drop logs must not include dropped filenames")
-    assertTrue(!titlebarChromeDropJson.contains("[Image #1]"), "titlebar chrome drop logs must not include prepared terminal text")
-    assertTrue(!titlebarChromeDropJson.contains("codex --ask private request"), "titlebar chrome drop logs must not include command text")
-    assertTrue(!titlebarChromeDropJson.contains("secret-token"), "titlebar chrome drop logs must not include secrets")
-
-    let titlebarWebViewDisabledPayload = NativeLogPrivacy.sanitizePayload([
-      "commandText": "codex --ask private request",
-      "event": "nativeWorkspace.terminalDrop.titlebarChromeWebView.registrationDisabled",
-      "filePath": "/Users/person/Pictures/private image.png",
-      "operationSource": "titlebarChromeWebView",
-      "registeredTypeCount": 0,
-      "registeredTypes": [],
-      "secretToken": "secret-token",
-      "usesNativeChromeDropForwarder": true,
-      "webViewDropDestination": false,
-    ])
-    let titlebarWebViewDisabledJson = serializePrivacyTestPayload(titlebarWebViewDisabledPayload)
-
-    assertTrue(titlebarWebViewDisabledJson.contains("nativeWorkspace.terminalDrop.titlebarChromeWebView.registrationDisabled"), "titlebar webview disabled registration event should remain visible")
-    assertTrue(titlebarWebViewDisabledJson.contains("webViewDropDestination"), "titlebar webview drop ownership state should remain visible")
-    assertTrue(titlebarWebViewDisabledJson.contains("usesNativeChromeDropForwarder"), "titlebar native drop forwarder state should remain visible")
-    assertTrue(!titlebarWebViewDisabledJson.contains("/Users/person"), "titlebar webview disabled logs must not include dropped paths")
-    assertTrue(!titlebarWebViewDisabledJson.contains("private image.png"), "titlebar webview disabled logs must not include dropped filenames")
-    assertTrue(!titlebarWebViewDisabledJson.contains("codex --ask private request"), "titlebar webview disabled logs must not include command text")
-    assertTrue(!titlebarWebViewDisabledJson.contains("secret-token"), "titlebar webview disabled logs must not include secrets")
-
-    let titlebarWebViewFootprintPayload = NativeLogPrivacy.sanitizePayload([
-      "appIsActive": false,
-      "commandText": "codex --ask private request",
-      "didChange": true,
-      "event": "nativeWorkspace.terminalDrop.titlebarChrome.webViewFootprint",
-      "filePath": "/Users/person/Pictures/private image.png",
-      "mode": "titlebarStrip",
-      "operationSource": "titlebarChrome",
-      "projectName": "Private Customer Project",
-      "reason": "appDidResignActive",
-      "secretToken": "secret-token",
-      "terminalPaneDropForwardingActive": false,
-      "titlebarHeight": 35,
-      "url": "file:///Users/person/Pictures/private%20image.png",
-      "webViewFrame": ["height": 35, "minX": 0, "minY": 977, "width": 1440],
-      "windowIsKey": false,
-      "wrapperBounds": ["height": 1012, "minX": 0, "minY": 0, "width": 1440],
-    ])
-    let titlebarWebViewFootprintJson = serializePrivacyTestPayload(titlebarWebViewFootprintPayload)
-
-    assertTrue(titlebarWebViewFootprintJson.contains("nativeWorkspace.terminalDrop.titlebarChrome.webViewFootprint"), "titlebar webview footprint event should remain visible")
-    assertTrue(titlebarWebViewFootprintJson.contains("titlebarStrip"), "titlebar webview footprint mode should remain visible")
-    assertTrue(titlebarWebViewFootprintJson.contains("appDidResignActive"), "titlebar webview footprint reason should remain visible")
-    assertTrue(titlebarWebViewFootprintJson.contains("webViewFrame"), "titlebar webview footprint geometry should remain visible")
-    assertTrue(!titlebarWebViewFootprintJson.contains("Private Customer Project"), "titlebar webview footprint logs must not include project names")
-    assertTrue(!titlebarWebViewFootprintJson.contains("/Users/person"), "titlebar webview footprint logs must not include paths")
-    assertTrue(!titlebarWebViewFootprintJson.contains("private image.png"), "titlebar webview footprint logs must not include filenames")
-    assertTrue(!titlebarWebViewFootprintJson.contains("codex --ask private request"), "titlebar webview footprint logs must not include command text")
-    assertTrue(!titlebarWebViewFootprintJson.contains("secret-token"), "titlebar webview footprint logs must not include secrets")
-
-    let titlebarForwarderHitTestPayload = NativeLogPrivacy.sanitizePayload([
-      "commandText": "codex --ask private request",
-      "event": "nativeWorkspace.terminalDrop.titlebarChrome.hitTest.forwarder",
-      "eventNumber": 29137,
-      "eventType": "leftMouseDragged",
-      "filePath": "/Users/person/Pictures/private image.png",
-      "hitRegionCount": 8,
-      "interactiveHitRegion": false,
-      "operationSource": "titlebarChrome",
-      "point": ["x": 900, "y": 420],
-      "projectName": "Private Customer Project",
-      "registeredTypeCount": 2,
-      "registeredTypes": ["public.file-url", "public.utf8-plain-text"],
-      "route": "nativeWrapper",
-      "secretToken": "secret-token",
-      "titlebarHeight": 35,
-      "titlebarStrip": false,
-      "url": "file:///Users/person/Pictures/private%20image.png",
-      "webViewDropDestination": false,
-    ])
-    let titlebarForwarderHitTestJson = serializePrivacyTestPayload(titlebarForwarderHitTestPayload)
-
-    assertTrue(titlebarForwarderHitTestJson.contains("nativeWorkspace.terminalDrop.titlebarChrome.hitTest.forwarder"), "titlebar drop-forwarder hit-test event should remain visible")
-    assertTrue(titlebarForwarderHitTestJson.contains("nativeWrapper"), "titlebar drop-forwarder route should remain visible")
-    assertTrue(titlebarForwarderHitTestJson.contains("webViewDropDestination"), "titlebar drop-forwarder webview ownership state should remain visible")
-    assertTrue(titlebarForwarderHitTestJson.contains("registeredTypeCount"), "titlebar drop-forwarder registered type count should remain visible")
-    assertTrue(!titlebarForwarderHitTestJson.contains("Private Customer Project"), "titlebar drop-forwarder hit-test logs must not include project names")
-    assertTrue(!titlebarForwarderHitTestJson.contains("/Users/person"), "titlebar drop-forwarder hit-test logs must not include paths")
-    assertTrue(!titlebarForwarderHitTestJson.contains("private image.png"), "titlebar drop-forwarder hit-test logs must not include filenames")
-    assertTrue(!titlebarForwarderHitTestJson.contains("codex --ask private request"), "titlebar drop-forwarder hit-test logs must not include command text")
-    assertTrue(!titlebarForwarderHitTestJson.contains("secret-token"), "titlebar drop-forwarder hit-test logs must not include secrets")
-
     let titlebarHitTestPayload = NativeLogPrivacy.sanitizePayload([
       "commandText": "codex --ask private request",
       "event": "nativeWorkspace.reactTitlebar.hitTest.route",
@@ -368,87 +121,225 @@ enum NativeLogPrivacyTests {
     assertTrue(!titlebarHitTestJson.contains("codex --ask private request"), "titlebar hit-test logs must not include command text")
     assertTrue(!titlebarHitTestJson.contains("secret-token"), "titlebar hit-test logs must not include secrets")
 
-    let forwardedHostDropPayload = NativeLogPrivacy.sanitizePayload([
+    let paneTabHitTestPayload = NativeLogPrivacy.sanitizePayload([
       "commandText": "codex --ask private request",
-      "draggingSourceOperationMaskRaw": "18446744073709551615",
-      "event": "nativeWorkspace.terminalDrop.terminalHost.perform.routeToSurface",
-      "filePath": "/Users/person/Pictures/private image.png",
-      "operationSource": "terminalHost",
-      "preparedContent": "[Image #1](/Users/person/Pictures/private image.png)",
+      "event": "nativePaneTabs.titleBar.hitTest.tabButton",
+      "projectName": "Private Customer Project",
+      "resolvedSessionId": "P123:G456",
       "secretToken": "secret-token",
-      "surfaceCanPerformDrop": true,
-      "surfaceSessionId": "G456",
-      "types": ["Apple URL pasteboard type", "NSFilenamesPboardType", "public.file-url", "public.jpeg"],
-      "url": "file:///Users/person/Pictures/private%20image.png",
+      "tabButtonFrame": ["height": 36, "minX": 0, "minY": 0, "width": 175],
+      "tabButtonFrames": [
+        [
+          "frame": ["height": 36, "minX": 0, "minY": 0, "width": 175],
+          "index": 0,
+          "isHidden": false,
+          "sessionId": "P123:G456",
+          "title": "Private Browser Title",
+        ],
+      ],
+      "tabButtonLocalPoint": ["x": 42, "y": 18],
+      "tabScrollOffsetX": 120,
+      "tabViewportFrame": ["height": 36, "minX": 0, "minY": 0, "width": 400],
+      "titleBarBounds": ["height": 36, "minX": 0, "minY": 0, "width": 520],
+      "title": "Private Browser Title",
+      "url": "https://example.test/private?token=secret-token",
     ])
-    let forwardedHostDropJson = serializePrivacyTestPayload(forwardedHostDropPayload)
+    let paneTabHitTestJson = serializePrivacyTestPayload(paneTabHitTestPayload)
 
-    assertTrue(forwardedHostDropJson.contains("nativeWorkspace.terminalDrop.terminalHost.perform.routeToSurface"), "forwarded host drop event should remain visible")
-    assertTrue(forwardedHostDropJson.contains("terminalHost"), "forwarded host operation source should remain visible")
-    assertTrue(forwardedHostDropJson.contains("draggingSourceOperationMaskRaw"), "forwarded host raw drag mask key should remain visible")
-    assertTrue(forwardedHostDropJson.contains("surfaceCanPerformDrop"), "forwarded host surface routing state should remain visible")
-    assertTrue(!forwardedHostDropJson.contains("/Users/person"), "forwarded host logs must not include dropped paths")
-    assertTrue(!forwardedHostDropJson.contains("private image.png"), "forwarded host logs must not include dropped filenames")
-    assertTrue(!forwardedHostDropJson.contains("[Image #1]"), "forwarded host logs must not include prepared terminal text")
-    assertTrue(!forwardedHostDropJson.contains("codex --ask private request"), "forwarded host logs must not include command text")
-    assertTrue(!forwardedHostDropJson.contains("secret-token"), "forwarded host logs must not include secrets")
+    assertTrue(paneTabHitTestJson.contains("nativePaneTabs.titleBar.hitTest.tabButton"), "pane-tab hit-test event should remain visible")
+    assertTrue(paneTabHitTestJson.contains("P123:G456"), "pane-tab hit-test session id should remain visible")
+    assertTrue(paneTabHitTestJson.contains("tabButtonLocalPoint"), "pane-tab hit-test geometry should remain visible")
+    assertTrue(!paneTabHitTestJson.contains("Private Browser Title"), "pane-tab hit-test logs must not include tab titles")
+    assertTrue(!paneTabHitTestJson.contains("Private Customer Project"), "pane-tab hit-test logs must not include project names")
+    assertTrue(!paneTabHitTestJson.contains("codex --ask private request"), "pane-tab hit-test logs must not include command text")
+    assertTrue(!paneTabHitTestJson.contains("secret-token"), "pane-tab hit-test logs must not include secrets")
+    assertTrue(!paneTabHitTestJson.contains("private?token"), "pane-tab hit-test logs must not include full URLs or query strings")
 
-    let hoverFeedbackPayload = NativeLogPrivacy.sanitizePayload([
+    let paneTabCloseClickPayload = NativeLogPrivacy.sanitizePayload([
       "commandText": "codex --ask private request",
-      "event": "nativeWorkspace.terminalDrop.hoverFeedback.visible",
-      "eventNumber": 26923,
-      "eventType": "entered",
-      "filePath": "/Users/person/Pictures/private image.png",
-      "operationSource": "titlebarChrome",
-      "preparedContent": "[Image #1](/Users/person/Pictures/private image.png)",
+      "event": "nativePaneTabs.button.inlineMouseDown",
+      "inlineActionAtPoint": "close",
+      "locallyHoveredInlineAction": "close",
+      "projectName": "Private Customer Project",
+      "resolvedInlineAction": "close",
       "secretToken": "secret-token",
-      "surfaceSessionId": "G456",
-      "targetFrame": ["height": 512, "minX": 0, "minY": 0, "width": 768],
-      "url": "file:///Users/person/Pictures/private%20image.png",
-      "visualAlpha": 0,
-      "workspaceBoundsContainsPoint": true,
+      "sessionId": "P123:G456",
+      "title": "Private Browser Title",
+      "url": "https://example.test/private?token=secret-token",
     ])
-    let hoverFeedbackJson = serializePrivacyTestPayload(hoverFeedbackPayload)
+    let paneTabCloseClickJson = serializePrivacyTestPayload(paneTabCloseClickPayload)
 
-    assertTrue(hoverFeedbackJson.contains("nativeWorkspace.terminalDrop.hoverFeedback.visible"), "hover feedback event should remain visible")
-    assertTrue(hoverFeedbackJson.contains("titlebarChrome"), "hover feedback operation source should remain visible")
-    assertTrue(hoverFeedbackJson.contains("targetFrame"), "hover feedback geometry should remain visible")
-    assertTrue(hoverFeedbackJson.contains("visualAlpha"), "hover feedback visual alpha should remain visible")
-    assertTrue(!hoverFeedbackJson.contains("/Users/person"), "hover feedback logs must not include dropped paths")
-    assertTrue(!hoverFeedbackJson.contains("private image.png"), "hover feedback logs must not include dropped filenames")
-    assertTrue(!hoverFeedbackJson.contains("[Image #1]"), "hover feedback logs must not include prepared terminal text")
-    assertTrue(!hoverFeedbackJson.contains("codex --ask private request"), "hover feedback logs must not include command text")
-    assertTrue(!hoverFeedbackJson.contains("secret-token"), "hover feedback logs must not include secrets")
+    assertTrue(paneTabCloseClickJson.contains("nativePaneTabs.button.inlineMouseDown"), "pane-tab close click event should remain visible")
+    assertTrue(paneTabCloseClickJson.contains("resolvedInlineAction"), "pane-tab close click action metadata should remain visible")
+    assertTrue(paneTabCloseClickJson.contains("P123:G456"), "pane-tab close click session id should remain visible")
+    assertTrue(!paneTabCloseClickJson.contains("Private Browser Title"), "pane-tab close click logs must not include tab titles")
+    assertTrue(!paneTabCloseClickJson.contains("Private Customer Project"), "pane-tab close click logs must not include project names")
+    assertTrue(!paneTabCloseClickJson.contains("codex --ask private request"), "pane-tab close click logs must not include command text")
+    assertTrue(!paneTabCloseClickJson.contains("secret-token"), "pane-tab close click logs must not include secrets")
+    assertTrue(!paneTabCloseClickJson.contains("private?token"), "pane-tab close click logs must not include full URLs or query strings")
 
-    let applicationFileOpenPayload = NativeLogPrivacy.sanitizePayload([
+    let paneTabOutsideBoundsPayload = NativeLogPrivacy.sanitizePayload([
       "commandText": "codex --ask private request",
-      "didRouteTerminalDrop": false,
-      "event": "nativeWorkspace.terminalDrop.applicationOpenFile.inspect",
-      "filePath": "/Users/person/Pictures/private image.png",
-      "operationSource": "applicationOpenFile",
-      "path": "/Users/person/Pictures/private image.png",
-      "pathCount": 1,
+      "event": "nativePaneTabs.button.mouseDown.outsideBounds",
+      "localPoint": ["x": -295, "y": 20],
+      "projectName": "Private Customer Project",
       "secretToken": "secret-token",
-      "url": "file:///Users/person/Pictures/private%20image.png",
+      "sessionId": "P123:G456",
+      "title": "Private Browser Title",
+      "url": "https://example.test/private?token=secret-token",
     ])
-    let applicationFileOpenJson = serializePrivacyTestPayload(applicationFileOpenPayload)
+    let paneTabOutsideBoundsJson = serializePrivacyTestPayload(paneTabOutsideBoundsPayload)
 
-    assertTrue(applicationFileOpenJson.contains("nativeWorkspace.terminalDrop.applicationOpenFile.inspect"), "application file-open drop event should remain visible")
-    assertTrue(applicationFileOpenJson.contains("didRouteTerminalDrop"), "application file-open route state should remain visible")
-    assertTrue(!applicationFileOpenJson.contains("/Users/person"), "application file-open logs must not include dropped paths")
-    assertTrue(!applicationFileOpenJson.contains("private image.png"), "application file-open logs must not include dropped filenames")
-    assertTrue(!applicationFileOpenJson.contains("codex --ask private request"), "application file-open logs must not include command text")
-    assertTrue(!applicationFileOpenJson.contains("secret-token"), "application file-open logs must not include secrets")
+    assertTrue(paneTabOutsideBoundsJson.contains("nativePaneTabs.button.mouseDown.outsideBounds"), "pane-tab outside-bounds event should remain visible")
+    assertTrue(paneTabOutsideBoundsJson.contains("localPoint"), "pane-tab outside-bounds geometry should remain visible")
+    assertTrue(paneTabOutsideBoundsJson.contains("P123:G456"), "pane-tab outside-bounds session id should remain visible")
+    assertTrue(!paneTabOutsideBoundsJson.contains("Private Browser Title"), "pane-tab outside-bounds logs must not include tab titles")
+    assertTrue(!paneTabOutsideBoundsJson.contains("Private Customer Project"), "pane-tab outside-bounds logs must not include project names")
+    assertTrue(!paneTabOutsideBoundsJson.contains("codex --ask private request"), "pane-tab outside-bounds logs must not include command text")
+    assertTrue(!paneTabOutsideBoundsJson.contains("secret-token"), "pane-tab outside-bounds logs must not include secrets")
+    assertTrue(!paneTabOutsideBoundsJson.contains("private?token"), "pane-tab outside-bounds logs must not include full URLs or query strings")
 
-    assertTrue(
-      isNativePersistentTerminalDropReproEvent("nativeWorkspace.terminalDrop.surface.entered", force: true),
-      "forced terminal drop events should persist for repros")
-    assertTrue(
-      !isNativePersistentTerminalDropReproEvent("nativeWorkspace.terminalDrop.surface.updated", force: false),
-      "non-forced terminal drop updates should stay quiet unless debugging mode is enabled")
-    assertTrue(
-      !isNativePersistentTerminalDropReproEvent("nativeWorkspace.unrelated", force: true),
-      "unrelated forced events should not use the terminal drop repro gate")
+    let paneTabReroutePayload = NativeLogPrivacy.sanitizePayload([
+      "commandText": "codex --ask private request",
+      "currentTarget": ["kind": "inlineClose", "sessionId": "P123:G456"],
+      "event": "nativePaneTabs.titleBar.reroute.mouseDown",
+      "phase": "mouseDown",
+      "projectName": "Private Customer Project",
+      "resolvedTarget": ["kind": "inlineClose", "sessionId": "P123:G456"],
+      "secretToken": "secret-token",
+      "source": "tabButtonOutsideBounds",
+      "sourceLocalPoint": ["x": -295, "y": 20],
+      "sourceSessionId": "P123:G999",
+      "title": "Private Browser Title",
+      "titleBarPoint": ["x": 522, "y": 18],
+      "url": "https://example.test/private?token=secret-token",
+    ])
+    let paneTabRerouteJson = serializePrivacyTestPayload(paneTabReroutePayload)
+
+    assertTrue(paneTabRerouteJson.contains("nativePaneTabs.titleBar.reroute.mouseDown"), "pane-tab reroute event should remain visible")
+    assertTrue(paneTabRerouteJson.contains("inlineClose"), "pane-tab reroute target kind should remain visible")
+    assertTrue(paneTabRerouteJson.contains("tabButtonOutsideBounds"), "pane-tab reroute source should remain visible")
+    assertTrue(paneTabRerouteJson.contains("P123:G456"), "pane-tab reroute resolved session id should remain visible")
+    assertTrue(!paneTabRerouteJson.contains("Private Browser Title"), "pane-tab reroute logs must not include tab titles")
+    assertTrue(!paneTabRerouteJson.contains("Private Customer Project"), "pane-tab reroute logs must not include project names")
+    assertTrue(!paneTabRerouteJson.contains("codex --ask private request"), "pane-tab reroute logs must not include command text")
+    assertTrue(!paneTabRerouteJson.contains("secret-token"), "pane-tab reroute logs must not include secrets")
+    assertTrue(!paneTabRerouteJson.contains("private?token"), "pane-tab reroute logs must not include full URLs or query strings")
+
+    let paneTabFixedActionPayload = NativeLogPrivacy.sanitizePayload([
+      "buttonKind": "newTerminal",
+      "commandText": "codex --ask private request",
+      "event": "nativePaneTabs.titleBar.hitTest.fixedActionButton",
+      "projectName": "Private Customer Project",
+      "secretToken": "secret-token",
+      "source": "localHover",
+      "title": "Private Browser Title",
+      "url": "https://example.test/private?token=secret-token",
+    ])
+    let paneTabFixedActionJson = serializePrivacyTestPayload(paneTabFixedActionPayload)
+
+    assertTrue(paneTabFixedActionJson.contains("nativePaneTabs.titleBar.hitTest.fixedActionButton"), "pane-tab fixed-button event should remain visible")
+    assertTrue(paneTabFixedActionJson.contains("newTerminal"), "pane-tab fixed-button kind should remain visible")
+    assertTrue(paneTabFixedActionJson.contains("localHover"), "pane-tab fixed-button source should remain visible")
+    assertTrue(!paneTabFixedActionJson.contains("Private Browser Title"), "pane-tab fixed-button logs must not include tab titles")
+    assertTrue(!paneTabFixedActionJson.contains("Private Customer Project"), "pane-tab fixed-button logs must not include project names")
+    assertTrue(!paneTabFixedActionJson.contains("codex --ask private request"), "pane-tab fixed-button logs must not include command text")
+    assertTrue(!paneTabFixedActionJson.contains("secret-token"), "pane-tab fixed-button logs must not include secrets")
+    assertTrue(!paneTabFixedActionJson.contains("private?token"), "pane-tab fixed-button logs must not include full URLs or query strings")
+
+    let paneTabRootPrepassPayload = NativeLogPrivacy.sanitizePayload([
+      "commandText": "codex --ask private request",
+      "event": "nativePaneTabs.root.hitTest.titleBarPrepass",
+      "hitView": "TerminalTitleBarActionButton",
+      "projectName": "Private Customer Project",
+      "rootPoint": ["x": 1473, "y": 983],
+      "secretToken": "secret-token",
+      "title": "Private Browser Title",
+      "url": "https://example.test/private?token=secret-token",
+      "workspaceFrame": ["height": 998, "minX": 235, "minY": 0, "width": 1493],
+      "workspacePoint": ["x": 1238, "y": 983],
+    ])
+    let paneTabRootPrepassJson = serializePrivacyTestPayload(paneTabRootPrepassPayload)
+
+    assertTrue(paneTabRootPrepassJson.contains("nativePaneTabs.root.hitTest.titleBarPrepass"), "pane-tab root prepass event should remain visible")
+    assertTrue(paneTabRootPrepassJson.contains("TerminalTitleBarActionButton"), "pane-tab root prepass hit-view type should remain visible")
+    assertTrue(paneTabRootPrepassJson.contains("workspacePoint"), "pane-tab root prepass geometry should remain visible")
+    assertTrue(!paneTabRootPrepassJson.contains("Private Browser Title"), "pane-tab root prepass logs must not include tab titles")
+    assertTrue(!paneTabRootPrepassJson.contains("Private Customer Project"), "pane-tab root prepass logs must not include project names")
+    assertTrue(!paneTabRootPrepassJson.contains("codex --ask private request"), "pane-tab root prepass logs must not include command text")
+    assertTrue(!paneTabRootPrepassJson.contains("secret-token"), "pane-tab root prepass logs must not include secrets")
+    assertTrue(!paneTabRootPrepassJson.contains("private?token"), "pane-tab root prepass logs must not include full URLs or query strings")
+
+    let paneTabWindowPrepassPayload = NativeLogPrivacy.sanitizePayload([
+      "commandText": "codex --ask private request",
+      "event": "nativePaneTabs.root.windowMouseEvent.titleBarPrepass",
+      "eventType": "leftMouseDown",
+      "projectName": "Private Customer Project",
+      "rootPoint": ["x": 1473, "y": 983],
+      "secretToken": "secret-token",
+      "source": "windowPaneTitleBarPrepass",
+      "title": "Private Browser Title",
+      "url": "https://example.test/private?token=secret-token",
+      "workspaceFrame": ["height": 998, "minX": 235, "minY": 0, "width": 1493],
+      "workspacePoint": ["x": 1238, "y": 983],
+    ])
+    let paneTabWindowPrepassJson = serializePrivacyTestPayload(paneTabWindowPrepassPayload)
+
+    assertTrue(paneTabWindowPrepassJson.contains("nativePaneTabs.root.windowMouseEvent.titleBarPrepass"), "pane-tab window prepass event should remain visible")
+    assertTrue(paneTabWindowPrepassJson.contains("leftMouseDown"), "pane-tab window prepass event type should remain visible")
+    assertTrue(paneTabWindowPrepassJson.contains("windowPaneTitleBarPrepass"), "pane-tab window prepass source should remain visible")
+    assertTrue(paneTabWindowPrepassJson.contains("workspacePoint"), "pane-tab window prepass geometry should remain visible")
+    assertTrue(!paneTabWindowPrepassJson.contains("Private Browser Title"), "pane-tab window prepass logs must not include tab titles")
+    assertTrue(!paneTabWindowPrepassJson.contains("Private Customer Project"), "pane-tab window prepass logs must not include project names")
+    assertTrue(!paneTabWindowPrepassJson.contains("codex --ask private request"), "pane-tab window prepass logs must not include command text")
+    assertTrue(!paneTabWindowPrepassJson.contains("secret-token"), "pane-tab window prepass logs must not include secrets")
+    assertTrue(!paneTabWindowPrepassJson.contains("private?token"), "pane-tab window prepass logs must not include full URLs or query strings")
+
+    let sourceDragPayload = NativeLogPrivacy.sanitizePayload([
+      "activeElement": [
+        "classTokens": ["monaco-workbench", "part-editor"],
+        "draggable": false,
+        "matches": ["workbench", "partEditor"],
+        "role": "textbox",
+        "tag": "div",
+      ],
+      "commandText": "codex --ask private request",
+      "event": "nativeWorkspace.projectEditor.cef.sourceDragDiagnostic",
+      "nativeDragId": 42,
+      "overlaySnapshot": [
+        "activeAppModalKind": "settings",
+        "modalHostFrame": ["height": 900, "minX": 0, "minY": 0, "width": 1440],
+        "titlebarDropdownPanel": [
+          "currentKind": "resources",
+          "panelFrame": ["height": 650, "minX": 600, "minY": 300, "width": 656],
+          "present": true,
+        ],
+      ],
+      "projectName": "Private Customer Project",
+      "projectPath": "/Users/person/dev/private-customer",
+      "secretToken": "secret-token",
+      "target": [
+        "classTokens": ["tab", "tab-border-top"],
+        "draggable": true,
+        "filePath": "/Users/person/dev/private-customer/private-file-name.ts",
+        "matches": ["tabsContainer", "tab", "tabDraggable"],
+        "role": "tab",
+        "tag": "div",
+      ],
+      "type": "drag-sequence-summary",
+      "url": "https://example.test/private?token=secret-token",
+    ])
+    let sourceDragJson = serializePrivacyTestPayload(sourceDragPayload)
+
+    assertTrue(sourceDragJson.contains("nativeWorkspace.projectEditor.cef.sourceDragDiagnostic"), "source drag event should remain visible")
+    assertTrue(sourceDragJson.contains("drag-sequence-summary"), "source drag diagnostic type should remain visible")
+    assertTrue(sourceDragJson.contains("tabsContainer"), "source drag structural matches should remain visible")
+    assertTrue(sourceDragJson.contains("nativeDragId"), "native drag id should remain visible")
+    assertTrue(!sourceDragJson.contains("Private Customer Project"), "source drag logs must not include project names")
+    assertTrue(!sourceDragJson.contains("/Users/person"), "source drag logs must not include paths")
+    assertTrue(!sourceDragJson.contains("private-file-name"), "source drag logs must not include file names")
+    assertTrue(!sourceDragJson.contains("codex --ask private request"), "source drag logs must not include command text")
+    assertTrue(!sourceDragJson.contains("secret-token"), "source drag logs must not include secrets")
 
     assertTrue(
       isNativePersistentLogImportantDiagnostic("nativeSidebar.gxserver.sessionTitleEventFailed"),

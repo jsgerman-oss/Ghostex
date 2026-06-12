@@ -59,6 +59,18 @@ case "$GHOSTEX_MACOS_ARCH" in
 esac
 BUILD_CACHE_DIR="${GHOSTEX_BUILD_CACHE_DIR:-$REPO_ROOT/build/$GHOSTEX_MACOS_ARCH/build-cache}"
 
+acquire_local_start_lock_if_needed() {
+	if [[ "${GHOSTEX_START_LOCK_HELD:-}" == "1" || "${GHOSTEX_BUILD_LOCK_HELD:-}" == "1" ]]; then
+		return 0
+	fi
+	local lock_file="$REPO_ROOT/build/ghostex-local-start.lock"
+	mkdir -p "$(dirname "$lock_file")"
+	# CDXC:LocalStartConcurrency 2026-06-11-18:59: Direct native builds mutate the same DerivedData app bundle that `bun run start` later mirrors into /Applications. Re-enter under the local-start lock unless the launcher already owns it, so a direct build cannot remove generated CEF payloads while another process installs the signed app.
+	exec /usr/bin/lockf -k "$lock_file" /usr/bin/env GHOSTEX_BUILD_LOCK_HELD=1 /bin/bash "$0" "$@"
+}
+
+acquire_local_start_lock_if_needed "$@"
+
 # CDXC:LocalStartFast 2026-06-07-16:23: Local starts should rebuild expensive bundled resources only when their runtime inputs change. Store content-hash stamps under build/<arch> so repeated `bun run start` calls do not churn source files or rely on generated folders that may be deleted by other build steps.
 fingerprint_inputs() {
 	"${GXSERVER_NODE_BIN:-node}" "$REPO_ROOT/scripts/fingerprint-build-inputs.mjs" "$@"
@@ -1208,8 +1220,10 @@ mkdir -p "$WEB_DIR/sounds"
 # without relying on repository-relative media paths.
 rsync -a --delete "$REPO_ROOT/media/sounds/" "$WEB_DIR/sounds/"
 NATIVE_WEB_CACHE_KEY="native-web-$GHOSTEX_MACOS_ARCH"
+# CDXC:NativeWebBuild 2026-06-11-20:28: Native web HTML assembly lives in this host build script, not only in build-native-web-bundles.mjs. Include this script in the digest so output-template changes that remove stale per-host CSS rebuild the Web resources instead of trusting an older cache stamp.
 NATIVE_WEB_DIGEST="$(fingerprint_inputs \
-	--value "native-web-bundles-v1" \
+	--value "native-web-bundles-v2" \
+	--path "$SCRIPT_DIR/build-ghostex-host.sh" \
 	--path "$REPO_ROOT/scripts/build-native-web-bundles.mjs" \
 	--path "$REPO_ROOT/native/sidebar" \
 	--path "$REPO_ROOT/sidebar" \
@@ -1237,6 +1251,8 @@ else
 # through the repository helper so React Compiler runs before Bun bundles and
 # the host still receives the same classic-script filenames it inlines below.
 # CDXC:LocalStartFast 2026-06-07-16:23: Cache native web bundle generation by source content so no-op starts do not rewrite identical WKWebView assets, which would invalidate the signed app resources and force a pointless re-sign.
+# CDXC:NativeWebBuild 2026-06-11-20:28: Host-specific CSS files are generated artifacts, and Bun may collapse shared CSS into native-sidebar.css for entries that import the same stylesheet. Remove stale per-host CSS before rebuilding so titlebar, modal, and pet HTML cannot inline an older #050505 modal surface after the source background changes to #0e0e0e.
+rm -f "$WEB_DIR/modal-host.css" "$WEB_DIR/titlebar-host.css" "$WEB_DIR/tasks-placeholder.css" "$WEB_DIR/pet-host.css"
 bun "$REPO_ROOT/scripts/build-native-web-bundles.mjs" \
 	--outdir "$WEB_DIR" \
 	"$REPO_ROOT/native/sidebar/native-sidebar.tsx" \
@@ -1256,14 +1272,15 @@ const modalJs = readFileSync(join(webDir, "modal-host.js"), "utf8");
 // CDXC:ReactTitlebar 2026-05-11-00:22: The titlebar now imports shadcn/sidebar
 // CSS for its grouped Open In controls, so inline its generated stylesheet in
 // the isolated titlebar WKWebView instead of relying on the sidebar HTML.
+// CDXC:NativeWebBuild 2026-06-11-20:28: When Bun emits only the shared native-sidebar.css for entries that import the same stylesheet, titlebar and pet hosts must inline that fresh shared CSS instead of preserving or omitting stale per-host CSS.
 const titlebarCssPath = join(webDir, "titlebar-host.css");
-const titlebarCss = existsSync(titlebarCssPath) ? readFileSync(titlebarCssPath, "utf8") : "";
+const titlebarCss = existsSync(titlebarCssPath) ? readFileSync(titlebarCssPath, "utf8") : css;
 const titlebarJs = readFileSync(join(webDir, "titlebar-host.js"), "utf8");
 const tasksPlaceholderCssPath = join(webDir, "tasks-placeholder.css");
 const tasksPlaceholderCss = existsSync(tasksPlaceholderCssPath) ? readFileSync(tasksPlaceholderCssPath, "utf8") : "";
 const tasksPlaceholderJs = readFileSync(join(webDir, "tasks-placeholder.js"), "utf8");
 const petCssPath = join(webDir, "pet-host.css");
-const petCss = existsSync(petCssPath) ? readFileSync(petCssPath, "utf8") : "";
+const petCss = existsSync(petCssPath) ? readFileSync(petCssPath, "utf8") : css;
 const petJs = readFileSync(join(webDir, "pet-host.js"), "utf8");
 // Inline script bodies must escape HTML script end tags that appear inside bundle strings.
 const escapedJs = js.replace(/<\/script/gi, "<\\/script");

@@ -8,6 +8,11 @@ import { SidebarApp } from "../../sidebar/sidebar-app";
 import { AGENT_LOGO_COLORS, AGENT_LOGOS } from "../../sidebar/agent-logos";
 import { TOOLTIP_DELAY_MS } from "../../sidebar/tooltip-delay";
 import {
+  createAppToastRequest,
+  type AppToastLevel,
+  type AppToastOptions,
+} from "../../shared/app-toast-contract";
+import {
   createNativeGxserverRequest,
   parseNativeGxserverResponse,
   type NativeGxserverHttpMethod,
@@ -201,7 +206,6 @@ import {
   normalizeStoredSidebarAgentOrder,
   normalizeStoredSidebarAgents,
   shouldPreferTerminalTitleForAgentIcon,
-  supportsTerminalTitleSessionSync,
   type SidebarAgentButton,
   type SidebarAgentIcon,
   type StoredSidebarAgent,
@@ -766,6 +770,7 @@ type NativeHostCommand =
   | { sessionId: string; type: "showBrowserProfilePicker" }
   | { sessionId: string; type: "showBrowserImportSettings" }
   | { side: SidebarSide; type: "setSidebarSide" }
+  | { type: "toggleSidebarCollapsed" }
   | {
       /**
        * CDXC:ReactTitlebar 2026-05-09-17:11
@@ -1143,7 +1148,7 @@ const NATIVE_MIN_WORKING_DURATION_BEFORE_ATTENTION_MS = 5_000;
 const NATIVE_PERSISTED_WORKING_STALE_MS = 30 * 60 * 1_000;
 /**
  * CDXC:SessionAttention 2026-05-16-23:35:
- * Green attention borders and status dots must remain visible for at least 1.5 seconds after appearing. A click during that floor records the acknowledgement immediately but delays clearing the shared attention state until the minimum visible duration has elapsed.
+ * #95d7f6 attention borders and status dots must remain visible for at least 1.5 seconds after appearing. A click during that floor records the acknowledgement immediately but delays clearing the shared attention state until the minimum visible duration has elapsed.
  */
 const NATIVE_MIN_ATTENTION_VISIBLE_MS = 1_500;
 const ghostex_AGENT_NOTIFY_HOOK_PATH = `${nativeGhostexHomeDirectory()}/hooks/agent-shell-notify.sh`;
@@ -3000,7 +3005,7 @@ function applyGxserverPresentationSessionToNativePaneChrome(
     const attentionEventId = getNativeGxserverPresentationAttentionEventId(presentation);
     /*
     CDXC:SessionAttention 2026-06-08-13:19:
-    gxserver presentation is now the path that turns macOS session chrome green for hook-owned attention events. Run sound and notification side effects only for fresh presentation deltas, not startup snapshots or stream recovery snapshots, and reuse the existing attention handler so event-id dedupe remains centralized.
+    gxserver presentation is now the path that turns macOS session chrome #95d7f6 for hook-owned attention events. Run sound and notification side effects only for fresh presentation deltas, not startup snapshots or stream recovery snapshots, and reuse the existing attention handler so event-id dedupe remains centralized.
     */
     const shouldRunAttentionSideEffects =
       shouldRunNativeGxserverPresentationAttentionSideEffects(reason) &&
@@ -3190,7 +3195,7 @@ function setGxserverPresentationSessionActivityLocally(
   let didChange = false;
   /*
   CDXC:SessionAttention 2026-06-02-18:31:
-  Clicking an attention terminal should clear the same green border and tab dot immediately even when those were rendered from gxserver presentation instead of local terminalState. Keep this as a local-first mirror of the existing acknowledgement path; gxserver remains the durable owner and reconciles through the normal presentation delta.
+  Clicking an attention terminal should clear the same #95d7f6 border and tab dot immediately even when those were rendered from gxserver presentation instead of local terminalState. Keep this as a local-first mirror of the existing acknowledgement path; gxserver remains the durable owner and reconciles through the normal presentation delta.
   */
   const sessions = presentation.sessions.map((session) => {
     if (
@@ -4002,27 +4007,14 @@ async function postNativeCreateTerminalWithGxserverAttach(
 }
 
 function showAppToast(
-  level: "info" | "success" | "warning" | "error",
+  level: AppToastLevel,
   title: string,
   description?: string,
-  options: {
-    action?: { label: string; sidebarMessage: SidebarToExtensionMessage };
-    interactive?: boolean;
-    persistent?: boolean;
-    toastId?: string;
-  } = {},
+  options: AppToastOptions & { interactive?: boolean } = {},
 ): void {
+  const { interactive: _interactive, ...toastOptions } = options;
   postAppModalHostMessage(
-    {
-      action: options.action,
-      description,
-      interactive: options.interactive,
-      level,
-      persistent: options.persistent,
-      title,
-      toastId: options.toastId,
-      type: "toast",
-    },
+    createAppToastRequest(level, title, description, toastOptions),
     "AppModals:toast",
   );
 }
@@ -6042,19 +6034,25 @@ function runNativeProcess(
   });
 }
 
-function nativeSidebarNodePath(): string | undefined {
-  const statusNodePath = currentGxserverStatus.nodePath?.trim();
-  if (statusNodePath) {
-    return statusNodePath;
-  }
-  try {
-    const webResourceDirectory = nativeSidebarWebResourceDirectory();
-    return webResourceDirectory
-      ? decodeURIComponent(new URL("../code-server/lib/node", new URL(`file://${webResourceDirectory}`)).pathname)
-      : undefined;
-  } catch {
+function nativeSidebarBundledCodeServerNodePath(): string | undefined {
+  /*
+  CDXC:AgentsHub 2026-06-12-03:05:
+  Agents Hub catalog/content helpers can run before gxserver status is ready. Resolve the installed app's bundled code-server Node from the loaded Web resource directory first so native helper scripts use Web/code-server/lib/node instead of the missing Resources/code-server/lib/node path.
+  */
+  const webResourceDirectory = nativeSidebarWebResourceDirectory();
+  if (!webResourceDirectory) {
     return undefined;
   }
+  return `${webResourceDirectory.replace(/\/+$/, "")}/code-server/lib/node`;
+}
+
+function nativeSidebarNodePath(): string | undefined {
+  const bundledNodePath = nativeSidebarBundledCodeServerNodePath();
+  if (bundledNodePath) {
+    return bundledNodePath;
+  }
+  const statusNodePath = currentGxserverStatus.nodePath?.trim();
+  return statusNodePath || undefined;
 }
 
 function nativeNodeUnavailableResult(): NativeProcessResult {
@@ -6074,7 +6072,7 @@ function runNativeNodeScript(
 ): Promise<NativeProcessResult> {
   /*
   CDXC:NativeCommandBridge 2026-06-10-18:17:
-  Native sidebar helpers must use Ghostex's bundled code-server Node runtime rather than `/usr/bin/python3` or user-installed interpreters. Prefer gxserver's reported Node path and fall back to the app's Web/code-server/lib/node path for early startup probes before daemon status has arrived.
+  Native sidebar helpers must use Ghostex's bundled code-server Node runtime rather than `/usr/bin/python3` or user-installed interpreters. Prefer the app's loaded Web/code-server/lib/node resource path and use gxserver's reported path only when the native sidebar is not running from bundled file resources.
   */
   const nodePath = nativeSidebarNodePath();
   if (!nodePath) {
@@ -6701,7 +6699,7 @@ function syncNativeSidebarSide(
    * CDXC:SidebarPlacement 2026-05-06-17:32
    * Settings changes must move the AppKit sidebar immediately. Keep the native
    * side mirror synchronized from the persisted settings value so the settings
-   * dropdown and move-sidebar hotkey cannot diverge.
+   * dropdown and explicit move-sidebar command cannot diverge.
    */
   sidebarSide = nextSidebarSide;
   postNative({ side: sidebarSide, type: "setSidebarSide" });
@@ -7131,7 +7129,7 @@ function handleNativeSessionEnteredAttention(
    * CDXC:SessionAttentionNotifications 2026-06-07-03:40
    * The transition edge is the attention event, not merely the local
    * idle/working/attention value changing again after hydration. Replayed
-   * attentionEventId values should keep the session green without repeating
+   * attentionEventId values should keep the session #95d7f6 without repeating
    * sound or banner side effects.
    */
   if (!shouldRunNativeAttentionSideEffects(sessionId, normalizedAttentionEventId)) {
@@ -9758,14 +9756,29 @@ function readSidebarSide(): SidebarSide {
 function moveSidebarToOtherSide(): void {
   /**
    * CDXC:SidebarPlacement 2026-05-06-17:32
-   * The move-sidebar hotkey is now another way to change the same Settings
-   * value, so the visible Settings control, shared snapshot, and AppKit chrome
-   * stay aligned after either interaction.
+   * The move-sidebar command changes the same Settings value as the visible
+   * placement control, so the shared snapshot and AppKit chrome stay aligned
+   * after either interaction.
+   *
+   * CDXC:SidebarCollapse 2026-06-12-02:23:
+   * Cmd+B no longer reaches this path by default; it toggles full native
+   * sidebar collapse instead. Side switching remains available only through
+   * Settings, CLI, command palette, or an explicit user hotkey binding.
    */
   saveSettings({
     ...settings,
     sidebarSide: settings.sidebarSide === "left" ? "right" : "left",
   });
+}
+
+function toggleSidebarCollapsed(): void {
+  /**
+   * CDXC:SidebarCollapse 2026-06-12-02:23:
+   * Complete sidebar collapse belongs to AppKit chrome because the workspace
+   * width, sidebar WebView, native resize divider, and workarea border must
+   * disappear together without overwriting the user's saved expanded width.
+   */
+  postNative({ type: "toggleSidebarCollapsed" });
 }
 
 function readGitPrimaryAction(): SidebarGitAction {
@@ -13008,7 +13021,7 @@ function createArchivedPreviousSessionRecord(
     };
   }
 
-  const archiveTitle = getNativePreviousSessionArchiveTitle(session, terminalState);
+  const archiveTitle = getNativePreviousSessionArchiveTitle(session);
   return {
     ...session,
     agentName: terminalState?.agentName ?? session.agentName,
@@ -13026,7 +13039,6 @@ function createArchivedPreviousSessionRecord(
 
 function getNativePreviousSessionArchiveTitle(
   session: TerminalSessionRecord,
-  terminalState: ReturnType<typeof terminalStateById.get>,
 ): {
   title?: string;
   titleSource?: TerminalSessionRecord["titleSource"];
@@ -13036,11 +13048,10 @@ function getNativePreviousSessionArchiveTitle(
     return { title: storedTitle.title, titleSource: session.titleSource };
   }
 
-  const visibleTerminalTitle = getVisibleTerminalTitle(terminalState?.terminalTitle)?.trim();
-  const agentName = terminalState?.agentName ?? session.agentName;
-  if (visibleTerminalTitle && isValidNativeAgentTerminalTitle(visibleTerminalTitle, agentName)) {
-    return { title: visibleTerminalTitle, titleSource: "terminal-auto" };
-  }
+  /*
+  CDXC:AgentDetection 2026-06-11-22:44:
+  Previous-session archive titles should use trusted stored titles only. Live terminal-title classification is gxserver-owned so macOS does not keep a parallel agent/title detector that can disagree with hook identity, session restore metadata, or other clients.
+  */
 
   return {};
 }
@@ -15733,6 +15744,7 @@ function createRemotePresentationSidebarSession(
   return {
     activity: presentation.activity,
     agentIcon,
+    agentSessionId: presentation.agentSessionId,
     alias: presentation.title,
     column: index % GRID_COLUMN_COUNT,
     detail: presentation.subtitle,
@@ -16214,7 +16226,11 @@ function createPresentationSidebarSession(
   return {
     activity: presentation.activity,
     agentIcon,
-    agentSessionId: localSession?.kind === "terminal" ? localSession.agentSessionId : undefined,
+    /*
+     * CDXC:GxserverPresentationIdentity 2026-06-11-23:58:
+     * Presentation-backed rows receive captured provider session identity from gxserver. Prefer that server-owned identity so hover tooltips and resume actions show the Codex/Claude session id even when no local terminal record exists.
+     */
+    agentSessionId: presentation.agentSessionId ?? (localSession?.kind === "terminal" ? localSession.agentSessionId : undefined),
     alias: presentation.title,
     column: index % GRID_COLUMN_COUNT,
     detail: presentation.subtitle,
@@ -17358,7 +17374,7 @@ function createNativeSessionStatusIndicatorCandidates(
    * available covers idle live sessions and other non-attention sessions.
    * CDXC:SessionStatusIndicators 2026-05-09-15:48
    * Menu bar status badges reuse this same candidate list and click routing.
-   * Green selects attention sessions; orange selects activity=`working`
+   * #95d7f6 selects attention sessions; orange selects activity=`working`
    * sessions, not lifecycleState=`running` live-idle sessions.
    * CDXC:SessionStatusIndicators 2026-05-09-15:53
    * The status-indicator native contract now uses `working` for the orange
@@ -17489,9 +17505,9 @@ function syncNativePetOverlayState(sidebarMessage?: SidebarHydrateMessage): void
    * cards still need useful shortcuts. Show the two most recently active open
    * sessions as neutral cards instead of leaving the expanded area empty.
    * CDXC:PetOverlay 2026-05-21-15:14:
-   * Expanded pet cards must never place an orange working session above a green
+   * Expanded pet cards must never place an orange working session above a #95d7f6
    * attention session. Preserve rendered sidebar order within each status, but
-   * group green attention cards before orange working cards globally so the pet
+   * group #95d7f6 attention cards before orange working cards globally so the pet
    * stack cannot imply active work is more important than completed/attention
    * sessions.
    */
@@ -17841,9 +17857,12 @@ function createNativeAgentSessionEnvironment(args: {
       currentGxserverStatus.protocolVersion ??
       window.__ghostex_NATIVE_HOST__?.gxserver?.protocolVersion;
     /*
-    CDXC:AgentHooks 2026-06-07-08:51:
-    Installed hooks post working/attention/idle events directly to gxserver. Native launches must provide only the daemon address, auth-token file, protocol version, and canonical S:P:G session ref so the macOS app stays a renderer/input surface instead of owning hook status logic.
-    */
+	  CDXC:AgentHooks 2026-06-07-08:51:
+	  Installed hooks post working/attention/idle events directly to gxserver. Native launches must provide only the daemon address, auth-token file, protocol version, and canonical S:P:G session ref so the macOS app stays a renderer/input surface instead of owning hook status logic.
+
+	  CDXC:MobileSessionStatus 2026-06-11-23:52:
+	  Native-created terminals still receive the canonical session-state sidecar path, but gxserver now reads that deterministic file itself before list/snapshot responses. Android and iOS must not depend on this macOS sidebar poller being alive to see agent status.
+	  */
     environment.GHOSTEX_GLOBAL_SESSION_REF = globalSessionRef;
     environment.GHOSTEX_GXSERVER_BASE_URL = nativeGxserverBaseUrl();
     if (tokenFile) {
@@ -18580,6 +18599,8 @@ type NativeResumeAgentId =
   | "gemini"
   | "grok"
   | "hermes-agent"
+  | "kiro"
+  | "omp"
   | "opencode"
   | "pi"
   | "qoder"
@@ -18927,6 +18948,12 @@ function resolveNativeResumeAgentId(
   if (normalizedAgentName === "hermes" || normalizedAgentName === "hermes agent") {
     return "hermes-agent";
   }
+  if (normalizedAgentName === "kiro cli" || normalizedAgentName === "kiro-cli") {
+    return "kiro";
+  }
+  if (normalizedAgentName === "omp cli") {
+    return "omp";
+  }
   if (normalizedAgentName === "qodercli") {
     return "qoder";
   }
@@ -18960,6 +18987,12 @@ function isNativeResumeAgentId(agentId: string | undefined): agentId is NativeRe
     agentId === "gemini" ||
     agentId === "grok" ||
     agentId === "hermes-agent" ||
+    /*
+    CDXC:AgentResume 2026-06-11-22:49:
+    macOS only gates whether a session can ask gxserver for a resume plan. Include Kiro and OMP in that gate so their server-owned exact-id restore commands are not blocked by an older native agent list.
+    */
+    agentId === "kiro" ||
+    agentId === "omp" ||
     agentId === "opencode" ||
     agentId === "pi" ||
     agentId === "qoder" ||
@@ -20743,16 +20776,6 @@ async function syncNativeSessionActivityWithGxserver(
   }
 }
 
-function isValidNativeAgentTerminalTitle(title: string, agentName: string | undefined): boolean {
-  return (
-    supportsTerminalTitleSessionSync(agentName) &&
-    title.trim().length > 1 &&
-    /[\p{L}\p{N}]/u.test(title) &&
-    getVisibleTerminalTitle(title) !== undefined &&
-    !isRejectedNativeResumeTitle(title)
-  );
-}
-
 type NativePersistedSessionState = {
   agentName?: string;
   agentSessionId?: string;
@@ -20827,7 +20850,7 @@ function rejectNativePersistedAgentIdentityConflict(
 
   /*
   CDXC:SessionIdentity 2026-06-09-22:30:
-  Surfacing a sleeping terminal can replay a legacy state file whose Codex thread id belongs to a different gxserver row. Reject that observation before forwarding status/title/prompt data, otherwise a wrong-thread done state can make the clicked session turn green and play completion audio.
+  Surfacing a sleeping terminal can replay a legacy state file whose Codex thread id belongs to a different gxserver row. Reject that observation before forwarding status/title/prompt data, otherwise a wrong-thread done state can make the clicked session turn #95d7f6 and play completion audio.
   */
   const logKey = [
     source,
@@ -20872,7 +20895,7 @@ function getNativeGxserverPresentationAttentionEventId(
 function shouldRunNativeGxserverPresentationAttentionSideEffects(reason: string): boolean {
   /*
   CDXC:SessionAttention 2026-06-08-13:19:
-  Startup and stream-recovery snapshots can contain sessions that were already green before this client observed them. Only presentation change deltas represent the live edge where macOS should play completion sound and optionally show the attention banner.
+  Startup and stream-recovery snapshots can contain sessions that were already #95d7f6 before this client observed them. Only presentation change deltas represent the live edge where macOS should play completion sound and optionally show the attention banner.
   */
   return reason === "delta:sessionPresentationChanged";
 }
@@ -21204,12 +21227,17 @@ function syncNativePersistedAgentActivity(
   }
 
   /*
-  CDXC:SharedSessionStatus 2026-06-07-10:06:
-  The legacy session-state file is now only a compatibility observation bridge.
-  macOS must not locally decide working/attention/idle from `.env`; forward each
-  new persisted hook status to gxserver and apply the daemon response so every
-  client shares the same status state machine.
-  */
+	  CDXC:SharedSessionStatus 2026-06-07-10:06:
+	  The legacy session-state file is now only a compatibility observation bridge.
+	  macOS must not locally decide working/attention/idle from `.env`; forward each
+	  new persisted hook status to gxserver and apply the daemon response so every
+	  client shares the same status state machine.
+
+	  CDXC:MobileSessionStatus 2026-06-11-23:52:
+	  This macOS poller is no longer the only compatibility bridge. gxserver reads
+	  the same sidecar files during inventory/snapshot requests, so mobile clients
+	  can show statuses when the macOS app is closed.
+	  */
   if (rejectNativePersistedAgentIdentityConflict(sessionId, terminalState, persistedState, "agent-activity")) {
     return false;
   }
@@ -22803,6 +22831,9 @@ function runNativeHotkeyAction(actionId: ghostexHotkeyActionId, source: "dom" | 
     case "moveSidebar":
       moveSidebarToOtherSide();
       return;
+    case "toggleSidebarCollapsed":
+      toggleSidebarCollapsed();
+      return;
     case "openCommandPalette":
       /**
        * CDXC:CommandPalette 2026-05-15-20:38:
@@ -23512,15 +23543,15 @@ function completeNativeTerminalAttentionAcknowledgement(
 
   /**
    * CDXC:NativeSessionStatus 2026-04-27-07:39
-   * Done/green is an attention state, not just an exited lifecycle. Clicking a
-   * green session card acknowledges that completion and clears both the card
+   * Done/#95d7f6 is an attention state, not just an exited lifecycle. Clicking a
+   * #95d7f6 session card acknowledges that completion and clears both the card
    * dot and workspace-bar done count until the next working-to-done transition.
    *
    * CDXC:SessionAttention 2026-05-16-23:35:
-   * Pane/tab clicks should always acknowledge the current green attention state. If the click arrives before the 1.5-second visibility floor, acknowledgement is completed by the deferred timer above so the border and dot disappear only after the user has had enough time to perceive them.
+   * Pane/tab clicks should always acknowledge the current #95d7f6 attention state. If the click arrives before the 1.5-second visibility floor, acknowledgement is completed by the deferred timer above so the border and dot disappear only after the user has had enough time to perceive them.
    *
    * CDXC:SessionAttention 2026-06-02-18:31:
-   * Native pane chrome can now render attention from gxserver presentation even when local terminalState still contains stale title-derived working. Treat presentation attention as the same acknowledgeable event so clicking the green terminal border or tab routes through the existing gxserver acknowledgement path.
+   * Native pane chrome can now render attention from gxserver presentation even when local terminalState still contains stale title-derived working. Treat presentation attention as the same acknowledgeable event so clicking the #95d7f6 terminal border or tab routes through the existing gxserver acknowledgement path.
    */
   terminalState.activity = "idle";
   setGxserverPresentationSessionActivityLocally(
@@ -27730,6 +27761,9 @@ async function handleNativeCliCommand(action: string, payload: Record<string, un
       case "moveSidebar":
         moveSidebarToOtherSide();
         return { ok: true, state: summarizeCliState() };
+      case "toggleSidebarCollapsed":
+        toggleSidebarCollapsed();
+        return { ok: true, state: summarizeCliState() };
       case "assertSidebarCard":
         return assertCliSidebarCard(payload);
       case "waitFor":
@@ -31532,7 +31566,16 @@ async function requestAgentsHubCatalog(): Promise<void> {
 	   * CDXC:AgentsHub 2026-06-10-18:17:
 	   * Catalog scanning must run through Ghostex's bundled code-server Node runtime instead of Python so the app works on Macs without a system Python install.
 	   */
-  const result = await runNativeNodeScript(getAgentsHubCatalogNodeScript());
+  let result: NativeProcessResult;
+  try {
+    result = await runNativeNodeScript(getAgentsHubCatalogNodeScript());
+  } catch (error) {
+    showNativeMessage(
+      "error",
+      error instanceof Error ? error.message : "Unable to load Agents Hub files.",
+    );
+    return;
+  }
   if (result.exitCode !== 0) {
     showNativeMessage(
       "error",
@@ -31550,6 +31593,116 @@ async function requestAgentsHubCatalog(): Promise<void> {
       error instanceof Error ? error.message : "Unable to parse Agents Hub file catalog.",
     );
   }
+}
+
+async function requestAgentsHubFileContent(filePath: string, requestId: string): Promise<void> {
+  /*
+  CDXC:AgentsHub 2026-06-12-02:53:
+  Agents Hub catalogs are metadata-only because loading every local profile,
+  skill, hook, and config file into one processResult can exceed the native
+  WebKit bridge budget. Read only the selected file buffer on demand so the
+  editor still shows real disk content without blocking the Hub tree.
+  */
+  const normalizedFilePath = filePath.trim();
+  if (!normalizedFilePath) {
+    postAppModalHost({
+      message: {
+        errorMessage: "Choose an Agents Hub file first.",
+        filePath,
+        requestId,
+        type: "agentsHubFileContent",
+      },
+      type: "sidebarState",
+    });
+    return;
+  }
+
+  let result: NativeProcessResult;
+  try {
+    result = await runNativeNodeScript(getAgentsHubFileContentNodeScript(), [
+      normalizedFilePath,
+    ]);
+  } catch (error) {
+    postAppModalHost({
+      message: {
+        errorMessage: error instanceof Error ? error.message : "Unable to load file contents.",
+        filePath: normalizedFilePath,
+        requestId,
+        type: "agentsHubFileContent",
+      },
+      type: "sidebarState",
+    });
+    return;
+  }
+
+  if (result.exitCode !== 0) {
+    postAppModalHost({
+      message: {
+        errorMessage: result.stderr.trim() || result.stdout.trim() || "Unable to load file contents.",
+        filePath: normalizedFilePath,
+        requestId,
+        type: "agentsHubFileContent",
+      },
+      type: "sidebarState",
+    });
+    return;
+  }
+
+  try {
+    const payload = JSON.parse(result.stdout) as { content?: string; errorMessage?: string; filePath?: string };
+    postAppModalHost({
+      message: {
+        content: payload.content,
+        errorMessage: payload.errorMessage,
+        filePath: payload.filePath ?? normalizedFilePath,
+        requestId,
+        type: "agentsHubFileContent",
+      },
+      type: "sidebarState",
+    });
+  } catch (error) {
+    postAppModalHost({
+      message: {
+        errorMessage: error instanceof Error ? error.message : "Unable to parse Agents Hub file contents.",
+        filePath: normalizedFilePath,
+        requestId,
+        type: "agentsHubFileContent",
+      },
+      type: "sidebarState",
+    });
+  }
+}
+
+function getAgentsHubFileContentNodeScript(): string {
+  return String.raw`
+const fs = require("node:fs");
+const path = require("node:path");
+
+const [rawFilePath] = process.argv.slice(1);
+const maxFileBytes = 128 * 1024;
+const filePath = path.resolve(String(rawFilePath || ""));
+
+function respond(payload) {
+  console.log(JSON.stringify({ filePath, ...payload }));
+}
+
+try {
+  if (!rawFilePath || !String(rawFilePath).trim()) {
+    respond({ errorMessage: "Choose an Agents Hub file first." });
+  } else {
+    const stat = fs.statSync(filePath);
+    if (!stat.isFile()) {
+      respond({ errorMessage: "Selected path is not a file." });
+    } else if (stat.size > maxFileBytes) {
+      respond({ errorMessage: "Selected file is too large to edit in Agents Hub." });
+    } else {
+      respond({ content: fs.readFileSync(filePath, "utf8") });
+    }
+  }
+} catch (error) {
+  respond({ errorMessage: error instanceof Error ? error.message : "Unable to read file." });
+}
+`;
 }
 
 function getAgentsHubCatalogNodeScript(): string {
@@ -31681,15 +31834,12 @@ function fileId(filePath) {
     .slice(0, 180);
 }
 
-function readFile(filePath) {
+function isReadableCatalogFile(filePath) {
   try {
     const stat = fs.statSync(filePath);
-    if (!stat.isFile() || stat.size > maxFileBytes) {
-      return undefined;
-    }
-    return fs.readFileSync(filePath, "utf8");
+    return stat.isFile() && stat.size <= maxFileBytes;
   } catch (_) {
-    return undefined;
+    return false;
   }
 }
 
@@ -31698,13 +31848,12 @@ function fileItem(candidatePath, root) {
   if (seenFiles.has(resolved)) {
     return undefined;
   }
-  const content = readFile(resolved);
-  if (content === undefined) {
+  if (!isReadableCatalogFile(resolved)) {
     return undefined;
   }
   seenFiles.add(resolved);
   const name = root && isRelativeTo(resolved, root) ? path.relative(path.resolve(root), resolved) : path.basename(resolved);
-  return { content, id: fileId(resolved), language: languageFor(resolved), name: name || path.basename(resolved), path: resolved };
+  return { id: fileId(resolved), language: languageFor(resolved), name: name || path.basename(resolved), path: resolved };
 }
 
 function addGroup(tab, groupId, name, rootPath, description, files, groupProfiles) {
@@ -35143,14 +35292,16 @@ function openAgentsModeFromTitlebar(): void {
   publish();
 }
 
-function showProjectEditorCompanionFromTitlebar(): void {
+function toggleProjectEditorCompanionFromTitlebar(): void {
   const project = activeProject();
   if (project.isChat === true || project.isRecentProject === true) {
     return;
   }
   const surfaceState = projectEditorSurfaceByProjectId.get(project.projectId);
-  appendTitlebarCodeLagDebugLog("titlebarCompanionRestore.sidebarReceived", {
+  const nextHidden = project.projectEditorCompanionPaneHidden !== true;
+  appendTitlebarCodeLagDebugLog("titlebarCompanionToggle.sidebarReceived", {
     activeProjectId,
+    nextProjectEditorCompanionPaneHidden: nextHidden,
     projectEditorCompanionPaneHidden: project.projectEditorCompanionPaneHidden === true,
     projectId: project.projectId,
     surfaceIsOpen: surfaceState?.isOpen === true,
@@ -35159,16 +35310,17 @@ function showProjectEditorCompanionFromTitlebar(): void {
     surfaceStatus: surfaceState?.status,
   });
   /**
-   * CDXC:ProjectEditorCompanion 2026-05-27-08:42:
-   * Restore-button repros need a JS handoff breadcrumb between the titlebar
-   * click and native layout sync. Keep the behavior unchanged: the titlebar
-   * only clears the project-owned hidden preference, then publish sends the
-   * normal setActiveTerminalSet state to AppKit.
+   * CDXC:ProjectEditorCompanion 2026-06-12-03:18:
+   * The titlebar companion control is now the single collapse/expand toggle for
+   * Code, GitHub, and Kanban companion panes. Update the project-owned hidden
+   * preference in either direction, then publish through the normal
+   * setActiveTerminalSet path so native AppKit layout observes the same state as
+   * sidebar session clicks and editor-surface changes.
    */
   setProjectEditorCompanionPaneHidden(
     project.projectId,
-    false,
-    "showProjectEditorCompanionFromTitlebar",
+    nextHidden,
+    "toggleProjectEditorCompanionFromTitlebar",
   );
   publish();
 }
@@ -36676,6 +36828,9 @@ function handleSidebarMessage(message: SidebarToExtensionMessage): void {
     case "requestAgentsHubCatalog":
       void requestAgentsHubCatalog();
       return;
+    case "requestAgentsHubFileContent":
+      void requestAgentsHubFileContent(message.filePath, message.requestId);
+      return;
     case "saveAgentsHubFile":
       void saveAgentsHubFile(message.filePath, message.content);
       return;
@@ -36866,6 +37021,9 @@ function handleSidebarMessage(message: SidebarToExtensionMessage): void {
       return;
     case "moveSidebarToOtherSide":
       moveSidebarToOtherSide();
+      return;
+    case "toggleSidebarCollapsed":
+      toggleSidebarCollapsed();
       return;
     case "sidebarContextMenuOpened":
       postNative({ type: "sidebarContextMenuOpened" });
@@ -37120,7 +37278,11 @@ function handleSidebarMessage(message: SidebarToExtensionMessage): void {
         void updateRemotePresentationSession(message.sessionId, { lifecycleState: "stopped" }, "close-session");
         return;
       }
-      closeTerminal(message.sessionId);
+      /*
+      CDXC:LocalFirstSidebar 2026-06-12-06:22:
+      Sidebar closeSession messages can be posted after React has already hidden the row locally. Keep native teardown out of the synchronous message handler so one terminal/browser/T3 close cannot block the sidebar click, hover, or repaint path.
+      */
+      closeNativeSessionsInBackground([message.sessionId]);
       return;
     case "closeSessions": {
       const localSessionIds: string[] = [];
@@ -37226,6 +37388,9 @@ function handleSidebarMessage(message: SidebarToExtensionMessage): void {
         return;
       }
       void copyAttachCommand(message.sessionId);
+      return;
+    case "copySessionDetails":
+      void navigator.clipboard?.writeText(message.detailsText).catch(() => undefined);
       return;
     case "requestT3SessionBrowserAccess":
       if (parseRemotePresentationSessionId(message.sessionId)) {
@@ -38036,7 +38201,7 @@ function createNativePaneSidebarSessionProjectionMap(
 
   /*
   CDXC:PaneTabs 2026-06-02-18:31:
-  Native pane tabs and terminal borders are visible sidebar chrome. When gxserver presentation supplies the rendered sidebar row, AppKit must use that projected activity before local terminalState so stale title-derived working cannot keep a tab orange while the sidebar card and green border are already attention.
+  Native pane tabs and terminal borders are visible sidebar chrome. When gxserver presentation supplies the rendered sidebar row, AppKit must use that projected activity before local terminalState so stale title-derived working cannot keep a tab orange while the sidebar card and #95d7f6 border are already attention.
   */
   for (const group of sidebarMessage.groups) {
     const groupProjectId = group.projectContext?.editor.projectId;
@@ -38400,7 +38565,7 @@ function syncNativeLayout(
   /**
    * CDXC:NativeTerminals 2026-04-28-03:37
    * Native title bars must mirror the same per-session state used by sidebar
-   * cards: green for done/attention and orange for working. Send the activity
+   * cards: #95d7f6 for done/attention and orange for working. Send the activity
    * projection with the layout command so AppKit renders the indicator from
    * the same source of truth as the React card indicator.
    *
@@ -38410,7 +38575,7 @@ function syncNativeLayout(
    * ellipsis, so the layout sync owns the display title used by AppKit chrome.
    *
    * CDXC:NativeTerminalFocus 2026-05-04-16:02
-   * A visible side terminal becoming done/green must not move keyboard focus
+   * A visible side terminal becoming done/#95d7f6 must not move keyboard focus
    * away from the terminal the user is typing in. Treat focusedSessionId in
    * passive status/layout sync as selection display only; Swift receives
    * focusRequestId only for explicit user focus commands such as sidebar
@@ -40273,7 +40438,7 @@ function handleNativePaneTabSelected(sessionId: string): void {
     const wasSleepingCommandSession = selectedCommandSessionBefore?.isSleeping === true;
     /**
      * CDXC:SessionAttention 2026-05-16-23:35:
-     * Clicking an already-selected command or workspace tab must still acknowledge green attention. Tab selection can be a layout no-op, so acknowledge before the unchanged guard and let the delayed attention timer preserve the 1.5-second visual floor when needed.
+     * Clicking an already-selected command or workspace tab must still acknowledge #95d7f6 attention. Tab selection can be a layout no-op, so acknowledge before the unchanged guard and let the delayed attention timer preserve the 1.5-second visual floor when needed.
      *
      * CDXC:SessionSleep 2026-05-26-22:36:
      * Command-pane sleeping tabs use the same wake contract as workspace tabs:
@@ -41035,7 +41200,7 @@ window.__ghostex_NATIVE_SIDEBAR__ = {
     void openGitHubProjectFromTitlebar();
   },
   quitResourcesFromTitlebar,
-  showProjectEditorCompanionFromTitlebar,
+  toggleProjectEditorCompanionFromTitlebar,
   sleepInactiveSessionsFromTitlebar,
   openTasksPlaceholderFromTitlebar,
   refreshWorkspaceOpenTargetAvailabilityFromTitlebar,

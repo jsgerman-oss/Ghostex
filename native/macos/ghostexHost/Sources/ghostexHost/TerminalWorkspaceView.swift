@@ -259,352 +259,33 @@ private enum ProjectBoardImageBridgeError: Error, LocalizedError {
   }
 }
 
-private let terminalPaneDropFileURLPasteboardType = NSPasteboard.PasteboardType("public.file-url")
-private let terminalPaneDropAppleURLPasteboardType = NSPasteboard.PasteboardType("Apple URL pasteboard type")
-private let terminalPaneDropCoreFileURLPasteboardType =
-  NSPasteboard.PasteboardType("CorePasteboardFlavorType 0x6675726C")
-private let terminalPaneDropLegacyFilenamesPasteboardType = NSPasteboard.PasteboardType("NSFilenamesPboardType")
-private let terminalPaneDropFilesPromisePasteboardType = NSPasteboard.PasteboardType("NSFilesPromisePboardType")
-private let terminalPaneDropFinderNodePasteboardType = NSPasteboard.PasteboardType("com.apple.finder.node")
-private let terminalPaneDropPromisedFileURLPasteboardType =
-  NSPasteboard.PasteboardType("com.apple.pasteboard.promised-file-url")
-private let terminalPaneDropPromisedFileContentType =
-  NSPasteboard.PasteboardType("com.apple.pasteboard.promised-file-content-type")
-private let terminalPaneDropAliasFilePasteboardType = NSPasteboard.PasteboardType("com.apple.alias-file")
-private let terminalPaneDropImagePasteboardTypes: [NSPasteboard.PasteboardType] = [
-  NSPasteboard.PasteboardType("public.image"),
-  NSPasteboard.PasteboardType("public.png"),
-  NSPasteboard.PasteboardType("public.tiff"),
-  NSPasteboard.PasteboardType("public.jpeg"),
-]
-private let terminalPaneDropTypes: Set<NSPasteboard.PasteboardType> = [
-  .string,
-  .fileURL,
-]
+private let terminalPaneClipboardFileURLPasteboardType = NSPasteboard.PasteboardType("public.file-url")
+private let terminalPaneClipboardLegacyFilenamesPasteboardType = NSPasteboard.PasteboardType("NSFilenamesPboardType")
 
 /*
- CDXC:TerminalImageDrop 2026-06-07-16:40:
- macOS image drags can advertise URL, legacy filename, or image pasteboard types instead of only public.file-url. Register the same URL-oriented drag types as the terminal surface expects, plus image UTIs, so AppKit delivers the drop before content parsing decides whether to paste an image Markdown reference or ordinary text.
-
- CDXC:TerminalImageDrop 2026-06-07-17:03:
- The 17:01 repro still produced no drag destination callbacks, which means the pasteboard negotiation and view hierarchy can fail before content parsing. Keep registration broad enough for Finder, promised-file, and pathless image drags while the parser still inserts only real paths, URLs, strings, or durable saved image files.
-
- CDXC:TerminalImageDrop 2026-06-08-03:24:
- Dock-stack drops reached the terminal surface as ordinary mouse events with an empty global drag pasteboard and no AppKit drag-destination callbacks. The first diagnostic pass tried broader legacy Apple URL, core file URL, file-promise, file-contents, and alias registrations to test whether AppKit needed those flavors for negotiation.
-
- CDXC:TerminalImageDrop 2026-06-08-04:28:
- The 04:22 Dock-stack repro showed the pane hover overlay but an empty drag
- pasteboard and no application file-open callback after the broad registration
- pass. Restore the terminal destination contract to the working AppKit shape:
- advertise only string and file URL types, while the parser still consumes
- legacy filename, Finder-node, URL-string, and image flavors when AppKit includes
- them in the negotiated pasteboard. The registration logs now prove that exact
- advertised type set after each rebuild.
-
- CDXC:TerminalImageDrop 2026-06-08-04:50:
- The 04:37 Dock-stack repro still produced only mouse geometry after the overlay
- stopped hit-test capture, which means the transparent registered overlay could
- still be blocking AppKit from selecting the real terminal surface. Keep terminal
- drop registration on concrete terminal/window/root destinations only, matching
- the working direct terminal NSView contract.
-
- CDXC:TerminalImageDrop 2026-06-08-04:49:
- The 04:45 Dock-stack repro still never delivered `NSDraggingInfo` to any root,
- window, wrapper, or terminal destination, while mouse hit testing after release
- reached `GhostexGhosttySurfaceView`. Remove file-drop registration from every
- non-terminal wrapper and leave the concrete terminal surface as the only AppKit
- drop destination, matching the direct native terminal view behavior.
+ CDXC:TerminalFileDrop 2026-06-12-06:52:
+ Terminal panes should accept direct file/image drops on the Ghostty NSView now that workspace overlays no longer sit above pane content. Register the terminal surface itself as the drag destination and insert dropped paths through NSTextInput so drag/drop does not require a transparent overlay.
  */
-
-private func terminalPaneDropLog(
-  event: String,
-  pasteboard: NSPasteboard? = nil,
-  details: [String: Any] = [:],
-  force: Bool = true
-) {
-  /*
-   CDXC:TerminalImageDropDiagnostics 2026-06-02-21:44:
-   Terminal drag/drop diagnostics must prove whether AppKit routing, pasteboard classification, or terminal insertion failed without logging user-owned content. Persist only drag phase, type identifiers, counts, booleans, and sanitized error classes; never log dropped paths, URLs, titles, strings, or image bytes.
-   */
-  var payload = details
-  if let pasteboard {
-    payload.merge(terminalPaneDropPasteboardSummary(pasteboard)) { _, next in next }
-  }
-  TerminalFocusDebugLog.append(event: event, details: payload, force: force)
+private func terminalPaneClipboardMarkdownImageReference(path: String, imageNumber: Int) -> String {
+  "[Image #\(imageNumber)](\(path))"
 }
 
-private func terminalPaneDropOperationMaskRawValue(_ sender: any NSDraggingInfo) -> String {
-  /*
-   CDXC:TerminalImageDropDiagnostics 2026-06-08-05:34:
-   Dock-stack file drags can report an AppKit drag operation mask with high unsigned bits set. Logging that mask through `Int(...)` traps Swift before the drop reaches the terminal, so persist the raw mask as text while keeping paths and dropped content out of logs.
-   */
-  String(describing: sender.draggingSourceOperationMask.rawValue)
-}
-
-private func terminalPaneDropPasteboardSummary(_ pasteboard: NSPasteboard) -> [String: Any] {
-  let types = (pasteboard.types ?? []).map(\.rawValue).sorted()
-  let typeSet = Set(pasteboard.types ?? [])
-  let imageTypeMatchCount = terminalPaneDropImagePasteboardTypes.filter { typeSet.contains($0) }.count
-
-  /*
-   CDXC:TerminalImageDropDiagnostics 2026-06-08-06:24:
-   Drag-hover diagnostics must not read the drag pasteboard's URL, filename, string, or image payloads. macOS treats those reads as cross-app drag data access for Dock/Finder sources, so logs stay type-only until AppKit delivers the actual drop callback.
-   */
-  return [
-    "hasFileURLType": typeSet.contains(.fileURL) || typeSet.contains(terminalPaneDropCoreFileURLPasteboardType),
-    "hasLegacyFilenamesType": typeSet.contains(terminalPaneDropLegacyFilenamesPasteboardType),
-    "hasStringType": typeSet.contains(.string),
-    "hasURLType": typeSet.contains(.URL),
-    "imagePasteboardTypeMatchCount": imageTypeMatchCount,
-    "pasteboardChangeCount": pasteboard.changeCount,
-    "registeredTypeMatchCount": Set(pasteboard.types ?? []).intersection(terminalPaneDropTypes).count,
-    "registeredTypes": terminalPaneDropRegisteredTypeNames(),
-    "typeCount": types.count,
-    "types": types,
-  ]
-}
-
-private func terminalPaneDropRegisteredTypeNames() -> [String] {
-  terminalPaneDropTypes.map(\.rawValue).sorted()
-}
-
-private func terminalPaneDropRegistrationDetails(operationSource: String, surfaceSessionId: String? = nil) -> [String: Any] {
-  [
-    "operationSource": operationSource,
-    "registeredTypeCount": terminalPaneDropTypes.count,
-    "registeredTypes": terminalPaneDropRegisteredTypeNames(),
-    "surfaceSessionId": surfaceSessionId ?? NSNull(),
-  ]
-}
-
-private func terminalPaneDropRegistrationDisabledDetails(
-  operationSource: String
-) -> [String: Any] {
-  [
-    "operationSource": operationSource,
-    "registeredTypeCount": 0,
-    "registeredTypes": [],
-    "surfaceOnlyDropDestination": true,
-  ]
-}
-
-private func terminalPaneDropContent(in pasteboard: NSPasteboard) throws -> String? {
-  terminalPaneDropLog(event: "nativeWorkspace.terminalDrop.content.start", pasteboard: pasteboard)
-  let paths = terminalPaneDroppedPaths(in: pasteboard)
-  if !paths.isEmpty {
-    let content = terminalPaneDropContent(for: paths)
-    terminalPaneDropLog(
-      event: "nativeWorkspace.terminalDrop.content.paths",
-      pasteboard: pasteboard,
-      details: [
-        "contentLength": content.count,
-        "didProduceContent": true,
-        "lineCount": content.components(separatedBy: "\n").count,
-        "pathCount": paths.count,
-      ])
-    return content
-  }
-
-  if let imagePath = try terminalPaneDropSavedImagePath(in: pasteboard) {
-    let content = terminalPaneDropMarkdownImageReference(path: imagePath, imageNumber: 1)
-    terminalPaneDropLog(
-      event: "nativeWorkspace.terminalDrop.content.rawImage",
-      pasteboard: pasteboard,
-      details: [
-        "contentLength": content.count,
-        "didProduceContent": true,
-        "lineCount": 1,
-      ])
-    return content
-  }
-
-  if let urlString = terminalPaneDropURLString(in: pasteboard) {
-    let content = ShellEscaper.escape(urlString)
-    terminalPaneDropLog(
-      event: "nativeWorkspace.terminalDrop.content.urlString",
-      pasteboard: pasteboard,
-      details: [
-        "contentLength": content.count,
-        "didProduceContent": true,
-        "lineCount": 1,
-      ])
-    return content
-  }
-
-  if let string = pasteboard.string(forType: .string), !string.isEmpty {
-    terminalPaneDropLog(
-      event: "nativeWorkspace.terminalDrop.content.string",
-      pasteboard: pasteboard,
-      details: [
-        "contentLength": string.count,
-        "didProduceContent": true,
-        "lineCount": string.components(separatedBy: "\n").count,
-      ])
-    return string
-  }
-
-  terminalPaneDropLog(
-    event: "nativeWorkspace.terminalDrop.content.empty",
-    pasteboard: pasteboard,
-    details: ["didProduceContent": false])
-  return nil
-}
-
-private func terminalPaneDropCanProduceContent(in pasteboard: NSPasteboard) -> Bool {
-  if terminalPaneDropLooksLikePotentialFileOrImageDrop(in: pasteboard) {
-    return true
-  }
-  let typeSet = Set(pasteboard.types ?? [])
-  if typeSet.contains(.URL) {
-    return true
-  }
-  if typeSet.contains(.string) {
-    return true
-  }
-  return false
-}
-
-private func terminalPaneDropLooksLikePotentialFileOrImageDrop(in pasteboard: NSPasteboard) -> Bool {
-  let typeSet = Set(pasteboard.types ?? [])
-  let potentialTypes: Set<NSPasteboard.PasteboardType> = Set([
-    .fileURL,
-    terminalPaneDropAppleURLPasteboardType,
-    terminalPaneDropCoreFileURLPasteboardType,
-    terminalPaneDropLegacyFilenamesPasteboardType,
-    terminalPaneDropFilesPromisePasteboardType,
-    terminalPaneDropFinderNodePasteboardType,
-    terminalPaneDropPromisedFileURLPasteboardType,
-    terminalPaneDropPromisedFileContentType,
-    terminalPaneDropAliasFilePasteboardType,
-  ] + terminalPaneDropImagePasteboardTypes)
-  return !typeSet.isDisjoint(with: potentialTypes)
-}
-
-private func terminalPaneDropContent(for paths: [String]) -> String {
-  var parts: [String] = []
+private func terminalPaneDropInsertionText(paths: [String]) -> String {
   var nextImageNumber = 1
-  var includesImages = false
-
-  for path in paths {
-    if terminalPaneDropIsImageFilePath(path) {
-      /*
-       CDXC:TerminalImageDrop 2026-06-07-15:35:
-       Terminal image file drops should paste direct Markdown references to the dropped file path, not saved copies. Use angle-bracket destinations so paths containing spaces remain valid Markdown while preserving the direct drop-to-insert flow.
-
-       CDXC:TerminalImageDrop 2026-06-08-02:57:
-       Image drops should paste the path directly inside the Markdown destination without angle brackets, matching the requested terminal prompt text shape even when the original path contains spaces.
-       */
-      parts.append(terminalPaneDropMarkdownImageReference(path: path, imageNumber: nextImageNumber))
-      nextImageNumber += 1
-      includesImages = true
-      continue
+  let entries = paths.map { path in
+    guard terminalPaneClipboardIsImageFilePath(path) else {
+      return path
     }
-
-    parts.append(ShellEscaper.escape(path))
+    defer { nextImageNumber += 1 }
+    return terminalPaneClipboardMarkdownImageReference(path: path, imageNumber: nextImageNumber)
   }
-
-  /*
-   CDXC:TerminalImageDrop 2026-06-07-15:35:
-   Multiple dropped image files need independent Markdown references. Keep normal file drops space-separated for shell parity, and use newline separators when any image participates so agent prompts receive one image reference per line.
-   */
-  return parts.joined(separator: includesImages ? "\n" : " ")
+  return entries.joined(separator: " ")
 }
 
 private func terminalPaneDroppedPaths(in pasteboard: NSPasteboard) -> [String] {
-  DroppedPathsParser.parse(
-    fileURLs: terminalPaneDropURLs(in: pasteboard),
+  TerminalPaneClipboardPathParser.parse(
+    fileURLs: terminalPaneClipboardFileURLs(in: pasteboard),
     plainString: pasteboard.string(forType: .string))
-}
-
-private func terminalPaneDropURLs(in pasteboard: NSPasteboard) -> [URL] {
-  var urls = (pasteboard.readObjects(forClasses: [NSURL.self]) as? [URL]) ?? []
-
-  for item in pasteboard.pasteboardItems ?? [] {
-    if let fileURLString = item.string(forType: terminalPaneDropFileURLPasteboardType),
-      let fileURL = URL(string: fileURLString),
-      fileURL.isFileURL
-    {
-      urls.append(fileURL)
-    }
-  }
-
-  if let urlString = pasteboard.string(forType: .URL),
-    let url = URL(string: urlString.trimmingCharacters(in: .whitespacesAndNewlines))
-  {
-    urls.append(url)
-  }
-
-  if let filenames = pasteboard.propertyList(forType: terminalPaneDropLegacyFilenamesPasteboardType) as? [String] {
-    urls.append(contentsOf: filenames.map { URL(fileURLWithPath: $0) })
-  }
-
-  var seen = Set<String>()
-  return urls.filter { url in
-    let key = url.isFileURL ? url.standardizedFileURL.path : url.absoluteString
-    return seen.insert(key).inserted
-  }
-}
-
-private func terminalPaneDropURLString(in pasteboard: NSPasteboard) -> String? {
-  guard let urlString = pasteboard.string(forType: .URL)?
-    .trimmingCharacters(in: .whitespacesAndNewlines),
-    !urlString.isEmpty
-  else {
-    return nil
-  }
-  if let url = URL(string: urlString), url.isFileURL {
-    return nil
-  }
-  return urlString
-}
-
-private enum DroppedPathsParser {
-  static func parse(
-    fileURLs: [URL],
-    plainString: String?,
-    fileExists: (String) -> Bool = { FileManager.default.fileExists(atPath: $0) }
-  ) -> [String] {
-    let urlPaths = fileURLs.compactMap { $0.isFileURL ? $0.path : nil }
-    if !urlPaths.isEmpty { return urlPaths }
-
-    guard let plainString else { return [] }
-
-    let candidates = plainString
-      .split(whereSeparator: \.isNewline)
-      .map { $0.trimmingCharacters(in: .whitespaces) }
-      .filter { !$0.isEmpty }
-
-    guard !candidates.isEmpty else { return [] }
-
-    var paths: [String] = []
-    for candidate in candidates {
-      if candidate.hasPrefix("file://"), let url = URL(string: candidate), url.isFileURL {
-        paths.append(url.path)
-        continue
-      }
-      if candidate.hasPrefix("/"), fileExists(candidate) {
-        paths.append(candidate)
-        continue
-      }
-      return []
-    }
-    return paths
-  }
-}
-
-private enum ShellEscaper {
-  private static let metaCharacters: Set<Character> = [
-    " ", "(", ")", "'", "\"", "\\", "&", "|", ";", "$", "`", "!",
-  ]
-
-  static func escape(_ path: String) -> String {
-    guard path.contains(where: metaCharacters.contains) else { return path }
-    return "'" + path.replacingOccurrences(of: "'", with: "'\\''") + "'"
-  }
-}
-
-private func terminalPaneDropMarkdownImageReference(path: String, imageNumber: Int) -> String {
-  "[Image #\(imageNumber)](\(path))"
 }
 
 private final class TerminalPanePreviewableImagePasteSetting {
@@ -645,65 +326,125 @@ private func terminalPaneClipboardMarkdownImageContent(in pasteboard: NSPasteboa
   if let fileContent = terminalPaneClipboardImageFileMarkdownContent(in: pasteboard) {
     return fileContent
   }
-  guard let imagePath = try terminalPaneDropSavedImagePath(in: pasteboard) else {
+  guard let imagePath = try terminalPaneClipboardSavedImagePath(in: pasteboard) else {
     return nil
   }
   /*
    CDXC:TerminalImagePaste 2026-06-08-13:18:
-   Focused macOS terminal paste should match terminal image drop output: file-backed images keep their original readable path, while pathless clipboard bitmaps are written to Ghostex-owned image storage before inserting visible `[Image #N](path)` prompt text.
+   Focused macOS terminal paste should keep file-backed images at their original readable path, while pathless clipboard bitmaps are written to Ghostex-owned image storage before inserting visible `[Image #N](path)` prompt text.
 
    CDXC:TerminalImagePaste 2026-06-08-13:32:
    This conversion runs only when Paste previewable images is enabled; disabled
    paste should fall through to Ghostty's ordinary clipboard text path.
    */
-  return terminalPaneDropMarkdownImageReference(path: imagePath, imageNumber: 1)
+  return terminalPaneClipboardMarkdownImageReference(path: imagePath, imageNumber: 1)
 }
 
 private func terminalPaneClipboardCanProduceImageMarkdownContent(in pasteboard: NSPasteboard) -> Bool {
   let hasFileBackedImage = terminalPaneClipboardImageFileMarkdownContent(in: pasteboard) != nil
-  return hasFileBackedImage || terminalPaneDropHasRawImageData(in: pasteboard)
+  return hasFileBackedImage || terminalPaneClipboardHasRawImageData(in: pasteboard)
 }
 
 private func terminalPaneClipboardImageFileMarkdownContent(in pasteboard: NSPasteboard) -> String? {
-  let imagePaths = terminalPaneDroppedPaths(in: pasteboard).filter { terminalPaneDropIsImageFilePath($0) }
+  let imagePaths = terminalPaneClipboardImagePaths(in: pasteboard).filter { terminalPaneClipboardIsImageFilePath($0) }
   guard !imagePaths.isEmpty else {
     return nil
   }
   return imagePaths.enumerated()
     .map { entry in
-      terminalPaneDropMarkdownImageReference(path: entry.element, imageNumber: entry.offset + 1)
+      terminalPaneClipboardMarkdownImageReference(path: entry.element, imageNumber: entry.offset + 1)
     }
     .joined(separator: "\n")
 }
 
-private func terminalPaneDropSavedImagePath(in pasteboard: NSPasteboard) throws -> String? {
-  guard let pngData = terminalPaneDropPNGData(in: pasteboard) else {
+private func terminalPaneClipboardImagePaths(in pasteboard: NSPasteboard) -> [String] {
+  TerminalPaneClipboardPathParser.parse(
+    fileURLs: terminalPaneClipboardFileURLs(in: pasteboard),
+    plainString: pasteboard.string(forType: .string))
+}
+
+private func terminalPaneClipboardFileURLs(in pasteboard: NSPasteboard) -> [URL] {
+  var urls = (pasteboard.readObjects(forClasses: [NSURL.self]) as? [URL]) ?? []
+
+  for item in pasteboard.pasteboardItems ?? [] {
+    if let fileURLString = item.string(forType: terminalPaneClipboardFileURLPasteboardType),
+      let fileURL = URL(string: fileURLString),
+      fileURL.isFileURL
+    {
+      urls.append(fileURL)
+    }
+  }
+
+  if let filenames = pasteboard.propertyList(forType: terminalPaneClipboardLegacyFilenamesPasteboardType) as? [String] {
+    urls.append(contentsOf: filenames.map { URL(fileURLWithPath: $0) })
+  }
+
+  var seen = Set<String>()
+  return urls.filter { url in
+    let key = url.isFileURL ? url.standardizedFileURL.path : url.absoluteString
+    return seen.insert(key).inserted
+  }
+}
+
+private enum TerminalPaneClipboardPathParser {
+  static func parse(
+    fileURLs: [URL],
+    plainString: String?,
+    fileExists: (String) -> Bool = { FileManager.default.fileExists(atPath: $0) }
+  ) -> [String] {
+    let urlPaths = fileURLs.compactMap { $0.isFileURL ? $0.path : nil }
+    if !urlPaths.isEmpty { return urlPaths }
+
+    guard let plainString else { return [] }
+
+    let candidates = plainString
+      .split(whereSeparator: \.isNewline)
+      .map { $0.trimmingCharacters(in: .whitespaces) }
+      .filter { !$0.isEmpty }
+
+    guard !candidates.isEmpty else { return [] }
+
+    var paths: [String] = []
+    for candidate in candidates {
+      if candidate.hasPrefix("file://"), let url = URL(string: candidate), url.isFileURL {
+        paths.append(url.path)
+        continue
+      }
+      if candidate.hasPrefix("/"), fileExists(candidate) {
+        paths.append(candidate)
+        continue
+      }
+      return []
+    }
+    return paths
+  }
+}
+
+private func terminalPaneClipboardSavedImagePath(in pasteboard: NSPasteboard) throws -> String? {
+  guard let pngData = terminalPaneClipboardPNGData(in: pasteboard) else {
     return nil
   }
   /*
-   CDXC:TerminalImageDrop 2026-06-07-16:40:
-   Pathless image pasteboard data still needs a durable local file before terminal insertion. Save it under shared image storage and paste the same `[Image #N](path)` Markdown shape used for file-backed image drops, with an absolute path the receiving agent can read.
-
    CDXC:TerminalImagePaste 2026-06-08-13:18:
    Cmd+V, menu Paste, right-click Paste, and Ctrl+V image paste all share the same pathless bitmap persistence path so terminal input never receives base64 image payloads or transient clipboard-only data.
    */
-  let fileURL = try terminalPaneDropUniqueImageURL(pathExtension: "png")
+  let fileURL = try terminalPaneClipboardUniqueImageURL(pathExtension: "png")
   try pngData.write(to: fileURL, options: .atomic)
   return fileURL.path
 }
 
-private func terminalPaneDropHasRawImageData(in pasteboard: NSPasteboard) -> Bool {
-  terminalPaneDropPNGData(in: pasteboard) != nil
+private func terminalPaneClipboardHasRawImageData(in pasteboard: NSPasteboard) -> Bool {
+  terminalPaneClipboardPNGData(in: pasteboard) != nil
 }
 
-private func terminalPaneDropUniqueImageURL(pathExtension: String) throws -> URL {
+private func terminalPaneClipboardUniqueImageURL(pathExtension: String) throws -> URL {
   let directory = GhostexAppStorage.sharedRootDirectory.appendingPathComponent("i", isDirectory: true)
   try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
   let formatter = DateFormatter()
   formatter.locale = Locale(identifier: "en_US_POSIX")
   formatter.dateFormat = "yyMMddHHmmss"
   let baseName = formatter.string(from: Date())
-  let normalizedExtension = terminalPaneDropNormalizedImageFileExtension(pathExtension)
+  let normalizedExtension = terminalPaneClipboardNormalizedImageFileExtension(pathExtension)
   let firstURL = directory.appendingPathComponent("\(baseName).\(normalizedExtension)", isDirectory: false)
   guard FileManager.default.fileExists(atPath: firstURL.path) else {
     return firstURL
@@ -723,7 +464,7 @@ private func terminalPaneDropUniqueImageURL(pathExtension: String) throws -> URL
     isDirectory: false)
 }
 
-private func terminalPaneDropNormalizedImageFileExtension(_ pathExtension: String) -> String {
+private func terminalPaneClipboardNormalizedImageFileExtension(_ pathExtension: String) -> String {
   let normalizedExtension = pathExtension.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
   if normalizedExtension == "jpeg" {
     return "jpg"
@@ -734,7 +475,7 @@ private func terminalPaneDropNormalizedImageFileExtension(_ pathExtension: Strin
   return normalizedExtension.isEmpty ? "png" : normalizedExtension
 }
 
-private func terminalPaneDropPNGData(in pasteboard: NSPasteboard) -> Data? {
+private func terminalPaneClipboardPNGData(in pasteboard: NSPasteboard) -> Data? {
   let pngType = NSPasteboard.PasteboardType("public.png")
   if let pngData = pasteboard.data(forType: pngType), NSImage(data: pngData) != nil {
     return pngData
@@ -744,16 +485,16 @@ private func terminalPaneDropPNGData(in pasteboard: NSPasteboard) -> Data? {
   if let tiffData = pasteboard.data(forType: tiffType),
     let image = NSImage(data: tiffData)
   {
-    return terminalPaneDropPNGData(from: image)
+    return terminalPaneClipboardPNGData(from: image)
   }
 
   guard let image = NSImage(pasteboard: pasteboard) else {
     return nil
   }
-  return terminalPaneDropPNGData(from: image)
+  return terminalPaneClipboardPNGData(from: image)
 }
 
-private func terminalPaneDropPNGData(from image: NSImage) -> Data? {
+private func terminalPaneClipboardPNGData(from image: NSImage) -> Data? {
   guard let tiffData = image.tiffRepresentation,
     let bitmap = NSBitmapImageRep(data: tiffData)
   else {
@@ -762,14 +503,14 @@ private func terminalPaneDropPNGData(from image: NSImage) -> Data? {
   return bitmap.representation(using: .png, properties: [:])
 }
 
-private func terminalPaneDropIsImageFilePath(_ path: String) -> Bool {
+private func terminalPaneClipboardIsImageFilePath(_ path: String) -> Bool {
   guard FileManager.default.fileExists(atPath: path) else {
     return false
   }
-  return terminalPaneDropIsImageFileURL(URL(fileURLWithPath: path))
+  return terminalPaneClipboardIsImageFileURL(URL(fileURLWithPath: path))
 }
 
-private func terminalPaneDropIsImageFileURL(_ url: URL) -> Bool {
+private func terminalPaneClipboardIsImageFileURL(_ url: URL) -> Bool {
   let pathExtension = url.pathExtension.trimmingCharacters(in: .whitespacesAndNewlines)
   guard !pathExtension.isEmpty else {
     return false
@@ -1792,11 +1533,8 @@ final class GhostexGhosttyApp {
      paths instead of passing relative URL objects to NSWorkspace, which fails
      with AppKit error -50 for normal filesystem paths.
 
-     CDXC:TerminalImageDrop 2026-06-07-15:35:
-     Terminal image drops now insert `[Image #N](</path/to/image.png>)` so spaces in dropped image paths stay Markdown-safe. Strip the wrapping angle brackets when resolving the terminal link target.
-
-     CDXC:TerminalImageDrop 2026-06-08-02:57:
-     New image drops paste `[Image #N](/path/to/image.png)` without angle brackets. Keep accepting the old wrapped form too so previously pasted terminal image links still resolve.
+     CDXC:TerminalImagePaste 2026-06-11-19:12:
+     Terminal image insertion is now paste-only, but existing terminal buffers can still contain `[Image #N](path)` links from earlier sessions. Keep resolving both wrapped and unwrapped Markdown image paths so old prompt text remains clickable.
      */
     let openValue = markdownImageReferencePath(in: trimmed) ?? trimmed
     if let candidate = URL(string: openValue), candidate.scheme?.isEmpty == false {
@@ -2111,21 +1849,6 @@ private final class TerminalPaneScroller: NSScroller {
 
 private final class TerminalPaneAttentionFocusScrollView: NSScrollView {
   var onMouseDownBeforeHandling: ((NSEvent) -> Void)?
-  weak var terminalPaneDropSurfaceView: GhostexGhosttySurfaceView? {
-    didSet {
-      /*
-       CDXC:TerminalImageDrop 2026-06-08-05:19:
-       Dock-stack drags can make AppKit pick the NSScrollView around the terminal surface as the destination before the inner surface receives `draggingEntered`.
-       Register this terminal-owned scroll wrapper for the same drag types and forward callbacks to the surface so image drops still paste through one insertion path.
-       */
-      registerForDraggedTypes(Array(terminalPaneDropTypes))
-      terminalPaneDropLog(
-        event: "nativeWorkspace.terminalDrop.terminalScrollHost.registeredTypes",
-        details: terminalPaneDropRegistrationDetails(
-          operationSource: "terminalScrollHost",
-          surfaceSessionId: terminalPaneDropSurfaceView?.ghostexSessionId))
-    }
-  }
 
   override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
     true
@@ -2135,179 +1858,6 @@ private final class TerminalPaneAttentionFocusScrollView: NSScrollView {
     onMouseDownBeforeHandling?(event)
     super.mouseDown(with: event)
   }
-
-  override func draggingEntered(_ sender: any NSDraggingInfo) -> NSDragOperation {
-    terminalPaneForwardedDragOperation(
-      surfaceView: terminalPaneDropSurfaceView,
-      sender: sender,
-      phase: "entered",
-      operationSource: "terminalScrollHost")
-  }
-
-  override func draggingUpdated(_ sender: any NSDraggingInfo) -> NSDragOperation {
-    terminalPaneForwardedDragOperation(
-      surfaceView: terminalPaneDropSurfaceView,
-      sender: sender,
-      phase: "updated",
-      operationSource: "terminalScrollHost")
-  }
-
-  override func draggingExited(_ sender: (any NSDraggingInfo)?) {
-    terminalPaneForwardedDraggingExited(
-      surfaceView: terminalPaneDropSurfaceView,
-      sender: sender,
-      operationSource: "terminalScrollHost")
-  }
-
-  override func prepareForDragOperation(_ sender: any NSDraggingInfo) -> Bool {
-    terminalPaneForwardedDragOperation(
-      surfaceView: terminalPaneDropSurfaceView,
-      sender: sender,
-      phase: "prepare",
-      operationSource: "terminalScrollHost") == .copy
-  }
-
-  override func performDragOperation(_ sender: any NSDraggingInfo) -> Bool {
-    terminalPaneForwardedPerformDragOperation(
-      surfaceView: terminalPaneDropSurfaceView,
-      sender: sender,
-      operationSource: "terminalScrollHost")
-  }
-}
-
-private final class TerminalPaneDropDocumentView: NSView {
-  weak var terminalPaneDropSurfaceView: GhostexGhosttySurfaceView? {
-    didSet {
-      /*
-       CDXC:TerminalImageDrop 2026-06-08-05:19:
-       The terminal document view sits between the scroll host and the concrete terminal surface, so it can be AppKit's chosen drop destination for Dock-origin file drags.
-       Register only this terminal-owned wrapper and forward to the surface to preserve the required `[Image #N](path)` paste format without a separate paste implementation.
-       */
-      registerForDraggedTypes(Array(terminalPaneDropTypes))
-      terminalPaneDropLog(
-        event: "nativeWorkspace.terminalDrop.terminalDocumentHost.registeredTypes",
-        details: terminalPaneDropRegistrationDetails(
-          operationSource: "terminalDocumentHost",
-          surfaceSessionId: terminalPaneDropSurfaceView?.ghostexSessionId))
-    }
-  }
-
-  override func draggingEntered(_ sender: any NSDraggingInfo) -> NSDragOperation {
-    terminalPaneForwardedDragOperation(
-      surfaceView: terminalPaneDropSurfaceView,
-      sender: sender,
-      phase: "entered",
-      operationSource: "terminalDocumentHost")
-  }
-
-  override func draggingUpdated(_ sender: any NSDraggingInfo) -> NSDragOperation {
-    terminalPaneForwardedDragOperation(
-      surfaceView: terminalPaneDropSurfaceView,
-      sender: sender,
-      phase: "updated",
-      operationSource: "terminalDocumentHost")
-  }
-
-  override func draggingExited(_ sender: (any NSDraggingInfo)?) {
-    terminalPaneForwardedDraggingExited(
-      surfaceView: terminalPaneDropSurfaceView,
-      sender: sender,
-      operationSource: "terminalDocumentHost")
-  }
-
-  override func prepareForDragOperation(_ sender: any NSDraggingInfo) -> Bool {
-    terminalPaneForwardedDragOperation(
-      surfaceView: terminalPaneDropSurfaceView,
-      sender: sender,
-      phase: "prepare",
-      operationSource: "terminalDocumentHost") == .copy
-  }
-
-  override func performDragOperation(_ sender: any NSDraggingInfo) -> Bool {
-    terminalPaneForwardedPerformDragOperation(
-      surfaceView: terminalPaneDropSurfaceView,
-      sender: sender,
-      operationSource: "terminalDocumentHost")
-  }
-}
-
-private func terminalPaneForwardedDragOperation(
-  surfaceView: GhostexGhosttySurfaceView?,
-  sender: any NSDraggingInfo,
-  phase: String,
-  operationSource: String
-) -> NSDragOperation {
-  guard let surfaceView else {
-    terminalPaneDropLog(
-      event: "nativeWorkspace.terminalDrop.\(operationSource).\(phase).noSurface",
-      pasteboard: sender.draggingPasteboard,
-      details: [
-        "draggingSourceOperationMaskRaw": terminalPaneDropOperationMaskRawValue(sender),
-        "operation": "none",
-        "operationSource": operationSource,
-        "phase": phase,
-      ],
-      force: phase != "updated" || NativeDebugLogging.isEnabled)
-    return []
-  }
-  return surfaceView.terminalPaneDragOperation(
-    for: sender,
-    phase: phase,
-    source: operationSource)
-}
-
-private func terminalPaneForwardedDraggingExited(
-  surfaceView: GhostexGhosttySurfaceView?,
-  sender: (any NSDraggingInfo)?,
-  operationSource: String
-) {
-  guard let sender else {
-    terminalPaneDropLog(
-      event: "nativeWorkspace.terminalDrop.\(operationSource).exited",
-      details: [
-        "hasSender": false,
-        "operationSource": operationSource,
-        "surfaceSessionId": surfaceView?.ghostexSessionId ?? NSNull(),
-      ])
-    return
-  }
-  terminalPaneDropLog(
-    event: "nativeWorkspace.terminalDrop.\(operationSource).exited",
-    pasteboard: sender.draggingPasteboard,
-    details: [
-      "hasSender": true,
-      "operationSource": operationSource,
-      "surfaceSessionId": surfaceView?.ghostexSessionId ?? NSNull(),
-    ])
-}
-
-private func terminalPaneForwardedPerformDragOperation(
-  surfaceView: GhostexGhosttySurfaceView?,
-  sender: any NSDraggingInfo,
-  operationSource: String
-) -> Bool {
-  guard let surfaceView else {
-    terminalPaneDropLog(
-      event: "nativeWorkspace.terminalDrop.\(operationSource).perform.noSurface",
-      pasteboard: sender.draggingPasteboard,
-      details: [
-        "draggingSourceOperationMaskRaw": terminalPaneDropOperationMaskRawValue(sender),
-        "operationSource": operationSource,
-      ])
-    return false
-  }
-  terminalPaneDropLog(
-    event: "nativeWorkspace.terminalDrop.\(operationSource).perform.routeToSurface",
-    pasteboard: sender.draggingPasteboard,
-    details: [
-      "draggingSourceOperationMaskRaw": terminalPaneDropOperationMaskRawValue(sender),
-      "operationSource": operationSource,
-      "surfaceCanPerformDrop": surfaceView.canPerformTerminalPaneDrop(pasteboard: sender.draggingPasteboard),
-      "surfaceSessionId": surfaceView.ghostexSessionId ?? NSNull(),
-    ])
-  return surfaceView.performTerminalPaneDrop(
-    pasteboard: sender.draggingPasteboard,
-    source: operationSource)
 }
 
 private final class GhostexGhosttySurfaceHostView: NSView {
@@ -2321,7 +1871,7 @@ private final class GhostexGhosttySurfaceHostView: NSView {
   private static let scrollButtonGap: CGFloat = 8.5
   private static let scrollButtonVisibilityThresholdPoints: CGFloat = 200
   private let scrollView = TerminalPaneAttentionFocusScrollView()
-  private let documentView = TerminalPaneDropDocumentView()
+  private let documentView = NSView()
   private let scrollToBottomButton = TerminalPaneScrollButton(direction: .bottom)
   private let scrollToTopButton = TerminalPaneScrollButton(direction: .top)
   let surfaceView: GhostexGhosttySurfaceView
@@ -2352,24 +1902,11 @@ private final class GhostexGhosttySurfaceHostView: NSView {
      Ghostty panes change shape while AppKit still owns scrollback geometry and
      drag-to-row behavior.
 
-     CDXC:TerminalImageDrop 2026-06-08-03:12:
-     Dock-stack image drags can expose their file payload only through the `NSDraggingInfo` pasteboard AppKit sends to the chosen destination view. The wrapper registration experiment tried to forward that payload around scroll-view hit testing.
-
-     CDXC:TerminalImageDrop 2026-06-08-04:49:
-     The wrapper registration experiment did not receive Dock-stack `NSDraggingInfo` by 04:45 and kept adding AppKit destination candidates above the real terminal. Disable wrapper drag registration and keep the concrete terminal surface as the only file-drop destination.
-
-     CDXC:TerminalImageDrop 2026-06-08-05:19:
-     Later 05:16 logs showed the pointer hit the terminal surface but no AppKit drag callback reached it for Dock-origin image drops.
-     Register only the terminal-owned host/scroll/document wrappers, not root/window/overlay destinations, so AppKit can select the visible terminal hierarchy and all drops still route into the surface parser.
+     CDXC:TerminalImagePaste 2026-06-11-19:12:
+     Terminal drag/drop receivers are intentionally absent from the host, scroll,
+     document, and surface views. Image insertion is limited to explicit paste so
+     AppKit drag negotiation cannot compete with embedded browser editor panes.
      */
-    registerForDraggedTypes(Array(terminalPaneDropTypes))
-    terminalPaneDropLog(
-      event: "nativeWorkspace.terminalDrop.terminalHost.registeredTypes",
-      details: terminalPaneDropRegistrationDetails(
-        operationSource: "terminalHost",
-        surfaceSessionId: surfaceView.ghostexSessionId))
-    scrollView.terminalPaneDropSurfaceView = surfaceView
-    documentView.terminalPaneDropSurfaceView = surfaceView
     scrollView.verticalScroller = TerminalPaneScroller()
     scrollView.hasVerticalScroller = surfaceView.scrollbarConfiguration != .never
     scrollView.hasHorizontalScroller = false
@@ -2462,44 +1999,6 @@ private final class GhostexGhosttySurfaceHostView: NSView {
   }
 
   override var safeAreaInsets: NSEdgeInsets { NSEdgeInsetsZero }
-
-  override func draggingEntered(_ sender: any NSDraggingInfo) -> NSDragOperation {
-    terminalPaneForwardedDragOperation(
-      surfaceView: surfaceView,
-      sender: sender,
-      phase: "entered",
-      operationSource: "terminalHost")
-  }
-
-  override func draggingUpdated(_ sender: any NSDraggingInfo) -> NSDragOperation {
-    terminalPaneForwardedDragOperation(
-      surfaceView: surfaceView,
-      sender: sender,
-      phase: "updated",
-      operationSource: "terminalHost")
-  }
-
-  override func draggingExited(_ sender: (any NSDraggingInfo)?) {
-    terminalPaneForwardedDraggingExited(
-      surfaceView: surfaceView,
-      sender: sender,
-      operationSource: "terminalHost")
-  }
-
-  override func prepareForDragOperation(_ sender: any NSDraggingInfo) -> Bool {
-    terminalPaneForwardedDragOperation(
-      surfaceView: surfaceView,
-      sender: sender,
-      phase: "prepare",
-      operationSource: "terminalHost") == .copy
-  }
-
-  override func performDragOperation(_ sender: any NSDraggingInfo) -> Bool {
-    terminalPaneForwardedPerformDragOperation(
-      surfaceView: surfaceView,
-      sender: sender,
-      operationSource: "terminalHost")
-  }
 
   override func layout() {
     super.layout()
@@ -2739,6 +2238,11 @@ final class TerminalWorkspaceView: NSView {
     let sessionId: String
   }
 
+  private struct PaneTitleBarEventTarget {
+    let titleBarPoint: NSPoint
+    let titleBarView: TerminalSessionTitleBarView
+  }
+
   private struct PaneResizeDrag {
     let availableLength: CGFloat
     let boundaryIndex: Int
@@ -2817,6 +2321,7 @@ final class TerminalWorkspaceView: NSView {
   private struct SourceCEFDragDiagnosticsState {
     let chromiumView: GhostexCEFBrowserView
     let projectId: String
+    let sequenceId: UInt64
     let startWindowPoint: CGPoint
     var didCrossDragThreshold: Bool
     var lastLogEventTime: TimeInterval
@@ -2876,6 +2381,10 @@ final class TerminalWorkspaceView: NSView {
   private static let paneResizeMinimumHeight: CGFloat = 160
   private static let paneResizeMinimumWidth: CGFloat = 220
   private static let paneResizeOuterEdgeExclusion: CGFloat = 8
+  /**
+   CDXC:NativePaneResize 2026-06-12-03:10:
+   Resize rails must remain five points wide. The 03:06 companion resize repro showed hover entering the concrete rail while mouseDown hit CEF/Ghostty content, so fix resize ownership in workspace hit testing instead of widening the rail.
+   */
   private static let paneResizeRailWidth: CGFloat = 5
   /**
    CDXC:ZmxPersistence 2026-05-18-07:20:
@@ -2946,6 +2455,11 @@ final class TerminalWorkspaceView: NSView {
   private let ghostty: GhostexGhosttyApp
   private let sendEvent: (HostEvent) -> Void
   var onManagedT3PaneRuntimeStateChanged: (ManagedT3PaneRuntimeState) -> Void = { _ in }
+  /*
+   CDXC:SourceCEFDragDrop 2026-06-11-19:40:
+   The minimal CEF/WKWebView repro app can reorder VS Code tabs, while the Ghostex window loses target-side dragover/drop events. Capture the app-level overlay and child-window state at each native Source drag phase so the next repro can distinguish CEF drag retargeting loss from a transparent AppKit/WebKit layer stealing the drag.
+   */
+  var sourceCEFDragOverlaySnapshotProvider: (() -> [String: Any])?
   private var sessions: [String: TerminalSession] = [:]
   private var webPaneSessions: [String: WebPaneSession] = [:]
   private var projectEditorPaneSessions: [String: ProjectEditorPaneSession] = [:]
@@ -2998,6 +2512,7 @@ final class TerminalWorkspaceView: NSView {
   private var paneResizeRatiosByPath: [String: [CGFloat]] = [:]
   private var paneResizeDrag: PaneResizeDrag?
   private var commandsPanelResizeDrag: CommandsPanelResizeDrag?
+  private var lastLoggedPaneResizeHandleLayeringSignature: String?
   private let commandsPanelChromeView = CommandsPanelChromeView()
   private let commandsPanelReservedBottomBarView = CommandsPanelChromeView(frame: .zero)
   private let commandsPanelCollapsedRightMarginView = NSView(frame: .zero)
@@ -3015,17 +2530,17 @@ final class TerminalWorkspaceView: NSView {
   private var workspacePaneSeparatorViews: [WorkspacePaneSeparatorView] = []
   private var paneResizeHandleViews: [TerminalWorkspacePaneResizeHandleView] = []
   private var paneHeaderDrag: PaneHeaderDrag?
+  private weak var windowRoutedPaneTitleBar: TerminalSessionTitleBarView?
   private var paneTabDragCaptureEventMonitor: Any?
   private var paneTabDragHiddenBrowserContentViews: [ObjectIdentifier: NSView] = [:]
   private var paneHeaderDragGhostView: TerminalPaneHeaderDragGhostView?
   private var paneHeaderDragTargetView: TerminalPaneHeaderDragTargetView?
   private var paneTabReorderTargetView: TerminalPaneTabReorderTargetView?
-  private var terminalPaneExternalDropTargetView: TerminalPaneExternalDropTargetView?
-  private var terminalPaneExternalDropFeedbackLogSignature: String?
   private var cefNativeDragSourceRelease: CEFNativeDragSourceRelease?
   private var cefNativeDragSourceReleaseEventMonitor: Any?
   private var cefNativeDragHoverTimer: Timer?
   private var sourceCEFDragDiagnostics: SourceCEFDragDiagnosticsState?
+  private var sourceCEFDragDiagnosticsSequence: UInt64 = 0
   private var sourceCEFDragDiagnosticsEventMonitor: Any?
   private var zmxPersistenceRefreshTimer: Timer?
   private var resizeLogSignatureBySessionId = [String: String]()
@@ -3118,18 +2633,6 @@ final class TerminalWorkspaceView: NSView {
     super.init(frame: .zero)
     wantsLayer = true
     layer?.backgroundColor = self.defaultWorkspaceBackgroundColor.cgColor
-    /*
-     CDXC:TerminalImageDrop 2026-06-08-04:49:
-     The workspace/root/window drag-registration layers did not receive the
-     Dock-stack image payload and can sit above the concrete terminal in AppKit's
-     destination search. Leave terminal file-drop registration on
-     `GhostexGhosttySurfaceView` only; workspace drag methods remain only for
-     already-routed AppKit callbacks and diagnostics.
-     */
-    unregisterDraggedTypes()
-    terminalPaneDropLog(
-      event: "nativeWorkspace.terminalDrop.workspace.registrationDisabled",
-      details: terminalPaneDropRegistrationDisabledDetails(operationSource: "workspace"))
     commandsPanelChromeView.isHidden = true
     commandsPanelReservedBottomBarView.isHidden = true
     commandsPanelCollapsedRightMarginView.wantsLayer = true
@@ -5572,6 +5075,10 @@ final class TerminalWorkspaceView: NSView {
      Cmd-W is a session-removal command, not a local native-surface disposal.
      Route focused terminal/web pane closes through the sidebar adapter so macOS layout/surface cleanup and gxserver-owned shared terminal lifecycle stay on the normal close path.
      */
+    if closeFocusedCommandsPanel(reason: reason) {
+      return true
+    }
+
     if let activeProjectEditorId, projectEditorPaneSessions[activeProjectEditorId] != nil {
       closeProjectEditorPane(projectId: activeProjectEditorId)
       return true
@@ -5609,6 +5116,25 @@ final class TerminalWorkspaceView: NSView {
         "sessionId": sessionId,
       ])
     return false
+  }
+
+  @discardableResult
+  private func closeFocusedCommandsPanel(reason: String) -> Bool {
+    guard commandsPanelIsVisible, let sessionId = commandPanelFocusedResponderSessionId() else {
+      return false
+    }
+    /**
+     CDXC:CommandsPanel 2026-06-12-04:06:
+     Cmd+W should minimize the Commands panel when a command terminal owns first responder. Use the same closeCommandsPanel titlebar action event as the chevron button, and require live command-panel responder focus so a stale commandsPanelFocusedSessionId cannot intercept workspace pane close.
+     */
+    TerminalFocusDebugLog.append(
+      event: "nativeWorkspace.commandsPanel.closeFocused",
+      details: [
+        "reason": reason,
+        "sessionId": sessionId,
+      ])
+    sendEvent(.terminalTitleBarAction(sessionId: sessionId, action: .closeCommandsPanel))
+    return true
   }
 
   func openBrowserDevTools(sessionId: String) {
@@ -6158,7 +5684,7 @@ final class TerminalWorkspaceView: NSView {
   ) {
     /*
      CDXC:NativeTerminalFocus 2026-06-07-09:55:
-     Green attention panes are the only wrapper-click case that should repair keyboard focus. Normal terminal clicks already work through Ghostty's surface mouseDown path, but clicks on an attention pane's shell, scroll host, or status border can acknowledge the green state without making the terminal first responder. Keep this guard attention-only so idle and working pane clicks continue through the existing AppKit routing.
+     #95d7f6 attention panes are the only wrapper-click case that should repair keyboard focus. Normal terminal clicks already work through Ghostty's surface mouseDown path, but clicks on an attention pane's shell, scroll host, or status border can acknowledge the done/attention state without making the terminal first responder. Keep this guard attention-only so idle and working pane clicks continue through the existing AppKit routing.
      */
     guard attentionSessionIds.contains(sessionId) || sessionActivities[sessionId] == .attention else {
       return
@@ -6220,7 +5746,7 @@ final class TerminalWorkspaceView: NSView {
     }
     /**
      CDXC:SessionAttention 2026-05-16-23:35:
-     User clicks on an already-focused pane or its title bar can be suppressed as duplicate focus locally. Still emit the existing terminalFocused event while the session is green/attention so the sidebar can clear the shared attention state after its 1.5-second minimum visibility floor.
+     User clicks on an already-focused pane or its title bar can be suppressed as duplicate focus locally. Still emit the existing terminalFocused event while the session is in done/attention status so the sidebar can clear the shared attention state after its 1.5-second minimum visibility floor.
      */
     TerminalFocusDebugLog.append(
       event: "nativeWorkspace.attentionClickAcknowledgement.emitted",
@@ -6991,7 +6517,7 @@ final class TerminalWorkspaceView: NSView {
     guard let focusRequestId = effectiveFocusRequestId else {
       /**
        CDXC:NativeTerminalFocus 2026-05-04-16:02
-       Passive status/layout sync can mark a side pane done/green while the
+       Passive status/layout sync can mark a side pane done/attention while the
        user is typing in another terminal. Do not translate focusedSessionId
        into AppKit first-responder focus unless native-sidebar attached a fresh
        explicit focus request id.
@@ -7516,9 +7042,18 @@ final class TerminalWorkspaceView: NSView {
       return
     }
     let railHeight = max(Self.paneResizeRailWidth, 12)
+    /*
+     CDXC:NativePaneTabClicks 2026-06-12-04:08:
+     The commands-panel resize rail must not overlap the native command tab bar.
+     Place the rail above the commands panel boundary instead of centering it
+     across the titlebar top edge, so resize hit testing cannot steal tab clicks.
+     */
+    let railY = min(
+      max(commandPanelBounds.maxY, bounds.minY),
+      max(bounds.maxY - railHeight, bounds.minY))
     commandsPanelResizeHandleView.frame = CGRect(
       x: commandPanelBounds.minX,
-      y: max(bounds.minY, commandPanelBounds.maxY - railHeight / 2),
+      y: railY,
       width: commandPanelBounds.width,
       height: min(railHeight, bounds.height)
     )
@@ -7527,6 +7062,7 @@ final class TerminalWorkspaceView: NSView {
     commandsPanelResizeHandleView.layer?.zPosition = 10_500
     addSubview(commandsPanelResizeHandleView, positioned: .above, relativeTo: nil)
     window?.invalidateCursorRects(for: commandsPanelResizeHandleView)
+    orderResizeHandlesToFront(reason: "syncCommandsPanelResizeHandle")
   }
 
   private func syncPaneResizeHandleViews() {
@@ -7576,6 +7112,111 @@ final class TerminalWorkspaceView: NSView {
       addSubview(handleView, positioned: .above, relativeTo: nil)
       window?.invalidateCursorRects(for: handleView)
     }
+    orderResizeHandlesToFront(reason: "syncPaneResizeHandleViews")
+  }
+
+  private func orderResizeHandlesToFront(reason: String) {
+    /*
+     CDXC:NativePaneResize 2026-06-12-02:16:
+     Pane focus, command-panel focus, and project-editor layout can re-raise
+     terminal/browser containers after resize rails were mounted. AppKit hit
+     testing follows subview order, so keep every visible resize rail as the final
+     native layer without restoring workspace-level mouse routing.
+     */
+    let handles = visibleResizeHandleViews()
+    for (_, handleView) in handles {
+      addSubview(handleView, positioned: .above, relativeTo: nil)
+      window?.invalidateCursorRects(for: handleView)
+    }
+    logPaneResizeHandleLayeringIfNeeded(reason: reason, handles: handles)
+  }
+
+  private func visibleResizeHandleViews() -> [(kind: String, view: TerminalWorkspacePaneResizeHandleView)] {
+    var handles: [(kind: String, view: TerminalWorkspacePaneResizeHandleView)] = []
+    if commandsPanelResizeHandleView.superview === self,
+      !commandsPanelResizeHandleView.isHidden,
+      !commandsPanelResizeHandleView.frame.isEmpty
+    {
+      handles.append(("commandsPanel", commandsPanelResizeHandleView))
+    }
+    for (index, handleView) in paneResizeHandleViews.enumerated()
+    where handleView.superview === self && !handleView.isHidden && !handleView.frame.isEmpty {
+      handles.append(("workspace.\(index)", handleView))
+    }
+    if projectEditorCompanionResizeHandleView.superview === self,
+      !projectEditorCompanionResizeHandleView.isHidden,
+      !projectEditorCompanionResizeHandleView.frame.isEmpty
+    {
+      handles.append(("projectEditorCompanion", projectEditorCompanionResizeHandleView))
+    }
+    return handles
+  }
+
+  private func logPaneResizeHandleLayeringIfNeeded(
+    reason: String,
+    handles: [(kind: String, view: TerminalWorkspacePaneResizeHandleView)]
+  ) {
+    guard NativeDebugLogging.isEnabled else {
+      return
+    }
+    let signature = handles.map { entry -> String in
+      let subviewIndex = subviews.firstIndex { $0 === entry.view } ?? -1
+      return "\(entry.kind):\(subviewIndex):\(entry.view.frame.debugDescription)"
+    }.joined(separator: "|")
+    guard signature != lastLoggedPaneResizeHandleLayeringSignature else {
+      return
+    }
+    lastLoggedPaneResizeHandleLayeringSignature = signature
+    NativePaneTabDragReproLog.append(event: "nativePaneResize.handles.layering", details: [
+      "handleCount": handles.count,
+      "handles": handles.map { entry -> [String: Any] in
+        [
+          "alphaValue": Double(entry.view.alphaValue),
+          "frame": nativePaneTabsDebugFrame(entry.view.frame),
+          "isHidden": entry.view.isHidden,
+          "kind": entry.kind,
+          "subviewIndex": subviews.firstIndex { $0 === entry.view } ?? -1,
+          "zPosition": Double(entry.view.layer?.zPosition ?? 0),
+        ]
+      },
+      "paneResizeHitCount": paneResizeHits.count,
+      "reason": reason,
+      "subviewCount": subviews.count,
+      "windowNumber": window?.windowNumber ?? NSNull(),
+    ])
+  }
+
+  private func appendPaneResizeDragLog(
+    eventName: String,
+    event: NSEvent?,
+    details: [String: Any] = [:]
+  ) {
+    /*
+     CDXC:NativePaneResizeDiagnostics 2026-06-12-02:35:
+     The 02:32 repro showed resize cursor ownership without a matching resize
+     drag. Persist begin, drag, and end lifecycle logs using only event type,
+     click count, geometry, deltas, booleans, and ratios so support can tell
+     whether AppKit missed mouseDown or the resize clamped movement to no-op.
+     */
+    var payload = details
+    payload["workspaceBounds"] = describeFrame(bounds)
+    if let event {
+      payload["clickCount"] = event.clickCount
+      payload["eventType"] = String(describing: event.type)
+      payload["locationInWindow"] = describePoint(event.locationInWindow)
+      if let windowNumber = event.window?.windowNumber ?? window?.windowNumber {
+        payload["windowNumber"] = windowNumber
+      } else {
+        payload["windowNumber"] = NSNull()
+      }
+    } else {
+      if let windowNumber = window?.windowNumber {
+        payload["windowNumber"] = windowNumber
+      } else {
+        payload["windowNumber"] = NSNull()
+      }
+    }
+    NativePaneTabDragReproLog.append(event: eventName, details: payload)
   }
 
   private func mountTerminalPaneContainer(for session: TerminalSession) {
@@ -7590,6 +7231,7 @@ final class TerminalWorkspaceView: NSView {
       session.containerView.removeFromSuperview()
       addSubview(session.containerView)
     }
+    session.containerView.titleBarHitTestView = session.titleBarView
     mount(session.titleBarView, in: session.containerView)
     mount(session.scrollView, in: session.containerView)
     mount(session.searchBarView, in: session.containerView)
@@ -7610,6 +7252,7 @@ final class TerminalWorkspaceView: NSView {
       session.containerView.removeFromSuperview()
       addSubview(session.containerView)
     }
+    session.containerView.titleBarHitTestView = session.titleBarView
     mount(session.titleBarView, in: session.containerView)
     mount(session.hostView, in: session.containerView)
     mount(session.borderView, in: session.containerView)
@@ -7721,6 +7364,7 @@ final class TerminalWorkspaceView: NSView {
     if commandsPanelChromeView.superview === self, commandsPanelIsVisible {
       commandsPanelChromeView.layer?.zPosition = commandsPanelMode == "floating" ? 250 : 0
     }
+    orderResizeHandlesToFront(reason: "orderCommandsPanelToFront")
   }
 
   private func applyProjectEditorCompanionPaneHiddenPreference(_ hidden: Bool?, reason: String) {
@@ -8008,7 +7652,7 @@ final class TerminalWorkspaceView: NSView {
     else {
       return false
     }
-    let workspaceBounds = projectEditorHitTestWorkspaceBounds()
+    let workspaceBounds = projectEditorCompanionWorkspaceBounds()
     guard
       let companionLayout = projectEditorCompanionLayout(in: workspaceBounds),
       companionLayout.sessionId == projectEditorCompanionSessionId
@@ -8197,9 +7841,15 @@ final class TerminalWorkspaceView: NSView {
 
      CDXC:ProjectEditorCompanion 2026-06-09-09:09:
      Source, GitHub, and Kanban companion panes should not reserve a visible
-     blank divider between the terminal and editor surface. Keep the existing
-     five-point resize target as a transparent overlay centered on the shared
+     blank divider between the terminal and editor surface. Keep the resize
+     target as a transparent overlay centered on the shared
      boundary so dragging remains forgiving without narrowing the terminal.
+
+     CDXC:ProjectEditorCompanion 2026-06-12-03:10:
+     The companion/editor boundary keeps the same five-point native resize rail
+     as split panes. The 03:06 repro showed the rail receiving hover while
+     mouseDown was routed to editor/terminal content, so the reliable drag start
+     belongs in workspace hit ownership rather than a wider companion rail.
     */
     let boundaryX = companionFrame.maxX
     let companionRightSeparatorFrame = CGRect(
@@ -8247,6 +7897,7 @@ final class TerminalWorkspaceView: NSView {
     projectEditorCompanionResizeHandleView.layer?.zPosition = 10_600
     addSubview(projectEditorCompanionResizeHandleView, positioned: .above, relativeTo: nil)
     window?.invalidateCursorRects(for: projectEditorCompanionResizeHandleView)
+    orderResizeHandlesToFront(reason: "syncProjectEditorCompanionPane")
   }
 
   private func syncProjectEditorCompanionRightSeparator(frame: CGRect) {
@@ -8268,16 +7919,15 @@ final class TerminalWorkspaceView: NSView {
   private func syncProjectEditorCompanionTitleBarControls(activeSessionId: String?) {
     /**
      CDXC:ProjectEditorCompanion 2026-05-14-09:47:
-     The companion pane's local controls must live inside the selected session
-     titlebar, so hover and click handling use the same AppKit button path as
-     existing titlebar actions.
-     Clear the controls from every non-companion titlebar when the companion is
-     hidden or retargeted.
+     Companion pane chrome must stay scoped to the selected session titlebar so
+     AppKit hit testing and generic action suppression follow the same selected
+     sidepane that owns the terminal/web surface. Clear that chrome state from
+     every non-companion titlebar when the companion is hidden or retargeted.
 
-     CDXC:ProjectEditorCompanion 2026-05-15-15:29:
-     Code/git view companion panes should no longer show the Back to Agents View
-     button. Keep only the close control in the selected companion titlebar so
-     the left pane can be dismissed without offering a workarea-mode switch.
+     CDXC:ProjectEditorCompanion 2026-06-12-03:18:
+     The React titlebar toggle immediately left of Agents now owns both collapse
+     and expand. Selected companion titlebars still use companion chrome to hide
+     generic pane actions, but they must not render a local collapse button.
      */
     for session in sessions.values {
       configureProjectEditorCompanionTitleBarControls(
@@ -8299,13 +7949,10 @@ final class TerminalWorkspaceView: NSView {
     activeSessionId: String?
   ) {
     guard activeSessionId == sessionId else {
-      titleBarView.setProjectEditorCompanionControls(onClose: nil)
+      titleBarView.setProjectEditorCompanionChromeVisible(false)
       return
     }
-    titleBarView.setProjectEditorCompanionControls(
-      onClose: { [weak self] in
-        self?.closeProjectEditorCompanionPane()
-      })
+    titleBarView.setProjectEditorCompanionChromeVisible(true)
   }
 
   private func hideProjectEditorCompanionChrome() {
@@ -8339,27 +7986,18 @@ final class TerminalWorkspaceView: NSView {
     return min(max(value, 0.05), 0.9)
   }
 
-  private func closeProjectEditorCompanionPane() {
-    projectEditorCompanionPaneHidden = true
-    projectEditorCompanionIsVisible = false
-    projectEditorCompanionResizeDrag = nil
-    if let activeProjectEditorId {
-      sendEvent(.projectEditorCompanionPaneHiddenChanged(projectId: activeProjectEditorId, hidden: true))
-    }
-    needsLayout = true
-    layoutSubtreeIfNeeded()
-    /*
-     CDXC:ZmxPersistenceRefresh 2026-05-18-15:44:
-     Closing the Code/Git/Project companion pane resizes the editor surface and removes the visible terminal pane through local native state before sidebar sync returns.
-     Schedule a surfaced-only zmx refresh so any remaining visible zmx command pane is repaired without targeting the hidden companion terminal.
-     */
-    scheduleZmxPersistenceTerminalRefreshAfterResize(reason: "projectEditorCompanionClosed")
-  }
-
   @discardableResult
   private func beginProjectEditorCompanionResize(with event: NSEvent) -> Bool {
     let workspaceBounds = projectEditorCompanionResizeWorkspaceBounds
     guard let layout = projectEditorCompanionLayout(in: workspaceBounds) else {
+      appendPaneResizeDragLog(
+        eventName: "nativePaneResize.projectEditorCompanion.beginRejected",
+        event: event,
+        details: [
+          "handleFrame": describeFrame(projectEditorCompanionResizeHandleView.frame),
+          "reason": "missingLayout",
+          "resizeWorkspaceBounds": describeFrame(workspaceBounds),
+        ])
       return false
     }
     if event.clickCount >= 2 {
@@ -8370,6 +8008,15 @@ final class TerminalWorkspaceView: NSView {
       persistProjectEditorCompanionWidthRatio(projectEditorCompanionWidthRatio)
       scheduleZmxPersistenceTerminalRefreshAfterResize(reason: "projectEditorCompanionResizeReset")
       NSCursor.resizeLeftRight.set()
+      appendPaneResizeDragLog(
+        eventName: "nativePaneResize.projectEditorCompanion.reset",
+        event: event,
+        details: [
+          "companionFrame": describeFrame(layout.companionFrame),
+          "handleFrame": describeFrame(projectEditorCompanionResizeHandleView.frame),
+          "nextWidthRatio": Double(projectEditorCompanionWidthRatio),
+          "resizeWorkspaceBounds": describeFrame(workspaceBounds),
+        ])
       return true
     }
     let point = convert(event.locationInWindow, from: nil)
@@ -8378,30 +8025,73 @@ final class TerminalWorkspaceView: NSView {
       startX: point.x,
       workspaceBounds: workspaceBounds)
     NSCursor.resizeLeftRight.set()
+    appendPaneResizeDragLog(
+      eventName: "nativePaneResize.projectEditorCompanion.begin",
+      event: event,
+      details: [
+        "companionFrame": describeFrame(layout.companionFrame),
+        "convertedPoint": describePoint(point),
+        "handleFrame": describeFrame(projectEditorCompanionResizeHandleView.frame),
+        "layoutHandleFrame": describeFrame(layout.resizeHandleFrame),
+        "resizeWorkspaceBounds": describeFrame(workspaceBounds),
+        "startWidth": Double(layout.companionFrame.width),
+        "startWidthRatio": Double(projectEditorCompanionWidthRatio),
+      ])
     return true
   }
 
   @discardableResult
   private func continueProjectEditorCompanionResize(with event: NSEvent) -> Bool {
     guard let drag = projectEditorCompanionResizeDrag else {
+      appendPaneResizeDragLog(
+        eventName: "nativePaneResize.projectEditorCompanion.dragIgnored",
+        event: event,
+        details: [
+          "handleFrame": describeFrame(projectEditorCompanionResizeHandleView.frame),
+          "reason": "missingDragState",
+        ])
       return false
     }
     let point = convert(event.locationInWindow, from: nil)
+    let deltaX = point.x - drag.startX
     let nextWidth = clampedProjectEditorCompanionWidth(
-      drag.startWidth + point.x - drag.startX,
+      drag.startWidth + deltaX,
       in: drag.workspaceBounds)
-    projectEditorCompanionWidthRatio = Self.normalizedProjectEditorCompanionWidthRatio(
+    let previousWidthRatio = projectEditorCompanionWidthRatio
+    let nextWidthRatio = Self.normalizedProjectEditorCompanionWidthRatio(
       nextWidth / max(drag.workspaceBounds.width, 1))
+    projectEditorCompanionWidthRatio = nextWidthRatio
     needsLayout = true
     layoutSubtreeIfNeeded()
     scheduleZmxPersistenceTerminalRefreshAfterResize(reason: "projectEditorCompanionResizeDrag")
     NSCursor.resizeLeftRight.set()
+    appendPaneResizeDragLog(
+      eventName: "nativePaneResize.projectEditorCompanion.dragged",
+      event: event,
+      details: [
+        "convertedPoint": describePoint(point),
+        "deltaX": Double(deltaX),
+        "didChangeRatio": abs(nextWidthRatio - previousWidthRatio) > 0.0001,
+        "handleFrame": describeFrame(projectEditorCompanionResizeHandleView.frame),
+        "nextWidth": Double(nextWidth),
+        "nextWidthRatio": Double(nextWidthRatio),
+        "previousWidthRatio": Double(previousWidthRatio),
+        "resizeWorkspaceBounds": describeFrame(drag.workspaceBounds),
+        "startWidth": Double(drag.startWidth),
+      ])
     return true
   }
 
   @discardableResult
   private func endProjectEditorCompanionResize(with event: NSEvent) -> Bool {
     guard projectEditorCompanionResizeDrag != nil else {
+      appendPaneResizeDragLog(
+        eventName: "nativePaneResize.projectEditorCompanion.endIgnored",
+        event: event,
+        details: [
+          "handleFrame": describeFrame(projectEditorCompanionResizeHandleView.frame),
+          "reason": "missingDragState",
+        ])
       return false
     }
     _ = continueProjectEditorCompanionResize(with: event)
@@ -8409,6 +8099,13 @@ final class TerminalWorkspaceView: NSView {
     persistProjectEditorCompanionWidthRatio(projectEditorCompanionWidthRatio)
     scheduleZmxPersistenceTerminalRefreshAfterResize(reason: "projectEditorCompanionResizeEnd")
     NSCursor.resizeLeftRight.set()
+    appendPaneResizeDragLog(
+      eventName: "nativePaneResize.projectEditorCompanion.end",
+      event: event,
+      details: [
+        "handleFrame": describeFrame(projectEditorCompanionResizeHandleView.frame),
+        "nextWidthRatio": Double(projectEditorCompanionWidthRatio),
+      ])
     return true
   }
 
@@ -10149,564 +9846,120 @@ final class TerminalWorkspaceView: NSView {
     true
   }
 
-  var terminalPaneDropRegisteredTypes: [NSPasteboard.PasteboardType] {
-    Array(terminalPaneDropTypes)
-  }
+  /*
+   CDXC:NativeWorkspaceHitTesting 2026-06-11-23:48:
+   The main workspace must not route clicks by cached pane geometry. Let AppKit's native child-view hierarchy deliver terminal content, tab buttons, browser/editor surfaces, and resize rails directly; each resize rail is a real sibling NSView above pane containers.
 
-  func logTerminalPaneDropOverlayHitTest(
-    eventTypeName: String,
-    dragPasteboardTypes: [NSPasteboard.PasteboardType]?,
-    shouldCapture: Bool,
-    details: [String: Any] = [:]
-  ) {
-    let types = (dragPasteboardTypes ?? []).map(\.rawValue).sorted()
-    terminalPaneDropLog(
-      event: "nativeWorkspace.terminalDrop.overlay.hitTest",
-      details: details.merging([
-        "eventType": eventTypeName,
-        "registeredTypeMatchCount": Set(dragPasteboardTypes ?? []).intersection(terminalPaneDropTypes).count,
-        "shouldCapture": shouldCapture,
-        "typeCount": types.count,
-        "types": types,
-      ]) { _, next in next })
-  }
+   CDXC:NativeWorkspaceHitTesting 2026-06-12-03:10:
+   The 03:06 companion resize repro showed tracking-area hover reaching the concrete rail while mouseDown hit CEF/Ghostty content. Keep rails at their real five-point frames and make those visible handle views win workspace hit testing before embedded surfaces, without reviving cached pane-geometry click routing.
 
-  func logTerminalPaneDropOverlayVisualOnly() {
-    terminalPaneDropLog(
-      event: "nativeWorkspace.terminalDrop.overlay.visualOnly",
-      details: [
-        "operationSource": "overlay",
-        "registeredTypeCount": 0,
-        "registeredTypes": [],
-        "usesGeometryHoverOnly": true,
-      ])
-  }
-
-  func logTerminalPaneDropRegistrationDisabled(operationSource: String) {
-    terminalPaneDropLog(
-      event: "nativeWorkspace.terminalDrop.\(operationSource).registrationDisabled",
-      details: terminalPaneDropRegistrationDisabledDetails(operationSource: operationSource))
-  }
-
-  /**
-   CDXC:NativePaneReorder 2026-05-06-03:04
-   Pane drag-to-reorder must still start from the native title bar only, but
-   embedded terminal/WebKit surfaces can sit above the title-bar mouse stream
-   during AppKit hit testing. Route only exact title-bar hits to the title-bar
-   view before falling back to normal pane hit testing; resize handles keep
-   priority so split resizing is not converted into pane dragging.
-
-   CDXC:NativePaneReorder 2026-05-10-14:24
-   Repro logs showed a bottom-edge terminal selection hit resolving to a
-   TerminalSessionTitleBarView while the registered title-bar frame was at the
-   pane top. Treat any title-bar hit outside the current registered draggable
-   title-bar band as invalid and reroute it to the pane content so the last
-   terminal line remains selectable and cannot start pane reordering.
-
-   CDXC:NativePaneResize 2026-05-11-17:53
-   Split dividers are ordinary AppKit siblings in the reserved divider width;
-   configurable pane gap spacing is no longer part of macOS layout.
-
-   CDXC:NativePaneResize 2026-05-13-07:35
-   Pane resize rails are real AppKit divider siblings between pane containers.
-   This workspace has custom titlebar/content hit routing, so check the rail
-   view before pane chrome. Without this explicit native handoff, titlebar
-   routing can bypass the rail and make pane resize hover/drag delivery disappear.
-
-   CDXC:CommandsPanel 2026-05-14-09:31:
-   The command pane remains interactive while the embedded VS Code CEF editor is
-   active. Route visible command-pane and companion pane titlebar/content hits
-   before yielding the rest of the workspace to the editor surface, because
-   AppKit's default subview hit order can hand floating command-pane clicks to
-   Chromium even when native command chrome is visually above it.
-
-   CDXC:ProjectEditorCompanion 2026-05-15-09:01:
-   Project-editor hit logs showed editor-region points falling through to
-   `super.hitTest` and resolving to the companion terminal surface. When VS Code
-   is active, use explicit command, companion, and editor frame routing so stale
-   or overlapping terminal subviews cannot steal clicks from the editor frame.
-  */
+   CDXC:NativePaneTabClicks 2026-06-12-04:28:
+   The 04:18 repro showed fresh builds still sending top-band clicks to
+   TerminalPaneLeafContainerView while tab-hover geometry stayed correct.
+   Resolve pane titlebar hits from the workspace's actual visible container
+   z-order before asking embedded Ghostty/browser children, so native tabs get
+   a direct mouse stream without cached pane-geometry routing.
+   */
   override func hitTest(_ point: NSPoint) -> NSView? {
-    if let floatingEditorHitView = floatingEditorHitView(at: point) {
-      logProjectEditorHitTestDecision(
-        event: "nativeWorkspace.projectEditor.hitTest.floatingEditor",
-        at: point,
-        hitView: floatingEditorHitView)
-      return floatingEditorHitView
-    }
-    if isProjectEditorInteractionSurfaceActive {
-      let visibleBrowserHits = visibleWebPaneSessionIds(containing: point)
-      if !visibleBrowserHits.isEmpty {
-        appendLayoutLayeringDebugLog("nativeWorkspace.hitTest.projectEditorActiveOverBrowserPoint", details: [
-          "point": describePoint(point),
-          "visibleBrowserHits": visibleBrowserHits,
-        ])
-      }
-      return projectEditorInteractionHitView(at: point)
-    }
-    if let paneResizeHandleHitView = paneResizeHandleHitView(at: point) {
-      return paneResizeHandleHitView
+    if let resizeHandleHitView = resizeHandleHitView(at: point) {
+      return resizeHandleHitView
     }
     if let titleBarHitView = paneTitleBarHitView(at: point) {
-      if isPaneBottomEdgeProbePoint(point) {
-        logPaneReorderProbe(
-          event: "nativePaneReorder.hitTest.titleBarNearBottom",
-          at: point,
-          details: [
-            "returnedHitView": String(describing: type(of: titleBarHitView)),
-          ])
-      }
       return titleBarHitView
     }
-    if let contentHitView = paneContentHitView(at: point) {
-      return contentHitView
-    }
-    /**
-     CDXC:NativeTerminalFocus 2026-05-13-07:48
-     Terminal content clicks must resolve through the current visible pane-owner
-     layout before falling through to AppKit child z-order. Stale inactive-tab
-     surfaces and recently focused pane containers can otherwise overlap a
-     neighboring pane enough that clicking the left side of a pane focuses the
-     pane immediately to its left. Resize rails and title bars keep priority
-     above this content route.
-     */
-    let hitView = super.hitTest(point)
-    if paneTitleBarAncestor(of: hitView) != nil {
-      logPaneReorderProbe(
-        event: "nativePaneReorder.hitTest.invalidTitleBarRerouted",
-        at: point,
-        details: [
-          "originalHitView": hitView.map { String(describing: type(of: $0)) } ?? "nil",
-        ])
-      return paneContentHitView(at: point)
-    }
-    return hitView
+    return super.hitTest(point)
   }
 
-  override func draggingEntered(_ sender: any NSDraggingInfo) -> NSDragOperation {
-    let operation = terminalPaneWorkspaceDragOperation(for: sender, phase: "entered")
-    return operation
-  }
-
-  override func draggingUpdated(_ sender: any NSDraggingInfo) -> NSDragOperation {
-    terminalPaneWorkspaceDragOperation(for: sender, phase: "updated")
-  }
-
-  override func draggingExited(_ sender: (any NSDraggingInfo)?) {
-    clearTerminalPaneExternalDropHoverFeedback(
-      operationSource: "workspace",
-      eventTypeName: "exited",
-      eventNumber: nil)
-    guard let sender else {
-      terminalPaneDropLog(
-        event: "nativeWorkspace.terminalDrop.workspace.exited",
-        details: ["hasSender": false])
-      return
-    }
-    terminalPaneDropLog(
-      event: "nativeWorkspace.terminalDrop.workspace.exited",
-      pasteboard: sender.draggingPasteboard,
-      details: terminalPaneWorkspaceDropDetails(for: sender, phase: "exited"))
-  }
-
-  override func performDragOperation(_ sender: any NSDraggingInfo) -> Bool {
-    defer {
-      clearTerminalPaneExternalDropHoverFeedback(
-        operationSource: "workspace",
-        eventTypeName: "perform",
-        eventNumber: nil)
-    }
-    let details = terminalPaneWorkspaceDropDetails(for: sender, phase: "perform")
-    guard let surfaceView = terminalPaneWorkspaceDropSurface(for: sender) else {
-      terminalPaneDropLog(
-        event: "nativeWorkspace.terminalDrop.workspace.perform.noSurface",
-        pasteboard: sender.draggingPasteboard,
-        details: details)
-      return false
-    }
-    terminalPaneDropLog(
-      event: "nativeWorkspace.terminalDrop.workspace.perform.routeToSurface",
-      pasteboard: sender.draggingPasteboard,
-      details: details.merging([
-        "surfaceCanPerformDrop": surfaceView.canPerformTerminalPaneDrop(pasteboard: sender.draggingPasteboard),
-      ]) { _, next in next })
-    return surfaceView.performTerminalPaneDrop(
-      pasteboard: sender.draggingPasteboard,
-      source: "workspace")
-  }
-
-  private func terminalPaneWorkspaceDragOperation(for sender: any NSDraggingInfo, phase: String) -> NSDragOperation {
-    let point = terminalPaneWorkspaceDropPoint(for: sender)
-    let details = terminalPaneWorkspaceDropDetails(for: sender, phase: phase)
-    let surfaceView = terminalPaneWorkspaceDropSurface(for: sender)
-    let surfaceCanPerformDrop = surfaceView?.canPerformTerminalPaneDrop(pasteboard: sender.draggingPasteboard) == true
-    let operation: NSDragOperation =
-      surfaceCanPerformDrop ? .copy : []
-    updateTerminalPaneExternalDropHoverFeedback(
-      workspacePoint: point,
-      operationSource: "workspace",
-      eventTypeName: phase,
-      eventNumber: nil,
-      shouldShow: surfaceCanPerformDrop)
-    terminalPaneDropLog(
-      event: "nativeWorkspace.terminalDrop.workspace.\(phase)",
-      pasteboard: sender.draggingPasteboard,
-      details: details.merging([
-        "operation": operation == .copy ? "copy" : "none",
-        "surfaceCanPerformDrop": surfaceCanPerformDrop,
-      ]) { _, next in next },
-      force: phase != "updated" || NativeDebugLogging.isEnabled)
-    return operation
-  }
-
-  func terminalPaneRootDragOperation(
-    for sender: any NSDraggingInfo,
-    rootView: NSView,
-    phase: String,
-    operationSource: String = "root"
-  ) -> NSDragOperation {
-    let rootPoint = terminalPaneRootDropRootPoint(for: sender, rootView: rootView)
-    let details = terminalPaneRootDropDetails(for: sender, rootView: rootView, phase: phase)
-    let surfaceView = terminalPaneRootDropSurface(for: sender, rootView: rootView)
-    let surfaceCanPerformDrop = surfaceView?.canPerformTerminalPaneDrop(pasteboard: sender.draggingPasteboard) == true
-    let operation: NSDragOperation = surfaceCanPerformDrop ? .copy : []
-    updateTerminalPaneExternalDropHoverFeedback(
-      rootPoint: rootPoint,
-      rootView: rootView,
-      operationSource: operationSource,
-      eventTypeName: phase,
-      eventNumber: nil,
-      shouldShow: surfaceCanPerformDrop)
-    terminalPaneDropLog(
-      event: "nativeWorkspace.terminalDrop.\(operationSource).\(phase)",
-      pasteboard: sender.draggingPasteboard,
-      details: details.merging([
-        "operationSource": operationSource,
-        "operation": operation == .copy ? "copy" : "none",
-        "surfaceCanPerformDrop": surfaceCanPerformDrop,
-      ]) { _, next in next },
-      force: phase != "updated" || NativeDebugLogging.isEnabled)
-    return operation
-  }
-
-  func performTerminalPaneRootDrop(
-    for sender: any NSDraggingInfo,
-    rootView: NSView,
-    operationSource: String = "root"
-  ) -> Bool {
-    defer {
-      clearTerminalPaneExternalDropHoverFeedback(
-        operationSource: operationSource,
-        eventTypeName: "perform",
-        eventNumber: nil)
-    }
-    let details = terminalPaneRootDropDetails(for: sender, rootView: rootView, phase: "perform")
-    guard let surfaceView = terminalPaneRootDropSurface(for: sender, rootView: rootView) else {
-      terminalPaneDropLog(
-        event: "nativeWorkspace.terminalDrop.\(operationSource).perform.noSurface",
-        pasteboard: sender.draggingPasteboard,
-        details: details.merging(["operationSource": operationSource]) { _, next in next })
-      return false
-    }
-    terminalPaneDropLog(
-      event: "nativeWorkspace.terminalDrop.\(operationSource).perform.routeToSurface",
-      pasteboard: sender.draggingPasteboard,
-      details: details.merging([
-        "operationSource": operationSource,
-        "surfaceCanPerformDrop": surfaceView.canPerformTerminalPaneDrop(pasteboard: sender.draggingPasteboard),
-      ]) { _, next in next })
-    return surfaceView.performTerminalPaneDrop(
-      pasteboard: sender.draggingPasteboard,
-      source: operationSource)
-  }
-
-  func terminalPaneRootDraggingExited(
-    _ sender: (any NSDraggingInfo)?,
-    rootView: NSView,
-    operationSource: String = "root"
-  ) {
-    clearTerminalPaneExternalDropHoverFeedback(
-      operationSource: operationSource,
-      eventTypeName: "exited",
-      eventNumber: nil)
-    guard let sender else {
-      terminalPaneDropLog(
-        event: "nativeWorkspace.terminalDrop.\(operationSource).exited",
-        details: [
-          "hasSender": false,
-          "operationSource": operationSource,
-        ])
-      return
-    }
-    terminalPaneDropLog(
-      event: "nativeWorkspace.terminalDrop.\(operationSource).exited",
-      pasteboard: sender.draggingPasteboard,
-      details: terminalPaneRootDropDetails(for: sender, rootView: rootView, phase: "exited")
-        .merging(["operationSource": operationSource]) { _, next in next })
-  }
-
-  func updateTerminalPaneExternalDropHoverFeedback(
-    rootPoint: NSPoint,
-    rootView: NSView,
-    operationSource: String,
-    eventTypeName: String,
-    eventNumber: Int?,
-    shouldShow: Bool
-  ) {
-    let workspacePoint = convert(rootPoint, from: rootView)
-    updateTerminalPaneExternalDropHoverFeedback(
-      workspacePoint: workspacePoint,
-      operationSource: operationSource,
-      eventTypeName: eventTypeName,
-      eventNumber: eventNumber,
-      shouldShow: shouldShow)
-  }
-
-  func clearTerminalPaneExternalDropHoverFeedback(
-    operationSource: String,
-    eventTypeName: String,
-    eventNumber: Int?
-  ) {
-    guard terminalPaneExternalDropTargetView != nil || terminalPaneExternalDropFeedbackLogSignature != nil else {
-      return
-    }
-    terminalPaneExternalDropTargetView?.removeFromSuperview()
-    terminalPaneExternalDropTargetView = nil
-    terminalPaneExternalDropFeedbackLogSignature = nil
-    terminalPaneDropLog(
-      event: "nativeWorkspace.terminalDrop.hoverFeedback.hidden",
-      details: [
-        "eventNumber": eventNumber ?? -1,
-        "eventType": eventTypeName,
-        "operationSource": operationSource,
-      ])
-  }
-
-  private func updateTerminalPaneExternalDropHoverFeedback(
-    workspacePoint: NSPoint,
-    operationSource: String,
-    eventTypeName: String,
-    eventNumber: Int?,
-    shouldShow: Bool
-  ) {
-    guard shouldShow,
-      bounds.contains(workspacePoint),
-      let surfaceView = terminalPaneWorkspaceDropSurface(at: workspacePoint),
-      let surfaceSessionId = surfaceView.ghostexSessionId,
-      let targetFrame = paneFrame(for: surfaceSessionId)
-    else {
-      clearTerminalPaneExternalDropHoverFeedback(
-        operationSource: operationSource,
-        eventTypeName: eventTypeName,
-        eventNumber: eventNumber)
-      return
-    }
-
-    /*
-     CDXC:TerminalImageDrop 2026-06-08-03:41:
-     Dock-stack drags originally required extra hover diagnostics while AppKit destination routing was being fixed.
-
-     CDXC:TerminalImageDrop 2026-06-08-06:27:
-     Hover feedback is now driven only by scoped AppKit drag callbacks. Do not consult global drag pasteboard state from mouse monitors; macOS can treat that as cross-app data access and repeatedly prompt.
-     */
-    let targetView = terminalPaneExternalDropTargetView ?? TerminalPaneExternalDropTargetView()
-    terminalPaneExternalDropTargetView = targetView
-    if targetView.superview !== self {
-      addSubview(targetView)
-    }
-    targetView.layer?.zPosition = Self.paneHeaderDragFeedbackZPosition + 20
-    setPaneDragFeedbackFrame(targetFrame.insetBy(dx: 2, dy: 2), for: targetView)
-    targetView.isHidden = false
-
-    let signature = "\(operationSource)|\(surfaceSessionId)|\(Int(targetFrame.minX))|\(Int(targetFrame.minY))|\(Int(targetFrame.width))|\(Int(targetFrame.height))"
-    guard signature != terminalPaneExternalDropFeedbackLogSignature else {
-      return
-    }
-    terminalPaneExternalDropFeedbackLogSignature = signature
-    terminalPaneDropLog(
-      event: "nativeWorkspace.terminalDrop.hoverFeedback.visible",
-      details: [
-        "eventNumber": eventNumber ?? -1,
-        "eventType": eventTypeName,
-        "operationSource": operationSource,
-        "surfaceSessionId": surfaceSessionId,
-        "surfaceViewFound": true,
-        "targetFrame": describeFrame(targetFrame),
-        "visualAlpha": Double(targetView.alphaValue),
-        "workspaceBoundsContainsPoint": true,
-        "workspacePoint": describePoint(workspacePoint),
-      ])
-  }
-
-  private func terminalPaneWorkspaceDropDetails(for sender: any NSDraggingInfo, phase: String) -> [String: Any] {
-    let point = terminalPaneWorkspaceDropPoint(for: sender)
-    let hitView = hitTest(point)
-    let contentHitView = paneContentHitView(at: point)
-    let contentSurfaceView = terminalPaneSurfaceView(containing: contentHitView)
-    let hitSurfaceView = terminalPaneSurfaceView(containing: hitView)
-    let surfaceView = contentSurfaceView ?? hitSurfaceView
-    return [
-      "boundsContainsPoint": bounds.contains(point),
-      "contentHitView": contentHitView.map { String(describing: type(of: $0)) } ?? "nil",
-      "contentHitViewChain": terminalPaneViewClassChain(from: contentHitView),
-      "contentSurfaceSessionId": contentSurfaceView?.ghostexSessionId ?? NSNull(),
-      "draggingSourceOperationMaskRaw": terminalPaneDropOperationMaskRawValue(sender),
-      "hitSurfaceSessionId": hitSurfaceView?.ghostexSessionId ?? NSNull(),
-      "hitView": hitView.map { String(describing: type(of: $0)) } ?? "nil",
-      "hitViewChain": terminalPaneViewClassChain(from: hitView),
-      "operationSource": "workspace",
-      "phase": phase,
-      "point": describePoint(point),
-      "surfaceSessionId": surfaceView?.ghostexSessionId ?? NSNull(),
-      "surfaceViewFound": surfaceView != nil,
-    ]
-  }
-
-  private func terminalPaneWorkspaceDropSurface(for sender: any NSDraggingInfo) -> GhostexGhosttySurfaceView? {
-    terminalPaneWorkspaceDropSurface(at: terminalPaneWorkspaceDropPoint(for: sender))
-  }
-
-  private func terminalPaneWorkspaceDropSurface(at point: NSPoint) -> GhostexGhosttySurfaceView? {
-    if let contentHitView = paneContentHitView(at: point),
-      let surfaceView = terminalPaneSurfaceView(containing: contentHitView)
-    {
-      return surfaceView
-    }
-    return terminalPaneSurfaceView(containing: hitTest(point))
-  }
-
-  private func terminalPaneWorkspaceDropPoint(for sender: any NSDraggingInfo) -> NSPoint {
-    let windowPoint = convert(sender.draggingLocation, from: nil)
-    if bounds.contains(windowPoint) {
-      return windowPoint
-    }
-    return sender.draggingLocation
-  }
-
-  private func terminalPaneRootDropDetails(
-    for sender: any NSDraggingInfo,
-    rootView: NSView,
-    phase: String
-  ) -> [String: Any] {
-    let rootPoint = terminalPaneRootDropRootPoint(for: sender, rootView: rootView)
-    return terminalPaneRootDropDetails(
-      rootPoint: rootPoint,
-      rootView: rootView,
-      phase: phase,
-      draggingSourceOperationMaskRaw: terminalPaneDropOperationMaskRawValue(sender),
-      operationSource: "root")
-  }
-
-  private func terminalPaneRootDropDetails(
-    rootPoint: NSPoint,
-    rootView: NSView,
-    phase: String,
-    draggingSourceOperationMaskRaw: String? = nil,
-    operationSource: String
-  ) -> [String: Any] {
-    let workspacePoint = convert(rootPoint, from: rootView)
-    let hitView = hitTest(workspacePoint)
-    let contentHitView = paneContentHitView(at: workspacePoint)
-    let contentSurfaceView = terminalPaneSurfaceView(containing: contentHitView)
-    let hitSurfaceView = terminalPaneSurfaceView(containing: hitView)
-    let surfaceView = contentSurfaceView ?? hitSurfaceView
-    return [
-      "draggingSourceOperationMaskRaw": draggingSourceOperationMaskRaw ?? NSNull(),
-      "operationSource": operationSource,
-      "phase": phase,
-      "rootBoundsContainsPoint": rootView.bounds.contains(rootPoint),
-      "rootPoint": describePoint(rootPoint),
-      "surfaceSessionId": surfaceView?.ghostexSessionId ?? NSNull(),
-      "surfaceViewFound": surfaceView != nil,
-      "workspaceBoundsContainsPoint": bounds.contains(workspacePoint),
-      "workspaceFrameContainsRootPoint": frame.contains(rootPoint),
-      "workspacePoint": describePoint(workspacePoint),
-    ]
-  }
-
-  private func terminalPaneRootDropSurface(
-    for sender: any NSDraggingInfo,
-    rootView: NSView
-  ) -> GhostexGhosttySurfaceView? {
-    let rootPoint = terminalPaneRootDropRootPoint(for: sender, rootView: rootView)
-    return terminalPaneRootDropSurface(rootPoint: rootPoint, rootView: rootView)
-  }
-
-  private func terminalPaneRootDropSurface(
-    rootPoint: NSPoint,
-    rootView: NSView
-  ) -> GhostexGhosttySurfaceView? {
-    guard frame.contains(rootPoint) else {
-      return nil
-    }
-    let workspacePoint = convert(rootPoint, from: rootView)
-    guard bounds.contains(workspacePoint) else {
-      return nil
-    }
-    return terminalPaneWorkspaceDropSurface(at: workspacePoint)
-  }
-
-  private func terminalPaneRootDropRootPoint(
-    for sender: any NSDraggingInfo,
-    rootView: NSView
-  ) -> NSPoint {
-    rootView.convert(sender.draggingLocation, from: nil)
-  }
-
-  private func terminalPaneViewClassChain(from view: NSView?) -> [String] {
-    var classes: [String] = []
-    var currentView = view
-    while let view = currentView, classes.count < 8 {
-      classes.append(String(describing: type(of: view)))
-      currentView = view.superview
-    }
-    return classes
-  }
-
-  private func terminalPaneSurfaceView(containing view: NSView?) -> GhostexGhosttySurfaceView? {
-    var currentView = view
-    while let view = currentView {
-      if let surfaceView = view as? GhostexGhosttySurfaceView {
-        return surfaceView
+  func resizeHandleHitView(at point: NSPoint) -> NSView? {
+    for (_, handleView) in visibleResizeHandleViews().reversed() {
+      let handlePoint = convert(point, to: handleView)
+      if let hitView = handleView.hitTest(handlePoint) {
+        return hitView
       }
-      currentView = view.superview
     }
     return nil
   }
 
-  func nativeChromeHitView(at point: NSPoint) -> NSView? {
-    guard bounds.contains(point) else {
+  func paneTitleBarHitView(at point: NSPoint) -> NSView? {
+    guard let target = paneTitleBarEventTarget(at: point) else {
       return nil
     }
+    return target.titleBarView.hitTest(target.titleBarPoint) ?? target.titleBarView
+  }
+
+  func routePaneTitleBarMouseEvent(_ event: NSEvent, at point: NSPoint, source: String) -> Bool {
+    switch event.type {
+    case .leftMouseDown:
+      guard let target = paneTitleBarEventTarget(at: point),
+        target.titleBarView.routeWindowTitleBarMouseEvent(
+          event,
+          point: target.titleBarPoint,
+          source: source)
+      else {
+        return false
+      }
+      windowRoutedPaneTitleBar = target.titleBarView
+      return true
+    case .leftMouseDragged:
+      guard let titleBarView = windowRoutedPaneTitleBar,
+        !titleBarView.isHidden,
+        titleBarView.alphaValue > 0,
+        titleBarView.window != nil
+      else {
+        return false
+      }
+      _ = titleBarView.routeWindowTitleBarMouseEvent(
+        event,
+        point: convert(point, to: titleBarView),
+        source: source)
+      return true
+    case .leftMouseUp:
+      guard let titleBarView = windowRoutedPaneTitleBar,
+        !titleBarView.isHidden,
+        titleBarView.alphaValue > 0,
+        titleBarView.window != nil
+      else {
+        windowRoutedPaneTitleBar = nil
+        return false
+      }
+      windowRoutedPaneTitleBar = nil
+      _ = titleBarView.routeWindowTitleBarMouseEvent(
+        event,
+        point: convert(point, to: titleBarView),
+        source: source)
+      return true
+    default:
+      return false
+    }
+  }
+
+  private func paneTitleBarEventTarget(at point: NSPoint) -> PaneTitleBarEventTarget? {
     guard !suppressNativeChromeInteractivity else {
       return nil
     }
-    /**
-     CDXC:RootHitBoundaries 2026-05-22-22:48:
-     The root React titlebar WKWebView can report interactive DOM regions below
-     the fixed titlebar strip. Native pane tabs and resize handles in the
-     workspace must get first chance at those points so visible right-side tabs
-     do not fall through to the titlebar/sidebar web surface.
-     */
-    if let floatingEditorHitView = floatingEditorHitView(at: point) {
-      return floatingEditorHitView
-    }
-    if isProjectEditorInteractionSurfaceActive {
-      if let paneResizeHandleHitView = projectEditorResizeHandleHitView(at: point) {
-        return paneResizeHandleHitView
+    for view in subviews.reversed() {
+      guard let containerView = view as? TerminalPaneLeafContainerView,
+        !containerView.isHidden,
+        containerView.alphaValue > 0,
+        containerView.window != nil,
+        let titleBarView = containerView.resolvedTitleBarHitTestView() as? TerminalSessionTitleBarView,
+        !titleBarView.isHidden,
+        titleBarView.alphaValue > 0
+      else {
+        continue
       }
-      if let commandTitleBarHitView = commandPaneTitleBarHitView(at: point) {
-        return commandTitleBarHitView
+      let containerPoint = convert(point, to: containerView)
+      guard containerView.bounds.contains(containerPoint),
+        titleBarView.frame.contains(containerPoint)
+      else {
+        continue
       }
-      if let projectEditorTitleBarHitView = activeProjectEditorTitleBarHitView(at: point) {
-        return projectEditorTitleBarHitView
-      }
-      return nil
+      let titleBarPoint = containerView.convert(containerPoint, to: titleBarView)
+      return PaneTitleBarEventTarget(
+        titleBarPoint: titleBarPoint,
+        titleBarView: titleBarView)
     }
-    if let paneResizeHandleHitView = paneResizeHandleHitView(at: point) {
-      return paneResizeHandleHitView
-    }
-    return paneTitleBarHitView(at: point)
+    return nil
   }
 
   func setNativeChromeInteractivitySuppressed(_ suppressed: Bool) {
@@ -10737,554 +9990,31 @@ final class TerminalWorkspaceView: NSView {
     }
   }
 
-  private func projectEditorInteractionHitView(at point: NSPoint) -> NSView? {
-    if let paneResizeHandleHitView = projectEditorResizeHandleHitView(at: point) {
-      logProjectEditorHitTestDecision(
-        event: "nativeWorkspace.projectEditor.hitTest.resizeHandle",
-        at: point,
-        hitView: paneResizeHandleHitView)
-      return paneResizeHandleHitView
-    }
-    if let commandTitleBarHitView = commandPaneTitleBarHitView(at: point) {
-      logProjectEditorHitTestDecision(
-        event: "nativeWorkspace.projectEditor.hitTest.commandTitleBar",
-        at: point,
-        hitView: commandTitleBarHitView)
-      return commandTitleBarHitView
-    }
-    if let commandContentHitView = commandPaneContentHitView(at: point) {
-      logProjectEditorHitTestDecision(
-        event: "nativeWorkspace.projectEditor.hitTest.commandContent",
-        at: point,
-        hitView: commandContentHitView)
-      return commandContentHitView
-    }
-
-    let workspaceBounds = projectEditorHitTestWorkspaceBounds()
-    let companionLayout = projectEditorCompanionLayout(in: workspaceBounds)
-    if let companionLayout {
-      if companionLayout.companionFrame.contains(point) {
-        if let companionHitView = projectEditorCompanionHitView(layout: companionLayout, at: point) {
-          logProjectEditorHitTestDecision(
-            event: "nativeWorkspace.projectEditor.hitTest.companion",
-            at: point,
-            hitView: companionHitView)
-          return companionHitView
-        }
-        let hitView = projectEditorCompanionFallbackHitView(sessionId: companionLayout.sessionId)
-        logProjectEditorHitTestDecision(
-          event: "nativeWorkspace.projectEditor.hitTest.companionFallback",
-          at: point,
-          hitView: hitView)
-        return hitView
-      }
-      if companionLayout.editorFrame.contains(point) {
-        let editorHitView = activeProjectEditorHitView(at: point)
-        logProjectEditorHitTestDecision(
-          event: "nativeWorkspace.projectEditor.hitTest.editor",
-          at: point,
-          hitView: editorHitView)
-        return editorHitView
-      }
-    } else if workspaceBounds.contains(point) {
-      let editorHitView = activeProjectEditorHitView(at: point)
-      logProjectEditorHitTestDecision(
-        event: "nativeWorkspace.projectEditor.hitTest.editor",
-        at: point,
-        hitView: editorHitView)
-      return editorHitView
-    }
-
-    let hitView = super.hitTest(point)
-    logProjectEditorHitTestDecision(
-      event: "nativeWorkspace.projectEditor.hitTest.super",
-      at: point,
-      hitView: hitView)
-    return hitView
-  }
-
-  private func projectEditorResizeHandleHitView(at point: NSPoint) -> NSView? {
-    if
-      !projectEditorCompanionResizeHandleView.isHidden,
-      projectEditorCompanionResizeHandleView.alphaValue > 0,
-      projectEditorCompanionResizeHandleView.frame.contains(point)
-    {
-      let handlePoint = projectEditorCompanionResizeHandleView.convert(point, from: self)
-      if let hitView = projectEditorCompanionResizeHandleView.hitTest(handlePoint) {
-        return hitView
-      }
-    }
-    if
-      !commandsPanelResizeHandleView.isHidden,
-      commandsPanelResizeHandleView.alphaValue > 0,
-      commandsPanelResizeHandleView.frame.contains(point)
-    {
-      let handlePoint = commandsPanelResizeHandleView.convert(point, from: self)
-      if let hitView = commandsPanelResizeHandleView.hitTest(handlePoint) {
-        return hitView
-      }
-    }
-    return nil
-  }
-
-  private func commandPaneTitleBarHitView(at point: CGPoint) -> NSView? {
-    for sessionId in orderedVisibleCommandPaneOwnerSessionIds().reversed() {
-      if let session = sessions[sessionId],
-        let hitView = paneTitleBarHitView(session.titleBarView, at: point)
-      {
-        return hitView
-      }
-    }
-    return nil
-  }
-
-  private func commandPaneContentHitView(at point: CGPoint) -> NSView? {
-    for sessionId in orderedVisibleCommandPaneOwnerSessionIds().reversed() {
-      if let session = sessions[sessionId],
-        let hitView = terminalPaneContentHitView(session, at: point)
-      {
-        return hitView
-      }
-    }
-    return nil
-  }
-
-  private func projectEditorCompanionHitView(
-    layout: ProjectEditorCompanionLayout,
-    at point: CGPoint
-  ) -> NSView? {
-    let sessionId = layout.sessionId
-    if let session = sessions[sessionId] {
-      return paneTitleBarHitView(session.titleBarView, at: point)
-        ?? terminalPaneContentHitView(session, at: point)
-    }
-    if let session = webPaneSessions[sessionId] {
-      return paneTitleBarHitView(session.titleBarView, at: point)
-        ?? webPaneContentHitView(session, at: point)
-    }
-    return nil
-  }
-
-  private func projectEditorCompanionFallbackHitView(sessionId: String) -> NSView? {
-    if let session = sessions[sessionId], !session.containerView.isHidden {
-      return session.containerView
-    }
-    if let session = webPaneSessions[sessionId], !session.containerView.isHidden {
-      return session.containerView
-    }
-    return nil
-  }
-
-  private func activeProjectEditorTitleBarHitView(at point: CGPoint) -> NSView? {
-    let activeSession =
-      activeProjectEditorId.flatMap { projectEditorPaneSessions[$0] }
-      ?? visibleProjectEditorInteractionSessionIds.compactMap { projectEditorPaneSessions[$0] }.first
-    guard let activeSession,
-      let titleBarView = activeSession.titleBarView,
-      !titleBarView.isHidden,
-      titleBarView.frame.contains(point)
-    else {
-      return nil
-    }
-    let titleBarPoint = convert(point, to: titleBarView)
-    return titleBarView.hitTest(titleBarPoint) ?? titleBarView
-  }
-
-  private func activeProjectEditorHitView(at point: CGPoint) -> NSView? {
-    let activeSession =
-      activeProjectEditorId.flatMap { projectEditorPaneSessions[$0] }
-      ?? visibleProjectEditorInteractionSessionIds.compactMap { projectEditorPaneSessions[$0] }.first
-    guard let activeSession, !activeSession.hostView.isHidden else {
-      NativeT3CodePaneReproLog.append("nativeWorkspace.projectEditor.hitTest.activeHostMissing", [
-        "activeProjectEditorId": activeProjectEditorId ?? NSNull(),
-        "knownProjectEditorIds": Array(projectEditorPaneSessions.keys).sorted(),
-        "point": describePoint(point),
-        "visibleProjectEditorInteractionSessionIds": Array(visibleProjectEditorInteractionSessionIds).sorted(),
-        "windowNumber": window?.windowNumber ?? NSNull(),
-      ])
-      return nil
-    }
-    if let hitView = activeProjectEditorTitleBarHitView(at: point) {
-      /**
-       CDXC:GitProjectTabs 2026-05-16-07:42:
-       Git tab chrome sits above the browser host inside the project-editor
-       frame. Route hit testing to that native tab bar before falling back to
-       the hosted Chromium view so tabs, inline buttons, and the plus control
-       receive real AppKit mouse events.
-      */
-      NativeT3CodePaneReproLog.append("nativeWorkspace.projectEditor.hitTest.gitTabBar", [
-        "activeProjectEditorId": activeProjectEditorId ?? NSNull(),
-        "hitView": String(describing: type(of: hitView)),
-        "point": describePoint(point),
-        "titleBarFrame": describeFrame(activeSession.titleBarView?.frame ?? .zero),
-        "titleBarPoint": describePoint(convert(point, to: activeSession.titleBarView)),
-        "windowNumber": window?.windowNumber ?? NSNull(),
-      ])
-      return hitView
-    }
-    let editorPoint = convert(point, to: activeSession.hostView)
-    guard activeSession.hostView.bounds.contains(editorPoint) else {
-      NativeT3CodePaneReproLog.append("nativeWorkspace.projectEditor.hitTest.editorOutsideHostBounds", [
-        "activeHostFrame": describeFrame(activeSession.hostView.frame),
-        "activeProjectEditorId": activeProjectEditorId ?? NSNull(),
-        "editorPoint": describePoint(editorPoint),
-        "hostBounds": describeFrame(activeSession.hostView.bounds),
-        "point": describePoint(point),
-        "windowNumber": window?.windowNumber ?? NSNull(),
-      ])
-      return activeSession.hostView
-    }
-    let hitView = activeSession.hostView.hitTest(editorPoint) ?? activeSession.hostView
-    NativeT3CodePaneReproLog.append("nativeWorkspace.projectEditor.hitTest.editorHost", [
-      "activeHostFrame": describeFrame(activeSession.hostView.frame),
-      "activeProjectEditorId": activeProjectEditorId ?? NSNull(),
-      "activeProjectEditorMode": activeSession.mode,
-      "activeTabId": activeSession.activeTabId,
-      "editorPoint": describePoint(editorPoint),
-      "hitView": String(describing: type(of: hitView)),
-      "hostHidden": activeSession.hostView.isHidden,
-      "windowNumber": window?.windowNumber ?? NSNull(),
-    ])
-    return hitView
-  }
-
-  private func projectEditorHitTestWorkspaceBounds() -> CGRect {
+  private func projectEditorCompanionWorkspaceBounds() -> CGRect {
     projectEditorCompanionResizeWorkspaceBounds.width > 1
       && projectEditorCompanionResizeWorkspaceBounds.height > 1
       ? projectEditorCompanionResizeWorkspaceBounds
       : bounds
   }
 
-  /**
-   CDXC:ProjectEditorCompanion 2026-05-15-05:34:
-   Clicks near the left edge of the embedded VS Code surface can be stolen by
-   native pane hit routing before CEF sees them. While confirming the root
-   cause, project-editor hit-test logs must record the click point, companion
-   and editor frames, returned AppKit view, and resolved session id so a click
-   in the editor frame can be correlated with an unexpected terminal focus.
-   */
-  private func logProjectEditorHitTestDecision(
-    event: String,
-    at point: CGPoint,
-    hitView: NSView?,
-    details: [String: Any] = [:]
-  ) {
-    guard NativeDebugLogging.isEnabled, isProjectEditorInteractionSurfaceActive else {
-      return
-    }
-    let workspaceBounds = projectEditorHitTestWorkspaceBounds()
-    let companionLayout = projectEditorCompanionLayout(in: workspaceBounds)
-    var payload = details
-    payload["activeProjectEditorId"] = nullableString(activeProjectEditorId)
-    payload["companionContentFrame"] = companionLayout.map { describeFrame($0.contentFrame) } ?? NSNull()
-    payload["companionFrame"] = companionLayout.map { describeFrame($0.companionFrame) } ?? NSNull()
-    payload["companionSessionId"] = nullableString(projectEditorCompanionSessionId)
-    payload["editorFrame"] = companionLayout.map { describeFrame($0.editorFrame) } ?? NSNull()
-    payload["focusedSessionId"] = nullableString(focusedSessionId)
-    payload["hitSessionId"] = nullableString(hitView.flatMap { sessionId(containing: $0) })
-    payload["hitView"] = hitView.map { String(describing: type(of: $0)) } ?? NSNull()
-    payload["point"] = describeFrame(CGRect(x: point.x, y: point.y, width: 0, height: 0))
-    payload["pointRegion"] = projectEditorHitTestPointRegion(point, layout: companionLayout)
-    payload["resizeHandleFrame"] = companionLayout.map { describeFrame($0.resizeHandleFrame) } ?? NSNull()
-    payload["visibleCommandPaneOwnerSessionIds"] = orderedVisibleCommandPaneOwnerSessionIds()
-    payload["visiblePaneOwnerSessionIds"] = orderedVisiblePaneOwnerSessionIds()
-    payload["workspaceBounds"] = describeFrame(workspaceBounds)
-    TerminalFocusDebugLog.append(event: event, details: payload)
-  }
-
-  private func projectEditorHitTestPointRegion(
-    _ point: CGPoint,
-    layout: ProjectEditorCompanionLayout?
-  ) -> String {
-    guard let layout else {
-      return "noCompanionLayout"
-    }
-    if layout.resizeHandleFrame.contains(point) {
-      return "companionResizeHandle"
-    }
-    if layout.companionFrame.contains(point) {
-      return "companion"
-    }
-    if layout.editorFrame.contains(point) {
-      return "editor"
-    }
-    return "outside"
-  }
-
-  private func paneResizeHandleHitView(at point: NSPoint) -> NSView? {
-    if
-      !projectEditorCompanionResizeHandleView.isHidden,
-      projectEditorCompanionResizeHandleView.alphaValue > 0,
-      projectEditorCompanionResizeHandleView.frame.contains(point)
-    {
-      let handlePoint = projectEditorCompanionResizeHandleView.convert(point, from: self)
-      if let hitView = projectEditorCompanionResizeHandleView.hitTest(handlePoint) {
-        return hitView
-      }
-    }
-    if
-      !commandsPanelResizeHandleView.isHidden,
-      commandsPanelResizeHandleView.alphaValue > 0,
-      commandsPanelResizeHandleView.frame.contains(point)
-    {
-      let handlePoint = commandsPanelResizeHandleView.convert(point, from: self)
-      if let hitView = commandsPanelResizeHandleView.hitTest(handlePoint) {
-        return hitView
-      }
-    }
-    for handleView in paneResizeHandleViews.reversed() {
-      guard
-        !handleView.isHidden,
-        handleView.alphaValue > 0,
-        handleView.frame.contains(point)
-      else {
-        continue
-      }
-      let handlePoint = handleView.convert(point, from: self)
-      if let hitView = handleView.hitTest(handlePoint) {
-        return hitView
-      }
-    }
-    return nil
-  }
-
-  private func floatingEditorHitView(at point: NSPoint) -> NSView? {
-    guard
-      let overlayView = floatingEditorOverlayView,
-      !overlayView.isHidden,
-      overlayView.alphaValue > 0,
-      overlayView.frame.contains(point)
-    else {
-      return nil
-    }
-    return overlayView.hitTest(overlayView.convert(point, from: self))
-  }
-
-  private func paneTitleBarHitView(at point: CGPoint) -> NSView? {
-    guard paneResizeHit(at: point) == nil else {
-      return nil
-    }
-    for sessionId in orderedVisibleCommandPaneOwnerSessionIds().reversed() {
-      if let session = sessions[sessionId],
-        let hitView = paneTitleBarHitView(session.titleBarView, at: point)
-      {
-        return hitView
-      }
-    }
-    for sessionId in orderedVisiblePaneOwnerSessionIds().reversed() {
-      if let session = sessions[sessionId],
-        let hitView = paneTitleBarHitView(session.titleBarView, at: point)
-      {
-        return hitView
-      }
-      if let session = webPaneSessions[sessionId],
-        let hitView = paneTitleBarHitView(session.titleBarView, at: point)
-      {
-        return hitView
-      }
-    }
-    return nil
-  }
-
-  private func paneTitleBarHitView(
-    _ titleBarView: TerminalSessionTitleBarView,
-    at point: CGPoint
-  ) -> NSView? {
-    let titleBarPoint = convert(point, to: titleBarView)
-    guard !titleBarView.isHidden, titleBarView.bounds.contains(titleBarPoint) else {
-      return nil
-    }
-    return titleBarView.hitTest(titleBarPoint)
-  }
-
-  private func paneTitleBarAncestor(of view: NSView?) -> TerminalSessionTitleBarView? {
-    var currentView = view
-    while let view = currentView {
-      if let titleBarView = view as? TerminalSessionTitleBarView {
-        return titleBarView
-      }
-      currentView = view.superview
-    }
-    return nil
-  }
-
-  private func paneContentHitView(at point: CGPoint) -> NSView? {
-    if let commandHitView = paneContentHitView(at: point, role: .commands) {
-      return commandHitView
-    }
-    if let workspaceHitView = paneContentHitView(at: point, role: .workspace) {
-      return workspaceHitView
-    }
-    return nil
-  }
-
-  private func paneContentHitView(at point: CGPoint, role: PaneContentHitRole) -> NSView? {
-    guard let region = paneContentHitRegions.reversed().first(where: {
-      $0.role == role && $0.rect.contains(point)
-    }) else {
-      return nil
-    }
-    let hitView: NSView?
-    let fallbackHitView: NSView?
-    if let session = sessions[region.sessionId] {
-      hitView = terminalPaneContentHitView(session, at: point)
-      fallbackHitView = session.scrollView
-    } else if let session = webPaneSessions[region.sessionId] {
-      hitView = webPaneContentHitView(session, at: point)
-      fallbackHitView = session.hostView
-    } else {
-      hitView = nil
-      fallbackHitView = nil
-    }
-    let returnedHitView = hitView ?? fallbackHitView
-    logPaneContentHitRouteIfNeeded(
-      point: point,
-      region: region,
-      returnedHitView: returnedHitView)
-    return returnedHitView
-  }
-
-  private func logPaneContentHitRouteIfNeeded(
-    point: CGPoint,
-    region: PaneContentHitRegion,
-    returnedHitView: NSView?
-  ) {
-    let legacyCandidateSessionIds = paneContentLegacyCandidateSessionIds(
-      at: point,
-      role: region.role)
-    let legacyFirstSessionId = legacyCandidateSessionIds.first
-    let returnedSessionId = returnedHitView.flatMap { sessionId(containing: $0) }
-    guard legacyFirstSessionId != region.sessionId || returnedSessionId != region.sessionId else {
-      return
-    }
-    appendLayoutLayeringDebugLog(
-      "nativeFocusTrace.paneContentHitRoutedByLayout",
-      details: [
-        "legacyCandidateSessionIds": legacyCandidateSessionIds,
-        "legacyFirstSessionId": nullableString(legacyFirstSessionId),
-        "layoutRegionPath": region.path,
-        "layoutRegionRect": describeFrame(region.rect),
-        "layoutRegionRole": region.role == .commands ? "commands" : "workspace",
-        "layoutRegionSessionId": region.sessionId,
-        "point": describePoint(point),
-        "returnedHitView": returnedHitView.map { String(describing: type(of: $0)) } ?? "nil",
-        "returnedSessionId": nullableString(returnedSessionId),
-      ],
-      force: true)
-  }
-
-  private func visibleWebPaneSessionIds(containing point: CGPoint) -> [String] {
-    webPaneSessions.values
-      .filter {
-        !$0.containerView.isHidden
-          && $0.containerView.window != nil
-          && $0.containerView.frame.contains(point)
-      }
-      .map(\.sessionId)
-      .sorted()
-  }
-
-  private func paneContentLegacyCandidateSessionIds(
-    at point: CGPoint,
-    role: PaneContentHitRole
-  ) -> [String] {
-    let sessionIds =
-      role == .commands
-      ? orderedVisibleCommandPaneOwnerSessionIds().reversed()
-      : orderedVisiblePaneOwnerSessionIds().reversed()
-    return sessionIds.filter { sessionId in
-      if let session = sessions[sessionId] {
-        return !session.containerView.isHidden
-          && session.containerView.window != nil
-          && session.containerView.frame.contains(point)
-      }
-      if let session = webPaneSessions[sessionId] {
-        return !session.containerView.isHidden
-          && session.containerView.window != nil
-          && session.containerView.frame.contains(point)
-      }
-      return false
-    }
-  }
-
-  private func terminalPaneContentHitView(_ session: TerminalSession, at point: CGPoint) -> NSView? {
-    guard !session.containerView.isHidden,
-      session.containerView.window != nil,
-      session.containerView.frame.contains(point)
-    else {
-      return nil
-    }
-    if !session.searchBarView.isHidden {
-      let searchPoint = convert(point, to: session.searchBarView)
-      if session.searchBarView.bounds.contains(searchPoint) {
-        let hitView = session.searchBarView.hitTest(searchPoint) ?? session.searchBarView
-        logTerminalSearchInteraction(
-          "nativeWorkspace.terminalSearch.hitTest",
-          session: session,
-          details: [
-            "hitView": String(describing: type(of: hitView)),
-            "rootPoint": describePoint(point),
-            "searchBarFrame": describeFrame(session.searchBarView.frame),
-            "searchPoint": describePoint(searchPoint),
-          ])
-        return hitView
-      }
-    }
-    let contentPoint = convert(point, to: session.scrollView)
-    if session.scrollView.bounds.contains(contentPoint) {
-      return session.scrollView.hitTest(contentPoint) ?? session.scrollView
-    }
-    return nil
-  }
-
-  private func webPaneContentHitView(_ session: WebPaneSession, at point: CGPoint) -> NSView? {
-    guard !session.containerView.isHidden,
-      session.containerView.window != nil,
-      session.containerView.frame.contains(point)
-    else {
-      return nil
-    }
-    let contentPoint = convert(point, to: session.hostView)
-    if session.hostView.bounds.contains(contentPoint) {
-      return session.hostView.hitTest(contentPoint) ?? session.hostView
-    }
-    return nil
-  }
-
-  override func mouseDown(with event: NSEvent) {
-    guard !isProjectEditorInteractionSurfaceActive else {
-      super.mouseDown(with: event)
-      return
-    }
-    guard beginPaneResize(with: event) else {
-      super.mouseDown(with: event)
-      return
-    }
-  }
-
-  @discardableResult
-  private func beginPaneResize(with event: NSEvent) -> Bool {
-    guard !isProjectEditorInteractionSurfaceActive else {
-      return false
-    }
-    let point = convert(event.locationInWindow, from: nil)
-    guard let hit = paneResizeHit(at: point) else {
-      return false
-    }
-    return beginPaneResize(hit: hit, event: event)
-  }
-
   @discardableResult
   private func beginPaneResize(hit: PaneResizeHit, event: NSEvent) -> Bool {
-    guard !isProjectEditorInteractionSurfaceActive else {
-      return false
-    }
     let point = convert(event.locationInWindow, from: nil)
 
     if event.clickCount >= 2 {
       resetPaneResizeRatios(for: hit)
       scheduleZmxPersistenceTerminalRefreshAfterResize(reason: "paneResizeReset")
       paneResizeCursor(for: hit.direction).set()
+      appendPaneResizeDragLog(
+        eventName: "nativePaneResize.workspace.reset",
+        event: event,
+        details: [
+          "availableLength": Double(hit.availableLength),
+          "boundaryIndex": hit.boundaryIndex,
+          "direction": hit.direction.rawValue,
+          "resizeHitFrame": describeFrame(hit.rect),
+          "trackCount": hit.trackCount,
+        ])
       return true
     }
 
@@ -11303,27 +10033,30 @@ final class TerminalWorkspaceView: NSView {
       startRatios: currentRatios
     )
     paneResizeCursor(for: hit.direction).set()
+    appendPaneResizeDragLog(
+      eventName: "nativePaneResize.workspace.begin",
+      event: event,
+      details: [
+        "availableLength": Double(hit.availableLength),
+        "boundaryIndex": hit.boundaryIndex,
+        "convertedPoint": describePoint(point),
+        "direction": hit.direction.rawValue,
+        "minimumAfter": Double(paneResizeMinimumLength(direction: hit.direction) * CGFloat(hit.trackCount - hit.boundaryIndex)),
+        "minimumBefore": Double(paneResizeMinimumLength(direction: hit.direction) * CGFloat(hit.boundaryIndex)),
+        "resizeHitFrame": describeFrame(hit.rect),
+        "startCoordinate": Double(hit.direction == .horizontal ? point.x : point.y),
+        "trackCount": hit.trackCount,
+      ])
     return true
-  }
-
-  override func mouseDragged(with event: NSEvent) {
-    guard !isProjectEditorInteractionSurfaceActive else {
-      super.mouseDragged(with: event)
-      return
-    }
-    guard continuePaneResize(with: event) else {
-      super.mouseDragged(with: event)
-      return
-    }
   }
 
   @discardableResult
   private func continuePaneResize(with event: NSEvent) -> Bool {
-    guard !isProjectEditorInteractionSurfaceActive else {
-      paneResizeDrag = nil
-      return false
-    }
     guard let drag = paneResizeDrag else {
+      appendPaneResizeDragLog(
+        eventName: "nativePaneResize.workspace.dragIgnored",
+        event: event,
+        details: ["reason": "missingDragState"])
       return false
     }
 
@@ -11333,42 +10066,35 @@ final class TerminalWorkspaceView: NSView {
     let delta = drag.direction == .horizontal
       ? coordinate - drag.startCoordinate
       : drag.startCoordinate - coordinate
-    paneResizeRatiosByPath[drag.path] = resizePaneRatios(
+    let nextRatios = resizePaneRatios(
       drag.startRatios,
       boundaryIndex: drag.boundaryIndex,
       delta: delta,
       availableLength: drag.availableLength,
       minimumBefore: drag.minimumBefore,
       minimumAfter: drag.minimumAfter)
+    paneResizeRatiosByPath[drag.path] = nextRatios
     needsLayout = true
     layoutSubtreeIfNeeded()
     scheduleZmxPersistenceTerminalRefreshAfterResize(reason: "paneResizeDrag")
+    appendPaneResizeDragLog(
+      eventName: "nativePaneResize.workspace.dragged",
+      event: event,
+      details: [
+        "availableLength": Double(drag.availableLength),
+        "boundaryIndex": drag.boundaryIndex,
+        "convertedPoint": describePoint(point),
+        "delta": Double(delta),
+        "direction": drag.direction.rawValue,
+        "didChangeRatios": nextRatios != drag.startRatios,
+        "nextRatioCount": nextRatios.count,
+        "startCoordinate": Double(drag.startCoordinate),
+      ])
     return true
-  }
-
-  private func paneResizeCursor(at point: CGPoint) -> NSCursor? {
-    guard let hit = paneResizeHit(at: point) else {
-      return nil
-    }
-    return paneResizeCursor(for: hit.direction)
   }
 
   private func paneResizeCursor(for direction: NativeTerminalLayout.SplitDirection) -> NSCursor {
     direction == .horizontal ? .resizeLeftRight : .resizeUpDown
-  }
-
-  override func mouseUp(with event: NSEvent) {
-    guard !isProjectEditorInteractionSurfaceActive else {
-      super.mouseUp(with: event)
-      return
-    }
-    if endPaneResize(with: event) {
-      return
-    }
-    paneHeaderDrag = nil
-    uninstallPaneTabDragCaptureMonitor()
-    endPaneHeaderDragFeedback()
-    super.mouseUp(with: event)
   }
 
   @discardableResult
@@ -11376,12 +10102,28 @@ final class TerminalWorkspaceView: NSView {
     if event.clickCount >= 2 {
       resetCommandsPanelHeightRatio()
       NSCursor.resizeUpDown.set()
+      appendPaneResizeDragLog(
+        eventName: "nativePaneResize.commandsPanel.reset",
+        event: event,
+        details: [
+          "handleFrame": describeFrame(commandsPanelResizeHandleView.frame),
+          "nextHeightRatio": Double(commandsPanelHeightRatio),
+        ])
       return true
     }
     let point = convert(event.locationInWindow, from: nil)
     let startHeight = clampedCommandsPanelHeight(bounds.height * commandsPanelHeightRatio)
     commandsPanelResizeDrag = CommandsPanelResizeDrag(startHeight: startHeight, startY: point.y)
     NSCursor.resizeUpDown.set()
+    appendPaneResizeDragLog(
+      eventName: "nativePaneResize.commandsPanel.begin",
+      event: event,
+      details: [
+        "convertedPoint": describePoint(point),
+        "handleFrame": describeFrame(commandsPanelResizeHandleView.frame),
+        "startHeight": Double(startHeight),
+        "startHeightRatio": Double(commandsPanelHeightRatio),
+      ])
     return true
   }
 
@@ -11407,21 +10149,51 @@ final class TerminalWorkspaceView: NSView {
   @discardableResult
   private func continueCommandsPanelResize(with event: NSEvent) -> Bool {
     guard let drag = commandsPanelResizeDrag else {
+      appendPaneResizeDragLog(
+        eventName: "nativePaneResize.commandsPanel.dragIgnored",
+        event: event,
+        details: [
+          "handleFrame": describeFrame(commandsPanelResizeHandleView.frame),
+          "reason": "missingDragState",
+        ])
       return false
     }
     let point = convert(event.locationInWindow, from: nil)
-    let nextHeight = clampedCommandsPanelHeight(drag.startHeight + point.y - drag.startY)
-    commandsPanelHeightRatio = Self.clampedCommandsPanelHeightRatio(Double(nextHeight / max(bounds.height, 1)))
+    let deltaY = point.y - drag.startY
+    let nextHeight = clampedCommandsPanelHeight(drag.startHeight + deltaY)
+    let previousHeightRatio = commandsPanelHeightRatio
+    let nextHeightRatio = Self.clampedCommandsPanelHeightRatio(Double(nextHeight / max(bounds.height, 1)))
+    commandsPanelHeightRatio = nextHeightRatio
     needsLayout = true
     layoutSubtreeIfNeeded()
     scheduleZmxPersistenceTerminalRefreshAfterResize(reason: "commandsPanelResizeDrag")
     NSCursor.resizeUpDown.set()
+    appendPaneResizeDragLog(
+      eventName: "nativePaneResize.commandsPanel.dragged",
+      event: event,
+      details: [
+        "convertedPoint": describePoint(point),
+        "deltaY": Double(deltaY),
+        "didChangeRatio": abs(nextHeightRatio - previousHeightRatio) > 0.0001,
+        "handleFrame": describeFrame(commandsPanelResizeHandleView.frame),
+        "nextHeight": Double(nextHeight),
+        "nextHeightRatio": Double(nextHeightRatio),
+        "previousHeightRatio": Double(previousHeightRatio),
+        "startHeight": Double(drag.startHeight),
+      ])
     return true
   }
 
   @discardableResult
   private func endCommandsPanelResize(with event: NSEvent) -> Bool {
     guard commandsPanelResizeDrag != nil else {
+      appendPaneResizeDragLog(
+        eventName: "nativePaneResize.commandsPanel.endIgnored",
+        event: event,
+        details: [
+          "handleFrame": describeFrame(commandsPanelResizeHandleView.frame),
+          "reason": "missingDragState",
+        ])
       return false
     }
     _ = continueCommandsPanelResize(with: event)
@@ -11430,22 +10202,36 @@ final class TerminalWorkspaceView: NSView {
     layoutSubtreeIfNeeded()
     sendEvent(.commandsPanelHeightRatioChanged(heightRatio: Double(commandsPanelHeightRatio)))
     NSCursor.resizeUpDown.set()
+    appendPaneResizeDragLog(
+      eventName: "nativePaneResize.commandsPanel.end",
+      event: event,
+      details: [
+        "handleFrame": describeFrame(commandsPanelResizeHandleView.frame),
+        "nextHeightRatio": Double(commandsPanelHeightRatio),
+      ])
     return true
   }
 
   @discardableResult
   private func endPaneResize(with event: NSEvent) -> Bool {
-    guard !isProjectEditorInteractionSurfaceActive else {
-      paneResizeDrag = nil
-      return false
-    }
-    guard paneResizeDrag != nil else {
+    guard let drag = paneResizeDrag else {
+      appendPaneResizeDragLog(
+        eventName: "nativePaneResize.workspace.endIgnored",
+        event: event,
+        details: ["reason": "missingDragState"])
       return false
     }
     paneResizeDrag = nil
-    let point = convert(event.locationInWindow, from: nil)
-    paneResizeCursor(at: point)?.set()
+    paneResizeCursor(for: drag.direction).set()
     scheduleZmxPersistenceTerminalRefreshAfterResize(reason: "paneResizeEnd")
+    appendPaneResizeDragLog(
+      eventName: "nativePaneResize.workspace.end",
+      event: event,
+      details: [
+        "availableLength": Double(drag.availableLength),
+        "boundaryIndex": drag.boundaryIndex,
+        "direction": drag.direction.rawValue,
+      ])
     return true
   }
 
@@ -11594,15 +10380,19 @@ final class TerminalWorkspaceView: NSView {
         sourceCEFDragDiagnostics = nil
         return
       }
+      sourceCEFDragDiagnosticsSequence += 1
+      let sequenceId = sourceCEFDragDiagnosticsSequence
       sourceCEFDragDiagnostics = SourceCEFDragDiagnosticsState(
         chromiumView: target.chromiumView,
         projectId: target.projectId,
+        sequenceId: sequenceId,
         startWindowPoint: windowPoint,
         didCrossDragThreshold: false,
         lastLogEventTime: event.timestamp,
         lastLogWindowPoint: windowPoint)
       logSourceCEFNativeDragDiagnostic(
         phase: "mouseDown",
+        sequenceId: sequenceId,
         projectId: target.projectId,
         chromiumView: target.chromiumView,
         windowPoint: windowPoint,
@@ -11613,7 +10403,8 @@ final class TerminalWorkspaceView: NSView {
       installSourceCEFDragPageDiagnosticsIfNeeded(
         target.chromiumView,
         projectId: target.projectId,
-        reason: "mouseDown")
+        reason: "mouseDown",
+        nativeDragId: sequenceId)
     case .leftMouseDragged:
       guard var diagnostics = sourceCEFDragDiagnostics else {
         return
@@ -11626,6 +10417,7 @@ final class TerminalWorkspaceView: NSView {
         diagnostics.didCrossDragThreshold = true
         logSourceCEFNativeDragDiagnostic(
           phase: "thresholdCrossed",
+          sequenceId: diagnostics.sequenceId,
           projectId: diagnostics.projectId,
           chromiumView: diagnostics.chromiumView,
           windowPoint: windowPoint,
@@ -11648,6 +10440,7 @@ final class TerminalWorkspaceView: NSView {
       }
       logSourceCEFNativeDragDiagnostic(
         phase: diagnostics.didCrossDragThreshold ? "dragged" : "draggedBelowThreshold",
+        sequenceId: diagnostics.sequenceId,
         projectId: diagnostics.projectId,
         chromiumView: diagnostics.chromiumView,
         windowPoint: windowPoint,
@@ -11664,6 +10457,7 @@ final class TerminalWorkspaceView: NSView {
       }
       logSourceCEFNativeDragDiagnostic(
         phase: "mouseUp",
+        sequenceId: diagnostics.sequenceId,
         projectId: diagnostics.projectId,
         chromiumView: diagnostics.chromiumView,
         windowPoint: windowPoint,
@@ -11698,6 +10492,7 @@ final class TerminalWorkspaceView: NSView {
 
   private func logSourceCEFNativeDragDiagnostic(
     phase: String,
+    sequenceId: UInt64,
     projectId: String,
     chromiumView: GhostexCEFBrowserView,
     windowPoint: CGPoint,
@@ -11708,8 +10503,9 @@ final class TerminalWorkspaceView: NSView {
   ) {
     let localPoint = chromiumView.convert(windowPoint, from: nil)
     let startLocalPoint = chromiumView.convert(startWindowPoint, from: nil)
-    NativeT3CodePaneReproLog.append("nativeWorkspace.projectEditor.cef.sourceDragDiagnostic.nativeMouse", [
+    var payload: [String: Any] = [
       "buttons": NSEvent.pressedMouseButtons,
+      "cefHoverBridgeEnabled": Self.isCEFNativeDragHoverBridgeEnabled,
       "clickCount": event.clickCount,
       "didCrossDragThreshold": didCrossDragThreshold,
       "eventType": Self.eventTypeName(event.type),
@@ -11718,27 +10514,59 @@ final class TerminalWorkspaceView: NSView {
       "localPoint": describePoint(localPoint),
       "phase": phase,
       "projectId": projectId,
+      "responder": responderSnapshot(),
+      "sequenceId": sequenceId,
       "startLocalPoint": describePoint(startLocalPoint),
       "startWindowPoint": describePoint(startWindowPoint),
+      "viewSnapshot": sourceCEFDragViewSnapshot(projectId: projectId, chromiumView: chromiumView),
       "windowNumber": window?.windowNumber ?? NSNull(),
       "windowPoint": describePoint(windowPoint),
-    ])
+    ]
+    if let overlaySnapshot = sourceCEFDragOverlaySnapshotProvider?() {
+      payload["overlaySnapshot"] = overlaySnapshot
+    }
+    NativeT3CodePaneReproLog.append(
+      "nativeWorkspace.projectEditor.cef.sourceDragDiagnostic.nativeMouse",
+      payload)
   }
 
   private func installSourceCEFDragPageDiagnosticsIfNeeded(
     _ chromiumView: GhostexCEFBrowserView,
     projectId: String,
-    reason: String
+    reason: String,
+    nativeDragId: UInt64? = nil
   ) {
     guard projectEditorPaneSessions[projectId]?.mode == "code" else {
       return
     }
-    chromiumView.executeJavaScript(Self.sourceCEFDragDiagnosticsScript(reason: reason))
+    chromiumView.executeJavaScript(
+      Self.sourceCEFDragDiagnosticsScript(reason: reason, nativeDragId: nativeDragId))
     NativeT3CodePaneReproLog.append("nativeWorkspace.projectEditor.cef.sourceDragDiagnostics.pageProbe.injected", [
+      "nativeDragId": nativeDragId ?? NSNull(),
       "projectId": projectId,
       "reason": reason,
       "windowNumber": window?.windowNumber ?? NSNull(),
     ])
+  }
+
+  private func sourceCEFDragViewSnapshot(
+    projectId: String,
+    chromiumView: GhostexCEFBrowserView
+  ) -> [String: Any] {
+    let session = projectEditorPaneSessions[projectId]
+    return [
+      "activeProjectEditorId": nullableString(activeProjectEditorId),
+      "chromiumBounds": describeFrame(chromiumView.bounds),
+      "chromiumFrame": describeFrame(chromiumView.frame),
+      "chromiumHidden": chromiumView.isHidden,
+      "chromiumWindowAttached": chromiumView.window != nil,
+      "hostBounds": session.map { describeFrame($0.hostView.bounds) } ?? NSNull(),
+      "hostFrame": session.map { describeFrame($0.hostView.frame) } ?? NSNull(),
+      "hostHidden": nullableBool(session?.hostView.isHidden),
+      "isProjectEditorInteractionSurfaceActive": isProjectEditorInteractionSurfaceActive,
+      "mode": nullableString(session?.mode),
+      "visibleProjectEditorInteractionSessionIds": visibleProjectEditorInteractionSessionIds,
+    ]
   }
 
   private var hasVisibleCEFInteractionSurface: Bool {
@@ -13875,6 +12703,7 @@ final class TerminalWorkspaceView: NSView {
     containerView.alphaValue = 1
     containerView.layer?.zPosition = 100
     keepCommandsPanelAboveWorkspacePanes()
+    orderResizeHandlesToFront(reason: "orderPaneContainerToFront")
   }
 
   private func scheduleWebPaneReload(sessionId: String, url: URL, remainingAttempts: Int) {
@@ -15000,19 +13829,24 @@ final class TerminalWorkspaceView: NSView {
       """
   }
 
-  private static func sourceCEFDragDiagnosticsScript(reason: String) -> String {
+  private static func sourceCEFDragDiagnosticsScript(reason: String, nativeDragId: UInt64? = nil) -> String {
     let prefixLiteral = javascriptStringLiteral(sourceCEFDragDiagnosticConsolePrefix)
     let reasonLiteral = javascriptStringLiteral(reason)
+    let nativeDragIdLiteral = nativeDragId.map { String($0) } ?? "null"
     return """
       (() => {
         const prefix = \(prefixLiteral);
         const installReason = \(reasonLiteral);
+        const nativeDragId = \(nativeDragIdLiteral);
         const existing = window.__ghostexSourceCEFDragDiagnostics;
         if (existing?.installed) {
+          existing.installReason = installReason;
+          existing.nativeDragId = nativeDragId;
           try {
             console.info(prefix + JSON.stringify({
               type: "install-skip",
               installReason,
+              nativeDragId,
               readyState: String(document.readyState || ""),
               hasFocus: document.hasFocus(),
               performanceNow: Math.round(performance.now())
@@ -15023,10 +13857,17 @@ final class TerminalWorkspaceView: NSView {
         /*
         CDXC:SourceCEFDragDrop 2026-06-11-07:31:
         Source CEF tab-drag diagnostics must prove whether code-server receives pointer/mouse and DOM drag events. Log only structural element metadata and event flags; never log tab text, editor content, URLs, labels, titles, or file paths.
+
+        CDXC:SourceCEFDragDrop 2026-06-11-19:40:
+        Ghostex now needs to compare the working minimal CEF/WKWebView app with the full macOS shell. Keep this probe read-only while summarizing each native-correlated HTML drag sequence, including whether `dragenter`, `dragover`, and `drop` ever reach VS Code's tab container.
         */
         const state = window.__ghostexSourceCEFDragDiagnostics = {
+          currentDrag: null,
+          dragSequenceId: 0,
+          installReason,
           installed: true,
-          lastByType: Object.create(null)
+          lastByType: Object.create(null),
+          nativeDragId
         };
         const selectorChecks = [
           ["workbench", ".monaco-workbench"],
@@ -15065,6 +13906,79 @@ final class TerminalWorkspaceView: NSView {
           };
         };
         const numeric = (value) => Number.isFinite(value) ? Math.round(value) : 0;
+        const viewportSummary = () => ({
+          devicePixelRatio: Number.isFinite(window.devicePixelRatio) ? Number(window.devicePixelRatio.toFixed(3)) : 0,
+          innerHeight: numeric(window.innerHeight),
+          innerWidth: numeric(window.innerWidth),
+          scrollX: numeric(window.scrollX),
+          scrollY: numeric(window.scrollY)
+        });
+        const elementFromEventPoint = (event) => {
+          try {
+            if (!Number.isFinite(event.clientX) || !Number.isFinite(event.clientY)) {
+              return null;
+            }
+            return document.elementFromPoint(event.clientX, event.clientY);
+          } catch {
+            return null;
+          }
+        };
+        const dataTransferSummary = (event) => event.dataTransfer ? {
+          dropEffect: String(event.dataTransfer.dropEffect || ""),
+          effectAllowed: String(event.dataTransfer.effectAllowed || ""),
+          typesCount: event.dataTransfer.types ? event.dataTransfer.types.length : 0
+        } : null;
+        const eventSnapshot = (event) => ({
+          button: typeof event.button === "number" ? event.button : -1,
+          buttons: typeof event.buttons === "number" ? event.buttons : 0,
+          cancelable: event.cancelable === true,
+          clientX: numeric(event.clientX),
+          clientY: numeric(event.clientY),
+          dataTransfer: dataTransferSummary(event),
+          defaultPrevented: event.defaultPrevented === true,
+          target: summarizeElement(event.target),
+          type: event.type,
+          underPointer: summarizeElement(elementFromEventPoint(event))
+        });
+        const emptyCounts = () => Object.create(null);
+        const startDragSummary = (event) => {
+          const summary = state.currentDrag = {
+            counts: emptyCounts(),
+            dragSequenceId: ++state.dragSequenceId,
+            dragoverCancelableCount: 0,
+            dragoverDefaultPreventedCount: 0,
+            first: eventSnapshot(event),
+            last: null,
+            lastDragover: null,
+            lastDrop: null,
+            nativeDragId: state.nativeDragId,
+            startedAt: performance.now()
+          };
+          return summary;
+        };
+        const recordDragEvent = (event) => {
+          if (!event.type.startsWith("drag") && event.type !== "drop") {
+            return state.currentDrag;
+          }
+          const summary = event.type === "dragstart"
+            ? startDragSummary(event)
+            : (state.currentDrag || startDragSummary(event));
+          summary.counts[event.type] = (summary.counts[event.type] || 0) + 1;
+          const snapshot = eventSnapshot(event);
+          summary.last = snapshot;
+          if (event.type === "dragover") {
+            summary.lastDragover = snapshot;
+            if (event.cancelable === true) {
+              summary.dragoverCancelableCount += 1;
+            }
+            if (event.defaultPrevented === true) {
+              summary.dragoverDefaultPreventedCount += 1;
+            }
+          } else if (event.type === "drop") {
+            summary.lastDrop = snapshot;
+          }
+          return summary;
+        };
         const shouldThrottle = (event) => {
           if (!["pointermove", "mousemove", "dragover"].includes(event.type)) {
             return false;
@@ -15089,19 +14003,48 @@ final class TerminalWorkspaceView: NSView {
           if (phase === Event.BUBBLING_PHASE) return "bubble";
           return "none";
         };
+        const postDragSummary = (event, summary) => {
+          try {
+            if (!summary) {
+              return;
+            }
+            const counts = {};
+            for (const [key, value] of Object.entries(summary.counts)) {
+              counts[key] = value;
+            }
+            console.info(prefix + JSON.stringify({
+              type: "drag-sequence-summary",
+              completedBy: event.type,
+              counts,
+              dragSequenceId: summary.dragSequenceId,
+              dragoverCancelableCount: summary.dragoverCancelableCount,
+              dragoverDefaultPreventedCount: summary.dragoverDefaultPreventedCount,
+              durationMs: Math.round(performance.now() - summary.startedAt),
+              first: summary.first,
+              hasDrop: counts.drop > 0,
+              hasDragover: counts.dragover > 0,
+              installReason: state.installReason,
+              last: summary.last,
+              lastDragover: summary.lastDragover,
+              lastDrop: summary.lastDrop,
+              nativeDragId: summary.nativeDragId,
+              performanceNow: Math.round(performance.now()),
+              readyState: String(document.readyState || ""),
+              viewport: viewportSummary()
+            }));
+          } catch {}
+        };
         const post = (event) => {
           try {
+            const dragSummary = recordDragEvent(event);
             if (shouldThrottle(event)) {
               return;
             }
-            const dataTransfer = event.dataTransfer ? {
-              dropEffect: String(event.dataTransfer.dropEffect || ""),
-              effectAllowed: String(event.dataTransfer.effectAllowed || ""),
-              typesCount: event.dataTransfer.types ? event.dataTransfer.types.length : 0
-            } : null;
             const payload = {
               type: event.type,
-              installReason,
+              dragSequenceId: dragSummary?.dragSequenceId || null,
+              installReason: state.installReason,
+              nativeDragId: state.nativeDragId,
               readyState: String(document.readyState || ""),
               hasFocus: document.hasFocus(),
               eventPhase: phaseName(event.eventPhase),
@@ -15111,12 +14054,20 @@ final class TerminalWorkspaceView: NSView {
               clientY: numeric(event.clientY),
               defaultPrevented: event.defaultPrevented === true,
               cancelable: event.cancelable === true,
-              dataTransfer,
+              dataTransfer: dataTransferSummary(event),
               target: summarizeElement(event.target),
               activeElement: summarizeElement(document.activeElement),
+              underPointer: summarizeElement(elementFromEventPoint(event)),
+              viewport: viewportSummary(),
               performanceNow: Math.round(performance.now())
             };
             console.info(prefix + JSON.stringify(payload));
+            if (event.type === "drop" || event.type === "dragend") {
+              postDragSummary(event, dragSummary);
+              if (event.type === "dragend") {
+                state.currentDrag = null;
+              }
+            }
           } catch {}
         };
         for (const type of [
@@ -15138,8 +14089,10 @@ final class TerminalWorkspaceView: NSView {
         console.info(prefix + JSON.stringify({
           type: "install",
           installReason,
+          nativeDragId,
           readyState: String(document.readyState || ""),
           hasFocus: document.hasFocus(),
+          viewport: viewportSummary(),
           performanceNow: Math.round(performance.now())
         }));
       })();
@@ -17818,13 +16771,8 @@ final class GhostexGhosttySurfaceView: NSView {
     surface = surfaceConfig.withCValue(view: self) { config in
       ghostty_surface_new(app, &config)
     }
+    registerForDraggedTypes([.fileURL, .string])
     updateTrackingAreas()
-    registerForDraggedTypes(Array(terminalPaneDropTypes))
-    terminalPaneDropLog(
-      event: "nativeWorkspace.terminalDrop.surface.registeredTypes",
-      details: terminalPaneDropRegistrationDetails(
-        operationSource: "surface",
-        surfaceSessionId: ghostexSessionId))
     updateGhosttySurfaceSize()
   }
 
@@ -18097,170 +17045,6 @@ final class GhostexGhosttySurfaceView: NSView {
       event.scrollingDeltaX * multiplier,
       event.scrollingDeltaY * multiplier,
       mods)
-  }
-
-  override func draggingEntered(_ sender: any NSDraggingInfo) -> NSDragOperation {
-    terminalPaneDragOperation(for: sender, phase: "entered", source: "surface")
-  }
-
-  override func draggingUpdated(_ sender: any NSDraggingInfo) -> NSDragOperation {
-    terminalPaneDragOperation(for: sender, phase: "updated", source: "surface")
-  }
-
-  override func draggingExited(_ sender: (any NSDraggingInfo)?) {
-    guard let sender else {
-      terminalPaneDropLog(
-        event: "nativeWorkspace.terminalDrop.surface.exited",
-        details: [
-          "hasSender": false,
-          "surfaceSessionId": ghostexSessionId ?? NSNull(),
-        ])
-      return
-    }
-    terminalPaneDropLog(
-      event: "nativeWorkspace.terminalDrop.surface.exited",
-      pasteboard: sender.draggingPasteboard,
-      details: [
-        "hasSender": true,
-        "surfaceSessionId": ghostexSessionId ?? NSNull(),
-      ])
-  }
-
-  override func performDragOperation(_ sender: any NSDraggingInfo) -> Bool {
-    performTerminalPaneDrop(pasteboard: sender.draggingPasteboard, source: "surface")
-  }
-
-  func canPerformTerminalPaneDrop(pasteboard: NSPasteboard) -> Bool {
-    terminalPaneDropCanProduceContent(in: pasteboard)
-  }
-
-  func performTerminalPaneDrop(pasteboard: NSPasteboard, source: String) -> Bool {
-    do {
-      terminalPaneDropLog(
-        event: "nativeWorkspace.terminalDrop.surface.perform.start",
-        pasteboard: pasteboard,
-        details: [
-          "operationSource": source,
-          "surfaceSessionId": ghostexSessionId ?? NSNull(),
-        ])
-      guard let content = try terminalPaneDropContent(in: pasteboard), !content.isEmpty else {
-        terminalPaneDropLog(
-          event: "nativeWorkspace.terminalDrop.surface.perform.empty",
-          pasteboard: pasteboard,
-          details: [
-            "operationSource": source,
-            "surfaceSessionId": ghostexSessionId ?? NSNull(),
-          ])
-        return false
-      }
-      scheduleFocusAndInsertAfterDrop(text: content, source: source)
-      terminalPaneDropLog(
-        event: "nativeWorkspace.terminalDrop.surface.perform.accepted",
-        pasteboard: pasteboard,
-        details: [
-          "contentLength": content.count,
-          "lineCount": content.components(separatedBy: "\n").count,
-          "operationSource": source,
-          "surfaceSessionId": ghostexSessionId ?? NSNull(),
-        ])
-      return true
-    } catch {
-      terminalPaneDropLog(
-        event: "nativeWorkspace.terminalDrop.surface.perform.error",
-        pasteboard: pasteboard,
-        details: [
-          "errorType": String(describing: type(of: error)),
-          "operationSource": source,
-          "surfaceSessionId": ghostexSessionId ?? NSNull(),
-        ])
-      return false
-    }
-  }
-
-  private func scheduleFocusAndInsertAfterDrop(text: String, source: String) {
-    terminalPaneDropLog(
-      event: "nativeWorkspace.terminalDrop.surface.insertScheduled",
-      details: [
-        "contentLength": text.count,
-        "lineCount": text.components(separatedBy: "\n").count,
-        "operationSource": source,
-        "surfaceSessionId": ghostexSessionId ?? NSNull(),
-      ])
-    RunLoop.main.perform(inModes: [.default]) { [weak self] in
-      MainActor.assumeIsolated {
-        guard let self else { return }
-        /*
-         CDXC:TerminalImageDrop 2026-06-07-15:35:
-         A successful terminal file drop should behave like typed prompt input in the target pane. Activate the app, key the containing window, and make this Ghostty surface first responder before inserting the parsed drop text so image Markdown lands in the pane under the pointer.
-
-         CDXC:TerminalImageDrop 2026-06-07-17:25:
-         The 17:21 repro logged surface.inserted, but the target terminal buffer did not contain the image marker. Use Ghostty's raw text insertion API for drop text instead of constructing a synthetic key event through NSTextInputClient, because this path is terminal text delivery rather than keyboard interpretation.
-        */
-        let firstResponderBefore = self.window?.firstResponder.map { String(describing: type(of: $0)) } ?? "nil"
-        NSApp.activate(ignoringOtherApps: true)
-        self.window?.makeKeyAndOrderFront(nil)
-        self.window?.makeFirstResponder(self)
-        let firstResponderAfter = self.window?.firstResponder.map { String(describing: type(of: $0)) } ?? "nil"
-        let didSendText = self.sendTerminalDropText(text)
-        terminalPaneDropLog(
-          event: "nativeWorkspace.terminalDrop.surface.inserted",
-          details: [
-            "contentLength": text.count,
-            "didSendText": didSendText,
-            "firstResponderAfter": firstResponderAfter,
-            "firstResponderBefore": firstResponderBefore,
-            "isSurfaceFirstResponderAfterFocus": self.window?.firstResponder === self,
-            "lineCount": text.components(separatedBy: "\n").count,
-            "operationSource": source,
-            "surfaceSessionId": self.ghostexSessionId ?? NSNull(),
-            "windowIsKey": self.window?.isKeyWindow ?? false,
-          ])
-      }
-    }
-  }
-
-  private func sendTerminalDropText(_ text: String) -> Bool {
-    guard let surfaceModel else {
-      return false
-    }
-    surfaceModel.sendText(text)
-    return true
-  }
-
-  func terminalPaneDragOperation(
-    for sender: any NSDraggingInfo,
-    phase: String,
-    source: String
-  ) -> NSDragOperation {
-    let canPerformDrop = canPerformTerminalPaneDrop(pasteboard: sender.draggingPasteboard)
-    guard canPerformDrop else {
-      terminalPaneDropLog(
-        event: "nativeWorkspace.terminalDrop.\(source).\(phase)",
-        pasteboard: sender.draggingPasteboard,
-        details: [
-          "canPerformDrop": canPerformDrop,
-          "draggingSourceOperationMaskRaw": terminalPaneDropOperationMaskRawValue(sender),
-          "operation": "none",
-          "operationSource": source,
-          "phase": phase,
-          "surfaceSessionId": ghostexSessionId ?? NSNull(),
-        ],
-        force: phase != "updated" || NativeDebugLogging.isEnabled)
-      return []
-    }
-    terminalPaneDropLog(
-      event: "nativeWorkspace.terminalDrop.\(source).\(phase)",
-      pasteboard: sender.draggingPasteboard,
-      details: [
-        "canPerformDrop": canPerformDrop,
-        "draggingSourceOperationMaskRaw": terminalPaneDropOperationMaskRawValue(sender),
-        "operation": "copy",
-        "operationSource": source,
-        "phase": phase,
-        "surfaceSessionId": ghostexSessionId ?? NSNull(),
-      ],
-      force: phase != "updated" || NativeDebugLogging.isEnabled)
-    return .copy
   }
 
   /**
@@ -18877,6 +17661,53 @@ final class GhostexGhosttySurfaceView: NSView {
   private static let commandShiftZSequence = "\u{1B}[122;10u"
   private static let controlGSequence = "\u{07}"
 
+}
+
+extension GhostexGhosttySurfaceView {
+  override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+    guard terminalPaneDroppedText(from: sender) != nil else {
+      return []
+    }
+    return .copy
+  }
+
+  override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
+    terminalPaneDroppedText(from: sender) == nil ? [] : .copy
+  }
+
+  override func draggingExited(_ sender: NSDraggingInfo?) {
+  }
+
+  override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+    guard let text = terminalPaneDroppedText(from: sender) else {
+      return false
+    }
+    scheduleFocusAndInsertDroppedText(text)
+    return true
+  }
+
+  private func terminalPaneDroppedText(from sender: NSDraggingInfo) -> String? {
+    let text = terminalPaneDropInsertionText(paths: terminalPaneDroppedPaths(in: sender.draggingPasteboard))
+    return text.isEmpty ? nil : text
+  }
+
+  private func scheduleFocusAndInsertDroppedText(_ text: String) {
+    /*
+     CDXC:TerminalFileDrop 2026-06-12-06:52:
+     Dropped image files must enter the prompt as visible `[Image #N](path)` references, while non-image files insert their raw filesystem paths. Focus the terminal before insertion so AppKit delivers the text through the same native input path as typed terminal text.
+     */
+    RunLoop.main.perform(inModes: [.default]) { [weak self] in
+      MainActor.assumeIsolated {
+        guard let self else {
+          return
+        }
+        NSApp.activate(ignoringOtherApps: true)
+        self.window?.makeKeyAndOrderFront(nil)
+        self.window?.makeFirstResponder(self)
+        self.insertText(text, replacementRange: NSRange(location: NSNotFound, length: 0))
+      }
+    }
+  }
 }
 
 extension GhostexGhosttySurfaceView: NSTextInputClient {
@@ -19890,36 +18721,6 @@ private final class TerminalPaneTabReorderTargetView: NSView {
   }
 }
 
-private final class TerminalPaneExternalDropTargetView: NSView {
-  private static let temporaryVisualAlpha: CGFloat = 0
-
-  override init(frame frameRect: NSRect) {
-    super.init(frame: frameRect)
-    wantsLayer = true
-    layer?.borderWidth = 2
-    layer?.cornerRadius = 6
-    layer?.borderColor = NSColor(calibratedRed: 0.36, green: 0.72, blue: 1, alpha: 0.98).cgColor
-    layer?.backgroundColor = NSColor(calibratedRed: 0.08, green: 0.42, blue: 0.78, alpha: 0.14).cgColor
-    /*
-     CDXC:TerminalImageDrop 2026-06-08-05:45:
-     File-drop hover feedback should stay mounted for drag/drop state while the current Dock-stack test hides the visual overlay. Use alpha 0 instead of hiding the view so terminal drop routing and the AppKit copy cursor behavior remain unchanged.
-     */
-    alphaValue = Self.temporaryVisualAlpha
-  }
-
-  required init?(coder: NSCoder) {
-    fatalError("init(coder:) is not supported")
-  }
-
-  override func hitTest(_ point: NSPoint) -> NSView? {
-    /**
-     CDXC:TerminalImageDrop 2026-06-08-03:41:
-     Terminal file-drop hover feedback is visual-only. It must appear above terminal content while AppKit or the inactive-drag monitor is evaluating a drop, but it must never take mouse ownership from the terminal pane below.
-     */
-    nil
-  }
-}
-
 private final class TerminalPaneHeaderDragGhostView: NSView {
   private static let height: CGFloat = 32
   private static let horizontalPadding: CGFloat = 8
@@ -20028,8 +18829,16 @@ private final class TerminalTitleBarActionButton: NSButton {
   private var hoverTrackingArea: NSTrackingArea?
   private var baseToolTip: String?
   private var isOverlayInteractionSuppressed = false
+  fileprivate var debugActionKind = "unknown"
   private var isPointerInside = false {
     didSet { updateActionChrome() }
+  }
+  fileprivate var isPointerLocallyInside: Bool {
+    isPointerInside
+  }
+
+  fileprivate var debugButtonFrame: CGRect {
+    frame
   }
   override var isHighlighted: Bool {
     didSet { updateActionChrome() }
@@ -20147,6 +18956,83 @@ private final class TerminalTitleBarActionButton: NSButton {
     return super.hitTest(point)
   }
 
+  override func mouseDown(with event: NSEvent) {
+    guard !isOverlayInteractionSuppressed else {
+      return
+    }
+    let point = convert(event.locationInWindow, from: nil)
+    guard bounds.contains(point) else {
+      NativePaneTabDragReproLog.append(event: "nativePaneTabs.actionButton.mouseDown.outsideBounds", details: [
+        "buttonBounds": nativePaneTabsDebugFrame(bounds),
+        "buttonFrame": nativePaneTabsDebugFrame(frame),
+        "buttonKind": debugActionKind,
+        "localPoint": nativePaneTabsDebugPoint(point),
+        "windowNumber": event.window?.windowNumber ?? NSNull(),
+      ])
+      if let titleBar = owningTitleBarView() {
+        titleBar.rerouteMisdirectedOwnedTitleBarMouseDown(
+          event,
+          source: "actionButtonOutsideBounds",
+          sourceSessionId: nil,
+          sourceButtonKind: debugActionKind,
+          sourceLocalPoint: point)
+        return
+      }
+      TerminalSessionTitleBarView.rerouteMisdirectedTitleBarMouseDown(
+        event,
+        source: "actionButtonOutsideBounds",
+        sourceSessionId: nil,
+        sourceButtonKind: debugActionKind,
+        sourceLocalPoint: point)
+      return
+    }
+    super.mouseDown(with: event)
+  }
+
+  override func mouseUp(with event: NSEvent) {
+    guard !isOverlayInteractionSuppressed else {
+      return
+    }
+    let point = convert(event.locationInWindow, from: nil)
+    guard bounds.contains(point) else {
+      NativePaneTabDragReproLog.append(event: "nativePaneTabs.actionButton.mouseUp.outsideBounds", details: [
+        "buttonBounds": nativePaneTabsDebugFrame(bounds),
+        "buttonFrame": nativePaneTabsDebugFrame(frame),
+        "buttonKind": debugActionKind,
+        "localPoint": nativePaneTabsDebugPoint(point),
+        "windowNumber": event.window?.windowNumber ?? NSNull(),
+      ])
+      if let titleBar = owningTitleBarView() {
+        titleBar.rerouteMisdirectedOwnedTitleBarMouseUp(
+          event,
+          source: "actionButtonOutsideBounds",
+          sourceSessionId: nil,
+          sourceButtonKind: debugActionKind,
+          sourceLocalPoint: point)
+        return
+      }
+      TerminalSessionTitleBarView.rerouteMisdirectedTitleBarMouseUp(
+        event,
+        source: "actionButtonOutsideBounds",
+        sourceSessionId: nil,
+        sourceButtonKind: debugActionKind,
+        sourceLocalPoint: point)
+      return
+    }
+    super.mouseUp(with: event)
+  }
+
+  private func owningTitleBarView() -> TerminalSessionTitleBarView? {
+    var nextView = superview
+    while let current = nextView {
+      if let titleBar = current as? TerminalSessionTitleBarView {
+        return titleBar
+      }
+      nextView = current.superview
+    }
+    return nil
+  }
+
   override func layout() {
     super.layout()
     layer?.cornerRadius = chromeCornerRadius
@@ -20225,6 +19111,13 @@ private func nativePaneTabsDebugFrame(_ frame: CGRect) -> [String: Double] {
   ]
 }
 
+private func nativePaneTabsDebugPoint(_ point: CGPoint) -> [String: Double] {
+  [
+    "x": Double(point.x),
+    "y": Double(point.y),
+  ]
+}
+
 fileprivate enum TerminalPaneChromeRole {
   case commands
   case workspace
@@ -20258,9 +19151,9 @@ private final class TerminalTitleBarTabButton: NSButton {
     alpha: 1
   ).cgColor
   private static let attentionIndicatorColor = NSColor(
-    calibratedRed: 0x65 / 255,
-    green: 0xE5 / 255,
-    blue: 0x8A / 255,
+    calibratedRed: 0x95 / 255,
+    green: 0xD7 / 255,
+    blue: 0xF6 / 255,
     alpha: 1
   ).cgColor
   private static let zmxInactiveIconColor = NSColor(calibratedWhite: 0.86, alpha: 0.42)
@@ -20330,10 +19223,12 @@ private final class TerminalTitleBarTabButton: NSButton {
   private var isSleepingTab = false
   private var isZmxInactiveTab = false
   private var showsCommandTrailingSeparator = false
+  private var hasValidMouseDown = false
   private var pendingMouseDownInlineAction: InlineAction?
   private var hoverTrackingArea: NSTrackingArea?
   private var baseToolTip: String?
   private var isOverlayInteractionSuppressed = false
+  fileprivate var isPointerLocallyInside = false
   private var isTabHovered = false {
     didSet {
       guard oldValue != isTabHovered else { return }
@@ -20488,6 +19383,10 @@ private final class TerminalTitleBarTabButton: NSButton {
     hoveredInlineAction = isOverlayInteractionSuppressed ? nil : action
   }
 
+  fileprivate var locallyHoveredInlineAction: InlineAction? {
+    hoveredInlineAction
+  }
+
   func setTabToolTip(_ value: String?) {
     baseToolTip = value
     toolTip = isOverlayInteractionSuppressed ? nil : value
@@ -20499,7 +19398,9 @@ private final class TerminalTitleBarTabButton: NSButton {
     }
     isOverlayInteractionSuppressed = suppressed
     if suppressed {
+      hasValidMouseDown = false
       pendingMouseDownInlineAction = nil
+      isPointerLocallyInside = false
       isTabHovered = false
       hoveredInlineAction = nil
     }
@@ -20587,9 +19488,14 @@ private final class TerminalTitleBarTabButton: NSButton {
 
      CDXC:PaneTabs 2026-05-11-03:15
      Tabs mirror session-card activity indicators: orange means working and
-     green means attention/done. Draw the indicator on the right only while the
+     #95d7f6 means attention/done. Draw the indicator on the right only while the
      tab is not hovered; hover controls float above the title instead of
      changing the title rect, so text truncation is stable while hovering.
+
+     CDXC:SessionStatusIndicators 2026-06-12-02:32:
+     Native tab dots and pane borders must use #95d7f6 for done/attention
+     instead of the prior green so AppKit chrome matches sidebar, Android, and
+     iOS status color.
 
      CDXC:PaneTabs 2026-05-11-08:32
      Main work-area tabs should show the same session identity cue as sidebar
@@ -20710,18 +19616,32 @@ private final class TerminalTitleBarTabButton: NSButton {
       updateLocalHover(for: point)
       return
     }
+    isPointerLocallyInside = false
     setTabHovered(false)
     setHoveredInlineAction(nil)
   }
 
   private func updateLocalHover(for point: NSPoint?) {
     guard let point, !isOverlayInteractionSuppressed else {
+      isPointerLocallyInside = false
       setTabHovered(false)
       setHoveredInlineAction(nil)
       return
     }
-    setTabHovered(bounds.contains(point))
+    let isInside = bounds.contains(point)
+    isPointerLocallyInside = isInside
+    setTabHovered(isInside)
     setHoveredInlineAction(inlineAction(at: point))
+  }
+
+  private func inlineActionDebugValue(_ action: InlineAction?) -> Any {
+    guard let action else {
+      return NSNull()
+    }
+    switch action {
+    case .close:
+      return "close"
+    }
   }
 
   override func mouseDown(with event: NSEvent) {
@@ -20731,20 +19651,89 @@ private final class TerminalTitleBarTabButton: NSButton {
     }
     let point = convert(event.locationInWindow, from: nil)
     updateLocalHover(for: point)
-    if let inlineAction = inlineAction(at: point) {
+    guard bounds.contains(point) else {
+      /**
+       CDXC:NativePaneTabClicks 2026-06-12-05:41:
+       The 05:33 repro showed AppKit delivering mouseDown to a scrolled tab
+       two slots to the right of the click; its local point was negative and
+       outside the button bounds. A tab button must never activate or close its
+       own session unless the received event is inside that same button.
+
+       CDXC:NativePaneTabClicks 2026-06-12-05:52:
+       Suppressing the stale receiver is not enough because the intended tab
+       would not get mouseDown. Reroute outside-bounds events back through the
+       visible titlebar so the click activates or closes the target under the
+       actual window point.
+       */
+      NativePaneTabDragReproLog.append(event: "nativePaneTabs.button.mouseDown.outsideBounds", details: [
+        "buttonBounds": nativePaneTabsDebugFrame(bounds),
+        "buttonFrame": nativePaneTabsDebugFrame(frame),
+        "localPoint": nativePaneTabsDebugPoint(point),
+        "sessionId": sessionId,
+        "windowNumber": event.window?.windowNumber ?? NSNull(),
+      ])
+      hasValidMouseDown = false
+      pendingMouseDownInlineAction = nil
+      if let titleBar = owningTitleBarView() {
+        titleBar.rerouteMisdirectedOwnedTitleBarMouseDown(
+          event,
+          source: "tabButtonOutsideBounds",
+          sourceSessionId: sessionId,
+          sourceButtonKind: nil,
+          sourceLocalPoint: point)
+        return
+      }
+      TerminalSessionTitleBarView.rerouteMisdirectedTitleBarMouseDown(
+        event,
+        source: "tabButtonOutsideBounds",
+        sourceSessionId: sessionId,
+        sourceButtonKind: nil,
+        sourceLocalPoint: point)
+      return
+    }
+    hasValidMouseDown = true
+    let inlineActionAtPoint = inlineAction(at: point)
+    if let inlineAction = locallyHoveredInlineAction ?? inlineActionAtPoint {
       /**
        CDXC:PaneTabs 2026-05-11-19:36
        Visible tab Close controls are native AppKit button-region clicks. Handle
        them on the tab button itself instead of routing through a workspace
        monitor or title-bar coordinate router, so narrow right-side tabs keep
        one local mouseDown/mouseUp owner.
+
+       CDXC:NativePaneTabClicks 2026-06-12-04:57:
+       The inline Close button should follow the same ownership rule as tab
+       selection: if this concrete tab button's own tracking area already says
+       the Close affordance is hovered, use that local owner before recomputing
+       from parent/titlebar coordinates.
+
+       CDXC:NativePaneTabClicks 2026-06-12-05:22:
+       Close clicks need the same diagnostic shape as tab selection clicks:
+       record the local point, local hover owner, and resolved inline action so
+       a repro can distinguish a stale parent hit from the concrete tab button
+       that actually received mouseDown.
        */
+      NativePaneTabDragReproLog.append(event: "nativePaneTabs.button.inlineMouseDown", details: [
+        "buttonBounds": nativePaneTabsDebugFrame(bounds),
+        "buttonFrame": nativePaneTabsDebugFrame(frame),
+        "inlineActionAtPoint": inlineActionDebugValue(inlineActionAtPoint),
+        "isPointerLocallyInside": isPointerLocallyInside,
+        "localPoint": nativePaneTabsDebugPoint(point),
+        "locallyHoveredInlineAction": inlineActionDebugValue(locallyHoveredInlineAction),
+        "resolvedInlineAction": inlineActionDebugValue(inlineAction),
+        "sessionId": sessionId,
+        "windowNumber": event.window?.windowNumber ?? NSNull(),
+      ])
       pendingMouseDownInlineAction = inlineAction
       return
     }
     NativePaneTabDragReproLog.append(event: "nativePaneTabs.button.mouseDown", details: [
       "buttonBounds": nativePaneTabsDebugFrame(bounds),
       "buttonFrame": nativePaneTabsDebugFrame(frame),
+      "inlineActionAtPoint": inlineActionDebugValue(inlineActionAtPoint),
+      "isPointerLocallyInside": isPointerLocallyInside,
+      "localPoint": nativePaneTabsDebugPoint(point),
+      "locallyHoveredInlineAction": inlineActionDebugValue(locallyHoveredInlineAction),
       "sessionId": sessionId,
       "windowNumber": event.window?.windowNumber ?? NSNull(),
     ])
@@ -20753,6 +19742,32 @@ private final class TerminalTitleBarTabButton: NSButton {
 
   override func mouseDragged(with event: NSEvent) {
     guard !isOverlayInteractionSuppressed else {
+      return
+    }
+    let point = convert(event.locationInWindow, from: nil)
+    guard hasValidMouseDown || bounds.contains(point) else {
+      NativePaneTabDragReproLog.append(event: "nativePaneTabs.button.mouseDragged.outsideBounds", details: [
+        "buttonBounds": nativePaneTabsDebugFrame(bounds),
+        "buttonFrame": nativePaneTabsDebugFrame(frame),
+        "localPoint": nativePaneTabsDebugPoint(point),
+        "sessionId": sessionId,
+        "windowNumber": event.window?.windowNumber ?? NSNull(),
+      ])
+      if let titleBar = owningTitleBarView() {
+        titleBar.rerouteMisdirectedOwnedTitleBarMouseDragged(
+          event,
+          source: "tabButtonOutsideBounds",
+          sourceSessionId: sessionId,
+          sourceButtonKind: nil,
+          sourceLocalPoint: point)
+        return
+      }
+      TerminalSessionTitleBarView.rerouteMisdirectedTitleBarMouseDragged(
+        event,
+        source: "tabButtonOutsideBounds",
+        sourceSessionId: sessionId,
+        sourceButtonKind: nil,
+        sourceLocalPoint: point)
       return
     }
     if pendingMouseDownInlineAction != nil {
@@ -20772,10 +19787,55 @@ private final class TerminalTitleBarTabButton: NSButton {
       pendingMouseDownInlineAction = nil
       return
     }
+    let point = convert(event.locationInWindow, from: nil)
+    guard hasValidMouseDown || bounds.contains(point) else {
+      NativePaneTabDragReproLog.append(event: "nativePaneTabs.button.mouseUp.outsideBounds", details: [
+        "buttonBounds": nativePaneTabsDebugFrame(bounds),
+        "buttonFrame": nativePaneTabsDebugFrame(frame),
+        "localPoint": nativePaneTabsDebugPoint(point),
+        "sessionId": sessionId,
+        "windowNumber": event.window?.windowNumber ?? NSNull(),
+      ])
+      hasValidMouseDown = false
+      pendingMouseDownInlineAction = nil
+      if let titleBar = owningTitleBarView() {
+        titleBar.rerouteMisdirectedOwnedTitleBarMouseUp(
+          event,
+          source: "tabButtonOutsideBounds",
+          sourceSessionId: sessionId,
+          sourceButtonKind: nil,
+          sourceLocalPoint: point)
+        return
+      }
+      TerminalSessionTitleBarView.rerouteMisdirectedTitleBarMouseUp(
+        event,
+        source: "tabButtonOutsideBounds",
+        sourceSessionId: sessionId,
+        sourceButtonKind: nil,
+        sourceLocalPoint: point)
+      return
+    }
+    hasValidMouseDown = false
     if let pendingInlineAction = pendingMouseDownInlineAction {
       pendingMouseDownInlineAction = nil
-      let point = convert(event.locationInWindow, from: nil)
-      guard inlineAction(at: point) == pendingInlineAction else {
+      updateLocalHover(for: point)
+      let inlineActionAtPoint = inlineAction(at: point)
+      let resolvedInlineAction = locallyHoveredInlineAction ?? inlineActionAtPoint
+      let shouldInvoke = resolvedInlineAction == pendingInlineAction
+      NativePaneTabDragReproLog.append(event: "nativePaneTabs.button.inlineMouseUp", details: [
+        "buttonBounds": nativePaneTabsDebugFrame(bounds),
+        "buttonFrame": nativePaneTabsDebugFrame(frame),
+        "inlineActionAtPoint": inlineActionDebugValue(inlineActionAtPoint),
+        "isPointerLocallyInside": isPointerLocallyInside,
+        "localPoint": nativePaneTabsDebugPoint(point),
+        "locallyHoveredInlineAction": inlineActionDebugValue(locallyHoveredInlineAction),
+        "pendingInlineAction": inlineActionDebugValue(pendingInlineAction),
+        "resolvedInlineAction": inlineActionDebugValue(resolvedInlineAction),
+        "sessionId": sessionId,
+        "shouldInvoke": shouldInvoke,
+        "windowNumber": event.window?.windowNumber ?? NSNull(),
+      ])
+      guard shouldInvoke else {
         return
       }
       switch pendingInlineAction {
@@ -20787,10 +19847,24 @@ private final class TerminalTitleBarTabButton: NSButton {
     NativePaneTabDragReproLog.append(event: "nativePaneTabs.button.mouseUp", details: [
       "buttonBounds": nativePaneTabsDebugFrame(bounds),
       "buttonFrame": nativePaneTabsDebugFrame(frame),
+      "isPointerLocallyInside": isPointerLocallyInside,
+      "localPoint": nativePaneTabsDebugPoint(point),
+      "locallyHoveredInlineAction": inlineActionDebugValue(locallyHoveredInlineAction),
       "sessionId": sessionId,
       "windowNumber": event.window?.windowNumber ?? NSNull(),
     ])
     onTabMouseUp?(event, sessionId)
+  }
+
+  private func owningTitleBarView() -> TerminalSessionTitleBarView? {
+    var nextView = superview
+    while let current = nextView {
+      if let titleBar = current as? TerminalSessionTitleBarView {
+        return titleBar
+      }
+      nextView = current.superview
+    }
+    return nil
   }
 
   override func otherMouseDown(with event: NSEvent) {
@@ -21358,9 +20432,9 @@ private final class TerminalSessionTitleBarView: NSView {
     alpha: 1
   ).cgColor
   private static let attentionIndicatorColor = NSColor(
-    calibratedRed: 0x65 / 255,
-    green: 0xE5 / 255,
-    blue: 0x8A / 255,
+    calibratedRed: 0x95 / 255,
+    green: 0xD7 / 255,
+    blue: 0xF6 / 255,
     alpha: 1
   ).cgColor
   private static let actionSeparatorColor = NSColor(calibratedWhite: 1, alpha: 0.16).cgColor
@@ -21504,6 +20578,20 @@ private final class TerminalSessionTitleBarView: NSView {
   private static let workspaceTabButtonHeight: CGFloat = 36
   private static var tabScrollOffsetByGroupSignature: [String: CGFloat] = [:]
 
+  private enum FixedTabBarActionKind: String, Equatable {
+    case stickyActiveTab
+    case newTerminal
+    case newBrowser
+    case overflowMenu
+  }
+
+  private enum ReroutedTitleBarTarget: Equatable {
+    case tab(sessionId: String)
+    case inlineClose(sessionId: String)
+    case fixedAction(FixedTabBarActionKind)
+    case titleBarAction(TerminalTitleBarAction)
+  }
+
   private let faviconImageView = NSImageView(frame: .zero)
   private let titleLabel = NSTextField(labelWithString: "")
   private let activityIndicatorView = NSView(frame: .zero)
@@ -21515,7 +20603,6 @@ private final class TerminalSessionTitleBarView: NSView {
   private let commandCollapsedTrailingBackgroundView = NSView(frame: .zero)
   private let bottomBorderView = NSView(frame: .zero)
   private let actionMenuButton = TerminalTitleBarActionButton(title: "", target: nil, action: nil)
-  private let projectEditorCompanionCloseButton = TerminalTitleBarActionButton(title: "", target: nil, action: nil)
   private var actionButtons: [(action: TerminalTitleBarAction, button: NSButton)]
   private var actionSeparators: [NSView] = []
   private var activeTabSessionId: String?
@@ -21529,8 +20616,7 @@ private final class TerminalSessionTitleBarView: NSView {
   private var isFocusedPane = false
   private var layoutHiddenActions = Set<TerminalTitleBarAction>()
   private var collapsedActionMenuActions: [TerminalTitleBarAction] = []
-  private var projectEditorCompanionCloseAction: (() -> Void)?
-  private var showsProjectEditorCompanionControls = false
+  private var usesProjectEditorCompanionChrome = false
   private var tabContentWidth: CGFloat = 0
   private var tabScrollOffsetX: CGFloat = 0
   private var tabViewportFrame: CGRect = .zero
@@ -21544,6 +20630,7 @@ private final class TerminalSessionTitleBarView: NSView {
   private var debugOwnerSessionId: String?
   private var debugPaneKind = "unknown"
   private var lastLoggedPaneTabGeometrySignature: String?
+  private var pendingReroutedTitleBarTarget: ReroutedTitleBarTarget?
   private var hoverTrackingArea: NSTrackingArea?
   private var isOverlayInteractionSuppressed = false
   private var isPaneHovered = false {
@@ -21592,6 +20679,239 @@ private final class TerminalSessionTitleBarView: NSView {
     true
   }
 
+  fileprivate static func rerouteMisdirectedTitleBarMouseDown(
+    _ event: NSEvent,
+    source: String,
+    sourceSessionId: String?,
+    sourceButtonKind: String?,
+    sourceLocalPoint: NSPoint
+  ) {
+    guard let resolved = titleBarRerouteCandidate(for: event) else {
+      logTitleBarRerouteMiss(
+        event,
+        phase: "mouseDown",
+        source: source,
+        sourceSessionId: sourceSessionId,
+        sourceButtonKind: sourceButtonKind,
+        sourceLocalPoint: sourceLocalPoint)
+      return
+    }
+    resolved.titleBar.handleReroutedTitleBarMouseDown(
+      event,
+      point: resolved.point,
+      target: resolved.target,
+      source: source,
+      sourceSessionId: sourceSessionId,
+      sourceButtonKind: sourceButtonKind,
+      sourceLocalPoint: sourceLocalPoint)
+  }
+
+  fileprivate static func rerouteMisdirectedTitleBarMouseDragged(
+    _ event: NSEvent,
+    source: String,
+    sourceSessionId: String?,
+    sourceButtonKind: String?,
+    sourceLocalPoint: NSPoint
+  ) {
+    guard let resolved = titleBarRerouteCandidate(for: event) else {
+      logTitleBarRerouteMiss(
+        event,
+        phase: "mouseDragged",
+        source: source,
+        sourceSessionId: sourceSessionId,
+        sourceButtonKind: sourceButtonKind,
+        sourceLocalPoint: sourceLocalPoint)
+      return
+    }
+    resolved.titleBar.handleReroutedTitleBarMouseDragged(
+      event,
+      point: resolved.point,
+      source: source,
+      sourceSessionId: sourceSessionId,
+      sourceButtonKind: sourceButtonKind,
+      sourceLocalPoint: sourceLocalPoint)
+  }
+
+  fileprivate static func rerouteMisdirectedTitleBarMouseUp(
+    _ event: NSEvent,
+    source: String,
+    sourceSessionId: String?,
+    sourceButtonKind: String?,
+    sourceLocalPoint: NSPoint
+  ) {
+    guard let resolved = titleBarRerouteCandidate(for: event) else {
+      logTitleBarRerouteMiss(
+        event,
+        phase: "mouseUp",
+        source: source,
+        sourceSessionId: sourceSessionId,
+        sourceButtonKind: sourceButtonKind,
+        sourceLocalPoint: sourceLocalPoint)
+      return
+    }
+    resolved.titleBar.handleReroutedTitleBarMouseUp(
+      event,
+      point: resolved.point,
+      target: resolved.target,
+      source: source,
+      sourceSessionId: sourceSessionId,
+      sourceButtonKind: sourceButtonKind,
+      sourceLocalPoint: sourceLocalPoint)
+  }
+
+  fileprivate func rerouteMisdirectedOwnedTitleBarMouseDown(
+    _ event: NSEvent,
+    source: String,
+    sourceSessionId: String?,
+    sourceButtonKind: String?,
+    sourceLocalPoint: NSPoint
+  ) {
+    /*
+     CDXC:NativePaneTabClicks 2026-06-12-05:58:
+     Split panes can deliver mouseDown/mouseUp to a stale tab or fixed action
+     child even after titlebar hit testing resolves the correct visible control.
+     When the stale receiver can identify its owning titlebar, use that
+     titlebar's direct window-point conversion before falling back to a
+     window-wide search, so split panes do not steal each other's tab clicks.
+     */
+    let point = convert(event.locationInWindow, from: nil)
+    guard bounds.contains(point),
+      let target = reroutedTitleBarTarget(at: point)
+    else {
+      Self.rerouteMisdirectedTitleBarMouseDown(
+        event,
+        source: source,
+        sourceSessionId: sourceSessionId,
+        sourceButtonKind: sourceButtonKind,
+        sourceLocalPoint: sourceLocalPoint)
+      return
+    }
+    handleReroutedTitleBarMouseDown(
+      event,
+      point: point,
+      target: target,
+      source: source,
+      sourceSessionId: sourceSessionId,
+      sourceButtonKind: sourceButtonKind,
+      sourceLocalPoint: sourceLocalPoint)
+  }
+
+  fileprivate func rerouteMisdirectedOwnedTitleBarMouseDragged(
+    _ event: NSEvent,
+    source: String,
+    sourceSessionId: String?,
+    sourceButtonKind: String?,
+    sourceLocalPoint: NSPoint
+  ) {
+    let point = convert(event.locationInWindow, from: nil)
+    guard bounds.contains(point) || pendingReroutedTitleBarTarget != nil else {
+      Self.rerouteMisdirectedTitleBarMouseDragged(
+        event,
+        source: source,
+        sourceSessionId: sourceSessionId,
+        sourceButtonKind: sourceButtonKind,
+        sourceLocalPoint: sourceLocalPoint)
+      return
+    }
+    handleReroutedTitleBarMouseDragged(
+      event,
+      point: point,
+      source: source,
+      sourceSessionId: sourceSessionId,
+      sourceButtonKind: sourceButtonKind,
+      sourceLocalPoint: sourceLocalPoint)
+  }
+
+  fileprivate func rerouteMisdirectedOwnedTitleBarMouseUp(
+    _ event: NSEvent,
+    source: String,
+    sourceSessionId: String?,
+    sourceButtonKind: String?,
+    sourceLocalPoint: NSPoint
+  ) {
+    let point = convert(event.locationInWindow, from: nil)
+    guard bounds.contains(point),
+      let target = reroutedTitleBarTarget(at: point)
+    else {
+      Self.rerouteMisdirectedTitleBarMouseUp(
+        event,
+        source: source,
+        sourceSessionId: sourceSessionId,
+        sourceButtonKind: sourceButtonKind,
+        sourceLocalPoint: sourceLocalPoint)
+      return
+    }
+    handleReroutedTitleBarMouseUp(
+      event,
+      point: point,
+      target: target,
+      source: source,
+      sourceSessionId: sourceSessionId,
+      sourceButtonKind: sourceButtonKind,
+      sourceLocalPoint: sourceLocalPoint)
+  }
+
+  private static func titleBarRerouteCandidate(for event: NSEvent) -> (
+    titleBar: TerminalSessionTitleBarView, point: NSPoint, target: ReroutedTitleBarTarget
+  )? {
+    guard let contentView = event.window?.contentView else {
+      return nil
+    }
+    for titleBar in titleBarsForReroute(in: contentView) {
+      guard !titleBar.isHidden,
+        titleBar.alphaValue > 0,
+        titleBar.window != nil
+      else {
+        continue
+      }
+      let point = titleBar.convert(event.locationInWindow, from: nil)
+      guard titleBar.bounds.contains(point),
+        let target = titleBar.reroutedTitleBarTarget(at: point)
+      else {
+        continue
+      }
+      return (titleBar, point, target)
+    }
+    return nil
+  }
+
+  private static func titleBarsForReroute(in root: NSView) -> [TerminalSessionTitleBarView] {
+    var titleBars: [TerminalSessionTitleBarView] = []
+    collectTitleBarsForReroute(in: root, into: &titleBars)
+    return titleBars
+  }
+
+  private static func collectTitleBarsForReroute(
+    in view: NSView,
+    into titleBars: inout [TerminalSessionTitleBarView]
+  ) {
+    if let titleBar = view as? TerminalSessionTitleBarView {
+      titleBars.append(titleBar)
+    }
+    for subview in view.subviews.reversed() {
+      collectTitleBarsForReroute(in: subview, into: &titleBars)
+    }
+  }
+
+  private static func logTitleBarRerouteMiss(
+    _ event: NSEvent,
+    phase: String,
+    source: String,
+    sourceSessionId: String?,
+    sourceButtonKind: String?,
+    sourceLocalPoint: NSPoint
+  ) {
+    NativePaneTabDragReproLog.append(event: "nativePaneTabs.titleBar.reroute.miss", details: [
+      "phase": phase,
+      "source": source,
+      "sourceButtonKind": sourceButtonKind ?? NSNull(),
+      "sourceLocalPoint": nativePaneTabsDebugPoint(sourceLocalPoint),
+      "sourceSessionId": sourceSessionId ?? NSNull(),
+      "windowLocation": nativePaneTabsDebugPoint(event.locationInWindow),
+      "windowNumber": event.window?.windowNumber ?? NSNull(),
+    ])
+  }
+
   var displayTitle: String {
     titleLabel.stringValue
   }
@@ -21623,7 +20943,6 @@ private final class TerminalSessionTitleBarView: NSView {
     tabBrowserButton.setOverlayInteractionSuppressed(isOverlayInteractionSuppressed)
     stickyActiveTabButton.setOverlayInteractionSuppressed(isOverlayInteractionSuppressed)
     actionMenuButton.setOverlayInteractionSuppressed(isOverlayInteractionSuppressed)
-    projectEditorCompanionCloseButton.setOverlayInteractionSuppressed(isOverlayInteractionSuppressed)
     for item in actionButtons {
       (item.button as? TerminalTitleBarActionButton)?
         .setOverlayInteractionSuppressed(isOverlayInteractionSuppressed)
@@ -21944,21 +21263,14 @@ private final class TerminalSessionTitleBarView: NSView {
      Pane title bars must not paint colored debug hit-region overlays in normal
      app use. Narrow-pane click verification stays in logs and native hit-test
      ownership, leaving the visible chrome to production tab/action styling.
-     */
+    */
     for item in actionButtons {
       item.button.target = self
       item.button.action = #selector(performTitleBarAction(_:))
+      (item.button as? TerminalTitleBarActionButton)?.debugActionKind = item.action.rawValue
       addSubview(item.button)
     }
     configureActionMenuButton()
-    configureProjectEditorCompanionButton(
-      projectEditorCompanionCloseButton,
-      image: Self.projectEditorCompanionCloseButtonImage(),
-      fallbackTitle: "X",
-      tooltip: "Collapse Companion Sidepane",
-      action: #selector(performProjectEditorCompanionCloseButton(_:)))
-    addSubview(projectEditorCompanionCloseButton)
-    hideProjectEditorCompanionButtons()
     syncActionSeparators()
     addSubview(bottomBorderView)
     updateActionButtonVisibility()
@@ -21974,6 +21286,25 @@ private final class TerminalSessionTitleBarView: NSView {
     }
     let point = convert(event.locationInWindow, from: nil)
     isPointerInsideTitleBar = true
+    if let target = reroutedTitleBarTarget(at: point) {
+      /*
+       CDXC:NativePaneTabClicks 2026-06-12-06:11:
+       In split panes, AppKit can deliver a tab-bar click directly to the
+       titlebar instead of the concrete tab or fixed action child. The titlebar
+       already owns the visual geometry, so dispatch tab activation, inline
+       Close, and fixed buttons from the titlebar target resolver before
+       treating the click as empty draggable chrome.
+       */
+      handleReroutedTitleBarMouseDown(
+        event,
+        point: point,
+        target: target,
+        source: "titleBarDirect",
+        sourceSessionId: nil,
+        sourceButtonKind: nil,
+        sourceLocalPoint: point)
+      return
+    }
     if showsTabAddButton, event.clickCount >= 2, !tabItems.isEmpty, isEmptyTitleBarDoubleClickPoint(point) {
       /**
        CDXC:PaneTabs 2026-05-11-11:47
@@ -21998,6 +21329,125 @@ private final class TerminalSessionTitleBarView: NSView {
       return
     }
     onMouseDown?(event)
+  }
+
+  fileprivate func routeWindowTitleBarMouseEvent(
+    _ event: NSEvent,
+    point: NSPoint,
+    source: String
+  ) -> Bool {
+    guard !isOverlayInteractionSuppressed else {
+      if event.type == .leftMouseUp {
+        pendingReroutedTitleBarTarget = nil
+      }
+      return false
+    }
+    switch event.type {
+    case .leftMouseDown:
+      guard let target = reroutedTitleBarTarget(at: point) else {
+        return false
+      }
+      isPointerInsideTitleBar = bounds.contains(point)
+      handleReroutedTitleBarMouseDown(
+        event,
+        point: point,
+        target: target,
+        source: source,
+        sourceSessionId: nil,
+        sourceButtonKind: nil,
+        sourceLocalPoint: point)
+      return true
+    case .leftMouseDragged:
+      guard pendingReroutedTitleBarTarget != nil else {
+        return false
+      }
+      handleReroutedTitleBarMouseDragged(
+        event,
+        point: point,
+        source: source,
+        sourceSessionId: nil,
+        sourceButtonKind: nil,
+        sourceLocalPoint: point)
+      return true
+    case .leftMouseUp:
+      let pendingTarget = pendingReroutedTitleBarTarget
+      guard let target = reroutedTitleBarTarget(at: point) else {
+        if pendingTarget != nil {
+          logTitleBarReroute(
+            event: "nativePaneTabs.titleBar.reroute.mouseUp",
+            phase: "mouseUp",
+            target: pendingTarget,
+            point: point,
+            source: source,
+            sourceSessionId: nil,
+            sourceButtonKind: nil,
+            sourceLocalPoint: point,
+            currentTarget: nil)
+        }
+        pendingReroutedTitleBarTarget = nil
+        return pendingTarget != nil
+      }
+      handleReroutedTitleBarMouseUp(
+        event,
+        point: point,
+        target: target,
+        source: source,
+        sourceSessionId: nil,
+        sourceButtonKind: nil,
+        sourceLocalPoint: point)
+      return pendingTarget != nil
+    default:
+      return false
+    }
+  }
+
+  override func mouseDragged(with event: NSEvent) {
+    guard !isOverlayInteractionSuppressed else {
+      return
+    }
+    guard pendingReroutedTitleBarTarget != nil else {
+      return
+    }
+    let point = convert(event.locationInWindow, from: nil)
+    handleReroutedTitleBarMouseDragged(
+      event,
+      point: point,
+      source: "titleBarDirect",
+      sourceSessionId: nil,
+      sourceButtonKind: nil,
+      sourceLocalPoint: point)
+  }
+
+  override func mouseUp(with event: NSEvent) {
+    guard !isOverlayInteractionSuppressed else {
+      pendingReroutedTitleBarTarget = nil
+      return
+    }
+    let point = convert(event.locationInWindow, from: nil)
+    guard let target = reroutedTitleBarTarget(at: point) else {
+      if pendingReroutedTitleBarTarget != nil {
+        logTitleBarReroute(
+          event: "nativePaneTabs.titleBar.reroute.mouseUp",
+          phase: "mouseUp",
+          target: pendingReroutedTitleBarTarget,
+          point: point,
+          source: "titleBarDirect",
+          sourceSessionId: nil,
+          sourceButtonKind: nil,
+          sourceLocalPoint: point,
+          currentTarget: nil)
+      }
+      pendingReroutedTitleBarTarget = nil
+      return
+    }
+    handleReroutedTitleBarMouseUp(
+      event,
+      point: point,
+      target: target,
+      source: "titleBarDirect",
+      sourceSessionId: nil,
+      sourceButtonKind: nil,
+      sourceLocalPoint: point)
   }
 
   private func backgroundColor(for role: TerminalPaneChromeRole) -> CGColor {
@@ -22066,81 +21516,100 @@ private final class TerminalSessionTitleBarView: NSView {
       return nil
     }
     /**
-     CDXC:NativePaneReorder 2026-05-03-03:42
-     Pane headers used to be draggable from visible title and empty title-bar
-     chrome, but tab dragging is now the only pane-reorder gesture. Keep action
-     buttons as normal controls and keep tab hit testing inside the title-bar
-     hierarchy so hidden/offscreen tab sessions can still be selected and
-     dragged through their visible tab controls.
+     CDXC:NativeWorkspaceHitTesting 2026-06-12-00:01:
+     Pane title bars should let AppKit own the terminal and browser content path
+     instead of routing by cached workspace geometry.
 
-     CDXC:NativePaneReorder 2026-05-11-01:16
-     Drag-to-reorder starts only from tabs. Non-action subviews such as the
-     title label, favicon, and activity dot still should not win hit testing,
-     otherwise title-bar focus and tab hit routing can disappear behind labels.
+     CDXC:NativeWorkspaceHitTesting 2026-06-12-02:36:
+     Native macOS pane tabs must remain clickable and draggable when hover still
+     works. The 02:33 repro showed mouseDown/mouseUp falling through to pane
+     content instead of the tab buttons, so titlebar hit testing must explicitly
+     return concrete native tab/action controls while leaving non-control
+     content on AppKit's normal child-view path.
 
-     CDXC:BrowserPanes 2026-05-03-11:06
-     Action buttons remain real AppKit buttons for drawing, Accessibility, and
-     pointer dispatch across terminal, browser, editor, and popped-out panes.
+     CDXC:NativePaneTabClicks 2026-06-12-04:57:
+     The sticky active-tab chevron, New Terminal, New Browser, and overflow
+     menu buttons should follow the same click rule as tabs: if a concrete
+     AppKit button already owns local hover, return that button before using
+     parent titlebar frame checks.
 
-     CDXC:PaneTitleBarUX 2026-05-11-20:25
-     When right-side pane actions are visible, return the concrete NSButton for
-     its real frame. This keeps hamburger and action clicks on AppKit
-     target/action dispatch.
+     CDXC:NativePaneTabClicks 2026-06-12-05:31:
+     The 05:24 browser-button verification still resolved to New Terminal
+     because stale local hover was trusted even when the click point had moved
+     to a button on its right. Fixed action-button hover can stabilize clicks
+     only when the converted button frame still contains the click point.
 
-     CDXC:PaneTabs 2026-05-12-11:59
-     Tab clicks must be owned by the native TerminalTitleBarTabButton that
-     paints the tab. Right-side pane actions remain higher-priority sibling
-     buttons; visible tab pixels return the actual tab button so AppKit delivers
-     the real mouseDown/mouseUp stream to that button, not to title-bar focus
-     handling or any monitor-style click router.
+     CDXC:NativePaneTabClicks 2026-06-12-05:41:
+     The 05:33 repro showed scrolled AppKit child hit testing could still pick
+     a tab two slots to the right. After explicit tab hit resolution, do not
+     fall back to child hit testing inside the tab viewport.
      */
     layoutSubtreeIfNeeded()
-    if let projectEditorCompanionButton = projectEditorCompanionButton(at: point) {
-      /**
-       CDXC:ProjectEditorCompanion 2026-05-14-09:47:
-       Companion controls live inside the session titlebar and must be returned
-       as concrete NSButton hits. This keeps hover background and click dispatch
-       on the visible controls instead of a detached overlay strip.
-
-       CDXC:ProjectEditorCompanion 2026-05-15-15:29:
-       Only the companion Close button remains in this titlebar control group.
-       It still returns as a concrete native button hit so AppKit owns hover and
-       click dispatch.
-       */
-      return projectEditorCompanionButton
+    if let hoveredTitleBarButton = locallyHoveredTitleBarActionButton(at: point) {
+      logFixedTitleBarActionButtonHit(
+        button: hoveredTitleBarButton,
+        point: point,
+        source: "localHover")
+      return hoveredTitleBarButton
     }
     if let collapsedActionMenuButton = collapsedActionMenuButton(at: point) {
       logCollapsedActionMenuEvent(
         "nativePaneActionMenu.titleBar.hitTest",
         point: point)
-      /**
-       CDXC:PaneTitleBarUX 2026-05-11-20:24
-       Collapsed action-menu clicks belong to the actual NSButton frame.
-       Returning the native button keeps the menu on button target/action
-       dispatch instead of title-bar click synthesis.
-       */
       return collapsedActionMenuButton
     }
-    if let actionButton = actionButton(at: point) {
-      /**
-       CDXC:PaneTitleBarUX 2026-05-11-20:24
-       Titlebar action buttons own their full AppKit frames. Return the concrete
-       NSButton so Pop In/Pop Out, Close, Split, Reload, and sibling actions all
-       use performTitleBarAction(_:).
-       */
-      return actionButton
+    if let actionButtonItem = actionButtonItem(at: point) {
+      NativePaneTabDragReproLog.append(event: "nativePaneTabs.titleBar.hitTest.actionButton", details: [
+        "buttonFrame": nativePaneTabsDebugFrame(actionButtonItem.button.frame),
+        "hitPoint": nativePaneTabsDebugPoint(point),
+        "resolvedAction": actionButtonItem.action.rawValue,
+        "source": "frame",
+        "titleBarBounds": nativePaneTabsDebugFrame(bounds),
+        "windowNumber": window?.windowNumber ?? NSNull(),
+      ])
+      return actionButtonItem.button
     }
     if let browserButton = tabBrowserButton(at: point) {
+      logFixedTitleBarActionButtonHit(
+        button: browserButton,
+        point: point,
+        source: "frame")
       return browserButton
     }
     if let addButton = tabAddButton(at: point) {
+      logFixedTitleBarActionButtonHit(
+        button: addButton,
+        point: point,
+        source: "frame")
       return addButton
     }
     if let stickyButton = stickyActiveTabButton(at: point) {
+      logFixedTitleBarActionButtonHit(
+        button: stickyButton,
+        point: point,
+        source: "frame")
       return stickyButton
     }
-    if let tabButton = tabButton(at: point) {
-      return tabButton
+    if let tabHit = tabButtonHit(at: point) {
+      NativePaneTabDragReproLog.append(event: "nativePaneTabs.titleBar.hitTest.tabButton", details: [
+        "hitPoint": nativePaneTabsDebugPoint(point),
+        "hitSource": tabHit.source,
+        "sessionId": tabHit.button.sessionId,
+        "tabButtonFrame": nativePaneTabsDebugFrame(tabHit.button.frame),
+        "tabButtonFrames": tabDebugFrames(),
+        "tabButtonIndex": tabHit.index,
+        "tabButtonLocalPoint": nativePaneTabsDebugPoint(tabHit.localPoint),
+        "tabButtonVisibleFrame": nativePaneTabsDebugFrame(tabHit.visibleFrame),
+        "tabScrollOffsetX": Double(tabScrollOffsetX),
+        "tabViewportFrame": nativePaneTabsDebugFrame(tabViewportFrame),
+        "titleBarBounds": nativePaneTabsDebugFrame(bounds),
+        "visibleTabButtonHitCount": tabButtonHitRecords(at: point).count,
+        "windowNumber": window?.windowNumber ?? NSNull(),
+      ])
+      return tabHit.button
+    }
+    if tabViewportFrame.contains(point) {
+      return self
     }
     if let hitView = super.hitTest(point), hitView !== self {
       if hitView === faviconImageView
@@ -22156,6 +21625,210 @@ private final class TerminalSessionTitleBarView: NSView {
       return hitView
     }
     return self
+  }
+
+  private func reroutedTitleBarTarget(at point: NSPoint) -> ReroutedTitleBarTarget? {
+    layoutSubtreeIfNeeded()
+    if collapsedActionMenuButton(at: point) != nil {
+      return .fixedAction(.overflowMenu)
+    }
+    if let actionButtonItem = actionButtonItem(at: point) {
+      return .titleBarAction(actionButtonItem.action)
+    }
+    if tabBrowserButton(at: point) != nil {
+      return .fixedAction(.newBrowser)
+    }
+    if tabAddButton(at: point) != nil {
+      return .fixedAction(.newTerminal)
+    }
+    if stickyActiveTabButton(at: point) != nil {
+      return .fixedAction(.stickyActiveTab)
+    }
+    guard let tabHit = tabButtonHit(at: point) else {
+      return nil
+    }
+    if case .close? = tabHit.button.inlineAction(at: tabHit.localPoint) {
+      return .inlineClose(sessionId: tabHit.button.sessionId)
+    }
+    return .tab(sessionId: tabHit.button.sessionId)
+  }
+
+  private func handleReroutedTitleBarMouseDown(
+    _ event: NSEvent,
+    point: NSPoint,
+    target: ReroutedTitleBarTarget,
+    source: String,
+    sourceSessionId: String?,
+    sourceButtonKind: String?,
+    sourceLocalPoint: NSPoint
+  ) {
+    /*
+     CDXC:NativePaneTabClicks 2026-06-12-05:52:
+     The 05:44 computer-use repro showed the old guard only stopped a stale
+     scrolled child tab from activating; it did not let the intended visual tab
+     receive the click. When AppKit sends mouseDown to the wrong tab or fixed
+     button, reroute once through the visible titlebar under the window point
+     and dispatch the resolved target from titlebar geometry.
+     */
+    logTitleBarReroute(
+      event: "nativePaneTabs.titleBar.reroute.mouseDown",
+      phase: "mouseDown",
+      target: target,
+      point: point,
+      source: source,
+      sourceSessionId: sourceSessionId,
+      sourceButtonKind: sourceButtonKind,
+      sourceLocalPoint: sourceLocalPoint,
+      currentTarget: target)
+    switch target {
+    case let .tab(sessionId):
+      pendingReroutedTitleBarTarget = target
+      onTabMouseDown?(event, sessionId)
+    case .inlineClose:
+      pendingReroutedTitleBarTarget = target
+    case let .fixedAction(kind):
+      if kind == .overflowMenu {
+        pendingReroutedTitleBarTarget = target
+      } else {
+        pendingReroutedTitleBarTarget = nil
+        performReroutedFixedAction(kind, source: "reroutedMouseDown")
+      }
+    case let .titleBarAction(action):
+      pendingReroutedTitleBarTarget = nil
+      performReroutedTitleBarAction(action, source: "reroutedMouseDown")
+    }
+  }
+
+  private func handleReroutedTitleBarMouseDragged(
+    _ event: NSEvent,
+    point: NSPoint,
+    source: String,
+    sourceSessionId: String?,
+    sourceButtonKind: String?,
+    sourceLocalPoint: NSPoint
+  ) {
+    guard case let .tab(sessionId) = pendingReroutedTitleBarTarget else {
+      return
+    }
+    logTitleBarReroute(
+      event: "nativePaneTabs.titleBar.reroute.mouseDragged",
+      phase: "mouseDragged",
+      target: .tab(sessionId: sessionId),
+      point: point,
+      source: source,
+      sourceSessionId: sourceSessionId,
+      sourceButtonKind: sourceButtonKind,
+      sourceLocalPoint: sourceLocalPoint,
+      currentTarget: reroutedTitleBarTarget(at: point))
+    onTabMouseDragged?(event, sessionId)
+  }
+
+  private func handleReroutedTitleBarMouseUp(
+    _ event: NSEvent,
+    point: NSPoint,
+    target: ReroutedTitleBarTarget,
+    source: String,
+    sourceSessionId: String?,
+    sourceButtonKind: String?,
+    sourceLocalPoint: NSPoint
+  ) {
+    let pendingTarget = pendingReroutedTitleBarTarget
+    pendingReroutedTitleBarTarget = nil
+    logTitleBarReroute(
+      event: "nativePaneTabs.titleBar.reroute.mouseUp",
+      phase: "mouseUp",
+      target: pendingTarget,
+      point: point,
+      source: source,
+      sourceSessionId: sourceSessionId,
+      sourceButtonKind: sourceButtonKind,
+      sourceLocalPoint: sourceLocalPoint,
+      currentTarget: target)
+    guard let pendingTarget, pendingTarget == target else {
+      return
+    }
+    switch pendingTarget {
+    case let .tab(sessionId):
+      onTabMouseUp?(event, sessionId)
+    case let .inlineClose(sessionId):
+      onTabCloseRequested?(sessionId, .close)
+    case let .fixedAction(kind):
+      performReroutedFixedAction(kind, source: "reroutedMouseUp")
+    case let .titleBarAction(action):
+      performReroutedTitleBarAction(action, source: "reroutedMouseUp")
+    }
+  }
+
+  private func performReroutedFixedAction(_ kind: FixedTabBarActionKind, source: String) {
+    NativePaneTabDragReproLog.append(event: "nativePaneTabs.actionButton.perform", details: [
+      "action": kind.rawValue,
+      "buttonKind": kind.rawValue,
+      "source": source,
+      "titleBarBounds": nativePaneTabsDebugFrame(bounds),
+      "windowNumber": window?.windowNumber ?? NSNull(),
+    ])
+    switch kind {
+    case .stickyActiveTab:
+      centerActiveTabInTabStrip()
+    case .newTerminal:
+      onAction?(.newTerminal)
+    case .newBrowser:
+      onAction?(.openBrowser)
+    case .overflowMenu:
+      showCollapsedActionMenu(from: actionMenuButton, source: source)
+    }
+  }
+
+  private func performReroutedTitleBarAction(_ action: TerminalTitleBarAction, source: String) {
+    NativePaneTabDragReproLog.append(event: "nativePaneTabs.actionButton.perform", details: [
+      "action": action.rawValue,
+      "buttonKind": "titleBarAction",
+      "source": source,
+      "titleBarBounds": nativePaneTabsDebugFrame(bounds),
+      "windowNumber": window?.windowNumber ?? NSNull(),
+    ])
+    onAction?(action)
+  }
+
+  private func logTitleBarReroute(
+    event: String,
+    phase: String,
+    target: ReroutedTitleBarTarget?,
+    point: NSPoint,
+    source: String,
+    sourceSessionId: String?,
+    sourceButtonKind: String?,
+    sourceLocalPoint: NSPoint,
+    currentTarget: ReroutedTitleBarTarget?
+  ) {
+    NativePaneTabDragReproLog.append(event: event, details: [
+      "currentTarget": debugReroutedTitleBarTarget(currentTarget),
+      "phase": phase,
+      "resolvedTarget": debugReroutedTitleBarTarget(target),
+      "source": source,
+      "sourceButtonKind": sourceButtonKind ?? NSNull(),
+      "sourceLocalPoint": nativePaneTabsDebugPoint(sourceLocalPoint),
+      "sourceSessionId": sourceSessionId ?? NSNull(),
+      "titleBarBounds": nativePaneTabsDebugFrame(bounds),
+      "titleBarPoint": nativePaneTabsDebugPoint(point),
+      "windowNumber": window?.windowNumber ?? NSNull(),
+    ])
+  }
+
+  private func debugReroutedTitleBarTarget(_ target: ReroutedTitleBarTarget?) -> Any {
+    guard let target else {
+      return NSNull()
+    }
+    switch target {
+    case let .tab(sessionId):
+      return ["kind": "tab", "sessionId": sessionId]
+    case let .inlineClose(sessionId):
+      return ["kind": "inlineClose", "sessionId": sessionId]
+    case let .fixedAction(kind):
+      return ["kind": "fixedAction", "action": kind.rawValue]
+    case let .titleBarAction(action):
+      return ["kind": "titleBarAction", "action": action.rawValue]
+    }
   }
 
   func tabSessionId(at point: NSPoint) -> String? {
@@ -22190,21 +21863,126 @@ private final class TerminalSessionTitleBarView: NSView {
   }
 
   private func tabButtonHit(at point: NSPoint) -> (
-    button: TerminalTitleBarTabButton, localPoint: NSPoint
+    button: TerminalTitleBarTabButton, localPoint: NSPoint, source: String, index: Int,
+    visibleFrame: CGRect
   )? {
     guard !tabClipView.isHidden, tabViewportFrame.contains(point) else {
       return nil
     }
-    let contentPoint = CGPoint(
+    /*
+     CDXC:NativePaneTabClicks 2026-06-12-04:36:
+     Native tabs must own their clicks as concrete AppKit subviews. The 04:29
+     repro showed click delivery reaching TerminalTitleBarTabButton while the
+     titlebar's manual `point + tabScrollOffsetX` lookup could select the
+     neighboring tab. Ask the clipped tab strip which real subview hit first,
+     then resolve the owning tab button from the AppKit view chain.
+
+     CDXC:NativePaneTabClicks 2026-06-12-04:45:
+     The 04:42 repro showed hover following the visually intended tab while
+     click selection still chose the tab to its right in a heavily scrolled tab
+     strip. Prefer the tab button whose own AppKit tracking area currently owns
+     local hover, then keep clipped-strip hit testing as the no-hover fallback.
+
+     CDXC:NativePaneTabClicks 2026-06-12-05:22:
+     The 05:xx repro still clicked a tab one or two slots to the right. Resolve
+     click ownership from each concrete tab button's converted visible frame in
+     titlebar coordinates, not from clipped-strip hitTest rediscovery or content
+     offset index math, so the same NSButton that paints the visible tab owns
+     mouseDown, drag, mouseUp, and Close.
+
+     CDXC:NativePaneTabClicks 2026-06-12-05:41:
+     The 05:33 repro showed the concrete button that received mouseDown had a
+     negative local x value. Resolve visible tabs from the layout's own content
+     coordinate system: titlebar point + current tabScrollOffsetX compared
+     against each tab button's frame.
+     */
+    if let hoverHit = locallyHoveredTabButtonHit(at: point) {
+      return hoverHit
+    }
+    return visibleTabButtonHit(at: point)
+  }
+
+  private func visibleTabButtonHit(at point: NSPoint) -> (
+    button: TerminalTitleBarTabButton, localPoint: NSPoint, source: String, index: Int,
+    visibleFrame: CGRect
+  )? {
+    let hitRecords = tabButtonHitRecords(at: point)
+    guard hitRecords.count == 1, let hitRecord = hitRecords.first else {
+      return nil
+    }
+    return (
+      hitRecord.button,
+      hitRecord.localPoint,
+      "visibleFrame",
+      hitRecord.index,
+      hitRecord.visibleFrame)
+  }
+
+  private func locallyHoveredTabButtonHit(at point: NSPoint) -> (
+    button: TerminalTitleBarTabButton, localPoint: NSPoint, source: String, index: Int,
+    visibleFrame: CGRect
+  )? {
+    guard tabViewportFrame.contains(point) else {
+      return nil
+    }
+    let hoveredHits = tabButtonHitRecords(at: point).filter {
+      $0.button.isPointerLocallyInside
+    }
+    guard hoveredHits.count == 1, let hoverHit = hoveredHits.first else {
+      return nil
+    }
+    return (
+      hoverHit.button,
+      hoverHit.localPoint,
+      "localHover",
+      hoverHit.index,
+      hoverHit.visibleFrame)
+  }
+
+  private func tabButtonHitRecords(at point: NSPoint) -> [(
+    index: Int, button: TerminalTitleBarTabButton, localPoint: NSPoint, visibleFrame: CGRect
+  )] {
+    guard !tabClipView.isHidden, tabViewportFrame.contains(point) else {
+      return []
+    }
+    let contentPoint = tabContentPoint(forTitleBarPoint: point)
+    return tabButtons.enumerated().compactMap { index, button in
+      guard !button.isHidden,
+        button.alphaValue > 0,
+        button.window != nil
+      else {
+        return nil
+      }
+      let visibleFrame = visibleTabButtonFrame(for: button)
+      guard !visibleFrame.isNull,
+        !visibleFrame.isEmpty,
+        visibleFrame.contains(point)
+      else {
+        return nil
+      }
+      let localPoint = NSPoint(
+        x: contentPoint.x - button.frame.minX,
+        y: contentPoint.y - button.frame.minY)
+      guard button.bounds.contains(localPoint) else {
+        return nil
+      }
+      return (index, button, localPoint, visibleFrame)
+    }
+  }
+
+  private func tabContentPoint(forTitleBarPoint point: NSPoint) -> NSPoint {
+    NSPoint(
       x: point.x - tabViewportFrame.minX + tabScrollOffsetX,
       y: point.y - tabViewportFrame.minY)
-    for button in tabButtons where !button.isHidden && button.frame.contains(contentPoint) {
-      return (
-        button,
-        CGPoint(x: contentPoint.x - button.frame.minX, y: contentPoint.y - button.frame.minY)
-      )
-    }
-    return nil
+  }
+
+  private func visibleTabButtonFrame(for button: TerminalTitleBarTabButton) -> CGRect {
+    let frameInTitleBar = CGRect(
+      x: tabViewportFrame.minX + button.frame.minX - tabScrollOffsetX,
+      y: tabViewportFrame.minY + button.frame.minY,
+      width: button.frame.width,
+      height: button.frame.height)
+    return frameInTitleBar.intersection(tabViewportFrame)
   }
 
   func containsTab(_ sessionId: String) -> Bool {
@@ -22307,12 +22085,14 @@ private final class TerminalSessionTitleBarView: NSView {
   }
 
   private func tabDebugFrames() -> [[String: Any]] {
-    tabButtons.map { button in
+    tabButtons.enumerated().map { index, button in
       [
         "frame": nativePaneTabsDebugFrame(button.frame),
+        "index": index,
         "isHidden": button.isHidden,
+        "isPointerLocallyInside": button.isPointerLocallyInside,
         "sessionId": button.sessionId,
-        "title": button.title,
+        "visibleFrame": nativePaneTabsDebugFrame(visibleTabButtonFrame(for: button)),
       ]
     }
   }
@@ -22327,6 +22107,67 @@ private final class TerminalSessionTitleBarView: NSView {
 
   private func isCollapsedActionMenuPoint(_ point: NSPoint) -> Bool {
     collapsedActionMenuButton(at: point) != nil
+  }
+
+  private func locallyHoveredTitleBarActionButton(at point: NSPoint) -> TerminalTitleBarActionButton? {
+    guard bounds.contains(point) else {
+      return nil
+    }
+    let hoveredButtons = [
+      stickyActiveTabButton,
+      tabAddButton,
+      tabBrowserButton,
+      actionMenuButton,
+    ].filter {
+      $0.isPointerLocallyInside
+        && !$0.isHidden
+        && $0.isEnabled
+        && $0.alphaValue > 0
+        && $0.window != nil
+        && convertedTitleBarActionButtonFrame($0).contains(point)
+        && $0.bounds.contains(convert(point, to: $0))
+    }
+    guard hoveredButtons.count == 1, let button = hoveredButtons.first else {
+      return nil
+    }
+    return button
+  }
+
+  private func convertedTitleBarActionButtonFrame(_ button: TerminalTitleBarActionButton) -> CGRect {
+    convert(button.bounds, from: button)
+  }
+
+  private func logFixedTitleBarActionButtonHit(
+    button: TerminalTitleBarActionButton,
+    point: NSPoint,
+    source: String
+  ) {
+    NativePaneTabDragReproLog.append(event: "nativePaneTabs.titleBar.hitTest.fixedActionButton", details: [
+      "buttonFrame": nativePaneTabsDebugFrame(button.debugButtonFrame),
+      "buttonKind": fixedTitleBarActionButtonKind(button),
+      "hitPoint": nativePaneTabsDebugPoint(point),
+      "isPointerLocallyInside": button.isPointerLocallyInside,
+      "source": source,
+      "tabViewportFrame": nativePaneTabsDebugFrame(tabViewportFrame),
+      "titleBarBounds": nativePaneTabsDebugFrame(bounds),
+      "windowNumber": window?.windowNumber ?? NSNull(),
+    ])
+  }
+
+  private func fixedTitleBarActionButtonKind(_ button: TerminalTitleBarActionButton) -> String {
+    if button === stickyActiveTabButton {
+      return "stickyActiveTab"
+    }
+    if button === tabAddButton {
+      return "newTerminal"
+    }
+    if button === tabBrowserButton {
+      return "newBrowser"
+    }
+    if button === actionMenuButton {
+      return "overflowMenu"
+    }
+    return "unknown"
   }
 
   private func collapsedActionMenuButton(at point: NSPoint) -> TerminalTitleBarActionButton? {
@@ -22349,20 +22190,6 @@ private final class TerminalSessionTitleBarView: NSView {
     return actionMenuButton
   }
 
-  private func projectEditorCompanionButton(at point: NSPoint) -> TerminalTitleBarActionButton? {
-    guard showsProjectEditorCompanionControls else {
-      return nil
-    }
-    for button in [projectEditorCompanionCloseButton]
-    where button.frame.contains(point)
-      && !button.isHidden
-      && button.isEnabled
-      && button.alphaValue > 0 {
-      return button
-    }
-    return nil
-  }
-
   private func actionButton(at point: NSPoint) -> NSButton? {
     actionButtonItem(at: point)?.button
   }
@@ -22379,7 +22206,7 @@ private final class TerminalSessionTitleBarView: NSView {
     return nil
   }
 
-  private func tabAddButton(at point: NSPoint) -> NSButton? {
+  private func tabAddButton(at point: NSPoint) -> TerminalTitleBarActionButton? {
     guard tabAddButton.frame.contains(point),
       !tabAddButton.isHidden,
       tabAddButton.isEnabled,
@@ -22390,7 +22217,7 @@ private final class TerminalSessionTitleBarView: NSView {
     return tabAddButton
   }
 
-  private func tabBrowserButton(at point: NSPoint) -> NSButton? {
+  private func tabBrowserButton(at point: NSPoint) -> TerminalTitleBarActionButton? {
     guard tabBrowserButton.frame.contains(point),
       !tabBrowserButton.isHidden,
       tabBrowserButton.isEnabled,
@@ -22401,7 +22228,7 @@ private final class TerminalSessionTitleBarView: NSView {
     return tabBrowserButton
   }
 
-  private func stickyActiveTabButton(at point: NSPoint) -> NSButton? {
+  private func stickyActiveTabButton(at point: NSPoint) -> TerminalTitleBarActionButton? {
     guard stickyActiveTabButton.frame.contains(point),
       !stickyActiveTabButton.isHidden,
       stickyActiveTabButton.isEnabled,
@@ -22442,9 +22269,6 @@ private final class TerminalSessionTitleBarView: NSView {
       return false
     }
     if isCollapsedActionMenuPoint(point) || actionButtonAction(at: point) != nil {
-      return false
-    }
-    if projectEditorCompanionButton(at: point) != nil {
       return false
     }
     return bounds.contains(point)
@@ -22643,7 +22467,7 @@ private final class TerminalSessionTitleBarView: NSView {
      extra separator that used to sit under Open Browser Pane.
      */
     let shouldCollapseActionMenu =
-      !showsProjectEditorCompanionControls
+      !usesProjectEditorCompanionChrome
       && !Self.isCommandsPanelChromeActionSet(actionButtons.map(\.action))
       && !collapsedMenuEligibleActions.isEmpty
     let minimumContentWidthForCollapsedControls =
@@ -22659,13 +22483,12 @@ private final class TerminalSessionTitleBarView: NSView {
         - tabViewportTrailingGap
         >= minimumContentWidthForCollapsedControls
     var separatorIndex = 0
-    if showsProjectEditorCompanionControls {
+    if usesProjectEditorCompanionChrome {
       /*
        CDXC:ProjectEditorCompanion 2026-05-16-11:46:
        The side companion pane in Code, Git, and Project views needs a minimal
-       titlebar with only its local close control. Hide the normal session pane
-       action buttons and collapsed overflow menu instead of leaving generic
-       pane actions in this embedded-editor surface.
+       titlebar without generic session pane actions. Hide the normal action
+       buttons and collapsed overflow menu in this embedded-editor surface.
        */
       collapsedActionMenuActions = []
       actionMenuButton.frame = .zero
@@ -22755,12 +22578,6 @@ private final class TerminalSessionTitleBarView: NSView {
         }
       }
     }
-    layoutProjectEditorCompanionButtons(
-      trailingX: &trailingX,
-      centerY: centerY,
-      buttonSize: buttonSize,
-      buttonGap: buttonGap,
-      insetX: insetX)
     if layoutHiddenActions != nextLayoutHiddenActions {
       layoutHiddenActions = nextLayoutHiddenActions
       updateActionButtonVisibility()
@@ -23415,31 +23232,22 @@ private final class TerminalSessionTitleBarView: NSView {
     }
   }
 
-  func setProjectEditorCompanionControls(onClose: (() -> Void)?) {
-    projectEditorCompanionCloseAction = onClose
-    let shouldShowControls = onClose != nil
-    guard showsProjectEditorCompanionControls != shouldShowControls else {
+  func setProjectEditorCompanionChromeVisible(_ shouldUseCompanionChrome: Bool) {
+    guard usesProjectEditorCompanionChrome != shouldUseCompanionChrome else {
       return
     }
     /**
-     CDXC:ProjectEditorCompanion 2026-05-14-09:47:
-     The embedded-editor companion controls are titlebar-local actions, not
-     normal pane lifecycle actions. Show them only on the selected companion
-     session so Close uses the same AppKit button/hover implementation as
-     native pane titlebar controls.
-
-     CDXC:ProjectEditorCompanion 2026-05-15-15:29:
-     The selected companion titlebar now exposes Close as the only companion
-     action. Removing Back to Agents View from this group keeps the code/git
-     companion pane chrome focused on pane dismissal.
-
      CDXC:ProjectEditorCompanion 2026-05-16-11:46:
      Code, Git, and Project companion panes should not show the generic pane
      overflow menu in their titlebar. Agents view panes still use the normal
      action menu because they do not enable companion controls.
+
+     CDXC:ProjectEditorCompanion 2026-06-12-03:18:
+     Companion panes no longer render a local collapse control. Keep only this
+     chrome state so selected companion titlebars can suppress generic pane
+     actions while the React titlebar toggle owns hiding and expanding.
      */
-    showsProjectEditorCompanionControls = shouldShowControls
-    updateProjectEditorCompanionButtonVisibility()
+    usesProjectEditorCompanionChrome = shouldUseCompanionChrome
     needsLayout = true
   }
 
@@ -23457,6 +23265,7 @@ private final class TerminalSessionTitleBarView: NSView {
     for item in actionButtons {
       item.button.target = self
       item.button.action = #selector(performTitleBarAction(_:))
+      (item.button as? TerminalTitleBarActionButton)?.debugActionKind = item.action.rawValue
       addSubview(item.button)
     }
     if actionMenuButton.superview == nil {
@@ -23520,20 +23329,27 @@ private final class TerminalSessionTitleBarView: NSView {
     else {
       return
     }
+    NativePaneTabDragReproLog.append(event: "nativePaneTabs.actionButton.perform", details: [
+      "action": item.action.rawValue,
+      "buttonFrame": nativePaneTabsDebugFrame(item.button.frame),
+      "buttonKind": "titleBarAction",
+      "titleBarBounds": nativePaneTabsDebugFrame(bounds),
+      "windowNumber": window?.windowNumber ?? NSNull(),
+    ])
     onAction?(item.action)
-  }
-
-  @objc private func performProjectEditorCompanionCloseButton(_ sender: NSButton) {
-    guard sender === projectEditorCompanionCloseButton, showsProjectEditorCompanionControls else {
-      return
-    }
-    projectEditorCompanionCloseAction?()
   }
 
   @objc private func performTabAddButton(_ sender: NSButton) {
     guard showsTabAddButton, sender === tabAddButton, !tabAddButton.isHidden, tabAddButton.isEnabled else {
       return
     }
+    NativePaneTabDragReproLog.append(event: "nativePaneTabs.actionButton.perform", details: [
+      "action": TerminalTitleBarAction.newTerminal.rawValue,
+      "buttonFrame": nativePaneTabsDebugFrame(tabAddButton.frame),
+      "buttonKind": "newTerminal",
+      "titleBarBounds": nativePaneTabsDebugFrame(bounds),
+      "windowNumber": window?.windowNumber ?? NSNull(),
+    ])
     onAction?(.newTerminal)
   }
 
@@ -23541,6 +23357,13 @@ private final class TerminalSessionTitleBarView: NSView {
     guard showsTabBrowserButton, sender === tabBrowserButton, !tabBrowserButton.isHidden, tabBrowserButton.isEnabled else {
       return
     }
+    NativePaneTabDragReproLog.append(event: "nativePaneTabs.actionButton.perform", details: [
+      "action": TerminalTitleBarAction.openBrowser.rawValue,
+      "buttonFrame": nativePaneTabsDebugFrame(tabBrowserButton.frame),
+      "buttonKind": "newBrowser",
+      "titleBarBounds": nativePaneTabsDebugFrame(bounds),
+      "windowNumber": window?.windowNumber ?? NSNull(),
+    ])
     onAction?(.openBrowser)
   }
 
@@ -23551,10 +23374,25 @@ private final class TerminalSessionTitleBarView: NSView {
     else {
       return
     }
+    NativePaneTabDragReproLog.append(event: "nativePaneTabs.actionButton.perform", details: [
+      "action": "showActiveTab",
+      "buttonFrame": nativePaneTabsDebugFrame(stickyActiveTabButton.frame),
+      "buttonKind": "stickyActiveTab",
+      "tabViewportFrame": nativePaneTabsDebugFrame(tabViewportFrame),
+      "titleBarBounds": nativePaneTabsDebugFrame(bounds),
+      "windowNumber": window?.windowNumber ?? NSNull(),
+    ])
     centerActiveTabInTabStrip()
   }
 
   @objc private func performActionMenuButton(_ sender: NSButton) {
+    NativePaneTabDragReproLog.append(event: "nativePaneTabs.actionButton.perform", details: [
+      "action": "openOverflowMenu",
+      "buttonFrame": nativePaneTabsDebugFrame(actionMenuButton.frame),
+      "buttonKind": "overflowMenu",
+      "titleBarBounds": nativePaneTabsDebugFrame(bounds),
+      "windowNumber": window?.windowNumber ?? NSNull(),
+    ])
     showCollapsedActionMenu(from: sender, source: "buttonAction")
   }
 
@@ -23661,6 +23499,7 @@ private final class TerminalSessionTitleBarView: NSView {
   }
 
   private func configureTabAddButton() {
+    tabAddButton.debugActionKind = FixedTabBarActionKind.newTerminal.rawValue
     tabAddButton.bezelStyle = .texturedRounded
     tabAddButton.isBordered = false
     tabAddButton.imagePosition = .imageOnly
@@ -23688,6 +23527,7 @@ private final class TerminalSessionTitleBarView: NSView {
   }
 
   private func configureTabBrowserButton() {
+    tabBrowserButton.debugActionKind = FixedTabBarActionKind.newBrowser.rawValue
     tabBrowserButton.bezelStyle = .texturedRounded
     tabBrowserButton.isBordered = false
     tabBrowserButton.imagePosition = .imageOnly
@@ -23714,6 +23554,7 @@ private final class TerminalSessionTitleBarView: NSView {
   }
 
   private func configureStickyActiveTabButton() {
+    stickyActiveTabButton.debugActionKind = FixedTabBarActionKind.stickyActiveTab.rawValue
     stickyActiveTabButton.bezelStyle = .texturedRounded
     stickyActiveTabButton.isBordered = false
     stickyActiveTabButton.imagePosition = .imageOnly
@@ -23735,6 +23576,7 @@ private final class TerminalSessionTitleBarView: NSView {
   }
 
   private func configureActionMenuButton() {
+    actionMenuButton.debugActionKind = FixedTabBarActionKind.overflowMenu.rawValue
     actionMenuButton.bezelStyle = .texturedRounded
     actionMenuButton.isBordered = false
     actionMenuButton.imagePosition = .imageOnly
@@ -23770,66 +23612,6 @@ private final class TerminalSessionTitleBarView: NSView {
       pointSize: workspaceTabBarActionIconPointSize,
       weight: .regular)
     return image.withSymbolConfiguration(configuration) ?? image
-  }
-
-  /**
-   CDXC:ProjectEditorCompanion 2026-06-11-12:00:
-   Collapse Companion Sidepane must use Tabler IconLayoutSidebarLeftCollapse so
-   the companion dismiss control pairs with the floating titlebar restore glyph
-   and reads as closing the left companion pane instead of a generic X mark.
-
-   CDXC:ProjectEditorCompanion 2026-06-11-12:18:
-   Companion collapse/expand glyphs render at 14x14 so they match the titlebar
-   restore control and stay visually balanced inside pane action buttons.
-   */
-  private static let projectEditorCompanionIconSize: CGFloat = 14
-  private static let projectEditorCompanionCloseIconSvg = """
-  <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z" fill="none"/><path d="M4 6a2 2 0 0 1 2 -2h12a2 2 0 0 1 2 2v12a2 2 0 0 1 -2 2h-12a2 2 0 0 1 -2 -2l0 -12"/><path d="M9 4v16"/><path d="M15 10l-2 2l2 2"/></svg>
-  """
-
-  private static func projectEditorCompanionCloseButtonImage() -> NSImage? {
-    let dataUrl =
-      "data:image/svg+xml;base64,\(Data(projectEditorCompanionCloseIconSvg.utf8).base64EncodedString())"
-    return nativeTemplateImage(
-      atPointSize: projectEditorCompanionIconSize,
-      fromDataUrl: dataUrl)
-  }
-
-  private func configureProjectEditorCompanionButton(
-    _ button: TerminalTitleBarActionButton,
-    image: NSImage?,
-    fallbackTitle: String,
-    tooltip: String,
-    action: Selector
-  ) {
-    button.bezelStyle = .texturedRounded
-    button.isBordered = false
-    button.imagePosition = .imageOnly
-    button.imageScaling = .scaleNone
-    button.toolTip = tooltip
-    button.target = self
-    button.action = action
-    /**
-     CDXC:ProjectEditorCompanion 2026-05-14-09:47:
-     Companion controls are placed in the session titlebar and dispatch on left
-     mouse-down, matching existing pane action buttons so a focus change during
-     the click cannot swallow the action.
-
-     CDXC:ProjectEditorCompanion 2026-05-15-15:29:
-     Close is the only companion-specific button configured here; the Back to
-     Agents View control is intentionally absent from code/git companion panes.
-
-     CDXC:ProjectEditorCompanion 2026-06-11-12:00:
-     Collapse Companion Sidepane renders Tabler IconLayoutSidebarLeftCollapse as
-     a native template glyph so it pairs with the titlebar restore control.
-     */
-    button.sendAction(on: [.leftMouseDown])
-    if let image {
-      button.image = image
-    } else {
-      button.title = fallbackTitle
-      button.font = NSFont.systemFont(ofSize: 11, weight: .bold)
-    }
   }
 
   private func syncActionSeparators() {
@@ -23876,58 +23658,8 @@ private final class TerminalSessionTitleBarView: NSView {
     actionMenuButton.isHidden = !menuVisible
     actionMenuButton.alphaValue = menuVisible ? 1 : 0
     actionMenuButton.isEnabled = menuVisible
-    updateProjectEditorCompanionButtonVisibility()
     if let window {
       window.invalidateCursorRects(for: actionMenuButton)
-    }
-  }
-
-  private func layoutProjectEditorCompanionButtons(
-    trailingX: inout CGFloat,
-    centerY: CGFloat,
-    buttonSize: CGFloat,
-    buttonGap: CGFloat,
-    insetX: CGFloat
-  ) {
-    guard showsProjectEditorCompanionControls else {
-      hideProjectEditorCompanionButtons()
-      return
-    }
-    for button in [projectEditorCompanionCloseButton] {
-      guard trailingX - buttonSize >= insetX else {
-        button.frame = .zero
-        continue
-      }
-      trailingX -= buttonSize
-      let buttonX = max(0, trailingX)
-      button.frame = CGRect(
-        x: buttonX,
-        y: centerY,
-        width: min(buttonSize, bounds.width - buttonX),
-        height: buttonSize)
-      trailingX -= buttonGap
-    }
-    updateProjectEditorCompanionButtonVisibility()
-  }
-
-  private func updateProjectEditorCompanionButtonVisibility() {
-    let visible = showsProjectEditorCompanionControls
-    for button in [projectEditorCompanionCloseButton] {
-      button.isHidden = !visible || button.frame.isEmpty
-      button.alphaValue = visible && !button.frame.isEmpty ? 1 : 0
-      button.isEnabled = visible && !button.frame.isEmpty
-      if let window {
-        window.invalidateCursorRects(for: button)
-      }
-    }
-  }
-
-  private func hideProjectEditorCompanionButtons() {
-    for button in [projectEditorCompanionCloseButton] {
-      button.frame = .zero
-      button.isHidden = true
-      button.alphaValue = 0
-      button.isEnabled = false
     }
   }
 
@@ -24462,6 +24194,13 @@ final class WebPaneHostView: NSView, NSTextFieldDelegate {
     updateBrowserToolbarState()
   }
 
+  /*
+   CDXC:SourceCEFDragDrop 2026-06-11-21:10:
+   WebPaneHostView should not force CEF/WKWebView as the hit owner when their
+   native child hit tests return nil. Let AppKit traverse toolbar, browser, and
+   visual-only loader subviews directly so embedded VS Code drag/drop follows
+   the same ownership model as the minimal harness.
+   */
   required init?(coder: NSCoder) {
     fatalError("init(coder:) is not supported")
   }
@@ -24516,49 +24255,6 @@ final class WebPaneHostView: NSView, NSTextFieldDelegate {
      */
     chromiumView?.pinHostedViewToBounds()
     layoutInitialLoadingOverlay(webFrame: webFrame)
-  }
-
-  override func hitTest(_ point: NSPoint) -> NSView? {
-    guard bounds.contains(point) else {
-      return nil
-    }
-    /**
-     CDXC:EditorPanes 2026-05-15-10:54:
-     Project-editor hit logs showed left-edge VS Code clicks reaching the editor
-     region but stopping at `WebPaneHostView` when the embedded browser child
-     declined that strip. The host is layout/focus chrome, not the web content
-     target; visible browser pixels must resolve to the hosted browser view so
-     AppKit delivers the click into VS Code.
-     */
-    if showsBrowserToolbar, toolbarView.frame.contains(point) {
-      let toolbarPoint = convert(point, to: toolbarView)
-      let hitView = browserToolbarHitView(at: toolbarPoint)
-      /**
-       CDXC:BrowserToolbarDiagnostics 2026-05-16-11:05:
-       Browser toolbar clicks are currently failing in both Git project views
-       and normal browser panes. Log toolbar-row hit routing before any action
-       callback so reproduction timestamps can distinguish lost AppKit hit
-       tests from controls that receive the click but do not execute.
-       */
-      logBrowserToolbarInteraction("hitTest.toolbar", details: [
-        "addressFieldFrame": Self.describeFrame(addressField.frame),
-        "browserFrame": Self.describeFrame(browserView.frame),
-        "hitTarget": toolbarTargetName(at: toolbarPoint),
-        "hitView": String(describing: type(of: hitView)),
-        "hostBounds": Self.describeFrame(bounds),
-        "hostFrame": Self.describeFrame(frame),
-        "isHidden": isHidden,
-        "toolbarFrame": Self.describeFrame(toolbarView.frame),
-        "toolbarPoint": Self.describePoint(toolbarPoint),
-        "windowNumber": window?.windowNumber ?? NSNull(),
-      ])
-      return hitView
-    }
-    if browserView.frame.contains(point) {
-      let browserPoint = convert(point, to: browserView)
-      return browserView.hitTest(browserPoint) ?? browserView
-    }
-    return super.hitTest(point)
   }
 
   func refreshBrowserToolbar(reason: String) {
@@ -25891,6 +25587,7 @@ private final class TerminalPaneScrollButton: NSButton {
 
 private final class TerminalPaneLeafContainerView: NSView {
   var onMouseDown: ((NSEvent) -> Void)?
+  weak var titleBarHitTestView: NSView?
 
   override var isOpaque: Bool {
     false
@@ -25908,6 +25605,29 @@ private final class TerminalPaneLeafContainerView: NSView {
 
   override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
     true
+  }
+
+  override func hitTest(_ point: NSPoint) -> NSView? {
+    if let titleBarView = resolvedTitleBarHitTestView(),
+      titleBarView.superview === self,
+      !titleBarView.isHidden,
+      titleBarView.frame.contains(point)
+    {
+      /*
+       CDXC:NativePaneTabClicks 2026-06-12-04:08:
+       Normal in-workspace panes must make the titlebar band a hard AppKit
+       boundary. Recent click repros showed hover tracking still updating while
+       mouseDown/mouseUp hit Ghostty or sidebar web content, so route the titlebar
+       rectangle to its native titlebar before terminal/browser children can
+       compete for the same mouse stream.
+       */
+      return titleBarView.hitTest(convert(point, to: titleBarView))
+    }
+    return super.hitTest(point)
+  }
+
+  func resolvedTitleBarHitTestView() -> NSView? {
+    titleBarHitTestView ?? subviews.first { $0 is TerminalSessionTitleBarView }
   }
 
   override func mouseDown(with event: NSEvent) {
@@ -26283,6 +26003,7 @@ private final class TerminalWorkspacePaneResizeHandleView: NSView {
   var onMouseUp: ((NSEvent) -> Void)?
   private var cursor: NSCursor = .arrow
   private var splitDirection = ""
+  private var isResizeDragging = false
   private let resizeHoverIndicator = NativeResizeHoverIndicator(lineAxis: .vertical)
 
   override var isOpaque: Bool {
@@ -26363,11 +26084,29 @@ private final class TerminalWorkspacePaneResizeHandleView: NSView {
   }
 
   override func mouseEntered(with event: NSEvent) {
+    cursor.set()
+    appendResizeRailLog("nativePaneResize.handle.mouseEntered", event: event)
     resizeHoverIndicator.mouseEntered(in: self)
   }
 
   override func mouseExited(with event: NSEvent) {
+    appendResizeRailLog("nativePaneResize.handle.mouseExited", event: event)
+    /*
+     CDXC:NativePaneResize 2026-06-12-03:58:
+     Resize hover should not leave the resize cursor stuck after the pointer
+     exits the five-point rail toward terminal/editor content. Restore the
+     default cursor on hover exit, but keep the resize cursor during an active
+     drag because real resize gestures naturally leave the rail bounds.
+     */
+    if !isResizeDragging {
+      NSCursor.arrow.set()
+    }
     resizeHoverIndicator.mouseExited(in: self)
+  }
+
+  override func cursorUpdate(with event: NSEvent) {
+    cursor.set()
+    appendResizeRailLog("nativePaneResize.handle.cursorUpdate", event: event)
   }
 
   override func resetCursorRects() {
@@ -26377,6 +26116,27 @@ private final class TerminalWorkspacePaneResizeHandleView: NSView {
      Pane, command, and companion resize rails should show the native resize cursor again while keeping the delayed hover line. Register the full rail bounds with AppKit so cursor feedback matches the drag hit target.
      */
     addCursorRect(bounds, cursor: cursor)
+  }
+
+  private func appendResizeRailLog(_ eventName: String, event: NSEvent?) {
+    var details: [String: Any] = [
+      "alphaValue": Double(alphaValue),
+      "bounds": nativePaneTabsDebugFrame(bounds),
+      "direction": splitDirection,
+      "frame": nativePaneTabsDebugFrame(frame),
+      "isHidden": isHidden,
+      "zPosition": Double(layer?.zPosition ?? 0),
+    ]
+    if let event {
+      details["eventType"] = String(describing: event.type)
+      details["locationInWindow"] = nativePaneTabsDebugPoint(event.locationInWindow)
+    }
+    if let windowNumber = event?.window?.windowNumber ?? window?.windowNumber {
+      details["windowNumber"] = windowNumber
+    } else {
+      details["windowNumber"] = NSNull()
+    }
+    NativePaneTabDragReproLog.append(event: eventName, details: details)
   }
 
   func cancelResizeHoverIndicator() {
@@ -26393,26 +26153,25 @@ private final class TerminalWorkspacePaneResizeHandleView: NSView {
   }
 
   override func mouseDown(with event: NSEvent) {
-    NativePaneTabDragReproLog.append(event: "nativePaneTabs.resizeRail.mouseDown", details: [
-      "bounds": nativePaneTabsDebugFrame(bounds),
-      "direction": splitDirection,
-      "frame": nativePaneTabsDebugFrame(frame),
-      "locationInWindow": nativePaneTabsDebugFrame(CGRect(
-        x: event.locationInWindow.x,
-        y: event.locationInWindow.y,
-        width: 0,
-        height: 0)),
-      "windowNumber": event.window?.windowNumber ?? NSNull(),
-    ])
+    isResizeDragging = true
+    cursor.set()
+    appendResizeRailLog("nativePaneResize.handle.mouseDown", event: event)
     onMouseDown?(event)
   }
 
   override func mouseDragged(with event: NSEvent) {
+    cursor.set()
+    appendResizeRailLog("nativePaneResize.handle.mouseDragged", event: event)
     onMouseDragged?(event)
   }
 
   override func mouseUp(with event: NSEvent) {
+    isResizeDragging = false
+    appendResizeRailLog("nativePaneResize.handle.mouseUp", event: event)
     onMouseUp?(event)
+    if !bounds.contains(convert(event.locationInWindow, from: nil)) {
+      NSCursor.arrow.set()
+    }
   }
 }
 
@@ -26436,9 +26195,9 @@ final class TerminalPaneBorderView: NSView {
     alpha: 1
   ).cgColor
   private static let attentionBorderColor = NSColor(
-    calibratedRed: 0x65 / 255,
-    green: 0xE5 / 255,
-    blue: 0x8A / 255,
+    calibratedRed: 0x95 / 255,
+    green: 0xD7 / 255,
+    blue: 0xF6 / 255,
     alpha: 1
   ).cgColor
   private static let roundedBottomCornerRadius: CGFloat = 12
@@ -26538,8 +26297,12 @@ final class TerminalPaneBorderView: NSView {
     /**
      CDXC:NativeSessionStatus 2026-04-27-08:02
      Native Ghostty panes are outside the React workspace DOM. Mirror the
-     existing workspace UX with a selected border and a green border for
+     existing workspace UX with a selected border and a #95d7f6 border for
      done/attention sessions, without stealing terminal input.
+
+     CDXC:NativeSessionStatus 2026-06-12-02:32:
+     The attention border is the native pane's done/attention status indicator;
+     keep it on #95d7f6 with the other app surfaces.
      */
     let nextState: BorderState = isAttention ? .attention : isFocused ? .focused : .none
     guard nextState != state else {

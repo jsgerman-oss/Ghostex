@@ -105,8 +105,15 @@
 }
 
 .project-drag-ghost .group-title-row {
+  /*
+   * CDXC:ProjectDragPreview 2026-06-12-12:00:
+   * The macOS sidebar project drag ghost should keep its icon and title aligned
+   * with the grabbed header row; nudge both 15px right so they line up with the
+   * live project header during drag.
+   */
   gap: 0;
   min-height: 32px;
+  padding-left: 15px;
   width: 100%;
 }
 
@@ -845,7 +852,7 @@
    * count cluster is visible, hidden header actions leave layout entirely so
    * their flex gap does not pull the project indicators away from the edge.
    */
-  --project-status-attention-color: #73e79c;
+  --project-status-attention-color: var(--done-attention-color, #95d7f6);
   --project-status-working-color: #f8ad07;
   align-items: center;
   display: inline-flex;
@@ -1439,52 +1446,6 @@
   z-index: 28;
 }
 
-/*
- * CDXC:ProjectHeaders 2026-05-18-09:13:
- * Inactive projects should read as secondary context as a whole, including
- * their header and session list, so the active project is obvious while users
- * scan the reference sidebar.
- *
- * CDXC:ProjectHeaders 2026-05-18-09:29:
- * Inactive projects should use 50% opacity, not 70%, so the active project has
- * stronger contrast without adding a separate active highlight.
- *
- * CDXC:ProjectHeaders 2026-05-27-06:16:
- * Inactive project dimming must not apply opacity to the project group itself.
- * Parent opacity fades local session tooltip surfaces and creates a stacking
- * context that can trap those tooltips behind sticky project headers. Keep the
- * 50% inactive treatment as a shared value and apply it only to non-tooltip
- * content leaves.
- */
-.sidebar-reference-layout[data-reference-sidebar="true"]
-  .group[data-project-group="true"][data-active="false"] {
-  --reference-inactive-project-opacity: 0.5;
-}
-
-.sidebar-reference-layout[data-reference-sidebar="true"]
-  .group[data-project-group="true"][data-active="false"]
-  :is(
-    .group-collapse-button,
-    .group-title-handle,
-    .group-project-diff-stats,
-    .group-collapsed-status-counts,
-    .group-collapsed-summary,
-    .group-empty-drop-target,
-    .group-session-connector-rail,
-    .group-session-connector-button,
-    .session-frame,
-    .session-status-dot-anchored
-  ) {
-  opacity: var(--reference-inactive-project-opacity);
-}
-
-.sidebar-reference-layout[data-reference-sidebar="true"]
-  .group[data-project-group="true"][data-active="false"]
-  .group-header-actions
-  :is(.group-add-icon, .group-agent-launcher-icon, .group-agent-toggle-button > svg) {
-  opacity: var(--reference-inactive-project-opacity);
-}
-
 .sidebar-reference-layout[data-reference-sidebar="true"]
   .group[data-project-group="true"][data-dragging="true"] {
   opacity: 0.18;
@@ -1608,11 +1569,18 @@
 }
 
 /*
- * CDXC:ProjectHeaders 2026-05-18-09:26:
- * Active project indication is the absence of the inactive 50% content dimming,
- * not a persistent colored header fill. Project headers should show background
- * only while the header itself is hovered or focused.
+ * CDXC:ProjectHeaders 2026-06-12-06:22:
+ * Project rows should not dim when another project is active, and the active
+ * project should not keep a persistent header background or bold title. Prefix
+ * the active project title with a visual bullet while keeping project header
+ * backgrounds hover/focus-only.
  */
+.sidebar-reference-layout[data-reference-sidebar="true"]
+  .group[data-project-group="true"][data-active="true"]
+  .group-title::before {
+  content: "• ";
+}
+
 .sidebar-reference-layout[data-reference-sidebar="true"]
   .group[data-project-group="true"][data-active="true"]
   .group-head::before {
@@ -1621,10 +1589,16 @@
 }
 
 .sidebar-reference-layout[data-reference-sidebar="true"]
-  .group[data-project-group="true"][data-active="true"]
+  .group[data-project-group="true"]
+  .group-head::before {
+  box-shadow: none;
+}
+
+.sidebar-reference-layout[data-reference-sidebar="true"]
+  .group[data-project-group="true"]
   .group-head:hover::before,
 .sidebar-reference-layout[data-reference-sidebar="true"]
-  .group[data-project-group="true"][data-active="true"]
+  .group[data-project-group="true"]
   .group-head:has(.group-title-button:focus-visible)::before {
   background: color-mix(in srgb, var(--app-foreground) 6%, transparent);
   box-shadow: none;
@@ -1780,7 +1754,11 @@
   letter-spacing: 0;
   line-height: 1.15;
   min-height: 0;
-  padding-left: 10px;
+  /*
+   * CDXC:QuickSessions 2026-06-11-21:00:
+   * The empty Quick copy must sit 8px farther right so "No Quick Sessions" aligns under the Quick section label in the same text column as the Projects empty placeholder.
+   */
+  padding-left: 18px;
 }
 
 .sidebar-reference-layout[data-reference-sidebar="true"] .reference-sidebar-empty-state {

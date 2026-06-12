@@ -1175,7 +1175,7 @@
 
 .session-tag-colored-icon[data-session-tag="done"],
 .session-tag-agent-icon[data-session-tag="done"] {
-  color: #73e79c;
+  color: var(--done-attention-color, #95d7f6);
 }
 
 .session-tag-colored-icon[data-session-tag="bug"],
@@ -1637,7 +1637,7 @@ body.native-sidebar-body[data-native-pointer-inside="false"]
    neutral gray surface instead of the app accent's blue-tinted active color.
    CDXC:SessionStatusIndicators 2026-05-08-09:09: Working and attention status
    indicators belong against the session button's right edge; attention uses
-   #73e79c, and working uses a subtly orange spinner.
+   #95d7f6, and working uses a subtly orange spinner.
    CDXC:SessionStatusIndicators 2026-05-08-09:14: The smaller attention dot
    shifts 3px left from the shared right edge so its visual center aligns with
    the wider working spinner.
@@ -2189,7 +2189,7 @@ body.native-sidebar-body[data-native-pointer-inside="false"]
 }
 
 .sidebar-reference-layout[data-reference-sidebar="true"] .session-status-dot {
-  background: #73e79c;
+  background: var(--done-attention-color, #95d7f6);
   box-shadow: none;
   height: 7px;
   right: var(--reference-session-trailing-inset);
@@ -2206,9 +2206,9 @@ body.native-sidebar-body[data-native-pointer-inside="false"]
 
 .sidebar-reference-layout[data-reference-sidebar="true"] .session-frame[data-activity="attention"] .session-status-dot,
 .sidebar-reference-layout[data-reference-sidebar="true"] .session-status-dot-anchored[data-activity="attention"] {
-  --session-status-dot-color: #73e79c;
+  --session-status-dot-color: var(--done-attention-color, #95d7f6);
   animation: none;
-  background: #73e79c;
+  background: var(--done-attention-color, #95d7f6);
   right: calc(var(--reference-session-trailing-inset) + 6px);
 }
 
