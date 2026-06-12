@@ -86,14 +86,14 @@ describe("Cursor first-prompt auto naming", () => {
 });
 
 describe("Claude first-prompt auto naming", () => {
-  test("should generate a title and send Claude's rename command strategy for generic titles", () => {
+  test("should send a bare rename command strategy for generic titles", () => {
     /**
      * CDXC:SessionTitleSync 2026-06-12-07:08:
      * Claude Code hook activity can begin before the CLI has a meaningful
-     * session title. Ghostex should generate a first-prompt title and stage
-     * `/rename <title>` for generic Claude titles, matching Codex behavior.
+     * session title. Ghostex should stage bare `/rename` for generic Claude
+     * titles and let Claude generate the title itself.
      */
-    expect(resolveFirstPromptAutoRenameStrategy("claude")).toBe("generateTitleAndRename");
+    expect(resolveFirstPromptAutoRenameStrategy("claude")).toBe("sendBareRenameCommand");
     expect(
       explainFirstPromptAutoRenameDecision({
         agentName: "claude",
@@ -103,7 +103,7 @@ describe("Claude first-prompt auto naming", () => {
     ).toMatchObject({
       reason: "eligible",
       shouldAutoName: true,
-      strategy: "generateTitleAndRename",
+      strategy: "sendBareRenameCommand",
     });
   });
 });

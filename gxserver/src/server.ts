@@ -3839,12 +3839,14 @@ async function runGxserverFirstPromptAutoTitleJob(
       });
       return;
     }
-    const title = await generateGxserverFirstPromptSessionTitle(
-      runtime,
-      project.path,
-      decision.normalizedPrompt,
-      session.runtimeSettings,
-    );
+    const title = decision.strategy === "sendBareRenameCommand"
+      ? undefined
+      : await generateGxserverFirstPromptSessionTitle(
+          runtime,
+          project.path,
+          decision.normalizedPrompt,
+          session.runtimeSettings,
+        );
     const latestSession = repository.getSession(input.projectId, input.sessionId);
     if (!latestSession) {
       return;
@@ -3897,11 +3899,19 @@ async function runGxserverFirstPromptAutoTitleJob(
       });
       return;
     }
-    const commandText = decision.strategy === "generateTitleAndName" ? `/name ${title}` : `/rename ${title}`;
+    const commandText =
+      decision.strategy === "sendBareRenameCommand"
+        ? "/rename"
+        : decision.strategy === "generateTitleAndName"
+          ? `/name ${title}`
+          : `/rename ${title}`;
     const zmx = await (runtime.zmxLifecycle?.requireZmx ?? requireBundledZmx)();
     /*
     CDXC:GxserverSessionTitle 2026-06-05-12:43:
     Generated first-prompt titles must be staged as terminal text only. The macOS client observes the applied title transition and sends the real programmatic Enter key event, because appending a carriage return to zmx text input can insert a newline in agent prompt editors instead of submitting the staged rename command.
+
+    CDXC:GxserverSessionTitle 2026-06-12-07:08:
+    Claude's first-prompt naming path stages only `/rename` and relies on Claude to choose the title after native submits the staged command. Keep the same staged-text plus native-Enter bridge as generated Codex titles so gxserver does not write carriage returns into agent prompt editors.
     */
     await runZmxInteractionCommand(
       runtime,
@@ -3918,11 +3928,12 @@ async function runGxserverFirstPromptAutoTitleJob(
         autoTitleFromFirstPrompt: true,
         gxserverFirstPromptAutoTitleAppliedAt: new Date().toISOString(),
         gxserverFirstPromptAutoTitleReason: decision.reason,
+        gxserverFirstPromptAutoTitleShouldSubmitStagedCommand: true,
         gxserverFirstPromptAutoTitleStatus: "applied",
-        titleSource: "generated",
+        ...(title ? { titleSource: "generated" } : {}),
       },
       sessionId: latestSession.sessionId,
-      title,
+      ...(title ? { title } : {}),
     });
     observeZmxTitleForSession(runtime, updated, "first-prompt-auto-title");
     schedulePresentationSessionDelta(runtime, repository, {
@@ -3935,7 +3946,7 @@ async function runGxserverFirstPromptAutoTitleJob(
         agentName: getGxserverFirstPromptAgentName(updated),
         status: "applied",
         strategy: decision.strategy,
-        titleLength: title.length,
+        ...(title ? { titleLength: title.length } : {}),
       },
       event: "session-title.firstPromptAutoTitle",
       level: "info",
@@ -4038,7 +4049,7 @@ function decideGxserverFirstPromptAutoTitle(
   normalizedPrompt?: string;
   reason: string;
   shouldRun: boolean;
-  strategy?: "generateTitleAndRename" | "generateTitleAndName";
+  strategy?: "sendBareRenameCommand" | "generateTitleAndRename" | "generateTitleAndName";
 } {
   const status = readRuntimeText(session.runtimeSettings, "gxserverFirstPromptAutoTitleStatus");
   const normalizedPrompt = normalizeGxserverFirstPromptTitlePrompt(prompt);
@@ -4102,12 +4113,19 @@ function clearGxserverFirstPromptAutoTitleCancellation(
 
 function resolveGxserverFirstPromptAutoTitleStrategy(
   agentName: string | undefined,
-): "generateTitleAndRename" | "generateTitleAndName" | undefined {
+): "sendBareRenameCommand" | "generateTitleAndRename" | "generateTitleAndName" | undefined {
   const normalized = normalizeGxserverAgentName(agentName);
-  if (normalized === "codex" || normalized === "claude") {
+  if (normalized === "claude") {
     /*
     CDXC:GxserverSessionTitle 2026-06-12-07:08:
-    Claude Code hooks expose the first user prompt when the session starts working, but unrenamed Claude rows can remain at the generic `Claude Code` title. Treat Claude like Codex for gxserver-owned first-prompt title generation so the hook-backed flow stages `/rename <generated title>` as soon as work starts while meaningful existing titles still block automation.
+    Claude Code hooks expose the first user prompt when the session starts working, but unrenamed Claude rows can remain at the generic `Claude Code` title. Stage a bare `/rename` command for Claude instead of generating a title in gxserver because Claude can generate its own title from the active conversation after the command is submitted.
+    */
+    return "sendBareRenameCommand";
+  }
+  if (normalized === "codex") {
+    /*
+    CDXC:GxserverSessionTitle 2026-06-12-07:08:
+    Codex still needs gxserver to generate the first-prompt title before staging `/rename <generated title>`, while Claude receives only a bare `/rename` so the provider names itself.
     */
     return "generateTitleAndRename";
   }

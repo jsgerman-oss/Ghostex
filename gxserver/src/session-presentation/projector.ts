@@ -131,8 +131,14 @@ export function projectPresentationSession(
     /*
     CDXC:GxserverSessionTitle 2026-06-04-07:11:
     First-prompt title generation is gxserver-owned, but clients still own their local loading chrome. Publish a privacy-safe boolean in presentation rows so native terminal overlays, sidebar card text, and future clients can render and clear "Generating title" without reading raw prompts or duplicating server runtime-status rules.
+
+    CDXC:GxserverSessionTitle 2026-06-12-07:08:
+    gxserver stages first-prompt title commands as terminal text and native macOS submits them with a real Enter. Publish an explicit submit flag so Claude's bare `/rename` can use that bridge without marking the unchanged generic title as generated.
     */
     isGeneratingFirstPromptTitle: readText(session.runtimeSettings.gxserverFirstPromptAutoTitleStatus) === "running",
+    ...(session.runtimeSettings.gxserverFirstPromptAutoTitleShouldSubmitStagedCommand === true
+      ? { shouldSubmitStagedFirstPromptTitleCommand: true }
+      : {}),
     isPinned: session.isPinned,
     displayTitle: titleProjection.displayTitle,
     displayTitleTooltip: titleProjection.displayTitleTooltip,

@@ -673,6 +673,9 @@ test("presentation sessions expose gxserver first-prompt title generation state"
   /*
   CDXC:GxserverSessionTitle 2026-06-04-07:11:
   Clients need a server-owned loading signal for first-prompt title generation so the terminal overlay and sidebar "Generating title" text can render during gxserver-owned auto-title jobs and clear from the next presentation delta.
+
+  CDXC:GxserverSessionTitle 2026-06-12-07:08:
+  Native macOS submits staged first-prompt title commands with a real Enter after gxserver applies the command. Presentation must expose that submit signal separately from generated title provenance so Claude can receive bare `/rename` without changing the visible title first.
   */
   const project = projectFixture({});
   const snapshot = projectGxserverPresentationSnapshot({
@@ -688,6 +691,22 @@ test("presentation sessions expose gxserver first-prompt title generation state"
   });
 
   assert.equal(snapshot.sessions[0]?.isGeneratingFirstPromptTitle, true);
+
+  const appliedSnapshot = projectGxserverPresentationSnapshot({
+    projects: [project],
+    revision: 2 as GxserverPresentationRevision,
+    sessions: [
+      sessionFixture({
+        runtimeSettings: {
+          gxserverFirstPromptAutoTitleShouldSubmitStagedCommand: true,
+          gxserverFirstPromptAutoTitleStatus: "applied",
+        },
+      }),
+    ],
+  });
+
+  assert.equal(appliedSnapshot.sessions[0]?.isGeneratingFirstPromptTitle, false);
+  assert.equal(appliedSnapshot.sessions[0]?.shouldSubmitStagedFirstPromptTitleCommand, true);
 });
 
 test("agent title metadata debounce runs leading and trailing checks for a burst", () => {

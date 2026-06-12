@@ -77,10 +77,10 @@ export function resolveFirstPromptAutoRenameStrategy(
     /**
      * CDXC:SessionTitleSync 2026-06-12-07:08:
      * Claude Code can leave newly working sessions at the generic `Claude Code`
-     * title. Use the generated-title `/rename` flow for unrenamed Claude
-     * sessions so hook-detected work receives the same naming path as Codex.
+     * title. Send a bare `/rename` for unrenamed Claude sessions because
+     * Claude can generate the title itself from the active conversation.
      */
-    return "generateTitleAndRename";
+    return "sendBareRenameCommand";
   }
 
   if (normalizedAgentName === "codex") {

@@ -1379,6 +1379,7 @@ test("session state event API runs first-prompt auto-title through gxserver", as
 test("Claude hook working events run first-prompt auto-title through gxserver", async () => {
   const zmxCalls: string[] = [];
   const sendInputs: string[] = [];
+  let titleGenerationCalled = false;
   await withApiServer(
     "local",
     async ({ baseUrl, token }) => {
@@ -1407,7 +1408,7 @@ test("Claude hook working events run first-prompt auto-title through gxserver", 
 
       /*
       CDXC:GxserverSessionTitle 2026-06-12-07:08:
-      Claude Code UserPromptSubmit hooks are the first reliable signal that a newly launched Claude session is working with user text. When the row is still generically named, gxserver must claim the same generated-title job used by Codex and stage `/rename <generated title>` for the terminal.
+      Claude Code UserPromptSubmit hooks are the first reliable signal that a newly launched Claude session is working with user text. When the row is still generically named, gxserver must claim the first-prompt title flow, stage only `/rename`, and let Claude generate its own title after native submits the command.
       */
       const ingested = await requestJson(baseUrl, "/api/ingestAgentHookEvent", {
         body: {
@@ -1434,22 +1435,27 @@ test("Claude hook working events run first-prompt auto-title through gxserver", 
       assert.equal(ingested.body.result.session.agentId, "claude");
       assert.equal(ingested.body.result.session.runtimeSettings.gxserverFirstPromptAutoTitleStatus, "running");
 
-      const titledSession = await waitForSession(
+      const renamedSession = await waitForSession(
         baseUrl,
         token,
         project.projectId,
         session.sessionId,
         (candidate) => candidate.runtimeSettings?.gxserverFirstPromptAutoTitleStatus === "applied",
       );
-      assert.equal(titledSession.title, "Claude Hook Naming");
-      assert.equal(titledSession.runtimeSettings.titleSource, "generated");
-      assert.equal(titledSession.runtimeSettings.autoTitleFromFirstPrompt, true);
-      assert.deepEqual(sendInputs, ["/rename Claude Hook Naming"]);
+      assert.equal(renamedSession.title, "Claude Code");
+      assert.equal(renamedSession.runtimeSettings.titleSource, "placeholder");
+      assert.equal(renamedSession.runtimeSettings.autoTitleFromFirstPrompt, true);
+      assert.equal(renamedSession.runtimeSettings.gxserverFirstPromptAutoTitleShouldSubmitStagedCommand, true);
+      assert.equal(titleGenerationCalled, false);
+      assert.deepEqual(sendInputs, ["/rename"]);
       assert.ok(zmxCalls.some((script) => script.includes('exec "$zmx_bin" send "$zmx_session"')));
     },
     {
       firstPromptTitleGeneration: {
-        generateTitle: async () => "Claude Hook Naming",
+        generateTitle: async () => {
+          titleGenerationCalled = true;
+          throw new Error("Claude bare rename should not call title generation");
+        },
       },
       zmxLifecycle: fakeZmxLifecycle(zmxCalls, () => 0, { stdinInputs: sendInputs }),
     },

@@ -334,7 +334,7 @@ import {
   upsertPresentationProject,
   upsertPresentationProjectGroup,
 } from "./gxserver-presentation-cache";
-import { shouldSubmitStagedGeneratedFirstPromptTitle } from "./first-prompt-title-submit";
+import { shouldSubmitStagedFirstPromptTitleCommand } from "./first-prompt-title-submit";
 import type {
   GxserverAgentActivityState,
   GxserverAgentResumePlan,
@@ -1264,7 +1264,7 @@ let storedAgents: StoredSidebarAgent[] = [];
 let storedAgentOrder: string[] = [];
 let agents: SidebarAgentButton[] = [];
 const gitWorkflowToastBySessionId = new Map<string, { title: string; toastId: string }>();
-const submittedFirstPromptGeneratedTitleEnterBySessionKey = new Set<string>();
+const submittedFirstPromptTitleCommandEnterBySessionKey = new Set<string>();
 const NATIVE_INTERNAL_PROMPT_GENERATION_ENVIRONMENT_KEYS = [
   "GHOSTEX_GLOBAL_SESSION_REF",
   "GHOSTEX_GXSERVER_AUTH_TOKEN_FILE",
@@ -2997,8 +2997,8 @@ function applyGxserverPresentationSessionToNativePaneChrome(
 
   let didChange = false;
   const wasGeneratingFirstPromptTitle = terminalState?.firstPromptAutoRenameInProgress === true;
-  const shouldSubmitGeneratedFirstPromptTitleEnter =
-    shouldSubmitStagedGeneratedFirstPromptTitle(wasGeneratingFirstPromptTitle, presentation) &&
+  const shouldSubmitFirstPromptTitleCommandEnter =
+    shouldSubmitStagedFirstPromptTitleCommand(wasGeneratingFirstPromptTitle, presentation) &&
     localSession?.kind === "terminal";
   if (terminalState) {
     const previousActivity = terminalState.activity;
@@ -3048,8 +3048,11 @@ function applyGxserverPresentationSessionToNativePaneChrome(
 
       CDXC:GxserverSessionTitle 2026-06-09-20:21:
       Keep the blocking "Generating title" overlay visible until after the native Enter bridge submits the staged generated rename. Clearing this flag before sendTerminalEnter re-enables user input while `/rename <title>` is still sitting in the agent prompt editor.
+
+      CDXC:GxserverSessionTitle 2026-06-12-07:08:
+      Claude first-prompt naming stages a bare `/rename` command rather than a generated title. Use gxserver's explicit staged-command submit flag so native sends the same real Enter without relying on `titleSource: generated`.
       */
-      if (shouldSubmitGeneratedFirstPromptTitleEnter && presentation.isGeneratingFirstPromptTitle === false) {
+      if (shouldSubmitFirstPromptTitleCommandEnter && presentation.isGeneratingFirstPromptTitle === false) {
         terminalState.firstPromptAutoRenameInProgress = true;
       } else {
         terminalState.firstPromptAutoRenameInProgress = presentation.isGeneratingFirstPromptTitle;
@@ -3057,10 +3060,10 @@ function applyGxserverPresentationSessionToNativePaneChrome(
       }
     }
   }
-  if (shouldSubmitGeneratedFirstPromptTitleEnter) {
+  if (shouldSubmitFirstPromptTitleCommandEnter) {
     const sessionKey = gxserverTitleProjectionKey(presentation.projectId, presentation.sessionId);
-    if (!submittedFirstPromptGeneratedTitleEnterBySessionKey.has(sessionKey)) {
-      submittedFirstPromptGeneratedTitleEnterBySessionKey.add(sessionKey);
+    if (!submittedFirstPromptTitleCommandEnterBySessionKey.has(sessionKey)) {
+      submittedFirstPromptTitleCommandEnterBySessionKey.add(sessionKey);
       window.setTimeout(() => {
         const nativeSessionId = nativeSessionIdForProjectSidebarSession(
           presentation.projectId,
