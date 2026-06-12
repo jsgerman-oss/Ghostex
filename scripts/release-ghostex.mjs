@@ -1554,10 +1554,17 @@ async function updateHomebrew(version, artifacts, options) {
  * Homebrew must stop publishing new Intel release URLs. Normalize the current
  * cask to one arm64 DMG URL and one SHA while preserving the git history that
  * still contains v4.1.0 and older Intel cask revisions.
+ *
+ * CDXC:HomebrewRelease 2026-06-12-13:07:
+ * Homebrew 6 style checks reject the wrapper block unless generated comments
+ * and control flow are cask-style clean. Keep this block aligned with the live
+ * 4.10.0 cask so manual Homebrew recovery is not repeated on the next release.
  */
 function normalizeGhostexCliCask(cask) {
   const cliCommandBlock = `  # CDXC:CliBranding 2026-05-26-15:11: Install gx only when another tool does not already own that command name.
-  # CDXC:CliInstall 2026-06-12-09:31: Homebrew writes wrapper files in HOMEBREW_PREFIX/bin instead of binary symlinks into Ghostex.app, because macOS can kill direct app-bundled script execution during policy assessment.
+  # CDXC:CliInstall 2026-06-12-09:31: Homebrew writes wrapper files in
+  # HOMEBREW_PREFIX/bin instead of binary symlinks into Ghostex.app because
+  # macOS can kill direct app-bundled script execution during policy assessment.
   preflight do
     commands = ["ghostex", "gx"]
     commands.each do |command|
@@ -1571,7 +1578,9 @@ function normalizeGhostexCliCask(cask) {
 
         command_target = command_path.symlink? ? command_path.readlink.to_s : command_path.to_s
         command_content = command_path.file? ? command_path.read : ""
-        next if command_content.include?("CDXC:CliInstall 2026-06-12-09:31") && command_content.include?("ghostex-cli.mjs")
+        if command_content.include?("CDXC:CliInstall 2026-06-12-09:31") && command_content.include?("ghostex-cli.mjs")
+          next
+        end
         next if command_target.include?("ghostex.app/Contents/Resources/CLI/#{command}")
         next if command_target.include?("ghostex.app/Contents/Resources/Web/cli/#{command}")
         next if command == "ghostex" && command_target.include?("ghostex.app/Contents/MacOS/ghostex")
@@ -1585,6 +1594,7 @@ function normalizeGhostexCliCask(cask) {
   postflight do
     cli_script = "#{appdir}/ghostex.app/Contents/Resources/CLI/ghostex-cli.mjs"
     bin_dir = HOMEBREW_PREFIX/"bin"
+    policy_attributes = ["com.apple.provenance", "com.apple.quarantine"]
     bin_dir.mkpath
 
     ["ghostex", "gx"].each do |command|
@@ -1593,7 +1603,9 @@ function normalizeGhostexCliCask(cask) {
         command_path.delete
       elsif command_path.exist?
         command_content = command_path.file? ? command_path.read : ""
-        command_path.delete if command_content.include?("CDXC:CliInstall 2026-06-12-09:31") && command_content.include?("ghostex-cli.mjs")
+        if command_content.include?("CDXC:CliInstall 2026-06-12-09:31") && command_content.include?("ghostex-cli.mjs")
+          command_path.delete
+        end
       end
 
       command_path.write <<~EOS
@@ -1603,7 +1615,7 @@ function normalizeGhostexCliCask(cask) {
         exec /usr/bin/env node "#{cli_script}" "$@"
       EOS
       command_path.chmod 0755
-      ["com.apple.provenance", "com.apple.quarantine"].each do |attribute|
+      policy_attributes.each do |attribute|
         system "/usr/bin/xattr", "-d", attribute, command_path.to_s, out: File::NULL, err: File::NULL
       end
     end
@@ -1612,10 +1624,12 @@ function normalizeGhostexCliCask(cask) {
   uninstall_preflight do
     ["ghostex", "gx"].each do |command|
       command_path = HOMEBREW_PREFIX/"bin/#{command}"
-      next unless command_path.exist? && command_path.file?
+      next if !command_path.exist? || !command_path.file?
 
       command_content = command_path.read
-      command_path.delete if command_content.include?("CDXC:CliInstall 2026-06-12-09:31") && command_content.include?("ghostex-cli.mjs")
+      if command_content.include?("CDXC:CliInstall 2026-06-12-09:31") && command_content.include?("ghostex-cli.mjs")
+        command_path.delete
+      end
     end
   end`;
 
