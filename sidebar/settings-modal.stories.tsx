@@ -25,7 +25,7 @@ function SettingsModalStory({
 }: {
   cuaPermissionsGranted?: boolean;
   initialSettings?: ghostexSettings;
-  initialTab?: "settings" | "ghostty" | "integrations" | "projects" | "agents" | "actions" | "openTargets" | "hotkeys";
+  initialTab?: "settings" | "integrations" | "projects" | "agents" | "actions" | "openTargets" | "hotkeys";
 }) {
   const [settings, setSettings] = useState<ghostexSettings>(initialSettings);
   const [agentHookStatus, setAgentHookStatus] = useState<SidebarAgentHookStatusMessage>({
@@ -64,7 +64,7 @@ function SettingsModalStory({
   return (
     <div
       style={{
-        background: "#050505",
+        background: "#0e0e0e",
         height: "100vh",
         width: "100vw",
       }}

@@ -13,11 +13,70 @@
  * The native full-window modal host uses the sidebar modal components without
  * the sidebar shell. Keep that host transparent and restore full viewport width
  * so dialogs are centered over the app instead of sized for sidebar chrome.
+ *
+ * CDXC:AppModals 2026-06-11-19:59:
+ * Native child-window modals need their modal-host document background to
+ * match the AppKit panel color (#0e0e0e) so the area behind reused React
+ * components does not show a transparent or themed sidebar layer.
+ *
+ * CDXC:AppModals 2026-06-11-20:28:
+ * The native modal window background must be #0e0e0e across every web layer
+ * behind React components. Apply it to html/body/root plus Radix and legacy
+ * modal shells so older darker story/frame defaults cannot show through.
+ *
+ * CDXC:AppModals 2026-06-11-20:43:
+ * Native modal windows should not show a darker #050505 halo around the React
+ * component. Paint the viewport gutter, overlay, outer dialog border, and
+ * shadcn shadow/ring area as #0e0e0e so transparent pixels and default dialog
+ * chrome are visually invisible against the AppKit window.
  */
 .app-modal-host-body {
   background: transparent;
   padding: 0;
   zoom: 1;
+}
+
+html.app-modal-host-native-window-document,
+html:has(body.app-modal-host-native-window-body) {
+  background: #0e0e0e;
+  background-color: #0e0e0e;
+  min-height: 100%;
+}
+
+.app-modal-host-native-window-body {
+  background: #0e0e0e;
+  background-color: #0e0e0e;
+  margin: 0;
+  min-height: 100vh;
+}
+
+.app-modal-host-native-window-body #root {
+  background: #0e0e0e;
+  background-color: #0e0e0e;
+  min-height: 100vh;
+}
+
+.app-modal-host-native-window-body [data-slot="dialog-overlay"],
+.app-modal-host-native-window-body [data-slot="dialog-content"],
+.app-modal-host-native-window-body .confirm-modal-root,
+.app-modal-host-native-window-body .confirm-modal-backdrop,
+.app-modal-host-native-window-body .confirm-modal {
+  background: #0e0e0e !important;
+  background-color: #0e0e0e !important;
+}
+
+.app-modal-host-native-window-body [data-slot="dialog-overlay"] {
+  -webkit-backdrop-filter: none !important;
+  backdrop-filter: none !important;
+}
+
+.app-modal-host-native-window-body [data-slot="dialog-content"],
+.app-modal-host-native-window-body .confirm-modal {
+  border-color: #0e0e0e !important;
+  box-shadow: none !important;
+  outline-color: #0e0e0e !important;
+  --tw-ring-color: #0e0e0e !important;
+  --tw-ring-offset-color: #0e0e0e !important;
 }
 
 .app-modal-host-body #root {
@@ -57,9 +116,13 @@
 
 /*
  * CDXC:PromptEditor 2026-05-19-10:05:
- * Startup prewarm opens one hidden prompt-editor session under the macOS
- * loading overlay. Keep that warm-up panel invisible and non-interactive so
- * users never see or click it while Monaco initializes.
+ * Legacy prompt-editor prewarm messages can still render a hidden editor while
+ * Monaco initializes. Keep that compatibility state invisible and
+ * non-interactive.
+ *
+ * CDXC:PromptEditor 2026-06-11-22:51:
+ * The active rich prompt editor now lives in a native child window, so this
+ * hidden full-workspace overlay state is not used for normal Ctrl+G opens.
  */
 .floating-prompt-editor-root[data-prewarm="true"] {
   opacity: 0;
@@ -84,6 +147,33 @@
   overflow: hidden;
   pointer-events: auto;
   position: absolute;
+}
+
+.app-modal-host-native-window-body .floating-prompt-editor-root {
+  /*
+   * CDXC:PromptEditor 2026-06-11-22:51:
+   * The rich prompt editor is rendered directly inside a native child window.
+   * Fill that window instead of acting like a positioned overlay panel inside a
+   * transparent full-workspace modal host.
+   */
+  background: #0e0e0e;
+  pointer-events: auto;
+  z-index: 0;
+}
+
+.app-modal-host-native-window-body .floating-prompt-editor-panel {
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  height: 100vh;
+  left: 0;
+  position: fixed;
+  top: 0;
+  width: 100vw;
+}
+
+.app-modal-host-native-window-body .floating-prompt-editor-resize {
+  display: none;
 }
 
 .floating-prompt-editor-titlebar {
@@ -802,6 +892,17 @@
    */
   max-width: min(546px, calc(100vw - 32px));
   width: min(546px, calc(100vw - 32px));
+}
+
+.app-modal-host-native-window-body .previous-sessions-modal {
+  /*
+   * CDXC:PreviousSessions 2026-06-11-20:39:
+   * The native Previous Sessions child window is sized to the 546px React
+   * component plus the modal host's 12px viewport padding. Let the picker use
+   * the fitted window height instead of the old 80vh cap, which centered a
+   * smaller React modal inside an oversized native window.
+   */
+  max-height: calc(100vh - 24px);
 }
 
 .app-modal-host-body .pinned-prompts-modal,
@@ -3120,8 +3221,15 @@
    * Settings. Keep the textarea compact by default while still allowing longer
    * pasted naming text to expand, and expose separate Cancel, Rename, and
    * Generate Name actions.
+   *
+   * CDXC:SidebarRename 2026-06-12-05:05:
+   * The macOS Rename Session dialog needs a 20px wider React surface and 15px
+   * less horizontal content padding so the textarea and controls have more
+   * usable width without increasing the fixed 400px native height.
    */
-  max-width: min(520px, calc(100vw - 2rem));
+  max-width: min(540px, calc(100vw - 2rem));
+  padding-left: 9px;
+  padding-right: 9px;
 }
 
 .add-repository-modal-shadcn {
@@ -3362,15 +3470,16 @@
 }
 
 .settings-management-header {
-  display: grid;
-  gap: 8px;
+  align-items: center;
+  display: flex;
+  gap: 16px;
+  justify-content: space-between;
 }
 
-.settings-management-header-row {
-  align-items: flex-start;
-  display: flex;
-  gap: 12px;
-  justify-content: space-between;
+.settings-management-header-text {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
 }
 
 .settings-management-heading {
@@ -3384,34 +3493,91 @@
 
 .settings-management-description {
   color: var(--app-muted);
-  flex: 1;
   font-size: 12px;
   line-height: 1.5;
   margin: 0;
-  min-width: 0;
-  white-space: nowrap;
 }
 
 .settings-management-help-button {
-  color: color-mix(in srgb, var(--app-muted) 90%, var(--app-foreground) 10%);
   flex-shrink: 0;
-  font-size: 11px;
-  font-weight: 500;
-  gap: 4px;
-  height: auto;
-  padding: 2px 6px;
+  gap: 6px;
 }
 
-.settings-management-help-button:hover,
-.settings-management-help-button:focus-visible,
 .settings-management-help-button[data-popup-open] {
-  background: color-mix(in srgb, var(--app-card-active) 55%, transparent);
-  color: var(--app-foreground);
+  background: color-mix(in srgb, var(--app-card-active) 70%, transparent);
+  border-color: color-mix(in srgb, var(--app-border) 100%, transparent);
 }
 
 .settings-management-list {
   display: grid;
   gap: 8px;
+}
+
+/*
+ * CDXC:RemoteMachines 2026-06-12-04:11:
+ * Saved remote machine cards should sit two per row in the Remote tab, with a small gutter between machines, so multiple machines are scannable without each card consuming the full modal width.
+ *
+ * CDXC:RemoteMachines 2026-06-12-04:28:
+ * The empty Remote machines placeholder follows the same half-width grid slot as a saved machine instead of spanning the row, preserving the two-column rhythm even before any machines are saved.
+ */
+.settings-remote-machine-list {
+  align-items: start;
+  gap: 8px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+@media (max-width: 720px) {
+  .settings-remote-machine-list {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/*
+ * CDXC:RemoteMachines 2026-06-12-05:42:
+ * The empty placeholder fills the grid slot beside the add-machine card, so it stretches to that card's height and centers a dashed-bordered "No machines yet" prompt — the Remote tab reads as two equal halves before any machine exists, not a small box above a wide form.
+ */
+.settings-remote-machine-empty {
+  align-items: center;
+  align-self: stretch;
+  background: color-mix(in srgb, var(--app-card-active) 22%, transparent);
+  border: 1px dashed color-mix(in srgb, var(--app-border) 90%, transparent);
+  border-radius: 0;
+  display: flex;
+  flex-direction: row;
+  gap: 12px;
+  justify-content: center;
+  min-height: 132px;
+  padding: 16px;
+}
+
+.settings-remote-machine-empty-icon {
+  align-items: center;
+  background: color-mix(in srgb, var(--app-card-active) 55%, transparent);
+  color: color-mix(in srgb, var(--app-muted) 80%, var(--app-foreground) 20%);
+  display: flex;
+  flex-shrink: 0;
+  height: 34px;
+  justify-content: center;
+  width: 34px;
+}
+
+.settings-remote-machine-empty-text {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.settings-remote-machine-empty-title {
+  color: var(--app-foreground);
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.2;
+}
+
+.settings-remote-machine-empty-hint {
+  color: var(--app-muted);
+  font-size: 11px;
+  line-height: 1.45;
 }
 
 .settings-management-row {
@@ -3473,6 +3639,16 @@
 
 .settings-remote-machine-add-summary {
   padding-block: 11px;
+}
+
+.settings-remote-machine-add-icon {
+  align-items: center;
+  background: color-mix(in srgb, var(--app-card-active) 70%, transparent);
+  color: color-mix(in srgb, var(--app-muted) 70%, var(--app-foreground) 30%);
+  display: flex;
+  height: 26px;
+  justify-content: center;
+  width: 26px;
 }
 
 .settings-remote-machine-add-title {

@@ -64,7 +64,7 @@ import { SidebarSessionSearchField } from "./sidebar-session-search-overlay";
 import {
   IconAsterisk,
   IconAlertTriangle,
-  IconChevronDown,
+  IconChevronRight,
   IconCircleCheckFilled,
   IconCircleX,
   IconCodeDots,
@@ -82,6 +82,7 @@ import {
   IconTerminal2,
   IconTools,
   IconTrash,
+  IconX,
 } from "@tabler/icons-react";
 import { COMPLETION_SOUND_OPTIONS, type CompletionSoundSetting } from "../shared/completion-sound";
 import { GHOSTEX_RECOMMENDED_GHOSTTY_CONFIG_LINES } from "../shared/ghostty-config-actions";
@@ -157,6 +158,7 @@ import {
   type FirstLaunchSetupMainSettingKey,
 } from "../shared/first-launch-setup-settings";
 import {
+  AGENT_ACCEPT_ALL_MODE_SELECT_ITEMS,
   supportsAgentAcceptAll,
   type AgentAcceptAllMode,
 } from "../shared/sidebar-agent-accept-all";
@@ -209,6 +211,7 @@ const HOTKEY_SETTINGS_SECTIONS: readonly HotkeySettingsSectionDefinition[] = [
       "createSession",
       "openCommandPalette",
       "openSettings",
+      "toggleSidebarCollapsed",
       "moveSidebar",
     ],
     title: "General",
@@ -296,7 +299,6 @@ type SettingModificationProps = {
 
 export type SettingsModalTab =
   | "settings"
-  | "ghostty"
   | "integrations"
   | "osIntegration"
   | "remote"
@@ -312,6 +314,9 @@ type MainSettingsSectionId =
   | "statusIndicators"
   | "sessionCards"
   | "workspace"
+  | "terminal"
+  | "terminalBehavior"
+  | "terminalScrolling"
   | "browser"
   | "editor"
   | "autoSleep"
@@ -361,12 +366,43 @@ const MAIN_SETTINGS_SECTION_SETTING_KEYS: Record<
     "hideLastActiveTimeOnSessionCards",
     "showSessionCloseContextMenuAction",
     "showSessionCommandCopyActions",
+    "showSessionDetailsCopyAction",
   ],
   workspace: [
     "workspaceActivePaneBorderColor",
     "workspaceBackgroundColor",
     "commandsPanelDefaultHeightPx",
     "debuggingMode",
+  ],
+  terminal: [
+    "ghosttySettingsActions",
+    "terminalGhosttyTheme",
+    "terminalFontFamily",
+    "terminalFontSize",
+    "terminalFontWeight",
+    "terminalLineHeight",
+    "terminalLetterSpacing",
+    "terminalCursorStyle",
+    "terminalCursorStyleBlink",
+    "sessionPersistenceProvider",
+    "showSessionIdInTerminalPanes",
+    "promptEditorBackend",
+    "customPromptEditorCommand",
+  ],
+  terminalBehavior: [
+    "terminalScrollbackLimitMb",
+    "terminalCopyOnSelect",
+    "terminalConfirmCloseSurface",
+    "terminalClipboardTrimTrailingSpaces",
+    "terminalClipboardPasteProtection",
+    "terminalPastePreviewableImages",
+    "terminalMouseHideWhileTyping",
+    "terminalScrollbar",
+  ],
+  terminalScrolling: [
+    "terminalMouseScrollMultiplierPrecision",
+    "terminalMouseScrollMultiplierDiscrete",
+    "terminalScrollToBottomWhenTyping",
   ],
   editor: [
     "defaultEditorCommand",
@@ -412,8 +448,6 @@ const MAIN_SETTINGS_SECTION_SETTING_KEYS: Record<
   storage: [],
 };
 
-type GhosttySettingsSectionId = "terminal" | "terminalBehavior" | "terminalScrolling";
-
 type HotkeySettingsSectionId =
   | "general"
   | "paneActions"
@@ -444,8 +478,8 @@ function getInitialSettingsModalTab(initialTab: SettingsModalTab): SettingsModal
   return rememberedSettingsModalTab ?? initialTab;
 }
 
-function isSearchableSettingsModalTab(tab: SettingsModalTab): tab is "settings" | "ghostty" | "hotkeys" {
-  return tab === "settings" || tab === "ghostty" || tab === "hotkeys";
+function isSearchableSettingsModalTab(tab: SettingsModalTab): tab is "settings" | "hotkeys" {
+  return tab === "settings" || tab === "hotkeys";
 }
 
 function hasActiveHotkeyRecorder(): boolean {
@@ -579,7 +613,6 @@ export function SettingsModal({
   const isFirstLaunchSetup = presentation === "firstLaunchSetup";
   const [draft, setDraft] = useState<ghostexSettings>(normalizeghostexSettings(settings));
   const [settingsSearchQuery, setSettingsSearchQuery] = useState("");
-  const [ghosttySearchQuery, setGhosttySearchQuery] = useState("");
   const [hotkeysSearchQuery, setHotkeysSearchQuery] = useState("");
   const [activeTab, setActiveTabState] = useState<SettingsModalTab>(() =>
     getInitialSettingsModalTab(initialTab),
@@ -621,18 +654,11 @@ export function SettingsModal({
     if (activeTab === "hotkeys") {
       return hotkeysSearchQuery;
     }
-    if (activeTab === "ghostty") {
-      return ghosttySearchQuery;
-    }
     return settingsSearchQuery;
   };
   const setActiveSearchQuery = (nextQuery: string) => {
     if (activeTab === "hotkeys") {
       setHotkeysSearchQuery(nextQuery);
-      return;
-    }
-    if (activeTab === "ghostty") {
-      setGhosttySearchQuery(nextQuery);
       return;
     }
     setSettingsSearchQuery(nextQuery);
@@ -696,8 +722,6 @@ export function SettingsModal({
      */
     if (nextTab === "hotkeys") {
       setHotkeysSearchQuery(nextQuery);
-    } else if (nextTab === "ghostty") {
-      setGhosttySearchQuery(nextQuery);
     } else if (nextTab === "settings") {
       setSettingsSearchQuery(nextQuery);
     }
@@ -1018,6 +1042,11 @@ export function SettingsModal({
         subtitle: "Show Copy resume and Copy attach command in session context menus.",
         title: "Show command copy actions",
       },
+      {
+        key: "showSessionDetailsCopyAction",
+        subtitle: "Show Copy details in session context menus.",
+        title: "Show Copy details option",
+      },
     ]),
     statusIndicators: getSettingsSectionSearch(settingsSearchQuery, "Status Indicators", [
       /*
@@ -1145,7 +1174,7 @@ export function SettingsModal({
         title: "Ghostex folder",
       },
     ]),
-    terminal: getSettingsSectionSearch(ghosttySearchQuery, "Terminal", [
+    terminal: getSettingsSectionSearch(settingsSearchQuery, "Terminal", [
       {
         key: "ghosttySettingsActions",
         options: [
@@ -1237,7 +1266,7 @@ export function SettingsModal({
           ]
         : []),
     ]),
-    terminalBehavior: getSettingsSectionSearch(ghosttySearchQuery, "Terminal Behavior", [
+    terminalBehavior: getSettingsSectionSearch(settingsSearchQuery, "Terminal Behavior", [
       {
         key: "terminalScrollbackLimitMb",
         subtitle: "Set scrollback memory per terminal surface.",
@@ -1282,7 +1311,7 @@ export function SettingsModal({
         title: "Scrollbar",
       },
     ]),
-    terminalScrolling: getSettingsSectionSearch(ghosttySearchQuery, "Terminal Scrolling", [
+    terminalScrolling: getSettingsSectionSearch(settingsSearchQuery, "Terminal Scrolling", [
       {
         key: "terminalMouseScrollMultiplierPrecision",
         subtitle: "Trackpads and high-resolution scroll wheels. Ghostty default is 1.",
@@ -1352,6 +1381,23 @@ export function SettingsModal({
       searchResult: settingsSearch.workspace,
       title: "Workspace",
     },
+    /*
+     * CDXC:SettingsNavigation 2026-06-12-04:13:
+     * Ghostty terminal controls belong on the main Settings page so one search query can find app settings and terminal settings together.
+     */
+    { id: "terminal", ref: ghosttyTerminalSectionRef, searchResult: settingsSearch.terminal, title: "Terminal" },
+    {
+      id: "terminalBehavior",
+      ref: ghosttyBehaviorSectionRef,
+      searchResult: settingsSearch.terminalBehavior,
+      title: "Terminal Behavior",
+    },
+    {
+      id: "terminalScrolling",
+      ref: ghosttyScrollingSectionRef,
+      searchResult: settingsSearch.terminalScrolling,
+      title: "Terminal Scrolling",
+    },
     { id: "editor", ref: editorSectionRef, searchResult: settingsSearch.editor, title: "Editor" },
     {
       id: "autoSleep",
@@ -1363,35 +1409,7 @@ export function SettingsModal({
     { id: "sounds", ref: soundsSectionRef, searchResult: settingsSearch.sounds, title: "Sounds" },
     { id: "storage", ref: storageSectionRef, searchResult: settingsSearch.storage, title: "Storage" },
   ];
-  const ghosttySettingsSectionNavigation: Array<{
-    id: GhosttySettingsSectionId;
-    ref: RefObject<HTMLDivElement | null>;
-    searchResult: SettingsSectionSearchResult;
-    title: string;
-  }> = [
-    {
-      id: "terminal",
-      ref: ghosttyTerminalSectionRef,
-      searchResult: settingsSearch.terminal,
-      title: "General",
-    },
-    {
-      id: "terminalBehavior",
-      ref: ghosttyBehaviorSectionRef,
-      searchResult: settingsSearch.terminalBehavior,
-      title: "Behavior",
-    },
-    {
-      id: "terminalScrolling",
-      ref: ghosttyScrollingSectionRef,
-      searchResult: settingsSearch.terminalScrolling,
-      title: "Scrolling",
-    },
-  ];
   const hasVisibleMainSettings = mainSettingsSectionNavigation.some((section) =>
-    hasVisibleSettingsSearchResult(section.searchResult),
-  );
-  const hasVisibleGhosttySettings = ghosttySettingsSectionNavigation.some((section) =>
     hasVisibleSettingsSearchResult(section.searchResult),
   );
   const visibleFirstLaunchMainSettings =
@@ -1438,11 +1456,14 @@ export function SettingsModal({
       sessionCards: sessionCardsSectionRef,
       sidebar: sidebarSectionRef,
       sounds: soundsSectionRef,
-      statusIndicators: statusIndicatorsSectionRef,
-      storage: storageSectionRef,
-      workspace: workspaceSectionRef,
-      agents: agentsOnboardingSectionRef,
-    });
+	      statusIndicators: statusIndicatorsSectionRef,
+	      storage: storageSectionRef,
+	      terminal: ghosttyTerminalSectionRef,
+	      terminalBehavior: ghosttyBehaviorSectionRef,
+	      terminalScrolling: ghosttyScrollingSectionRef,
+	      workspace: workspaceSectionRef,
+	      agents: agentsOnboardingSectionRef,
+	    });
     const animationFrame = requestAnimationFrame(() => {
       targetSectionRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
     });
@@ -1458,9 +1479,13 @@ export function SettingsModal({
     }
     /**
      * CDXC:SettingsTabs 2026-05-13-16:05
-     * Saving a control in Ghostty, Hotkeys, Agents, Actions, or Open In updates
+     * Saving a control in Hotkeys, Agents, Actions, or Open In updates
      * the incoming settings prop. That prop sync must not reset the selected
      * tab; tab changes are owned by explicit navigation and initial open state.
+     *
+     * CDXC:SettingsNavigation 2026-06-12-04:13:
+     * Ghostty terminal controls now save from the main Settings tab, so the tab
+     * sync rule no longer treats Ghostty as a separate navigation target.
      */
     setDraft(normalizeghostexSettings(settings));
   }, [isFirstLaunchSetup, isOpen, settings]);
@@ -1533,6 +1558,12 @@ export function SettingsModal({
     if (pendingSettings) {
       onChange(pendingSettings);
     }
+  };
+
+  const closeSettingsModal = () => {
+    rememberActiveScrollPosition();
+    flushPendingSettings();
+    onClose();
   };
 
   const applySettings = (nextSettings: ghostexSettings) => {
@@ -1677,15 +1708,24 @@ export function SettingsModal({
         }}
         onScrollCapture={handleSettingsModalScrollCapture}
         ref={dialogContentRef}
+        showCloseButton={false}
       >
+        <button
+          aria-label="Close Settings"
+          className="ghostex-modal-icon-close"
+          onClick={closeSettingsModal}
+          type="button"
+        >
+          <IconX aria-hidden="true" />
+        </button>
         <TooltipProvider delayDuration={300}>
           <Tabs
             className="flex min-h-0 flex-1 flex-col"
             onValueChange={(value) => setActiveTab(value as SettingsModalTab)}
             value={activeTab}
           >
-          <DialogHeader className="px-5 pt-5 pb-3">
-            <DialogTitle className="text-xl">
+          <DialogHeader className="ghostex-modal-heading-bar">
+            <DialogTitle className="ghostex-modal-heading-title">
               {isFirstLaunchSetup ? "Get started" : "Settings"}
             </DialogTitle>
             {isFirstLaunchSetup ? (
@@ -1695,16 +1735,17 @@ export function SettingsModal({
             ) : null}
             {/*
              * CDXC:UnifiedSettings 2026-05-09-15:30
-             * Settings is the single configuration surface. Ghostty owns the
-             * second tab so terminal config no longer crowds the main tab,
-             * while Agents, Actions, Open In, and Hotkeys keep their routed
-             * entry points in the same dialog.
+             * Settings is the single configuration surface for app controls,
+             * terminal controls, Agents, Actions, Open In, and Hotkeys.
+             *
+             * CDXC:SettingsNavigation 2026-06-12-04:13:
+             * Ghostty terminal settings are merged into the main Settings page
+             * so one Settings search covers app settings and terminal settings.
              */}
             {!isFirstLaunchSetup ? (
             <div className="settings-modal-tabs-scroll mt-3">
               <TabsList>
                 <TabsTrigger value="settings">Settings</TabsTrigger>
-                <TabsTrigger value="ghostty">Ghostty</TabsTrigger>
                 <TabsTrigger value="osIntegration">OS Integration</TabsTrigger>
                 <TabsTrigger value="integrations">Integrations</TabsTrigger>
                 <TabsTrigger value="remote">Remote</TabsTrigger>
@@ -1716,40 +1757,25 @@ export function SettingsModal({
               </TabsList>
             </div>
             ) : null}
-            {!isFirstLaunchSetup &&
-            (activeTab === "settings" || activeTab === "ghostty" || activeTab === "hotkeys") ? (
+            {!isFirstLaunchSetup && (activeTab === "settings" || activeTab === "hotkeys") ? (
               <SidebarSessionSearchField
                 ariaLabel={
                   activeTab === "hotkeys"
                     ? "Search hotkeys"
-                    : activeTab === "ghostty"
-                      ? "Search Ghostty settings"
-                      : "Search settings"
+                    : "Search settings"
                 }
                 clearLabel={
                   activeTab === "hotkeys"
                     ? "Clear hotkeys search"
-                    : activeTab === "ghostty"
-                      ? "Clear Ghostty settings search"
-                      : "Clear settings search"
+                    : "Clear settings search"
                 }
                 inputClassName="settings-modal-search-input"
                 inputRef={searchInputRef}
                 placeholder={activeTab === "hotkeys" ? "Search hotkeys" : "Search settings"}
-                query={
-                  activeTab === "hotkeys"
-                    ? hotkeysSearchQuery
-                    : activeTab === "ghostty"
-                      ? ghosttySearchQuery
-                      : settingsSearchQuery
-                }
+                query={activeTab === "hotkeys" ? hotkeysSearchQuery : settingsSearchQuery}
                 setQuery={(nextQuery) => {
                   if (activeTab === "hotkeys") {
                     setHotkeysSearchQuery(nextQuery);
-                    return;
-                  }
-                  if (activeTab === "ghostty") {
-                    setGhosttySearchQuery(nextQuery);
                     return;
                   }
                   setSettingsSearchQuery(nextQuery);
@@ -1770,7 +1796,11 @@ export function SettingsModal({
           {/* CDXC:SettingsNavigation 2026-05-13-08:05
               The main Settings tab uses a left section navigator inside the
               widened modal so long configuration groups remain directly
-              reachable without mixing Ghostty terminal controls into this tab. */}
+              reachable.
+
+              CDXC:SettingsNavigation 2026-06-12-04:13:
+              Terminal sections share this navigator with app settings so search
+              and section jumps operate on one main Settings page. */}
           <div className="settings-main-tab-layout">
             <aside aria-label="Settings sections" className="settings-section-sidebar">
               {(isFirstLaunchSetup
@@ -1814,7 +1844,7 @@ export function SettingsModal({
             ) : null}
             {mainSectionVisible("sidebar", settingsSearch.sidebar) ? (
               <SettingsSection sectionRef={sidebarSectionRef} title="Sidebar">
-              {/* CDXC:SidebarSettingsPresets 2026-05-16-10:11: Preset is the first Sidebar setting so users can apply Codex, Minimal, or Detailed sidebar UI defaults before tuning individual controlled settings. */}
+              {/* CDXC:SidebarSettingsPresets 2026-06-12-07:10: Preset is the first Sidebar setting so users can apply Codex, Minimal, Detailed, or Recommended sidebar UI defaults before tuning individual controlled settings. */}
               {mainSettingVisible(settingsSearch.sidebar, "sidebarSettingsPreset") ? (
               <SidebarPresetField
                 activePresetId={activeSidebarSettingsPresetId}
@@ -2073,6 +2103,21 @@ export function SettingsModal({
                 />
               </>
               ) : null}
+              {mainSettingVisible(settingsSearch.sessionCards, "showSessionDetailsCopyAction") ? (
+              <>
+                {/*
+                 * CDXC:SidebarContextMenu 2026-06-11-23:08:
+                 * Copy details is separate from command-copy actions because it copies metadata, not executable shell commands. Keep it opt-in so users choose when session ids and project paths appear in context menus.
+                 */}
+                <ToggleField
+                  checked={draft.showSessionDetailsCopyAction}
+                  description="Show Copy details in session context menus."
+                  label="Show Copy details option"
+                  {...getSettingModificationProps("showSessionDetailsCopyAction")}
+                  onChange={(checked) => updateDraft("showSessionDetailsCopyAction", checked)}
+                />
+              </>
+              ) : null}
             </SettingsSection>
             ) : null}
 
@@ -2123,6 +2168,432 @@ export function SettingsModal({
                 {...getSettingModificationProps("debuggingMode")}
                 onChange={(checked) => updateDraft("debuggingMode", checked)}
               />
+              ) : null}
+            </SettingsSection>
+            ) : null}
+
+            {mainSectionVisible("terminal", settingsSearch.terminal) ? (
+            <SettingsSection sectionRef={ghosttyTerminalSectionRef} title="Terminal">
+              {/* CDXC:TerminalSettings 2026-04-26-18:36: Terminal settings in
+                  ghostex edit the shared Ghostty config file, so users must see
+                  that external Ghostty windows receive the same values and can
+                  reload them with Ghostty's normal config shortcut.
+
+                  CDXC:SettingsNavigation 2026-06-12-04:13:
+                  Ghostty terminal controls live in the main Settings page so
+                  the Settings search box finds app and terminal controls in one
+                  pass. */}
+              {mainSettingVisible(settingsSearch.terminal, "ghosttySettingsActions") ? (
+                <>
+                  <div className="rounded-none border border-destructive/45 bg-destructive/10 px-4 py-3 text-sm leading-6 text-foreground">
+                    Whatever you set here also applies to your external Ghostty terminal
+                    because this Ghostty terminal uses the same settings file. ghostex reloads
+                    its embedded Ghostty terminal about 3 seconds after you stop changing
+                    these controls; external Ghostty windows may still need Cmd+Shift+, to
+                    reload.
+                  </div>
+                  <GhosttySettingsActions
+                    onApplyRecommended={applyRecommendedGhosttySettings}
+                    onOpenConfigFile={() => onGhosttySettingsAction?.("openGhosttyConfigFile")}
+                    onOpenDocs={() => onGhosttySettingsAction?.("openGhosttySettingsDocs")}
+                    onResetDefaults={resetGhosttySettingsToDefault}
+                  />
+                </>
+              ) : null}
+              {mainSettingVisible(settingsSearch.terminal, "terminalGhosttyTheme") ? (
+                <SelectField
+                  contentClassName="max-h-80"
+                  description="Choose a bundled Ghostty theme, or leave your existing Ghostty config in charge."
+                  label="Theme"
+                  {...getSettingModificationProps("terminalGhosttyTheme")}
+                  onChange={(value) =>
+                    updateDraft(
+                      "terminalGhosttyTheme",
+                      value === GHOSTTY_THEME_UNMANAGED_VALUE ? "" : value,
+                    )
+                  }
+                  options={GHOSTTY_THEME_SETTING_OPTIONS}
+                  showScrollButtons={false}
+                  value={draft.terminalGhosttyTheme || GHOSTTY_THEME_UNMANAGED_VALUE}
+                />
+              ) : null}
+              {mainSettingVisible(settingsSearch.terminal, "terminalFontFamily") ? (
+                <TextField
+                  description="Type a Ghostty font-family name. Leave blank to use existing Ghostty config or Ghostty's platform default."
+                  label="Font Family"
+                  {...getSettingModificationProps("terminalFontFamily")}
+                  onChange={(value) => updateDraft("terminalFontFamily", value)}
+                  placeholder="Ghostty default"
+                  value={draft.terminalFontFamily}
+                />
+              ) : null}
+              {mainSettingVisible(settingsSearch.terminal, "terminalFontSize") ? (
+                <SliderNumberField
+                  description="Set terminal text size."
+                  label="Font Size"
+                  {...getSettingModificationProps("terminalFontSize")}
+                  max={32}
+                  min={8}
+                  onCommit={(value) => updateDraft("terminalFontSize", value)}
+                  onChange={(value) => updateDraftDebounced("terminalFontSize", value)}
+                  step={0.5}
+                  value={draft.terminalFontSize}
+                />
+              ) : null}
+              {mainSettingVisible(settingsSearch.terminal, "terminalFontWeight") ? (
+                <SliderNumberField
+                  description="Set terminal text weight."
+                  label="Font Weight"
+                  {...getSettingModificationProps("terminalFontWeight")}
+                  max={900}
+                  min={100}
+                  onCommit={(value) => updateDraft("terminalFontWeight", value)}
+                  onChange={(value) => updateDraftDebounced("terminalFontWeight", value)}
+                  step={50}
+                  value={draft.terminalFontWeight}
+                />
+              ) : null}
+              {mainSettingVisible(settingsSearch.terminal, "terminalLineHeight") ? (
+                <SliderNumberField
+                  description="Adjust terminal row height."
+                  label="Line Height"
+                  {...getSettingModificationProps("terminalLineHeight")}
+                  max={2}
+                  min={0.8}
+                  onCommit={(value) => updateDraft("terminalLineHeight", value)}
+                  onChange={(value) => updateDraftDebounced("terminalLineHeight", value)}
+                  step={0.1}
+                  value={draft.terminalLineHeight}
+                />
+              ) : null}
+              {mainSettingVisible(settingsSearch.terminal, "terminalLetterSpacing") ? (
+                <SliderNumberField
+                  description="Adjust spacing between glyphs."
+                  label="Letter Spacing"
+                  {...getSettingModificationProps("terminalLetterSpacing")}
+                  max={8}
+                  min={-2}
+                  onCommit={(value) => updateDraft("terminalLetterSpacing", value)}
+                  onChange={(value) => updateDraftDebounced("terminalLetterSpacing", value)}
+                  step={0.1}
+                  value={draft.terminalLetterSpacing}
+                />
+              ) : null}
+              {mainSettingVisible(settingsSearch.terminal, "terminalCursorStyle") ? (
+                <SelectField
+                  description="Choose the cursor shape."
+                  label="Cursor Style"
+                  {...getSettingModificationProps("terminalCursorStyle")}
+                  onChange={(value) =>
+                    updateDraft("terminalCursorStyle", value as TerminalCursorStyle)
+                  }
+                  options={[
+                    { label: "Line", value: "bar" },
+                    { label: "Block", value: "block" },
+                    { label: "Underline", value: "underline" },
+                  ]}
+                  value={draft.terminalCursorStyle}
+                />
+              ) : null}
+              {mainSettingVisible(settingsSearch.terminal, "terminalCursorStyleBlink") ? (
+                <ToggleField
+                  checked={draft.terminalCursorStyleBlink}
+                  description="Blink the terminal cursor."
+                  label="Cursor blink"
+                  {...getSettingModificationProps("terminalCursorStyleBlink")}
+                  onChange={(checked) => updateDraft("terminalCursorStyleBlink", checked)}
+                />
+              ) : null}
+              {mainSettingVisible(settingsSearch.terminal, "sessionPersistenceProvider") ? (
+                /* CDXC:SessionPersistence 2026-05-05-07:28
+                    Session persistence is a provider choice for new terminal and
+                    agent launches. Existing panes keep their current process;
+                    new panes can use tmux, zmx, or zellij so restart restores by
+                    attach first and recreate+resume only when the named session
+                    is gone.
+
+                   CDXC:SessionPersistence 2026-05-06-03:43
+                    zellij shares the same Settings selector and semantics as
+                    tmux/zmx instead of adding a separate mode-specific control.
+
+                   CDXC:SessionPersistence 2026-05-08-14:04
+                    Explain that users should use zmx with zmx-session-manager when they care about ssh from
+                    other devices continuing sessions created through ghostex. Recommend zmx because it leaves Agent CLI tools unaffected while minor issues remain.
+
+                   CDXC:SessionPersistence 2026-05-26-13:41:
+                    zmx is now the default and recommended Settings option. Hide tmux and zellij from the dropdown without removing their code paths, so existing persisted provider sessions still normalize and launch.
+
+                  CDXC:SessionPersistence 2026-05-28-04:24:
+                    The Session Persistence setting should no longer be marked as Beta in Settings copy or search results.
+
+                   CDXC:SessionPersistence 2026-06-04-01:57:
+                    Users can disable persistence, but the Settings dropdown must warn that Android and iOS attach flows depend on persistent provider sessions. Show the warning only while Off is selected so the risk is visible at the decision point without making the default zmx state noisy. */
+                <SelectField
+                  description="Use zmx with zmx-session-manager when you care about using ssh from other devices to continue working on sessions created using Ghostex. It doesn't affect the Agent CLI tools at all. Mostly working great, few minor issues left to fix."
+                  label="Session Persistence"
+                  {...getSettingModificationProps("sessionPersistenceProvider")}
+                  onChange={(value) =>
+                    updateDraft(
+                      "sessionPersistenceProvider",
+                      value as SessionPersistenceProvider,
+                    )
+                  }
+                  options={SESSION_PERSISTENCE_PROVIDER_OPTIONS}
+                  supportingContent={
+                    draft.sessionPersistenceProvider === "off" ? (
+                      <div className="settings-persistence-warning" role="note">
+                        <IconAlertTriangle aria-hidden="true" size={14} />
+                        <span>
+                          Android and iOS attach can have issues while persistence is disabled.
+                        </span>
+                      </div>
+                    ) : undefined
+                  }
+                  value={draft.sessionPersistenceProvider}
+                />
+              ) : null}
+              {draft.sessionPersistenceProvider !== "off" &&
+              mainSettingVisible(settingsSearch.terminal, "showSessionIdInTerminalPanes") ? (
+                /*
+                 * CDXC:SessionPersistence 2026-05-23-00:50:
+                 * The pane-local provider/session label is useful for zmx/tmux/zellij
+                 * attach context. Keep this setting shown only when a persistence
+                 * provider is selected, while the label renderer still requires each
+                 * terminal pane to have provider metadata before showing text.
+                 */
+                <ToggleField
+                  checked={draft.showSessionIdInTerminalPanes}
+                  description="Show the provider session id in the top-right corner of each terminal pane."
+                  label="Show session id in the top right of each terminal pane"
+                  {...getSettingModificationProps("showSessionIdInTerminalPanes")}
+                  onChange={(checked) => updateDraft("showSessionIdInTerminalPanes", checked)}
+                />
+              ) : null}
+              {mainSettingVisible(settingsSearch.terminal, "promptEditorBackend") ? (
+                /**
+                 * CDXC:PromptEditorBackend 2026-05-11-14:38
+                 * Ctrl+G prompt editing can render either through the native
+                 * WebKit Monaco overlay or the gte TUI running inside the
+                 * launching terminal. Keep the install action with the gte option.
+                 *
+                 * CDXC:PromptEditorBackend 2026-05-22-09:56:
+                 * Settings copy must use gte for Ghostex Terminal Editor so users see the same name in the app, install command, and Ctrl+G editor selection.
+                 *
+                 * CDXC:PromptEditorBackend 2026-05-22-10:16:
+                 * Selecting gte must not describe or launch a popup. gte runs in the terminal that invoked Ctrl+G, while Monaco remains the popup editor.
+                 */
+                <GtePromptEditingField
+                  backend={draft.promptEditorBackend}
+                  isModified={getSettingModificationProps("promptEditorBackend").isModified}
+                  onInstall={() => onInstallGte?.()}
+                  onChange={(backend) => updateDraft("promptEditorBackend", backend)}
+                  onResetToDefault={
+                    getSettingModificationProps("promptEditorBackend").onResetToDefault
+                  }
+                />
+              ) : null}
+              {draft.promptEditorBackend === "custom" &&
+              mainSettingVisible(settingsSearch.terminal, "customPromptEditorCommand") ? (
+                <TextField
+                  description="Write the command exactly as the terminal should export it for $EDITOR and $VISUAL."
+                  label="Custom Ctrl+G editor command"
+                  {...getSettingModificationProps("customPromptEditorCommand")}
+                  onChange={(value) => updateDraft("customPromptEditorCommand", value)}
+                  placeholder="code --wait"
+                  value={draft.customPromptEditorCommand}
+                />
+              ) : null}
+            </SettingsSection>
+            ) : null}
+
+            {mainSectionVisible("terminalBehavior", settingsSearch.terminalBehavior) ? (
+            <SettingsSection sectionRef={ghosttyBehaviorSectionRef} title="Terminal Behavior">
+              {/* CDXC:TerminalBehaviorSettings 2026-04-29-09:32: Expose the
+                  Ghostty settings users commonly tune: scrollback memory,
+                  copy-on-select, close confirmation, clipboard safety,
+                  pointer hiding, and native scrollbar visibility. These
+                  controls write documented Ghostty config keys instead of
+                  intercepting terminal behavior inside ghostex. */}
+              {mainSettingVisible(
+                settingsSearch.terminalBehavior,
+                "terminalScrollbackLimitMb",
+              ) ? (
+                <SliderNumberField
+                  description="Scrollback memory per terminal surface. Ghostty default is 10 MB and changes affect new terminals."
+                  label="Scrollback limit"
+                  {...getSettingModificationProps("terminalScrollbackLimitMb")}
+                  max={200}
+                  min={1}
+                  onCommit={(value) => updateDraft("terminalScrollbackLimitMb", value)}
+                  onChange={(value) =>
+                    updateDraftDebounced("terminalScrollbackLimitMb", value)
+                  }
+                  step={1}
+                  value={draft.terminalScrollbackLimitMb}
+                />
+              ) : null}
+              {mainSettingVisible(settingsSearch.terminalBehavior, "terminalCopyOnSelect") ? (
+                <SelectField
+                  description="Copy selected terminal text automatically."
+                  label="Copy on select"
+                  {...getSettingModificationProps("terminalCopyOnSelect")}
+                  onChange={(value) =>
+                    updateDraft("terminalCopyOnSelect", value as GhosttyCopyOnSelect)
+                  }
+                  options={GHOSTTY_COPY_ON_SELECT_OPTIONS}
+                  value={draft.terminalCopyOnSelect}
+                />
+              ) : null}
+              {mainSettingVisible(
+                settingsSearch.terminalBehavior,
+                "terminalConfirmCloseSurface",
+              ) ? (
+                <SelectField
+                  description="Confirm before closing terminal surfaces."
+                  label="Confirm close"
+                  {...getSettingModificationProps("terminalConfirmCloseSurface")}
+                  onChange={(value) =>
+                    updateDraft(
+                      "terminalConfirmCloseSurface",
+                      value as GhosttyConfirmCloseSurface,
+                    )
+                  }
+                  options={GHOSTTY_CONFIRM_CLOSE_SURFACE_OPTIONS}
+                  value={draft.terminalConfirmCloseSurface}
+                />
+              ) : null}
+              {mainSettingVisible(
+                settingsSearch.terminalBehavior,
+                "terminalClipboardTrimTrailingSpaces",
+              ) ? (
+                <ToggleField
+                  checked={draft.terminalClipboardTrimTrailingSpaces}
+                  description="Trim trailing whitespace when copying terminal text."
+                  label="Trim trailing spaces on copy"
+                  {...getSettingModificationProps("terminalClipboardTrimTrailingSpaces")}
+                  onChange={(checked) =>
+                    updateDraft("terminalClipboardTrimTrailingSpaces", checked)
+                  }
+                />
+              ) : null}
+              {mainSettingVisible(
+                settingsSearch.terminalBehavior,
+                "terminalClipboardPasteProtection",
+              ) ? (
+                <ToggleField
+                  checked={draft.terminalClipboardPasteProtection}
+                  description="Ask before pasting text Ghostty considers unsafe."
+                  label="Paste protection"
+                  {...getSettingModificationProps("terminalClipboardPasteProtection")}
+                  onChange={(checked) =>
+                    updateDraft("terminalClipboardPasteProtection", checked)
+                  }
+                />
+              ) : null}
+              {mainSettingVisible(
+                settingsSearch.terminalBehavior,
+                "terminalPastePreviewableImages",
+              ) ? (
+                <ToggleField
+                  checked={draft.terminalPastePreviewableImages}
+                  description={PASTE_PREVIEWABLE_IMAGES_DESCRIPTION}
+                  label="Paste previewable images"
+                  {...getSettingModificationProps("terminalPastePreviewableImages")}
+                  onChange={(checked) =>
+                    updateDraft("terminalPastePreviewableImages", checked)
+                  }
+                />
+              ) : null}
+              {mainSettingVisible(
+                settingsSearch.terminalBehavior,
+                "terminalMouseHideWhileTyping",
+              ) ? (
+                <ToggleField
+                  checked={draft.terminalMouseHideWhileTyping}
+                  description="Hide the pointer while typing in the terminal."
+                  label="Hide mouse while typing"
+                  {...getSettingModificationProps("terminalMouseHideWhileTyping")}
+                  onChange={(checked) =>
+                    updateDraft("terminalMouseHideWhileTyping", checked)
+                  }
+                />
+              ) : null}
+              {mainSettingVisible(settingsSearch.terminalBehavior, "terminalScrollbar") ? (
+                <SelectField
+                  description="Control whether Ghostty shows its native scrollback scrollbar."
+                  label="Scrollbar"
+                  {...getSettingModificationProps("terminalScrollbar")}
+                  onChange={(value) =>
+                    updateDraft("terminalScrollbar", value as GhosttyScrollbar)
+                  }
+                  options={GHOSTTY_SCROLLBAR_OPTIONS}
+                  value={draft.terminalScrollbar}
+                />
+              ) : null}
+            </SettingsSection>
+            ) : null}
+
+            {mainSectionVisible("terminalScrolling", settingsSearch.terminalScrolling) ? (
+            <SettingsSection sectionRef={ghosttyScrollingSectionRef} title="Terminal Scrolling">
+              {/* CDXC:TerminalScrollSettings 2026-04-29-08:56: Ghostty
+                  scroll speed is controlled by mouse-scroll-multiplier.
+                  Precision and discrete devices need separate controls because
+                  Ghostty defaults trackpads to 1 and notched wheels to 3.
+                  The modal exposes 0.25-step sliders from 0.25 to 8 because
+                  Ghostty's documented 0.01..10000 bounds are extreme. */}
+              {mainSettingVisible(
+                settingsSearch.terminalScrolling,
+                "terminalMouseScrollMultiplierPrecision",
+              ) ? (
+                <SliderNumberField
+                  description="Trackpads and high-resolution scroll wheels. Ghostty default is 1."
+                  label="Precision scroll multiplier"
+                  {...getSettingModificationProps("terminalMouseScrollMultiplierPrecision")}
+                  max={8}
+                  min={0.25}
+                  onCommit={(value) =>
+                    updateDraft("terminalMouseScrollMultiplierPrecision", value)
+                  }
+                  onChange={(value) =>
+                    updateDraftDebounced("terminalMouseScrollMultiplierPrecision", value)
+                  }
+                  step={0.25}
+                  value={draft.terminalMouseScrollMultiplierPrecision}
+                />
+              ) : null}
+              {mainSettingVisible(
+                settingsSearch.terminalScrolling,
+                "terminalMouseScrollMultiplierDiscrete",
+              ) ? (
+                <SliderNumberField
+                  description="Traditional notched mouse wheels. Ghostty default is 3."
+                  label="Discrete scroll multiplier"
+                  {...getSettingModificationProps("terminalMouseScrollMultiplierDiscrete")}
+                  max={8}
+                  min={0.25}
+                  onCommit={(value) =>
+                    updateDraft("terminalMouseScrollMultiplierDiscrete", value)
+                  }
+                  onChange={(value) =>
+                    updateDraftDebounced("terminalMouseScrollMultiplierDiscrete", value)
+                  }
+                  step={0.25}
+                  value={draft.terminalMouseScrollMultiplierDiscrete}
+                />
+              ) : null}
+              {mainSettingVisible(
+                settingsSearch.terminalScrolling,
+                "terminalScrollToBottomWhenTyping",
+              ) ? (
+                <ToggleField
+                  checked={draft.terminalScrollToBottomWhenTyping}
+                  description="Keep the prompt visible while typing."
+                  label="Scroll to bottom when typing"
+                  {...getSettingModificationProps("terminalScrollToBottomWhenTyping")}
+                  onChange={(checked) =>
+                    updateDraft("terminalScrollToBottomWhenTyping", checked)
+                  }
+                />
               ) : null}
             </SettingsSection>
             ) : null}
@@ -2592,461 +3063,6 @@ export function SettingsModal({
           </div>
           </TabsContent>
           {!isFirstLaunchSetup ? (
-          <TabsContent className="mt-0 min-h-0 flex-1 overflow-hidden" value="ghostty">
-            {/* CDXC:SettingsNavigation 2026-05-13-16:05
-                Ghostty settings use their own section sidebar and independent
-                search query so tab switches do not carry stale Settings search
-                terms into terminal configuration. */}
-            <div className="settings-main-tab-layout">
-              <aside aria-label="Ghostty settings sections" className="settings-section-sidebar">
-                {ghosttySettingsSectionNavigation
-                  .filter((section) => shouldShowSettingsSection(section.searchResult))
-                  .map((section) => (
-                    <Button
-                      className="settings-section-sidebar-button"
-                      key={section.id}
-                      onClick={() => scrollSettingsSectionIntoView(section.ref)}
-                      type="button"
-                      variant="ghost"
-                    >
-                      {section.title}
-                    </Button>
-                  ))}
-              </aside>
-            <ScrollArea className="h-full min-h-0">
-              <div className="flex flex-col gap-6 px-5 pb-5">
-                {shouldShowSettingsSection(settingsSearch.terminal) ? (
-                  <SettingsSection sectionRef={ghosttyTerminalSectionRef} title="Terminal">
-                    {/* CDXC:TerminalSettings 2026-04-26-18:36: Terminal settings in
-                        ghostex edit the shared Ghostty config file, so users must see
-                        that external Ghostty windows receive the same values and can
-                        reload them with Ghostty's normal config shortcut. */}
-                    {shouldShowSetting(settingsSearch.terminal, "ghosttySettingsActions") ? (
-                      <>
-                        <div className="rounded-none border border-destructive/45 bg-destructive/10 px-4 py-3 text-sm leading-6 text-foreground">
-                          Whatever you set here also applies to your external Ghostty terminal
-                          because this Ghostty terminal uses the same settings file. ghostex reloads
-                          its embedded Ghostty terminal about 3 seconds after you stop changing
-                          these controls; external Ghostty windows may still need Cmd+Shift+, to
-                          reload.
-                        </div>
-                        <GhosttySettingsActions
-                          onApplyRecommended={applyRecommendedGhosttySettings}
-                          onOpenConfigFile={() => onGhosttySettingsAction?.("openGhosttyConfigFile")}
-                          onOpenDocs={() => onGhosttySettingsAction?.("openGhosttySettingsDocs")}
-                          onResetDefaults={resetGhosttySettingsToDefault}
-                        />
-                      </>
-                    ) : null}
-                    {shouldShowSetting(settingsSearch.terminal, "terminalGhosttyTheme") ? (
-                      <SelectField
-                        contentClassName="max-h-80"
-                        description="Choose a bundled Ghostty theme, or leave your existing Ghostty config in charge."
-                        label="Theme"
-                        {...getSettingModificationProps("terminalGhosttyTheme")}
-                        onChange={(value) =>
-                          updateDraft(
-                            "terminalGhosttyTheme",
-                            value === GHOSTTY_THEME_UNMANAGED_VALUE ? "" : value,
-                          )
-                        }
-                        options={GHOSTTY_THEME_SETTING_OPTIONS}
-                        showScrollButtons={false}
-                        value={draft.terminalGhosttyTheme || GHOSTTY_THEME_UNMANAGED_VALUE}
-                      />
-                    ) : null}
-                    {shouldShowSetting(settingsSearch.terminal, "terminalFontFamily") ? (
-                      <TextField
-                        description="Type a Ghostty font-family name. Leave blank to use existing Ghostty config or Ghostty's platform default."
-                        label="Font Family"
-                        {...getSettingModificationProps("terminalFontFamily")}
-                        onChange={(value) => updateDraft("terminalFontFamily", value)}
-                        placeholder="Ghostty default"
-                        value={draft.terminalFontFamily}
-                      />
-                    ) : null}
-                    {shouldShowSetting(settingsSearch.terminal, "terminalFontSize") ? (
-                      <SliderNumberField
-                        description="Set terminal text size."
-                        label="Font Size"
-                        {...getSettingModificationProps("terminalFontSize")}
-                        max={32}
-                        min={8}
-                        onCommit={(value) => updateDraft("terminalFontSize", value)}
-                        onChange={(value) => updateDraftDebounced("terminalFontSize", value)}
-                        step={0.5}
-                        value={draft.terminalFontSize}
-                      />
-                    ) : null}
-                    {shouldShowSetting(settingsSearch.terminal, "terminalFontWeight") ? (
-                      <SliderNumberField
-                        description="Set terminal text weight."
-                        label="Font Weight"
-                        {...getSettingModificationProps("terminalFontWeight")}
-                        max={900}
-                        min={100}
-                        onCommit={(value) => updateDraft("terminalFontWeight", value)}
-                        onChange={(value) => updateDraftDebounced("terminalFontWeight", value)}
-                        step={50}
-                        value={draft.terminalFontWeight}
-                      />
-                    ) : null}
-                    {shouldShowSetting(settingsSearch.terminal, "terminalLineHeight") ? (
-                      <SliderNumberField
-                        description="Adjust terminal row height."
-                        label="Line Height"
-                        {...getSettingModificationProps("terminalLineHeight")}
-                        max={2}
-                        min={0.8}
-                        onCommit={(value) => updateDraft("terminalLineHeight", value)}
-                        onChange={(value) => updateDraftDebounced("terminalLineHeight", value)}
-                        step={0.1}
-                        value={draft.terminalLineHeight}
-                      />
-                    ) : null}
-                    {shouldShowSetting(settingsSearch.terminal, "terminalLetterSpacing") ? (
-                      <SliderNumberField
-                        description="Adjust spacing between glyphs."
-                        label="Letter Spacing"
-                        {...getSettingModificationProps("terminalLetterSpacing")}
-                        max={8}
-                        min={-2}
-                        onCommit={(value) => updateDraft("terminalLetterSpacing", value)}
-                        onChange={(value) => updateDraftDebounced("terminalLetterSpacing", value)}
-                        step={0.1}
-                        value={draft.terminalLetterSpacing}
-                      />
-                    ) : null}
-                    {shouldShowSetting(settingsSearch.terminal, "terminalCursorStyle") ? (
-                      <SelectField
-                        description="Choose the cursor shape."
-                        label="Cursor Style"
-                        {...getSettingModificationProps("terminalCursorStyle")}
-                        onChange={(value) =>
-                          updateDraft("terminalCursorStyle", value as TerminalCursorStyle)
-                        }
-                        options={[
-                          { label: "Line", value: "bar" },
-                          { label: "Block", value: "block" },
-                          { label: "Underline", value: "underline" },
-                        ]}
-                        value={draft.terminalCursorStyle}
-                      />
-                    ) : null}
-                    {shouldShowSetting(settingsSearch.terminal, "terminalCursorStyleBlink") ? (
-                      <ToggleField
-                        checked={draft.terminalCursorStyleBlink}
-                        description="Blink the terminal cursor."
-                        label="Cursor blink"
-                        {...getSettingModificationProps("terminalCursorStyleBlink")}
-                        onChange={(checked) => updateDraft("terminalCursorStyleBlink", checked)}
-                      />
-                    ) : null}
-                    {shouldShowSetting(settingsSearch.terminal, "sessionPersistenceProvider") ? (
-                      /* CDXC:SessionPersistence 2026-05-05-07:28
-                          Session persistence is a provider choice for new terminal and
-                          agent launches. Existing panes keep their current process;
-                          new panes can use tmux, zmx, or zellij so restart restores by
-                          attach first and recreate+resume only when the named session
-                          is gone.
-
-                         CDXC:SessionPersistence 2026-05-06-03:43
-                          zellij shares the same Settings selector and semantics as
-                          tmux/zmx instead of adding a separate mode-specific control.
-
-                         CDXC:SessionPersistence 2026-05-08-14:04
-                          Explain that users should use zmx with zmx-session-manager when they care about ssh from
-                          other devices continuing sessions created through ghostex. Recommend zmx because it leaves Agent CLI tools unaffected while minor issues remain.
-
-                         CDXC:SessionPersistence 2026-05-26-13:41:
-                          zmx is now the default and recommended Settings option. Hide tmux and zellij from the dropdown without removing their code paths, so existing persisted provider sessions still normalize and launch.
-
-                        CDXC:SessionPersistence 2026-05-28-04:24:
-                          The Session Persistence setting should no longer be marked as Beta in Settings copy or search results.
-
-                         CDXC:SessionPersistence 2026-06-04-01:57:
-                          Users can disable persistence, but the Settings dropdown must warn that Android and iOS attach flows depend on persistent provider sessions. Show the warning only while Off is selected so the risk is visible at the decision point without making the default zmx state noisy. */
-                      <SelectField
-                        description="Use zmx with zmx-session-manager when you care about using ssh from other devices to continue working on sessions created using Ghostex. It doesn't affect the Agent CLI tools at all. Mostly working great, few minor issues left to fix."
-                        label="Session Persistence"
-                        {...getSettingModificationProps("sessionPersistenceProvider")}
-                        onChange={(value) =>
-                          updateDraft(
-                            "sessionPersistenceProvider",
-                            value as SessionPersistenceProvider,
-                          )
-                        }
-                        options={SESSION_PERSISTENCE_PROVIDER_OPTIONS}
-                        supportingContent={
-                          draft.sessionPersistenceProvider === "off" ? (
-                            <div className="settings-persistence-warning" role="note">
-                              <IconAlertTriangle aria-hidden="true" size={14} />
-                              <span>
-                                Android and iOS attach can have issues while persistence is disabled.
-                              </span>
-                            </div>
-                          ) : undefined
-                        }
-                        value={draft.sessionPersistenceProvider}
-                      />
-                    ) : null}
-                    {draft.sessionPersistenceProvider !== "off" &&
-                    shouldShowSetting(settingsSearch.terminal, "showSessionIdInTerminalPanes") ? (
-                      /*
-                       * CDXC:SessionPersistence 2026-05-23-00:50:
-                       * The pane-local provider/session label is useful for zmx/tmux/zellij
-                       * attach context. Keep this setting shown only when a persistence
-                       * provider is selected, while the label renderer still requires each
-                       * terminal pane to have provider metadata before showing text.
-                       */
-                      <ToggleField
-                        checked={draft.showSessionIdInTerminalPanes}
-                        description="Show the provider session id in the top-right corner of each terminal pane."
-                        label="Show session id in the top right of each terminal pane"
-                        {...getSettingModificationProps("showSessionIdInTerminalPanes")}
-                        onChange={(checked) => updateDraft("showSessionIdInTerminalPanes", checked)}
-                      />
-                    ) : null}
-                    {shouldShowSetting(settingsSearch.terminal, "promptEditorBackend") ? (
-                      /**
-                       * CDXC:PromptEditorBackend 2026-05-11-14:38
-                       * Ctrl+G prompt editing can render either through the native
-                       * WebKit Monaco overlay or the gte TUI running inside the
-                       * launching terminal. Keep the install action with the gte option.
-                       *
-                       * CDXC:PromptEditorBackend 2026-05-22-09:56:
-                       * Settings copy must use gte for Ghostex Terminal Editor so users see the same name in the app, install command, and Ctrl+G editor selection.
-                       *
-                       * CDXC:PromptEditorBackend 2026-05-22-10:16:
-                       * Selecting gte must not describe or launch a popup. gte runs in the terminal that invoked Ctrl+G, while Monaco remains the popup editor.
-                       */
-                      <GtePromptEditingField
-                        backend={draft.promptEditorBackend}
-                        isModified={getSettingModificationProps("promptEditorBackend").isModified}
-                        onInstall={() => onInstallGte?.()}
-                        onChange={(backend) => updateDraft("promptEditorBackend", backend)}
-                        onResetToDefault={
-                          getSettingModificationProps("promptEditorBackend").onResetToDefault
-                        }
-                      />
-                    ) : null}
-                    {draft.promptEditorBackend === "custom" &&
-                    shouldShowSetting(settingsSearch.terminal, "customPromptEditorCommand") ? (
-                      <TextField
-                        description="Write the command exactly as the terminal should export it for $EDITOR and $VISUAL."
-                        label="Custom Ctrl+G editor command"
-                        {...getSettingModificationProps("customPromptEditorCommand")}
-                        onChange={(value) => updateDraft("customPromptEditorCommand", value)}
-                        placeholder="code --wait"
-                        value={draft.customPromptEditorCommand}
-                      />
-                    ) : null}
-                  </SettingsSection>
-                ) : null}
-
-                {shouldShowSettingsSection(settingsSearch.terminalBehavior) ? (
-                  <SettingsSection sectionRef={ghosttyBehaviorSectionRef} title="Terminal Behavior">
-                    {/* CDXC:TerminalBehaviorSettings 2026-04-29-09:32: Expose the
-                        Ghostty settings users commonly tune: scrollback memory,
-                        copy-on-select, close confirmation, clipboard safety,
-                        pointer hiding, and native scrollbar visibility. These
-                        controls write documented Ghostty config keys instead of
-                        intercepting terminal behavior inside ghostex. */}
-                    {shouldShowSetting(
-                      settingsSearch.terminalBehavior,
-                      "terminalScrollbackLimitMb",
-                    ) ? (
-                      <SliderNumberField
-                        description="Scrollback memory per terminal surface. Ghostty default is 10 MB and changes affect new terminals."
-                        label="Scrollback limit"
-                        {...getSettingModificationProps("terminalScrollbackLimitMb")}
-                        max={200}
-                        min={1}
-                        onCommit={(value) => updateDraft("terminalScrollbackLimitMb", value)}
-                        onChange={(value) =>
-                          updateDraftDebounced("terminalScrollbackLimitMb", value)
-                        }
-                        step={1}
-                        value={draft.terminalScrollbackLimitMb}
-                      />
-                    ) : null}
-                    {shouldShowSetting(settingsSearch.terminalBehavior, "terminalCopyOnSelect") ? (
-                      <SelectField
-                        description="Copy selected terminal text automatically."
-                        label="Copy on select"
-                        {...getSettingModificationProps("terminalCopyOnSelect")}
-                        onChange={(value) =>
-                          updateDraft("terminalCopyOnSelect", value as GhosttyCopyOnSelect)
-                        }
-                        options={GHOSTTY_COPY_ON_SELECT_OPTIONS}
-                        value={draft.terminalCopyOnSelect}
-                      />
-                    ) : null}
-                    {shouldShowSetting(
-                      settingsSearch.terminalBehavior,
-                      "terminalConfirmCloseSurface",
-                    ) ? (
-                      <SelectField
-                        description="Confirm before closing terminal surfaces."
-                        label="Confirm close"
-                        {...getSettingModificationProps("terminalConfirmCloseSurface")}
-                        onChange={(value) =>
-                          updateDraft(
-                            "terminalConfirmCloseSurface",
-                            value as GhosttyConfirmCloseSurface,
-                          )
-                        }
-                        options={GHOSTTY_CONFIRM_CLOSE_SURFACE_OPTIONS}
-                        value={draft.terminalConfirmCloseSurface}
-                      />
-                    ) : null}
-                    {shouldShowSetting(
-                      settingsSearch.terminalBehavior,
-                      "terminalClipboardTrimTrailingSpaces",
-                    ) ? (
-                      <ToggleField
-                        checked={draft.terminalClipboardTrimTrailingSpaces}
-                        description="Trim trailing whitespace when copying terminal text."
-                        label="Trim trailing spaces on copy"
-                        {...getSettingModificationProps("terminalClipboardTrimTrailingSpaces")}
-                        onChange={(checked) =>
-                          updateDraft("terminalClipboardTrimTrailingSpaces", checked)
-                        }
-                      />
-                    ) : null}
-                    {shouldShowSetting(
-                      settingsSearch.terminalBehavior,
-                      "terminalClipboardPasteProtection",
-                    ) ? (
-                      <ToggleField
-                        checked={draft.terminalClipboardPasteProtection}
-                        description="Ask before pasting text Ghostty considers unsafe."
-                        label="Paste protection"
-                        {...getSettingModificationProps("terminalClipboardPasteProtection")}
-                        onChange={(checked) =>
-                          updateDraft("terminalClipboardPasteProtection", checked)
-                        }
-                      />
-                    ) : null}
-                    {shouldShowSetting(
-                      settingsSearch.terminalBehavior,
-                      "terminalPastePreviewableImages",
-                    ) ? (
-                      <ToggleField
-                        checked={draft.terminalPastePreviewableImages}
-                        description={PASTE_PREVIEWABLE_IMAGES_DESCRIPTION}
-                        label="Paste previewable images"
-                        {...getSettingModificationProps("terminalPastePreviewableImages")}
-                        onChange={(checked) =>
-                          updateDraft("terminalPastePreviewableImages", checked)
-                        }
-                      />
-                    ) : null}
-                    {shouldShowSetting(
-                      settingsSearch.terminalBehavior,
-                      "terminalMouseHideWhileTyping",
-                    ) ? (
-                      <ToggleField
-                        checked={draft.terminalMouseHideWhileTyping}
-                        description="Hide the pointer while typing in the terminal."
-                        label="Hide mouse while typing"
-                        {...getSettingModificationProps("terminalMouseHideWhileTyping")}
-                        onChange={(checked) =>
-                          updateDraft("terminalMouseHideWhileTyping", checked)
-                        }
-                      />
-                    ) : null}
-                    {shouldShowSetting(settingsSearch.terminalBehavior, "terminalScrollbar") ? (
-                      <SelectField
-                        description="Control whether Ghostty shows its native scrollback scrollbar."
-                        label="Scrollbar"
-                        {...getSettingModificationProps("terminalScrollbar")}
-                        onChange={(value) =>
-                          updateDraft("terminalScrollbar", value as GhosttyScrollbar)
-                        }
-                        options={GHOSTTY_SCROLLBAR_OPTIONS}
-                        value={draft.terminalScrollbar}
-                      />
-                    ) : null}
-                  </SettingsSection>
-                ) : null}
-
-                {shouldShowSettingsSection(settingsSearch.terminalScrolling) ? (
-                  <SettingsSection sectionRef={ghosttyScrollingSectionRef} title="Terminal Scrolling">
-                    {/* CDXC:TerminalScrollSettings 2026-04-29-08:56: Ghostty
-                        scroll speed is controlled by mouse-scroll-multiplier.
-                        Precision and discrete devices need separate controls because
-                        Ghostty defaults trackpads to 1 and notched wheels to 3.
-                        The modal exposes 0.25-step sliders from 0.25 to 8 because
-                        Ghostty's documented 0.01..10000 bounds are extreme. */}
-                    {shouldShowSetting(
-                      settingsSearch.terminalScrolling,
-                      "terminalMouseScrollMultiplierPrecision",
-                    ) ? (
-                      <SliderNumberField
-                        description="Trackpads and high-resolution scroll wheels. Ghostty default is 1."
-                        label="Precision scroll multiplier"
-                        {...getSettingModificationProps("terminalMouseScrollMultiplierPrecision")}
-                        max={8}
-                        min={0.25}
-                        onCommit={(value) =>
-                          updateDraft("terminalMouseScrollMultiplierPrecision", value)
-                        }
-                        onChange={(value) =>
-                          updateDraftDebounced("terminalMouseScrollMultiplierPrecision", value)
-                        }
-                        step={0.25}
-                        value={draft.terminalMouseScrollMultiplierPrecision}
-                      />
-                    ) : null}
-                    {shouldShowSetting(
-                      settingsSearch.terminalScrolling,
-                      "terminalMouseScrollMultiplierDiscrete",
-                    ) ? (
-                      <SliderNumberField
-                        description="Traditional notched mouse wheels. Ghostty default is 3."
-                        label="Discrete scroll multiplier"
-                        {...getSettingModificationProps("terminalMouseScrollMultiplierDiscrete")}
-                        max={8}
-                        min={0.25}
-                        onCommit={(value) =>
-                          updateDraft("terminalMouseScrollMultiplierDiscrete", value)
-                        }
-                        onChange={(value) =>
-                          updateDraftDebounced("terminalMouseScrollMultiplierDiscrete", value)
-                        }
-                        step={0.25}
-                        value={draft.terminalMouseScrollMultiplierDiscrete}
-                      />
-                    ) : null}
-                    {shouldShowSetting(
-                      settingsSearch.terminalScrolling,
-                      "terminalScrollToBottomWhenTyping",
-                    ) ? (
-                      <ToggleField
-                        checked={draft.terminalScrollToBottomWhenTyping}
-                        description="Keep the prompt visible while typing."
-                        label="Scroll to bottom when typing"
-                        {...getSettingModificationProps("terminalScrollToBottomWhenTyping")}
-                        onChange={(checked) =>
-                          updateDraft("terminalScrollToBottomWhenTyping", checked)
-                        }
-                      />
-                    ) : null}
-                  </SettingsSection>
-                ) : null}
-
-                {!hasVisibleGhosttySettings ? (
-                  <div className="rounded-none border border-border bg-muted/30 px-4 py-6 text-center text-sm text-muted-foreground">
-                    No Ghostty settings match your search.
-                  </div>
-                ) : null}
-              </div>
-            </ScrollArea>
-            </div>
-          </TabsContent>
-          ) : null}
-          {!isFirstLaunchSetup ? (
           <TabsContent className="mt-0 min-h-0 flex-1 overflow-hidden" value="osIntegration">
             <OSIntegrationSettingsTab
               loading={osIntegrationStatusLoading}
@@ -3345,19 +3361,20 @@ function RemoteSettingsTab({
     <div className="settings-tab-scroll scroll-mask-y" ref={containerRef}>
       <div className="settings-management-layout">
         <header className="settings-management-header">
-          <h3 className="settings-management-heading">Remote machines</h3>
-          <div className="settings-management-header-row">
+          <div className="settings-management-header-text">
+            <h3 className="settings-management-heading">Remote machines</h3>
             <p className="settings-management-description">
               Saved SSH machines appear as separate sidebar sections.
             </p>
-            <Popover onOpenChange={setIsTailscaleHelpOpen} open={isTailscaleHelpOpen}>
+          </div>
+          <Popover onOpenChange={setIsTailscaleHelpOpen} open={isTailscaleHelpOpen}>
               <PopoverTrigger
                 render={
                   <Button
                     className="settings-management-help-button"
                     size="sm"
                     type="button"
-                    variant="ghost"
+                    variant="outline"
                   />
                 }
               >
@@ -3375,8 +3392,8 @@ function RemoteSettingsTab({
                * CDXC:RemoteMachines 2026-06-08-18:47:
                * Tailscale setup help should be a compact popover above Remote Machine settings, not a full modal, because it is contextual guidance for filling the SSH host rather than a blocking workflow.
                *
-               * CDXC:RemoteMachines 2026-06-08-19:05:
-               * The Remote machines header keeps the description muted and places Tailscale setup as a compact ghost help control on the same row, not a full-width outline button under cramped title copy.
+               * CDXC:RemoteMachines 2026-06-12-05:42:
+               * The Remote machines header stacks the title over its muted subtitle on the left and pins Tailscale setup as an outline button on the right edge, so the contextual help reads as a real action opposite the header rather than a faint control wedged beside the subtitle.
                */}
               <PopoverHeader>
                 <PopoverTitle className="text-sm">Tailscale setup</PopoverTitle>
@@ -3394,14 +3411,49 @@ function RemoteSettingsTab({
                 Ghostex still connects with SSH only; no Tailscale tokens or remote gxserver listener are required.
               </p>
             </PopoverContent>
-            </Popover>
-          </div>
+          </Popover>
         </header>
 
-        <div className="settings-management-list">
+        <div className="settings-management-list settings-remote-machine-list">
+          {/*
+           * CDXC:RemoteMachines 2026-06-12-05:42:
+           * Add remote machine is the fixed first grid item (top-left), saved machines fill the remaining slots and wrap to new rows, and the empty placeholder occupies the slot beside the add card so the Remote tab always reads as a single uniform grid.
+           *
+           * CDXC:RemoteMachines 2026-06-02-23:47:
+           * Remote settings require a human name and SSH host before saving because the sidebar section title comes from this user label and v1 remote connections support SSH only.
+           */}
+          <Card className="settings-remote-machine-card settings-remote-machine-add-card" size="sm">
+            <div className="settings-remote-machine-summary settings-remote-machine-add-summary">
+              <span aria-hidden="true" className="settings-remote-machine-add-icon">
+                <IconPlus size={16} />
+              </span>
+              <CardTitle className="settings-remote-machine-add-title">Add remote machine</CardTitle>
+            </div>
+            <CardContent className="settings-remote-machine-body">
+              <RemoteMachineFields
+                draft={newMachine}
+                hidePasswordField
+                onChange={(patch) => setNewMachine((draft) => ({ ...draft, ...patch }))}
+              />
+              <div className="settings-management-actions settings-remote-machine-add-actions">
+                <Button disabled={!canAddMachine} onClick={addRemoteMachine} type="button">
+                  <IconPlus aria-hidden="true" />
+                  Add Machine
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
           {remoteMachines.length === 0 ? (
-            <div className="rounded-none border border-border bg-muted/30 px-4 py-6 text-center text-sm text-muted-foreground">
-              No remote machines.
+            <div className="settings-remote-machine-empty">
+              <span aria-hidden="true" className="settings-remote-machine-empty-icon">
+                <IconDeviceDesktop size={18} />
+              </span>
+              <span className="settings-remote-machine-empty-text">
+                <span className="settings-remote-machine-empty-title">No machines yet</span>
+                <span className="settings-remote-machine-empty-hint">
+                  Add one to reach it over SSH from the sidebar.
+                </span>
+              </span>
             </div>
           ) : (
             remoteMachines.map((machine) => (
@@ -3452,29 +3504,6 @@ function RemoteSettingsTab({
             ))
           )}
         </div>
-
-        <Card className="settings-remote-machine-card settings-remote-machine-add-card" size="sm">
-          <div className="settings-remote-machine-summary settings-remote-machine-add-summary">
-            <CardTitle className="settings-remote-machine-add-title">Add remote machine</CardTitle>
-          </div>
-          <CardContent className="settings-remote-machine-body">
-            {/*
-             * CDXC:RemoteMachines 2026-06-02-23:47:
-             * Remote settings require a human name and SSH host before saving because the sidebar section title comes from this user label and v1 remote connections support SSH only.
-             */}
-            <RemoteMachineFields
-              draft={newMachine}
-              hidePasswordField
-              onChange={(patch) => setNewMachine((draft) => ({ ...draft, ...patch }))}
-            />
-            <div className="settings-management-actions settings-remote-machine-add-actions">
-              <Button disabled={!canAddMachine} onClick={addRemoteMachine} type="button">
-                <IconPlus aria-hidden="true" />
-                Add Machine
-              </Button>
-            </div>
-          </CardContent>
-        </Card>
       </div>
     </div>
   );
@@ -4706,108 +4735,122 @@ function AgentsSettingsTab({
     <ScrollArea className="h-full min-h-0">
       <div className="flex flex-col gap-6 px-5 pb-5">
         {!editorState ? (
-          <details className="group rounded-none border border-border bg-muted/20">
-            <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-4 py-3 marker:hidden">
+          <SettingsSection title="Agent Hooks">
+            <details className="group w-full">
               {/*
                * CDXC:AgentHookSettings 2026-05-23-10:05:
                * Settings -> Agents starts with a collapsed hook setup panel so reliable-resume requirements are discoverable without pushing normal agent ordering/editing controls down the tab. The panel must cover every current Ghostex CLI resume-hook agent, while T3 Code remains outside the hook list because its managed runtime does not use CLI hook capture.
+               *
+               * CDXC:AgentHookSettings 2026-06-11-17:45:
+               * The collapsed header must use the same field label/description typography and bordered row spacing as the other Agents settings rows. The disclosure chevron points right when collapsed and rotates down when expanded.
+               *
+               * CDXC:AgentHookSettings 2026-06-12-04:34:
+               * The hook setup UI should use the same labeled section card chrome as the Agents management list below so the Agents tab scans as consistent grouped settings instead of a loose disclosure row followed by a bordered list.
                */}
-              <span className="flex min-w-0 items-center gap-2">
-                <IconChevronDown
-                  aria-hidden="true"
-                  className="size-4 shrink-0 text-muted-foreground transition-transform group-open:rotate-180"
-                />
-                <span className="min-w-0">
-                  <span className="block truncate text-sm font-medium">Agent resume hooks</span>
-                  <span className="block truncate text-xs text-muted-foreground">
-                    {hookStatusSummary}
-                  </span>
-                </span>
-              </span>
-              <AgentHookStatusIcon isLoading={agentHookStatusLoading} status={undefined} />
-            </summary>
-            <div className="flex flex-col gap-4 border-t border-border/70 px-4 pb-4 pt-3">
-              <div className="space-y-2 text-xs leading-5 text-muted-foreground">
-                <p>
-                  Install hooks so Ghostex can capture each agent&apos;s native session id and
-                  resume the exact conversation after sleep, reload, or app restart.
-                </p>
-                <p>
-                  Hooks write only session metadata into Ghostex&apos;s session-state files. The
-                  existing title-based restore path remains available when a hook has not captured
-                  an id yet.
-                </p>
-                <p>T3 Code uses Ghostex&apos;s managed runtime, so it does not need a CLI hook.</p>
-              </div>
-              <div className="flex flex-wrap gap-2">
-                <Button
-                  disabled={!onInstallAgentHooks || agentHookStatusLoading}
-                  onClick={onInstallAgentHooks}
-                  type="button"
-                  variant="outline"
-                >
-                  <IconDownload aria-hidden="true" data-icon="inline-start" />
-                  {updateRequiredHookCount > 0 ? "Update Hooks" : "Install Hooks"}
-                </Button>
-                <Button
-                  disabled={!onRequestAgentHookStatus || agentHookStatusLoading}
-                  onClick={onRequestAgentHookStatus}
-                  type="button"
-                  variant="ghost"
-                >
-                  <IconRefresh aria-hidden="true" data-icon="inline-start" />
-                  Refresh
-                </Button>
-              </div>
-              <div className="flex flex-col gap-2">
-                {agentHookStatus?.errorMessage ? (
-                  <div className="rounded-none border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive">
-                    {agentHookStatus.errorMessage}
-                  </div>
-                ) : null}
-                {AGENT_HOOK_SUPPORTED_DEFAULT_AGENTS.map((agent) => (
-                  <AgentHookStatusRow
-                    agent={{
-                      agentId: agent.agentId,
-                      command: agent.command,
-                      icon: agent.icon,
-                      isDefault: true,
-                      name: agent.name,
-                    }}
-                    isLoading={agentHookStatusLoading && !agentHookStatus}
-                    key={agent.agentId}
-                    status={hookStatusByAgentId.get(agent.agentId)}
+              <summary className="settings-management-row flex cursor-pointer list-none items-center justify-between gap-3 border border-border bg-muted/20 px-3 py-3 marker:hidden [&::-webkit-details-marker]:hidden">
+                <div className="flex min-w-0 flex-1 items-center gap-2.5">
+                  <IconChevronRight
+                    aria-hidden="true"
+                    className="size-4 shrink-0 text-muted-foreground transition-transform duration-150 group-open:rotate-90"
                   />
-                ))}
-              </div>
-              {agentHookStatus ? (
-                <div className="truncate text-[11px] text-muted-foreground">
-                  Hook state: {agentHookStatus.hookStateDirectory}
+                  <FieldContent className="min-w-0 gap-1">
+                    <FieldLabel className="text-sm">Agent resume hooks</FieldLabel>
+                    <FieldDescription className="text-xs text-muted-foreground">
+                      {hookStatusSummary}
+                    </FieldDescription>
+                  </FieldContent>
                 </div>
-              ) : null}
-            </div>
-          </details>
-        ) : null}
-        {!editorState && promptAgentOptions.length > 0 ? (
-          <SelectField
-            description="Choose the agent used by Git helper prompts, Prompt to Search, project board Start Work, and the default worktree first-prompt selection."
-            isModified={defaultPromptAgentId !== DEFAULT_ghostex_SETTINGS.defaultPromptAgentId}
-            label="Default Prompt Agent"
-            onChange={onDefaultPromptAgentIdChange}
-            onResetToDefault={() =>
-              onDefaultPromptAgentIdChange(DEFAULT_ghostex_SETTINGS.defaultPromptAgentId)
-            }
-            options={promptAgentOptions}
-            value={selectedDefaultPromptAgentId}
-          />
-        ) : !editorState ? (
-          <StaticNoteField
-            description="Configure at least one CLI agent before selecting a default prompt agent."
-            label="Default Prompt Agent"
-          />
+                <span className="flex shrink-0 items-center">
+                  <AgentHookStatusIcon isLoading={agentHookStatusLoading} status={undefined} />
+                </span>
+              </summary>
+              <div className="mt-3 flex flex-col gap-4 border border-border/80 bg-muted/10 px-4 pb-4 pt-4">
+                <div className="space-y-2 text-xs leading-5 text-muted-foreground">
+                  <p>
+                    Install hooks so Ghostex can capture each agent&apos;s native session id and
+                    resume the exact conversation after sleep, reload, or app restart.
+                  </p>
+                  <p>
+                    Hooks write only session metadata into Ghostex&apos;s session-state files. The
+                    existing title-based restore path remains available when a hook has not captured
+                    an id yet.
+                  </p>
+                  <p>T3 Code uses Ghostex&apos;s managed runtime, so it does not need a CLI hook.</p>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  <Button
+                    disabled={!onInstallAgentHooks || agentHookStatusLoading}
+                    onClick={onInstallAgentHooks}
+                    type="button"
+                    variant="outline"
+                  >
+                    <IconDownload aria-hidden="true" data-icon="inline-start" />
+                    {updateRequiredHookCount > 0 ? "Update Hooks" : "Install Hooks"}
+                  </Button>
+                  <Button
+                    disabled={!onRequestAgentHookStatus || agentHookStatusLoading}
+                    onClick={onRequestAgentHookStatus}
+                    type="button"
+                    variant="ghost"
+                  >
+                    <IconRefresh aria-hidden="true" data-icon="inline-start" />
+                    Refresh
+                  </Button>
+                </div>
+                <div className="flex flex-col gap-2">
+                  {agentHookStatus?.errorMessage ? (
+                    <div className="rounded-none border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+                      {agentHookStatus.errorMessage}
+                    </div>
+                  ) : null}
+                  {AGENT_HOOK_SUPPORTED_DEFAULT_AGENTS.map((agent) => (
+                    <AgentHookStatusRow
+                      agent={{
+                        agentId: agent.agentId,
+                        command: agent.command,
+                        icon: agent.icon,
+                        isDefault: true,
+                        name: agent.name,
+                      }}
+                      isLoading={agentHookStatusLoading && !agentHookStatus}
+                      key={agent.agentId}
+                      status={hookStatusByAgentId.get(agent.agentId)}
+                    />
+                  ))}
+                </div>
+                {agentHookStatus ? (
+                  <FieldDescription className="truncate text-[11px] text-muted-foreground">
+                    Hook state: {agentHookStatus.hookStateDirectory}
+                  </FieldDescription>
+                ) : null}
+              </div>
+            </details>
+          </SettingsSection>
         ) : null}
         {!editorState ? (
-          <>
+          <SettingsSection title="Config">
+            {/*
+             * CDXC:AgentConfigSettings 2026-06-12-04:40:
+             * Default prompt, title generation, custom title command, and global Accept All are configuration controls, not agent management rows. Group them under the same labeled SettingsSection chrome as Agent Hooks and Agents so the Agents tab scans as three consistent areas: hooks, config, and launchers.
+             */}
+            {promptAgentOptions.length > 0 ? (
+              <SelectField
+                description="Choose the agent used by Git helper prompts, Prompt to Search, project board Start Work, and the default worktree first-prompt selection."
+                isModified={defaultPromptAgentId !== DEFAULT_ghostex_SETTINGS.defaultPromptAgentId}
+                label="Default Prompt Agent"
+                onChange={onDefaultPromptAgentIdChange}
+                onResetToDefault={() =>
+                  onDefaultPromptAgentIdChange(DEFAULT_ghostex_SETTINGS.defaultPromptAgentId)
+                }
+                options={promptAgentOptions}
+                value={selectedDefaultPromptAgentId}
+              />
+            ) : (
+              <StaticNoteField
+                description="Configure at least one CLI agent before selecting a default prompt agent."
+                label="Default Prompt Agent"
+              />
+            )}
             {/*
              * CDXC:GxserverSessionTitle 2026-06-04-08:24:
              * First-prompt session-title generation needs its own agent selector instead of reusing Default Prompt Agent, because title generation is a gxserver-owned background job while prompt-launch defaults affect Git helpers, search prompts, project-board prompts, and worktree starts.
@@ -4838,44 +4881,45 @@ function AgentsSettingsTab({
               label="Title Generation Command"
               value={titleGenerationCommandPreview}
             />
-          </>
-        ) : null}
-        {!editorState && sessionTitleGenerationAgent === "custom" ? (
-          <TextField
-            description="Run this command with the title prompt on stdin. It should print only the title."
-            isModified={
-              customSessionTitleGenerationCommand !==
-              DEFAULT_ghostex_SETTINGS.customSessionTitleGenerationCommand
-            }
-            label="Custom Title Command"
-            onChange={onCustomSessionTitleGenerationCommandChange}
-            onResetToDefault={() =>
-              onCustomSessionTitleGenerationCommandChange(
-                DEFAULT_ghostex_SETTINGS.customSessionTitleGenerationCommand,
-              )
-            }
-            placeholder="title-generator"
-            value={customSessionTitleGenerationCommand}
-          />
-        ) : null}
-        {!editorState ? (
-          <Field className="items-center justify-between rounded-none border border-border bg-muted/20 px-4 py-3" orientation="horizontal">
-            <FieldContent>
-              <FieldLabel className="text-sm" htmlFor={acceptAllToggleId}>
-                Accept All
-              </FieldLabel>
-              <FieldDescription className="text-xs text-muted-foreground">
-                Enable each supported agent&apos;s permission-bypass mode when launching sessions.
-                Per-agent settings can inherit or override this default.
-              </FieldDescription>
-            </FieldContent>
-            <Switch
-              checked={agentAcceptAllEnabled}
-              disabled={!vscode}
-              id={acceptAllToggleId}
-              onCheckedChange={onAgentAcceptAllEnabledChange}
-            />
-          </Field>
+            {sessionTitleGenerationAgent === "custom" ? (
+              <TextField
+                description="Run this command with the title prompt on stdin. It should print only the title."
+                isModified={
+                  customSessionTitleGenerationCommand !==
+                  DEFAULT_ghostex_SETTINGS.customSessionTitleGenerationCommand
+                }
+                label="Custom Title Command"
+                onChange={onCustomSessionTitleGenerationCommandChange}
+                onResetToDefault={() =>
+                  onCustomSessionTitleGenerationCommandChange(
+                    DEFAULT_ghostex_SETTINGS.customSessionTitleGenerationCommand,
+                  )
+                }
+                placeholder="title-generator"
+                value={customSessionTitleGenerationCommand}
+              />
+            ) : null}
+            <Field
+              className="items-center justify-between rounded-none border border-border bg-muted/20 px-4 py-3"
+              orientation="horizontal"
+            >
+              <FieldContent>
+                <FieldLabel className="text-sm" htmlFor={acceptAllToggleId}>
+                  Accept All
+                </FieldLabel>
+                <FieldDescription className="text-xs text-muted-foreground">
+                  Enable each supported agent&apos;s permission-bypass mode when launching sessions.
+                  Per-agent settings can inherit or override this default.
+                </FieldDescription>
+              </FieldContent>
+              <Switch
+                checked={agentAcceptAllEnabled}
+                disabled={!vscode}
+                id={acceptAllToggleId}
+                onCheckedChange={onAgentAcceptAllEnabledChange}
+              />
+            </Field>
+          </SettingsSection>
         ) : null}
         <SettingsSection
           actions={
@@ -5259,6 +5303,7 @@ function AgentSettingsEditor({
         </FieldContent>
         <Select
           disabled={!acceptAllSupported}
+          items={AGENT_ACCEPT_ALL_MODE_SELECT_ITEMS}
           onValueChange={(value) => setAcceptAllMode(value as AgentAcceptAllMode)}
           value={acceptAllMode}
         >
@@ -5267,9 +5312,11 @@ function AgentSettingsEditor({
           </SelectTrigger>
           <SelectContent>
             <SelectGroup>
-              <SelectItem value="inherit">Inherit global setting</SelectItem>
-              <SelectItem value="enabled">Accept All</SelectItem>
-              <SelectItem value="disabled">Ask for permission</SelectItem>
+              {AGENT_ACCEPT_ALL_MODE_SELECT_ITEMS.map((item) => (
+                <SelectItem key={item.value} value={item.value}>
+                  {item.label}
+                </SelectItem>
+              ))}
             </SelectGroup>
           </SelectContent>
         </Select>
@@ -5797,7 +5844,7 @@ function HotkeysSettingsTab({
   /**
    * CDXC:Hotkeys 2026-05-13-16:05
    * Hotkey settings are split by workflow and searched independently from the
-   * Settings/Ghostty tabs. Section nav should jump to matching groups while
+   * Settings tab. Section nav should jump to matching groups while
    * search still filters individual bindings inside each group.
    */
   const sectionSearches = useMemo(
