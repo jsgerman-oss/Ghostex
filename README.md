@@ -45,18 +45,6 @@ Use the mobile apps to connect live to your Ghostex agent CLI sessions. APKs are
   <img width="250" alt="Ghostex iPhone companion app" src="https://github.com/user-attachments/assets/563dbb8a-5a9d-4db7-8946-1dfc383e09c8" />
 </p>
 
-## Highlights
-
-| Feature | What it gives you |
-| --- | --- |
-| Ghostty terminals | Lower RAM use, better battery life, and stable agent CLI sessions. |
-| Native macOS shell | Swift UI for performance-sensitive desktop behavior. |
-| T3code GUI panes | Graphical panes alongside terminal agents. |
-| Chromium CEF browser | Embedded browser panes with DevTools, profiles, and MCP access. |
-| Lightweight code editor | VS Code-based editor for Markdown, PR review, files, and git work. |
-| Mobile access | Android and iOS apps for checking and controlling live sessions. |
-| TUI mode | Use `ghostex` or `gx` to attach from another machine. |
-
 ## Screenshots
 
 ### T3code GUI panes and supported terminal CLIs
@@ -75,15 +63,15 @@ Ghostex works with Claude Code, Codex CLI, OpenCode, Pi Agent, Gemini, Copilot, 
 
 <img width="1664" height="1035" alt="Ghostex supported agent CLIs" src="https://github.com/user-attachments/assets/932497a7-8b68-480f-ae05-13df08571e47" />
 
-### Embedded browser
+### Embedded Chromium browser with DevTools and profiles.
 
 Chromium-based browser panes include DevTools, profiles, and MCP access.
 
 <img width="1000" alt="Ghostex sidebar with terminal and browser panes" src="media/readme/ghostex-browser-pane.png" />
 
-### Embedded code editor
+### Embedded VS Code based editor and Git + PRs manager
 
-The lightweight VS Code-based editor loads on demand for file edits, PR checks, Markdown, and git workflows.
+The fully featured VS Code-based editor loads on demand for file edits, PR checks, Markdown, and git workflows.
 
 <img width="3327" height="2065" alt="Ghostex embedded code editor" src="https://github.com/user-attachments/assets/f1cc7d00-7098-44fe-bc29-590ae03ea8e9" />
 
@@ -92,6 +80,19 @@ The lightweight VS Code-based editor loads on demand for file edits, PR checks, 
 Ghostex supports notifications, menu bar indicators, minimal floating counters, and session status at a glance.
 
 <img width="331" height="309" alt="Ghostex notification indicator" src="https://github.com/user-attachments/assets/ad0f7af5-b0e9-4b24-988c-cb6bf02c6c9f" />
+
+## Highlights
+
+| Feature | What it gives you |
+| --- | --- |
+| Ghostty terminals | Lower RAM use, better battery life, and stable agent CLI sessions. |
+| Native macOS shell | Swift UI for performance-sensitive desktop behavior. |
+| T3code GUI panes | Graphical panes alongside terminal agents. |
+| Chromium CEF browser | Embedded browser panes with DevTools, profiles, and MCP access. |
+| Lightweight code editor | VS Code-based editor for Markdown, PR review, files, and git work. |
+| Mobile access | Android and iOS apps for checking and controlling live sessions. |
+| TUI mode | Use `ghostex` or `gx` to attach from another machine. |
+
 
 ## Comparison
 
@@ -114,14 +115,11 @@ Ghostex supports notifications, menu bar indicators, minimal floating counters, 
 - First-launch preferences for common install defaults.
 - Git workflows with Sync with Main, split Git menus, prompt-agent PR review, and persistent running toasts.
 - First-prompt title generation for auto-naming new agent sessions.
-- Pinned sessions with `ghostex pin-session`.
+- Pinned sessions and assigning tags to sessions.
 - Auto-sleep for unused terminal, browser, and project panes.
-- Embedded Chromium browser with DevTools and profiles.
-- Embedded lightweight code editor and git manager.
 - Live Android and iOS access to agent CLI sessions.
 - SSH continuation with zmx, tmux, and zellij persistence.
 - Rich prompt editor with image insert and preview support.
-- Native Swift macOS app shell.
 - Auto session naming for popular agents.
 - App restart resumes existing agent CLI sessions.
 - Menu bar working/done indicators and notification sounds for most agent CLIs.
