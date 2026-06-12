@@ -1,6 +1,16 @@
 
 ## All features:
 
+- 4.10.0 improves native workspace and titlebar integration, preserves split panes during passive restore, adds safer `ghostex`/`gx` command wrappers, expands agent and mobile status support, refreshes sidebar/settings workflows, and strengthens packaged runtime validation for Apple Silicon releases.
+- Native workspace panes, directly mounted project-tab titlebars, app modal windows, and toast routing are integrated with the macOS host for more reliable click routing and focus behavior.
+- Passive sidebar terminal restore preserves workspace split layouts instead of merging panes while session rows and pane tabs resync.
+- Project Board and GitHub workspace focus remains steadier while passive sidebar refreshes restore or retarget terminal sessions.
+- Worktree deletion can clean up related branch metadata from the UI, and terminal Escape reporting helps clear stale agent attention after dismissed work.
+- The `ghostex` and `gx` CLI commands use gxserver session inventory, include a sidebar toggle, and install as wrapper commands outside `Ghostex.app` so macOS policy assessment does not kill direct app-bundled script execution.
+- Kiro CLI and OMP can report hook-backed agent status, mobile clients can ingest hook sidecar status, and Claude bare `/rename` flows stage first-prompt titles more reliably.
+- Sidebar and settings workflows include a collapse command/hotkey, Copy Session Details, Ghostty settings folded into the main settings sections, lazy Agent Hub file loading, and a default Accept All mode setting.
+- Android, iOS, Electron, TUI, and zehn integrations are refreshed for gxserver status, shared app toasts, status colors, grouped history search, and active-request iOS refresh indicators.
+- Packaged macOS runtime validation checks the bundled code-server Node 22 runtime, ripgrep, T3 Code native helpers, Beads, and source-map pruning without executing sealed native modules during validation.
 - 4.1.5 improves bundled-runtime hook reliability, Claude wake recovery for migrated sessions, sidebar sleep semantics, project-board Beads prefix alignment, Chromium zoom controls, Show less/Close menu settings, remote edit entry points, stale zmx wake activity suppression, and arm64-only macOS distribution.
 - Installed agent hooks, gxserver resume lookup, native sidebar state helpers, and Electron command-pane updates run through Ghostex-owned bundled runtimes instead of `/usr/bin/python3` or user-installed Node interpreters.
 - Claude sessions migrated from Ghostex 3.6 can wake more reliably because gxserver repair backfills transcript paths and saved resume commands before `claude --resume`.
