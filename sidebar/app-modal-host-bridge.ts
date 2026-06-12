@@ -141,6 +141,7 @@ declare global {
         };
       };
     };
+    __ghostex_APP_MODAL_HOST_SURFACE__?: "main" | "nativeWindow";
   }
 }
 
@@ -167,9 +168,30 @@ export function postAppModalHostMessage(message: unknown, area: string): void {
   }
 
   try {
-    modalHost.postMessage(message);
+    /*
+     * CDXC:AppModals 2026-06-11-19:46:
+     * Settings, Agents Hub, Previous Sessions, and the other non-prompt app modals now render in native child windows that reuse this web bridge. Mark messages with the modal-host surface when native injected one, so AppKit can route close/presented/result messages to the window host without guessing from modal kind.
+     */
+    modalHost.postMessage(withModalHostSurface(message));
   } catch (error) {
     logAppModalError(area, error);
     throw error;
   }
+}
+
+function withModalHostSurface(message: unknown): unknown {
+  const surface = window.__ghostex_APP_MODAL_HOST_SURFACE__;
+  if (
+    !surface ||
+    !message ||
+    typeof message !== "object" ||
+    Array.isArray(message) ||
+    "surface" in message
+  ) {
+    return message;
+  }
+  return {
+    ...(message as Record<string, unknown>),
+    surface,
+  };
 }
