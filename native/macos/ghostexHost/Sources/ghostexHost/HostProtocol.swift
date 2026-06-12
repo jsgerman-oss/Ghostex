@@ -71,12 +71,17 @@ enum HostCommand: Decodable {
   case showBrowserProfilePicker(SessionCommand)
   case showBrowserImportSettings(SessionCommand)
   case setSidebarSide(SetSidebarSide)
+  case toggleSidebarCollapsed
   case setReactTitlebarHitRegions(SetReactTitlebarHitRegions)
+  case showTitlebarDropdownPanel(ShowTitlebarDropdownPanel)
+  case closeTitlebarDropdownPanel
+  case resizeTitlebarDropdownPanel(ResizeTitlebarDropdownPanel)
+  case titlebarDropdownPanelReady(TitlebarDropdownPanelReady)
   case openActiveProjectEditorFromTitlebar
   case exitFocusModeFromTitlebar
   case openAgentsModeFromTitlebar
   case openGitHubProjectFromTitlebar
-  case showProjectEditorCompanionFromTitlebar
+  case toggleProjectEditorCompanionFromTitlebar
   case openTasksPlaceholderFromTitlebar
   case refreshWorkspaceOpenTargetAvailabilityFromTitlebar
   case rotateActivePaneLayoutClockwiseFromTitlebar
@@ -171,12 +176,17 @@ enum HostCommand: Decodable {
     case showBrowserProfilePicker
     case showBrowserImportSettings
     case setSidebarSide
+    case toggleSidebarCollapsed
     case setReactTitlebarHitRegions
+    case showTitlebarDropdownPanel
+    case closeTitlebarDropdownPanel
+    case resizeTitlebarDropdownPanel
+    case titlebarDropdownPanelReady
     case openActiveProjectEditorFromTitlebar
     case exitFocusModeFromTitlebar
     case openAgentsModeFromTitlebar
     case openGitHubProjectFromTitlebar
-    case showProjectEditorCompanionFromTitlebar
+    case toggleProjectEditorCompanionFromTitlebar
     case openTasksPlaceholderFromTitlebar
     case refreshWorkspaceOpenTargetAvailabilityFromTitlebar
     case rotateActivePaneLayoutClockwiseFromTitlebar
@@ -342,8 +352,18 @@ enum HostCommand: Decodable {
       self = .showBrowserImportSettings(try SessionCommand(from: decoder))
     case .setSidebarSide:
       self = .setSidebarSide(try SetSidebarSide(from: decoder))
+    case .toggleSidebarCollapsed:
+      self = .toggleSidebarCollapsed
     case .setReactTitlebarHitRegions:
       self = .setReactTitlebarHitRegions(try SetReactTitlebarHitRegions(from: decoder))
+    case .showTitlebarDropdownPanel:
+      self = .showTitlebarDropdownPanel(try ShowTitlebarDropdownPanel(from: decoder))
+    case .closeTitlebarDropdownPanel:
+      self = .closeTitlebarDropdownPanel
+    case .resizeTitlebarDropdownPanel:
+      self = .resizeTitlebarDropdownPanel(try ResizeTitlebarDropdownPanel(from: decoder))
+    case .titlebarDropdownPanelReady:
+      self = .titlebarDropdownPanelReady(try TitlebarDropdownPanelReady(from: decoder))
     case .openActiveProjectEditorFromTitlebar:
       self = .openActiveProjectEditorFromTitlebar
     case .exitFocusModeFromTitlebar:
@@ -352,8 +372,8 @@ enum HostCommand: Decodable {
       self = .openAgentsModeFromTitlebar
     case .openGitHubProjectFromTitlebar:
       self = .openGitHubProjectFromTitlebar
-    case .showProjectEditorCompanionFromTitlebar:
-      self = .showProjectEditorCompanionFromTitlebar
+    case .toggleProjectEditorCompanionFromTitlebar:
+      self = .toggleProjectEditorCompanionFromTitlebar
     case .openTasksPlaceholderFromTitlebar:
       self = .openTasksPlaceholderFromTitlebar
     case .refreshWorkspaceOpenTargetAvailabilityFromTitlebar:
@@ -1127,6 +1147,51 @@ struct SetReactTitlebarHitRegions: Decodable {
     overlayOpen = try container.decodeIfPresent(Bool.self, forKey: .overlayOpen) ?? false
     regions = try container.decode([ReactTitlebarHitRegion].self, forKey: .regions)
   }
+}
+
+struct TitlebarDropdownAnchorRect: Decodable {
+  let x: Double
+  let y: Double
+  let width: Double
+  let height: Double
+}
+
+struct TitlebarDropdownPreferredSize: Decodable {
+  /*
+   CDXC:ReactTitlebar 2026-06-12-02:50:
+   React owns the rendered option count for titlebar dropdowns, so the native
+   bridge accepts a preferred child-window size before AppKit creates the panel.
+   */
+  let width: Double
+  let height: Double
+}
+
+struct ShowTitlebarDropdownPanel: Decodable {
+  /*
+   CDXC:ReactTitlebar 2026-06-11-13:22:
+   Titlebar dropdowns must render in native child windows instead of portaled
+   content inside the full-window titlebar WKWebView, so AppKit never places a
+   titlebar-owned view over the editor workspace during CEF/WKWebView drags.
+   */
+  let kind: String
+  let anchorRect: TitlebarDropdownAnchorRect
+  let preferredSize: TitlebarDropdownPreferredSize?
+}
+
+struct ResizeTitlebarDropdownPanel: Decodable {
+  let kind: String
+  let width: Double
+  let height: Double
+}
+
+struct TitlebarDropdownPanelReady: Decodable {
+  /*
+   CDXC:TitlebarResources 2026-06-11-18:13:
+   The Resources dropdown loads in a native child WKWebView, but it should not be
+   ordered onscreen until its first resource snapshot has rendered. React sends
+   this readiness signal after committing non-loading content.
+   */
+  let kind: String
 }
 
 struct RunSidebarCommandFromTitlebar: Decodable {

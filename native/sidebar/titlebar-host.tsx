@@ -1,7 +1,5 @@
 import {
   IconAlertTriangle,
-  IconArrowsDiagonal2,
-  IconArrowsDiagonalMinimize,
   IconBox,
   IconBrandGithub,
   IconCheck,
@@ -19,6 +17,7 @@ import {
   IconGitCommit,
   IconGitPullRequest,
   IconInfoCircle,
+  IconLayoutSidebarLeftCollapse,
   IconLayoutSidebarLeftExpand,
   IconLoader2,
   IconMoon,
@@ -41,23 +40,13 @@ import {
   useMemo,
   useRef,
   useState,
-  type ComponentProps,
   type CSSProperties,
-  type Dispatch,
   type ReactNode,
-  type SetStateAction,
 } from "react";
 import { createRoot } from "react-dom/client";
 import { motion } from "motion/react";
 import { Button } from "@/components/ui/button";
 import { ButtonGroup } from "@/components/ui/button-group";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
 import {
   Tooltip,
   TooltipContent,
@@ -113,6 +102,18 @@ import {
 
 type ProjectEditorLoadStatus = "idle" | "opening" | "running" | "error";
 type TitlebarMode = "agents" | "code" | "git" | "tasks";
+type TitlebarDropdownPanelKind =
+  | "actions"
+  | "git"
+  | "keepAwake"
+  | "mode"
+  | "openIn"
+  | "resources"
+  | "tips";
+type TitlebarDropdownPanelSize = {
+  height: number;
+  width: number;
+};
 
 type NativeProcessResult = {
   exitCode: number;
@@ -280,7 +281,7 @@ type ResourceGroupView = {
 
 type NativeTitlebarCommand =
   | { details?: string; event: string; force?: boolean; type: "appendSessionTitleDebugLog" }
-  | { details?: string; event: string; type: "appendTerminalFocusDebugLog" }
+  | { details?: string; event: string; force?: boolean; type: "appendTerminalFocusDebugLog" }
   | {
       args: string[];
       cwd?: string;
@@ -296,7 +297,7 @@ type NativeTitlebarCommand =
       type: "setKeepAwakeLidSleepPrevention";
     }
   | { type: "openActiveProjectEditorFromTitlebar" }
-  | { type: "showProjectEditorCompanionFromTitlebar" }
+  | { type: "toggleProjectEditorCompanionFromTitlebar" }
   | { type: "exitFocusModeFromTitlebar" }
   | { type: "openAgentsModeFromTitlebar" }
   | { type: "openGitHubProjectFromTitlebar" }
@@ -313,6 +314,20 @@ type NativeTitlebarCommand =
   | { projectIds: string[]; sessionIds: string[]; type: "quitResourcesFromTitlebar" }
   | { commandId: string; type: "runSidebarCommandFromTitlebar" }
   | { action: SidebarGitAction; type: "runSidebarGitActionFromTitlebar" }
+  | {
+      anchorRect: { height: number; width: number; x: number; y: number };
+      kind: TitlebarDropdownPanelKind;
+      preferredSize: TitlebarDropdownPanelSize;
+      type: "showTitlebarDropdownPanel";
+    }
+  | { type: "closeTitlebarDropdownPanel" }
+  | { kind: TitlebarDropdownPanelKind; type: "titlebarDropdownPanelReady" }
+  | {
+      height: number;
+      kind: TitlebarDropdownPanelKind;
+      type: "resizeTitlebarDropdownPanel";
+      width: number;
+    }
   | {
       targetApp: WorkspaceIdeTargetApp;
       type: "openWorkspaceInIde";
@@ -346,9 +361,12 @@ type ResolvedOpenTarget =
 declare global {
   interface Window {
     __ghostex_PENDING_TITLEBAR_UPDATE_AVAILABLE__?: boolean;
+    __ghostex_TITLEBAR_PANEL_KIND__?: string;
+    __ghostex_PENDING_TITLEBAR_PROJECT_STATE__?: Partial<TitlebarProjectState>;
     __ghostex_TITLEBAR__?: {
       closeOpenDropdowns: () => void;
       setActiveProjectState: (state: Partial<TitlebarProjectState>) => void;
+      setNativeDropdownOpen: (kind: TitlebarDropdownPanelKind | undefined) => void;
       setNativePointerInside: (isInside: boolean) => void;
     };
   }
@@ -369,32 +387,149 @@ const KEEP_AWAKE_ADMIN_PROCESS_TIMEOUT_MS = 120_000;
 const TITLEBAR_HEIGHT = 35;
 const TITLEBAR_CONTROL_HEIGHT = TITLEBAR_HEIGHT - 1;
 /**
- * CDXC:ProjectEditorCompanion 2026-06-11-12:18:
- * Expand and Collapse Companion Sidepane controls must share one 14x14 Tabler
- * glyph footprint so the titlebar restore button and native pane close button
- * read as the same icon size.
+ * CDXC:ProjectEditorCompanion 2026-06-12-03:18:
+ * Companion pane collapse/expand is one titlebar toggle immediately left of
+ * Agents. Keep both state glyphs at the same footprint so the control
+ * reads as part of the mode switcher rather than separate floating chrome.
+ *
+ * CDXC:ProjectEditorCompanion 2026-06-12-04:23:
+ * The toggle icon needs a larger 17x17 footprint after visual review so the
+ * anchored companion control has the same presence as the adjacent text tabs.
  */
-const COMPANION_SIDEPANE_ICON_SIZE = 14;
+const COMPANION_SIDEPANE_ICON_SIZE = 17;
 const TITLEBAR_CONTROL_TOP = 1;
 const TITLEBAR_PROJECT_TOP = TITLEBAR_CONTROL_TOP;
 const TITLEBAR_CENTER_CONTROLS_TOP = TITLEBAR_CONTROL_TOP;
 const TITLEBAR_RIGHT_CONTROLS_TOP = TITLEBAR_CONTROL_TOP;
 const RESOURCE_POLL_INTERVAL_MS = 5_000;
-type DropdownMenuOpenChange = NonNullable<ComponentProps<typeof DropdownMenu>["onOpenChange"]>;
-type TitlebarDropdownOpenChangeDetails = Parameters<DropdownMenuOpenChange>[1];
 /**
- * CDXC:ReactTitlebar 2026-05-11-09:17
- * Titlebar split-button menus are triggered from their chevrons but should
- * visually land under the whole grouped control. Use shadcn/Radix tooltips for
- * hover labels instead of native title attributes so the titlebar matches the
- * sidebar interaction model.
+ * CDXC:ReactTitlebar 2026-06-11-13:22:
+ * The titlebar document uses native child-window dropdown panels instead of
+ * Radix portals in the full-window WKWebView, so the workspace never sits under
+ * a titlebar-owned overlay during editor drag/drop.
  *
- * CDXC:ReactTitlebar 2026-06-02-19:21:
- * Top-right macOS titlebar dropdowns must stay open when the pointer leaves
- * the dropdown or the isolated titlebar WKWebView. Dismiss them only from an
- * explicit item/escape/outside-click close or the native AppKit close hook.
+ * CDXC:ReactTitlebar 2026-06-11-15:58:
+ * Native titlebar dropdown panels must load the real titlebar-host.html file URL
+ * without query parameters. Swift injects the panel kind at document start so
+ * WebKit does not treat a synthetic local-file URL as the document resource.
  */
-const TITLEBAR_SPLIT_MENU_CENTER_OFFSET = -14;
+const TITLEBAR_PANEL_QUERY_PARAM = "ghostexTitlebarPanel";
+const TITLEBAR_DROPDOWN_COMPACT_PANEL_WIDTH = 240;
+const TITLEBAR_DROPDOWN_READING_PANEL_WIDTH = 656;
+const TITLEBAR_DROPDOWN_READING_PANEL_HEIGHT = 650;
+const TITLEBAR_DROPDOWN_MENU_CHROME_HEIGHT = 10;
+const TITLEBAR_DROPDOWN_MENU_ITEM_HEIGHT = 30;
+const TITLEBAR_DROPDOWN_ACTION_ITEM_HEIGHT = 44;
+const TITLEBAR_DROPDOWN_SEPARATOR_HEIGHT = 9;
+const TITLEBAR_DROPDOWN_EMPTY_ROW_HEIGHT = 30;
+
+function readTitlebarDropdownPanelKind(): TitlebarDropdownPanelKind | undefined {
+  const injectedKind =
+    typeof window.__ghostex_TITLEBAR_PANEL_KIND__ === "string"
+      ? window.__ghostex_TITLEBAR_PANEL_KIND__
+      : undefined;
+  const rawKind = injectedKind ?? new URLSearchParams(window.location.search).get(TITLEBAR_PANEL_QUERY_PARAM);
+  if (
+    rawKind === "actions" ||
+    rawKind === "git" ||
+    rawKind === "keepAwake" ||
+    rawKind === "mode" ||
+    rawKind === "openIn" ||
+    rawKind === "resources" ||
+    rawKind === "tips"
+  ) {
+    return rawKind;
+  }
+  return undefined;
+}
+
+function compactTitlebarDropdownPanelSize(height: number): TitlebarDropdownPanelSize {
+  return {
+    height: Math.ceil(height),
+    width: TITLEBAR_DROPDOWN_COMPACT_PANEL_WIDTH,
+  };
+}
+
+function titlebarMenuHeight(rowCount: number, options: {
+  rowHeight?: number;
+  separatorCount?: number;
+} = {}): number {
+  return TITLEBAR_DROPDOWN_MENU_CHROME_HEIGHT +
+    Math.max(0, rowCount) * (options.rowHeight ?? TITLEBAR_DROPDOWN_MENU_ITEM_HEIGHT) +
+    Math.max(0, options.separatorCount ?? 0) * TITLEBAR_DROPDOWN_SEPARATOR_HEIGHT;
+}
+
+function createTitlebarDropdownPanelPreferredSize(
+  kind: TitlebarDropdownPanelKind,
+  counts: {
+    actionCount: number;
+    gitItemCount: number;
+    keepAwakeIsRunning: boolean;
+    modeOptionCount: number;
+    targetCount: number;
+  },
+): TitlebarDropdownPanelSize {
+  /*
+   * CDXC:ReactTitlebar 2026-06-12-02:50:
+   * Compact native titlebar dropdown panels must be sized from the number and
+   * type of rendered options before AppKit creates the child window. This keeps
+   * short menus from clipping rows below the fold without reintroducing
+   * post-open WebKit measurement feedback.
+   */
+  switch (kind) {
+    case "resources":
+    case "tips":
+      return {
+        height: TITLEBAR_DROPDOWN_READING_PANEL_HEIGHT,
+        width: TITLEBAR_DROPDOWN_READING_PANEL_WIDTH,
+      };
+    case "actions": {
+      const actionRows = Math.max(0, counts.actionCount);
+      const actionRowsHeight = actionRows > 0
+        ? actionRows * TITLEBAR_DROPDOWN_ACTION_ITEM_HEIGHT
+        : TITLEBAR_DROPDOWN_EMPTY_ROW_HEIGHT;
+      return compactTitlebarDropdownPanelSize(
+        TITLEBAR_DROPDOWN_MENU_CHROME_HEIGHT +
+          actionRowsHeight +
+          TITLEBAR_DROPDOWN_SEPARATOR_HEIGHT +
+          TITLEBAR_DROPDOWN_MENU_ITEM_HEIGHT,
+      );
+    }
+    case "git":
+      return compactTitlebarDropdownPanelSize(
+        titlebarMenuHeight(Math.max(1, counts.gitItemCount)),
+      );
+    case "keepAwake":
+      return compactTitlebarDropdownPanelSize(
+        titlebarMenuHeight(
+          KEEP_AWAKE_DURATION_OPTIONS.length + (counts.keepAwakeIsRunning ? 1 : 0) + 1,
+          { separatorCount: 1 },
+        ),
+      );
+    case "mode":
+      return compactTitlebarDropdownPanelSize(
+        titlebarMenuHeight(Math.max(1, counts.modeOptionCount)),
+      );
+    case "openIn":
+      return compactTitlebarDropdownPanelSize(
+        titlebarMenuHeight(Math.max(0, counts.targetCount) + 1, { separatorCount: 1 }),
+      );
+  }
+}
+
+/**
+ * CDXC:ReactTitlebar 2026-06-11-17:16:
+ * Native dropdown child windows reuse this titlebar bundle, but their document
+ * must avoid inheriting the normal full-width titlebar viewport. Read the panel
+ * kind once before React mounts so document, body, and root sizing can be set
+ * before WebKit lays out content.
+ *
+ * CDXC:ReactTitlebar 2026-06-11-17:27:
+ * Dynamic measurement still allowed WebKit/AppKit feedback to shrink panels
+ * after opening. Native titlebar dropdowns now use fixed child-window sizes, so
+ * panel documents fill the WebView and dropdown content scrolls internally.
+ */
+const initialTitlebarDropdownPanelKind = readTitlebarDropdownPanelKind();
 
 /**
  * CDXC:TipsAndTricks 2026-05-30-08:31:
@@ -765,24 +900,6 @@ async function readResourceProcesses(): Promise<ResourceProcess[]> {
   return result.exitCode === 0 ? parseResourceProcessTable(result.stdout) : [];
 }
 
-function setTitlebarDropdownOpen(
-  setOpen: Dispatch<SetStateAction<boolean>>,
-  open: boolean,
-  details?: TitlebarDropdownOpenChangeDetails,
-): void {
-  if (!open && shouldIgnoreTitlebarPointerExitClose(details)) {
-    details?.cancel();
-    return;
-  }
-  setOpen(open);
-}
-
-function shouldIgnoreTitlebarPointerExitClose(
-  details?: TitlebarDropdownOpenChangeDetails,
-): boolean {
-  return details?.reason === "trigger-hover" || details?.reason === "focus-out";
-}
-
 /**
  * CDXC:TitlebarResources 2026-05-23-10:46:
  * Resource-manager Quit is a process-manager action, so it must terminate the
@@ -863,7 +980,12 @@ const EMPTY_RESOURCE_GROUP_VIEWS: ReturnType<typeof createResourceGroupViews> = 
 function createFirstOpenCollapsedResourceKeys(
   resourceViews: ReturnType<typeof createResourceGroupViews>,
 ): string[] {
-  const sectionKeys = createVisibleResourceSectionKeys(resourceViews);
+  /*
+   * CDXC:TitlebarResources 2026-06-11-18:30:
+   * Resource project/group sections must not be collapsible because collapsed
+   * section headers create a cramped, ambiguous Resources state. Keep sections
+   * expanded and only preserve child-process row disclosure for dense process trees.
+   */
   const nonDefaultCollapsedBundleKeys = [
     ...resourceViews.groupViews
       .filter((view) => view.bundles.length > 0)
@@ -876,18 +998,7 @@ function createFirstOpenCollapsedResourceKeys(
         bundle.childProcesses.length > 0 && bundle.type !== "session" && bundle.type !== "browser",
     )
     .map((bundle) => bundle.key);
-  return [...sectionKeys, ...nonDefaultCollapsedBundleKeys];
-}
-
-function createVisibleResourceSectionKeys(
-  resourceViews: ReturnType<typeof createResourceGroupViews>,
-): string[] {
-  const visibleGroupViews = resourceViews.groupViews.filter((view) => view.bundles.length > 0);
-  return [
-    ...visibleGroupViews.map((view) => `group:${view.group.groupId}`),
-    ...(resourceViews.browserBundles.length > 0 ? ["browser-tabs"] : []),
-    ...(resourceViews.orphanBundles.length > 0 ? ["orphaned"] : []),
-  ];
+  return nonDefaultCollapsedBundleKeys;
 }
 
 function isBrowserTabInResourceGroup(
@@ -1385,6 +1496,8 @@ export function GhostexTitlebarHost() {
 
 function App() {
   const bootstrap = window.__ghostex_NATIVE_HOST__ ?? {};
+  const titlebarPanelKind = useMemo(() => initialTitlebarDropdownPanelKind, []);
+  const isDropdownPanel = titlebarPanelKind !== undefined;
   const [projectState, setProjectState] = useState<TitlebarProjectState>(() =>
     createInitialProjectState(bootstrap),
   );
@@ -1392,26 +1505,35 @@ function App() {
   const [selectedActionCommandId, setSelectedActionCommandId] = useState(() =>
     readLastActionCommandId(createInitialProjectState(bootstrap)),
   );
-  const [actionsMenuOpen, setActionsMenuOpen] = useState(false);
-  const [gitMenuOpen, setGitMenuOpen] = useState(false);
-  const [keepAwakeMenuOpen, setKeepAwakeMenuOpen] = useState(false);
-  const [modeMenuOpen, setModeMenuOpen] = useState(false);
-  const [openInMenuOpen, setOpenInMenuOpen] = useState(false);
-  const [resourcesMenuOpen, setResourcesMenuOpen] = useState(false);
-  const [tipsMenuOpen, setTipsMenuOpen] = useState(false);
+  const [nativeDropdownOpen, setNativeDropdownOpen] = useState<TitlebarDropdownPanelKind | undefined>();
+  const dropdownPanelSizeResolverRef = useRef<(kind: TitlebarDropdownPanelKind) => TitlebarDropdownPanelSize>(
+    (kind) =>
+      createTitlebarDropdownPanelPreferredSize(kind, {
+        actionCount: 0,
+        gitItemCount: 1,
+        keepAwakeIsRunning: false,
+        modeOptionCount: 4,
+        targetCount: 0,
+      }),
+  );
   const [readTipIds, setReadTipIds] = useState<Set<string>>(() => readStoredTitlebarTipIds());
-  const titlebarOverlayOpen =
-    actionsMenuOpen ||
-    gitMenuOpen ||
-    keepAwakeMenuOpen ||
-    modeMenuOpen ||
-    openInMenuOpen ||
-    resourcesMenuOpen ||
-    tipsMenuOpen;
+  /*
+   * CDXC:ReactTitlebar 2026-06-11-13:22:
+   * Dropdown content now lives in native child windows, so the main titlebar
+   * WKWebView must never publish a below-titlebar overlay-open state or trigger
+   * the workspace interaction shield.
+   */
+  const titlebarOverlayOpen = false;
   const [keepAwakeRuntime, setKeepAwakeRuntime] = useState<KeepAwakeRuntimeState | undefined>(
     () => readStoredKeepAwakeRuntime(),
   );
   const [resourceProcesses, setResourceProcesses] = useState<ResourceProcess[]>([]);
+  /*
+   * CDXC:TitlebarResources 2026-06-11-18:13:
+   * The native Resources child panel should not render zero-memory or missing-session rows while the first `ps` snapshot is still loading.
+   * Track first-sample readiness separately from the process array so an intentionally empty process sample can render, while AppKit keeps the child window hidden until the first real sample is committed.
+   */
+  const [resourceProcessSnapshotReady, setResourceProcessSnapshotReady] = useState(false);
   const [collapseResourcesOnFirstOpen, setCollapseResourcesOnFirstOpen] = useState(
     () => localStorage.getItem(RESOURCES_MENU_FIRST_OPEN_STORAGE_KEY) !== "seen",
   );
@@ -1432,12 +1554,13 @@ function App() {
   const resourcesFirstOpenActiveRef = useRef(false);
   const resourcesFirstOpenSeededRef = useRef(false);
   const activeMode = optimisticMode ?? projectState.activeMode;
+  const resourcesPanelActive = titlebarPanelKind === "resources";
   const resourceViews = useMemo(
     () =>
-      resourcesMenuOpen
+      resourcesPanelActive
         ? createResourceGroupViews(projectState.browserTabs, projectState.resourceGroups, resourceProcesses)
         : EMPTY_RESOURCE_GROUP_VIEWS,
-    [projectState.browserTabs, projectState.resourceGroups, resourceProcesses, resourcesMenuOpen],
+    [projectState.browserTabs, projectState.resourceGroups, resourceProcesses, resourcesPanelActive],
   );
   const inactiveTerminalSleepSessionIds = useMemo(
     () => createInactiveTerminalSleepSessionIds(projectState.resourceGroups),
@@ -1507,19 +1630,54 @@ function App() {
     postTitlebarSidebarCommand({ type: "requestAgentHookStatus" });
     postTitlebarSidebarCommand({ type: "requestGhostexCliStatus" });
   }, []);
-  const openTipsMenuFromTitlebar = useCallback(() => {
-    requestRuntimeStatusForTips();
-    setTipsMenuOpen(true);
-  }, [requestRuntimeStatusForTips]);
-  const handleTipsMenuOpenChange = useCallback(
-    (open: boolean, details?: TitlebarDropdownOpenChangeDetails) => {
-      setTitlebarDropdownOpen(setTipsMenuOpen, open, details);
-      if (open) {
-        requestRuntimeStatusForTips();
+  const closeTitlebarDropdownPanel = useCallback(() => {
+    postNative({ type: "closeTitlebarDropdownPanel" });
+    setNativeDropdownOpen(undefined);
+  }, []);
+  const showTitlebarDropdownPanel = useCallback(
+    (kind: TitlebarDropdownPanelKind, anchor: HTMLElement) => {
+      /*
+       * CDXC:ReactTitlebar 2026-06-11-23:20:
+       * Native child-window dropdown triggers should behave like normal menu
+       * buttons: requesting the already-open panel closes it instead of
+       * reopening or repositioning the same child window.
+       */
+      if (nativeDropdownOpen === kind) {
+        closeTitlebarDropdownPanel();
+        return false;
       }
+      const anchorElement =
+        anchor.closest<HTMLElement>("[data-titlebar-dropdown-anchor]") ?? anchor;
+      const rect = anchorElement.getBoundingClientRect();
+      /*
+       * CDXC:ReactTitlebar 2026-06-11-13:22:
+       * Dropdown content must open as a native child window, not as Radix content
+       * portaled below the titlebar WKWebView. Send only the titlebar-strip anchor
+       * rectangle so Swift owns screen placement while React keeps rendering the
+       * existing menu surface inside the child window.
+       */
+      setNativeDropdownOpen(kind);
+      postNative({
+        anchorRect: {
+          height: rect.height,
+          width: rect.width,
+          x: rect.x,
+          y: rect.y,
+        },
+        kind,
+        preferredSize: dropdownPanelSizeResolverRef.current(kind),
+        type: "showTitlebarDropdownPanel",
+      });
+      return true;
     },
-    [requestRuntimeStatusForTips],
+    [closeTitlebarDropdownPanel, nativeDropdownOpen],
   );
+  const openTipsMenuFromTitlebar = useCallback((event: { currentTarget: HTMLElement }) => {
+    const didOpen = showTitlebarDropdownPanel("tips", event.currentTarget);
+    if (didOpen) {
+      requestRuntimeStatusForTips();
+    }
+  }, [requestRuntimeStatusForTips, showTitlebarDropdownPanel]);
 
   useEffect(() => {
     const suppressTitlebarWebviewContextMenu = (event: MouseEvent) => {
@@ -1540,16 +1698,21 @@ function App() {
   }, []);
 
   useEffect(() => {
+    if (isDropdownPanel) {
+      return;
+    }
     const compactModeMedia = window.matchMedia("(max-width: 1049px)");
     const closeModeMenuOutsideCompactWidth = () => {
       /**
        * CDXC:ModeSwitcher 2026-05-28-10:38:
-       * The compact mode picker exists only below 1050px. Close its portaled
-       * menu when the window grows back to the full segmented-control layout so
-       * an orphaned dropdown cannot remain open after the trigger is hidden.
+       * The compact mode picker exists only below 1050px.
+       *
+       * CDXC:ReactTitlebar 2026-06-11-13:22:
+       * Its dropdown now lives in a native child window; close that panel when
+       * the trigger leaves the titlebar layout so no detached panel remains.
        */
-      if (!compactModeMedia.matches) {
-        setModeMenuOpen(false);
+      if (!compactModeMedia.matches && nativeDropdownOpen === "mode") {
+        closeTitlebarDropdownPanel();
       }
     };
     closeModeMenuOutsideCompactWidth();
@@ -1557,22 +1720,30 @@ function App() {
     return () => {
       compactModeMedia.removeEventListener("change", closeModeMenuOutsideCompactWidth);
     };
-  }, []);
+  }, [closeTitlebarDropdownPanel, isDropdownPanel, nativeDropdownOpen]);
 
   useEffect(() => {
+    if (isDropdownPanel) {
+      return;
+    }
     const narrowTitlebarMedia = window.matchMedia("(max-width: 619.98px)");
     const closeMenusHiddenAtNarrowWidth = () => {
       /**
        * CDXC:ReactTitlebar 2026-05-29-16:05:
        * App widths below 620px hide the top-right Tips, Resources, and Keep
-       * Awake controls, so their portaled menus must close at the same
-       * breakpoint instead of remaining open after their triggers leave the
-       * titlebar.
+       * Awake controls.
+       *
+       * CDXC:ReactTitlebar 2026-06-11-13:22:
+       * Those dropdowns are native child panels now, so close the panel when its
+       * trigger leaves the visible titlebar instead of keeping an orphan window.
        */
-      if (narrowTitlebarMedia.matches) {
-        setKeepAwakeMenuOpen(false);
-        setResourcesMenuOpen(false);
-        setTipsMenuOpen(false);
+      if (
+        narrowTitlebarMedia.matches &&
+        (nativeDropdownOpen === "keepAwake" ||
+          nativeDropdownOpen === "resources" ||
+          nativeDropdownOpen === "tips")
+      ) {
+        closeTitlebarDropdownPanel();
       }
     };
     closeMenusHiddenAtNarrowWidth();
@@ -1580,7 +1751,7 @@ function App() {
     return () => {
       narrowTitlebarMedia.removeEventListener("change", closeMenusHiddenAtNarrowWidth);
     };
-  }, []);
+  }, [closeTitlebarDropdownPanel, isDropdownPanel, nativeDropdownOpen]);
 
   const allTargets = useMemo(
     () => createConfiguredOpenTargets(projectState.workspaceOpenTargets),
@@ -1610,17 +1781,24 @@ function App() {
     [projectState.git],
   );
   const publishHitRegions = useCallback(() => {
+    if (isDropdownPanel) {
+      return;
+    }
     /**
      * CDXC:ReactTitlebar 2026-05-11-00:22
-     * Dropdown content is portaled outside the root node by Radix. Measure all
-     * titlebar hit-region elements in the document so AppKit lets both the
-     * grouped button and its open menu receive pointer events.
+     * Measure titlebar hit-region elements in the document so AppKit lets fixed
+     * titlebar controls receive pointer events while blank titlebar space remains
+     * native draggable chrome.
      *
      * CDXC:ReactTitlebar 2026-05-12-18:58
-     * Portaled menus can finish placement after the React open-state commit.
-     * Publish the measured rectangles after layout settles as well as during
-     * the commit so visible Configure menu items cannot fall through the
-     * native titlebar pass-through area before their own onClick handlers run.
+     * Publish the measured rectangles after layout settles as well as during the
+     * commit so conditional titlebar controls cannot briefly be treated as blank
+     * AppKit titlebar pixels.
+     *
+     * CDXC:ReactTitlebar 2026-06-11-13:22:
+     * Dropdown panels are separate native child windows, so the titlebar document
+     * must publish only strip-contained hit regions and must never publish panel
+     * geometry from the child-window document.
      */
     const regions = Array.from(
       document.querySelectorAll<HTMLElement>("[data-titlebar-hit-region]"),
@@ -1633,22 +1811,23 @@ function App() {
         y: rect.y,
       };
     });
-    const companionRestoreButton = document.querySelector<HTMLElement>(
-      ".titlebar-companion-restore-button",
+    const companionToggleButton = document.querySelector<HTMLElement>(
+      ".titlebar-companion-toggle-button",
     );
-    if (companionRestoreButton && projectState.projectEditorCompanionPaneHidden) {
+    if (companionToggleButton) {
       /*
-       * CDXC:ProjectEditorCompanion 2026-05-27-08:42:
-       * Repros showed the restore button sometimes appeared to ignore clicks,
-       * but native logs only showed blank titlebar hits. Log the measured React
-       * hit rect when it changes so missed AppKit clicks can be compared to the
-       * actual DOM button geometry without logging every pointer event.
+       * CDXC:ProjectEditorCompanion 2026-06-12-03:18:
+       * The titlebar toggle now owns both expanding and collapsing the companion
+       * pane. Log the measured React hit rect when it changes so missed AppKit
+       * clicks can still be compared to the actual DOM geometry without logging
+       * every pointer event.
        */
-      const rect = companionRestoreButton.getBoundingClientRect();
+      const rect = companionToggleButton.getBoundingClientRect();
       const signature = [
         activeMode,
         projectState.editorIsOpen ? "open" : "closed",
         projectState.editorIsSleeping ? "sleeping" : "awake",
+        projectState.projectEditorCompanionPaneHidden ? "hidden" : "visible",
         projectState.projectId,
         Math.round(rect.x),
         Math.round(rect.y),
@@ -1660,7 +1839,7 @@ function App() {
         lastCompanionHitRegionSignatureRef.current = signature;
         appendTitlebarCodeLagDebugLog(
           projectState.debuggingMode,
-          "titlebarCompanionRestore.hitRegionMeasured",
+          "titlebarCompanionToggle.hitRegionMeasured",
           {
             activeMode,
             editorIsOpen: projectState.editorIsOpen,
@@ -1690,6 +1869,7 @@ function App() {
     projectState.projectEditorCompanionPaneHidden,
     projectState.projectId,
     titlebarOverlayOpen,
+    isDropdownPanel,
   ]);
 
   const publishSettledHitRegions = useCallback(() => {
@@ -1710,6 +1890,9 @@ function App() {
   }, [publishHitRegions]);
 
   useLayoutEffect(() => {
+    if (isDropdownPanel) {
+      return;
+    }
     /**
      * CDXC:SessionFocusMode 2026-05-26-22:47:
      * The Exit focus button is conditional titlebar chrome. Republish native
@@ -1726,14 +1909,7 @@ function App() {
   }, [
     activeTarget?.id,
     activeAction?.commandId,
-    actionsMenuOpen,
-    gitMenuOpen,
-    keepAwakeMenuOpen,
     keepAwakeRuntime?.pid,
-    modeMenuOpen,
-    openInMenuOpen,
-    resourcesMenuOpen,
-    tipsMenuOpen,
     resourceProcesses.length,
     projectState.projectEditorCompanionPaneHidden,
     projectState.gxserverDaemon.state,
@@ -1742,14 +1918,21 @@ function App() {
     projectState.projectName,
     projectState.updateAvailable,
     publishSettledHitRegions,
+    isDropdownPanel,
   ]);
 
   useEffect(() => {
+    if (isDropdownPanel) {
+      return;
+    }
     window.addEventListener("resize", publishHitRegions);
     return () => window.removeEventListener("resize", publishHitRegions);
-  }, [publishHitRegions]);
+  }, [publishHitRegions, isDropdownPanel]);
 
   useEffect(() => {
+    if (isDropdownPanel) {
+      return;
+    }
     return () => {
       /**
        * CDXC:ReactTitlebar 2026-05-25-10:09:
@@ -1763,7 +1946,7 @@ function App() {
         type: "setReactTitlebarHitRegions",
       });
     };
-  }, []);
+  }, [isDropdownPanel]);
 
   useEffect(() => {
     window.__ghostex_TITLEBAR__ = {
@@ -1774,46 +1957,22 @@ function App() {
          * cannot observe normal outside clicks in the workspace/sidebar. Expose
          * one explicit close hook that AppKit can call before routing the click
          * to the real app surface behind an open dropdown.
+         *
+         * CDXC:ReactTitlebar 2026-06-11-13:22:
+         * Titlebar dropdowns are now native child windows, so this bridge closes
+         * the panel window instead of toggling in-document Radix menu state.
          */
-        setActionsMenuOpen(false);
-        setGitMenuOpen(false);
-        setKeepAwakeMenuOpen(false);
-        setModeMenuOpen(false);
-        setOpenInMenuOpen(false);
-        setResourcesMenuOpen(false);
-        setTipsMenuOpen(false);
+        closeTitlebarDropdownPanel();
       },
       setNativePointerInside: setTitlebarNativePointerInside,
+      setNativeDropdownOpen,
       setActiveProjectState: (state) => {
-        setProjectState((current) => ({
-          ...current,
-          ...state,
-          activeMode:
-            state.activeMode === undefined
-              ? current.activeMode
-              : normalizeTitlebarMode(state.activeMode),
-          agentHookStatus: state.agentHookStatus ?? current.agentHookStatus,
-          ghostexCliStatus: state.ghostexCliStatus ?? current.ghostexCliStatus,
-          debuggingMode: state.debuggingMode ?? current.debuggingMode,
-          diffStats: state.diffStats ?? current.diffStats,
-          git: state.git ?? current.git,
-          gxserverDaemon: state.gxserverDaemon ?? current.gxserverDaemon,
-          keepAwake: state.keepAwake ?? current.keepAwake,
-          browserTabs: state.browserTabs ?? current.browserTabs,
-          projectEditorCompanionPaneHidden:
-            state.projectEditorCompanionPaneHidden ?? current.projectEditorCompanionPaneHidden,
-          projectIsQuick: state.projectIsQuick ?? current.projectIsQuick,
-          petOverlayEnabled: state.petOverlayEnabled ?? current.petOverlayEnabled,
-          resourceGroups: state.resourceGroups ?? current.resourceGroups,
-          sidebarActions: state.sidebarActions ?? current.sidebarActions,
-          sessionPersistenceProvider:
-            state.sessionPersistenceProvider ?? current.sessionPersistenceProvider,
-          workspaceOpenTargets: state.workspaceOpenTargets ?? current.workspaceOpenTargets,
-          isFocusModeActive: state.isFocusModeActive ?? current.isFocusModeActive,
-          updateAvailable: state.updateAvailable ?? current.updateAvailable,
-        }));
+        setProjectState((current) => mergeTitlebarProjectState(current, state));
       },
     };
+    if (isRecord(window.__ghostex_PENDING_TITLEBAR_PROJECT_STATE__)) {
+      window.__ghostex_TITLEBAR__.setActiveProjectState(window.__ghostex_PENDING_TITLEBAR_PROJECT_STATE__);
+    }
     if (typeof window.__ghostex_PENDING_TITLEBAR_UPDATE_AVAILABLE__ === "boolean") {
       /**
        * CDXC:AutoUpdate 2026-06-08-18:21:
@@ -1829,7 +1988,7 @@ function App() {
     return () => {
       delete window.__ghostex_TITLEBAR__;
     };
-  }, []);
+  }, [closeTitlebarDropdownPanel]);
 
   useEffect(() => {
     setSelectedActionCommandId(readLastActionCommandId(projectState));
@@ -1866,16 +2025,20 @@ function App() {
       const processes = await readResourceProcesses();
       if (generation === resourceRefreshGenerationRef.current) {
         setResourceProcesses(processes);
+        setResourceProcessSnapshotReady(true);
       }
     } catch (error) {
       console.warn("Failed to refresh Ghostex resources", error);
+      if (generation === resourceRefreshGenerationRef.current) {
+        setResourceProcessSnapshotReady(true);
+      }
     } finally {
       resourceRefreshInFlightRef.current = false;
     }
   }, []);
 
   useEffect(() => {
-    if (!resourcesMenuOpen) {
+    if (!resourcesPanelActive) {
       return;
     }
     /**
@@ -1888,9 +2051,14 @@ function App() {
      * Hidden Resources UI should hold no sampled process table and should never
      * stack overlapping `ps` runs. Treat each open as a generation so slow native
      * process replies cannot repopulate closed-menu state.
+     *
+     * CDXC:TitlebarResources 2026-06-11-18:13:
+     * Each native dropdown open clears readiness so AppKit waits for the current
+     * first process sample before revealing the Resources child window.
      */
     const generation = resourceRefreshGenerationRef.current + 1;
     resourceRefreshGenerationRef.current = generation;
+    setResourceProcessSnapshotReady(false);
     void refreshResources(generation);
     const interval = window.setInterval(() => {
       void refreshResources(generation);
@@ -1898,12 +2066,26 @@ function App() {
     return () => {
       window.clearInterval(interval);
       resourceRefreshGenerationRef.current += 1;
+      setResourceProcessSnapshotReady(false);
       setResourceProcesses((current) => current.length === 0 ? current : []);
     };
-  }, [refreshResources, resourcesMenuOpen]);
+  }, [refreshResources, resourcesPanelActive]);
 
   useEffect(() => {
-    if (!resourcesMenuOpen || !collapseResourcesOnFirstOpen) {
+    if (titlebarPanelKind !== "resources" || !resourceProcessSnapshotReady) {
+      return;
+    }
+    /*
+     * CDXC:TitlebarResources 2026-06-11-18:13:
+     * The native Resources panel is loaded offscreen until React has committed
+     * the first real process snapshot. Report readiness from an effect so AppKit
+     * orders the child window onscreen after the non-loading content is painted.
+     */
+    postNative({ kind: "resources", type: "titlebarDropdownPanelReady" });
+  }, [resourceProcessSnapshotReady, titlebarPanelKind]);
+
+  useEffect(() => {
+    if (!resourcesPanelActive || !collapseResourcesOnFirstOpen) {
       return;
     }
     /**
@@ -1934,15 +2116,15 @@ function App() {
       }
       return changed ? next : current;
     });
-  }, [collapseResourcesOnFirstOpen, resourceViews, resourcesMenuOpen]);
+  }, [collapseResourcesOnFirstOpen, resourceViews, resourcesPanelActive]);
 
   useEffect(() => {
-    if (resourcesMenuOpen || !resourcesFirstOpenActiveRef.current) {
+    if (resourcesPanelActive || !resourcesFirstOpenActiveRef.current) {
       return;
     }
     resourcesFirstOpenActiveRef.current = false;
     setCollapseResourcesOnFirstOpen(false);
-  }, [resourcesMenuOpen]);
+  }, [resourcesPanelActive]);
 
   const openTarget = (target: ResolvedOpenTarget | undefined) => {
     if (!target || !projectState.projectPath) {
@@ -2024,7 +2206,6 @@ function App() {
   };
 
   const runGitAction = (action: SidebarGitAction) => {
-    setGitMenuOpen(false);
     postNative({ action, type: "runSidebarGitActionFromTitlebar" });
   };
 
@@ -2040,27 +2221,6 @@ function App() {
     });
   };
 
-  const setResourceSectionsCollapsed = (keys: string[], collapsed: boolean) => {
-    if (keys.length === 0) {
-      return;
-    }
-    setCollapsedResourceKeys((current) => {
-      const next = new Set(current);
-      let changed = false;
-      for (const key of keys) {
-        const hasKey = next.has(key);
-        if (collapsed && !hasKey) {
-          next.add(key);
-          changed = true;
-        } else if (!collapsed && hasKey) {
-          next.delete(key);
-          changed = true;
-        }
-      }
-      return changed ? next : current;
-    });
-  };
-
   const focusResourceSession = (sessionId: string) => {
     /**
      * CDXC:TitlebarResources 2026-05-28-10:39:
@@ -2070,7 +2230,6 @@ function App() {
      * owner, which already handles cross-project and sleeping-session focus.
      */
     postNative({ sessionId, type: "focusResourceSessionFromTitlebar" });
-    setResourcesMenuOpen(false);
   };
 
   const quitResourceBundles = (bundles: ResourceProcessBundle[]) => {
@@ -2226,7 +2385,6 @@ function App() {
      * should open the Ghostty/Terminal settings tab and pre-fill search with
      * the exact setting label so users land on Session Persistence immediately.
      */
-    setTipsMenuOpen(false);
     window.webkit?.messageHandlers?.ghostexAppModalHost?.postMessage({
       initialSearchQuery: "Session Persistence",
       initialTab: "ghostty",
@@ -2243,7 +2401,6 @@ function App() {
      * the direct Agent Hooks install row without requiring an expanded details
      * panel.
      */
-    setTipsMenuOpen(false);
     window.webkit?.messageHandlers?.ghostexAppModalHost?.postMessage({
       initialTab: "integrations",
       modal: "settings",
@@ -2252,7 +2409,6 @@ function App() {
   };
 
   const openDebuggingModeSettings = () => {
-    setTipsMenuOpen(false);
     window.webkit?.messageHandlers?.ghostexAppModalHost?.postMessage({
       initialSearchQuery: "Debug logging and UI",
       initialTab: "settings",
@@ -2268,7 +2424,6 @@ function App() {
      * Repair CLI lives, so the notice is actionable without adding titlebar
      * install controls.
      */
-    setTipsMenuOpen(false);
     window.webkit?.messageHandlers?.ghostexAppModalHost?.postMessage({
       initialSearchQuery: "Ghostex CLI",
       initialTab: "integrations",
@@ -2292,15 +2447,6 @@ function App() {
     }
     openSessionPersistenceSettings();
   };
-
-  useEffect(() => {
-    if (!projectState.keepAwake.hideTitlebarControl && !keepAwakeMenuOpen) {
-      return;
-    }
-    if (projectState.keepAwake.hideTitlebarControl && keepAwakeMenuOpen) {
-      setKeepAwakeMenuOpen(false);
-    }
-  }, [keepAwakeMenuOpen, projectState.keepAwake.hideTitlebarControl]);
 
   useEffect(() => {
     if (!projectState.keepAwake.activateOnLaunch || keepAwakeRuntime) {
@@ -2497,25 +2643,25 @@ function App() {
     postNative({ type: "openTasksPlaceholderFromTitlebar" });
   };
 
-  const showProjectEditorCompanion = () => {
-    appendTitlebarCodeLagDebugLog(projectState.debuggingMode, "titlebarCompanionRestore.dispatch", {
+  const toggleProjectEditorCompanion = () => {
+    appendTitlebarCodeLagDebugLog(projectState.debuggingMode, "titlebarCompanionToggle.dispatch", {
       activeMode,
       editorIsOpen: projectState.editorIsOpen,
+      nextProjectEditorCompanionPaneHidden: projectState.projectEditorCompanionPaneHidden !== true,
       projectEditorCompanionPaneHidden: projectState.projectEditorCompanionPaneHidden,
       projectId: projectState.projectId,
       source: "click",
     });
-    postNative({ type: "showProjectEditorCompanionFromTitlebar" });
+    postNative({ type: "toggleProjectEditorCompanionFromTitlebar" });
   };
   const showUpdateDialog = () => {
     postNative({ type: "showUpdateDialogFromTitlebar" });
   };
 
-  const shouldShowCompanionRestoreButton =
+  const shouldShowCompanionToggleButton =
     activeMode !== "agents" &&
     projectState.editorIsOpen &&
-    !projectState.editorIsSleeping &&
-    projectState.projectEditorCompanionPaneHidden;
+    !projectState.editorIsSleeping;
   /*
    * CDXC:TitlebarModeTabs 2026-05-31-12:00:
    * macOS titlebar mode switcher labels use title case (Agents, Source, GitHub, Kanban), not all-caps, so the segmented control reads like navigation chrome rather than shouting labels.
@@ -2546,6 +2692,80 @@ function App() {
       value: "tasks" as const,
     },
   ];
+  const resolveTitlebarDropdownPanelSize = useCallback(
+    (kind: TitlebarDropdownPanelKind) =>
+      createTitlebarDropdownPanelPreferredSize(kind, {
+        actionCount: visibleActions.length,
+        gitItemCount: gitMenuItems.length,
+        keepAwakeIsRunning: Boolean(keepAwakeRuntime),
+        modeOptionCount: titlebarModes.length,
+        targetCount: visibleTargets.length,
+      }),
+    [
+      gitMenuItems.length,
+      keepAwakeRuntime,
+      titlebarModes.length,
+      visibleActions.length,
+      visibleTargets.length,
+    ],
+  );
+
+  useLayoutEffect(() => {
+    dropdownPanelSizeResolverRef.current = resolveTitlebarDropdownPanelSize;
+  }, [resolveTitlebarDropdownPanelSize]);
+
+  if (titlebarPanelKind) {
+    return (
+      <TooltipProvider delayDuration={300}>
+        <TitlebarDropdownPanelSurface
+          activeMode={activeMode}
+          activeTarget={activeTarget}
+          browserBundles={resourceViews.browserBundles}
+          collapsedResourceKeys={collapsedResourceKeys}
+          daemon={projectState.gxserverDaemon}
+          gitItems={gitMenuItems}
+          inactiveTerminalSleepSessionCount={inactiveTerminalSleepSessionIds.length}
+          kind={titlebarPanelKind}
+          modeOptions={titlebarModes}
+          notices={notices}
+          onClose={closeTitlebarDropdownPanel}
+          onFocusResourceSession={focusResourceSession}
+          onGxserverAlwaysStartChange={setGxserverAlwaysStart}
+          onGxserverRestart={restartGxserverDaemon}
+          onGxserverStart={startGxserverDaemon}
+          onGxserverStop={stopGxserverDaemon}
+          onMarkAllTipsRead={markAllTipsRead}
+          onMarkTipRead={markTipRead}
+          onOpenNoticeSettings={openNoticeSettings}
+          onOpenPowerSettings={openPowerSettings}
+          onOpenTarget={openTarget}
+          onQuitResources={quitResourceBundles}
+          onRunAction={runSidebarAction}
+          onRunGitAction={runGitAction}
+          onSleepInactiveSessions={sleepInactiveTerminalSessions}
+          onStartKeepAwake={startKeepAwake}
+          onStopKeepAwake={stopKeepAwake}
+          onToggleResourceCollapse={toggleResourceCollapse}
+          orphanBundles={resourceViews.orphanBundles}
+          resourceProcessSnapshotReady={resourceProcessSnapshotReady}
+          quittingResourceKeys={quittingResourceKeys}
+          readTips={readTips}
+          resourceGroupViews={resourceViews.groupViews}
+          selectedActionCommandId={selectedActionCommandId}
+          sessionPersistenceProvider={
+            projectState.sessionPersistenceProvider === "off"
+              ? undefined
+              : projectState.sessionPersistenceProvider
+          }
+          visibleActions={visibleActions}
+          visibleTargets={visibleTargets}
+          unreadTips={unreadTips}
+          activeKeepAwakeDuration={keepAwakeRuntime?.durationMinutes}
+          keepAwakeIsRunning={Boolean(keepAwakeRuntime)}
+        />
+      </TooltipProvider>
+    );
+  }
 
   return (
     <TooltipProvider delayDuration={300}>
@@ -2594,57 +2814,17 @@ function App() {
             <TitlebarModeDropdown
               activeMode={activeMode}
               modes={titlebarModes}
-              onOpenChange={(open, details) =>
-                setTitlebarDropdownOpen(setModeMenuOpen, open, details)
-              }
-              open={modeMenuOpen}
+              nativeDropdownOpen={nativeDropdownOpen}
+              onOpenPanel={showTitlebarDropdownPanel}
             />
           </div>
           <div style={styles.centerSlot}>
-            {shouldShowCompanionRestoreButton ? (
-              <div style={styles.companionRestoreSlot}>
-                <Tooltip>
-                  <TooltipTrigger
-                    render={
-                      <Button
-                        aria-label="Expand Companion Sidepane"
-                        className="titlebar-session-button titlebar-companion-restore-button"
-                        data-titlebar-hit-region
-                        onClick={showProjectEditorCompanion}
-                        type="button"
-                        variant="ghost"
-                      >
-                        {/*
-                         * CDXC:ProjectEditorCompanion 2026-05-16-14:42:
-                         * The hidden companion-pane restore control is floating
-                         * titlebar chrome. Keep it outside the mode switcher flow
-                         * so showing the button never shifts Agents/Code/Git/Project tabs.
-
-                         * CDXC:ProjectEditorCompanion 2026-06-11-12:18:
-                         * Expand Companion Sidepane uses the same 14x14 Tabler
-                         * glyph size as the native collapse control in the companion
-                         * pane titlebar.
-                         */}
-                        <IconLayoutSidebarLeftExpand
-                          aria-hidden="true"
-                          size={COMPANION_SIDEPANE_ICON_SIZE}
-                          stroke={1.8}
-                          style={{
-                            flexShrink: 0,
-                            height: COMPANION_SIDEPANE_ICON_SIZE,
-                            width: COMPANION_SIDEPANE_ICON_SIZE,
-                          }}
-                        />
-                      </Button>
-                    }
-                  />
-                  <TooltipContent>Expand Companion Sidepane</TooltipContent>
-                </Tooltip>
-              </div>
-            ) : null}
             <TitlebarModeSwitcher
               activeMode={activeMode}
+              companionPaneHidden={projectState.projectEditorCompanionPaneHidden}
               modes={titlebarModes}
+              onToggleCompanion={toggleProjectEditorCompanion}
+              showCompanionToggle={shouldShowCompanionToggleButton}
             />
           </div>
           <div style={styles.rightSlot}>
@@ -2672,11 +2852,11 @@ function App() {
              * titlebar control order, keeping the info/help affordance closer to
              * the mode switcher while power controls remain farther right.
              */}
-            <DropdownMenu
-              onOpenChange={handleTipsMenuOpenChange}
-              open={tipsMenuOpen}
+            <ButtonGroup
+              className="titlebar-open-group titlebar-tips-group"
+              data-titlebar-dropdown-anchor
+              data-titlebar-hit-region
             >
-              <ButtonGroup className="titlebar-open-group titlebar-tips-group" data-titlebar-hit-region>
                 <Tooltip>
                   <TooltipTrigger
                     render={
@@ -2687,10 +2867,11 @@ function App() {
                             : "Tips and tricks"
                         }
                         className="titlebar-session-button titlebar-tips-button"
+                        data-state={nativeDropdownOpen === "tips" ? "open" : undefined}
                         onClick={openTipsMenuFromTitlebar}
                         onContextMenu={(event) => {
                           event.preventDefault();
-                          openTipsMenuFromTitlebar();
+                          openTipsMenuFromTitlebar(event);
                         }}
                         type="button"
                         variant="ghost"
@@ -2708,46 +2889,15 @@ function App() {
                       </Button>
                     }
                   />
-                  <TooltipContent>Tips & Tricks</TooltipContent>
+                  <TooltipContent side="left">Tips & Tricks</TooltipContent>
                 </Tooltip>
-                <DropdownMenuTrigger
-                  render={
-                    <Button
-                      aria-label="Tips and tricks menu"
-                      aria-hidden="true"
-                      className="titlebar-session-button titlebar-open-chevron-button titlebar-open-chevron-button-hidden"
-                      tabIndex={-1}
-                      type="button"
-                      variant="ghost"
-                    />
-                  }
-                />
-              </ButtonGroup>
-              <DropdownMenuContent
-                align="end"
-                className="titlebar-open-menu titlebar-tips-menu rounded-none border-border/80 !bg-[#0e0e0e] p-0 text-[13px] text-foreground shadow-2xl"
-                data-titlebar-hit-region
-                sideOffset={6}
-                style={{ backgroundColor: "#0e0e0e" }}
-              >
-                <TitlebarTipsMenu
-                  notices={notices}
-                  onMarkAllRead={markAllTipsRead}
-                  onMarkRead={markTipRead}
-                  onOpenNoticeSettings={openNoticeSettings}
-                  readTips={readTips}
-                  unreadTips={unreadTips}
-                />
-              </DropdownMenuContent>
-            </DropdownMenu>
+            </ButtonGroup>
             {!projectState.keepAwake.hideTitlebarControl ? (
-              <DropdownMenu
-                onOpenChange={(open, details) =>
-                  setTitlebarDropdownOpen(setKeepAwakeMenuOpen, open, details)
-                }
-                open={keepAwakeMenuOpen}
+              <ButtonGroup
+                className="titlebar-open-group titlebar-keep-awake-group"
+                data-titlebar-dropdown-anchor
+                data-titlebar-hit-region
               >
-                <ButtonGroup className="titlebar-open-group titlebar-keep-awake-group" data-titlebar-hit-region>
                   <Tooltip>
                     <TooltipTrigger
                       render={
@@ -2755,10 +2905,11 @@ function App() {
                           aria-label={keepAwakeRuntime ? "Allow Mac sleep" : "Keep Mac awake"}
                           className="titlebar-session-button titlebar-open-main-button"
                           data-active={String(Boolean(keepAwakeRuntime))}
+                          data-state={nativeDropdownOpen === "keepAwake" ? "open" : undefined}
                           onClick={toggleKeepAwake}
                           onContextMenu={(event) => {
                             event.preventDefault();
-                            setKeepAwakeMenuOpen(true);
+                            showTitlebarDropdownPanel("keepAwake", event.currentTarget);
                           }}
                           type="button"
                           variant={keepAwakeRuntime ? "outline" : "ghost"}
@@ -2777,82 +2928,28 @@ function App() {
                         </Button>
                       }
                     />
-                    <TooltipContent>Click to toggle. Right-click for options.</TooltipContent>
+                    <TooltipContent side="left">Click to toggle. Right-click for options.</TooltipContent>
                   </Tooltip>
-                  <DropdownMenuTrigger
-                    render={
-                      <Button
-                        aria-label="Keep awake menu"
-                        aria-hidden="true"
-                        className="titlebar-session-button titlebar-open-chevron-button titlebar-open-chevron-button-hidden"
-                        tabIndex={-1}
-                        type="button"
-                        variant="ghost"
-                      >
-                        <IconChevronDown aria-hidden="true" size={14} />
-                      </Button>
-                    }
-                  />
-                </ButtonGroup>
-                <DropdownMenuContent
-                  align="center"
-                  alignOffset={TITLEBAR_SPLIT_MENU_CENTER_OFFSET}
-                  className="titlebar-open-menu min-w-[220px] rounded-none border-border/80 !bg-[#0e0e0e] p-1 text-[13px] text-foreground shadow-2xl"
-                  data-titlebar-hit-region
-                  sideOffset={6}
-                  style={{ backgroundColor: "#0e0e0e" }}
-                >
-                  {KEEP_AWAKE_DURATION_OPTIONS.map((option) => (
-                    <DropdownMenuItem
-                      className="titlebar-open-menu-item"
-                      key={option.value}
-                      onClick={() => {
-                        void startKeepAwake(option.value);
-                      }}
-                    >
-                      <IconCoffee aria-hidden="true" size={14} stroke={1.8} />
-                      <span className="min-w-0 flex-1 truncate">Keep awake {option.label.toLowerCase()}</span>
-                      {keepAwakeRuntime?.durationMinutes === option.value ? (
-                        <IconCheck aria-hidden="true" className="ml-2 size-4 opacity-75" />
-                      ) : null}
-                    </DropdownMenuItem>
-                  ))}
-                  {keepAwakeRuntime ? (
-                    <DropdownMenuItem className="titlebar-open-menu-item" onClick={() => void stopKeepAwake()}>
-                      <IconMoon aria-hidden="true" size={14} stroke={1.8} />
-                      <span>Allow sleep now</span>
-                    </DropdownMenuItem>
-                  ) : null}
-                  <DropdownMenuSeparator className="bg-border/70" />
-                  <DropdownMenuItem
-                    className="titlebar-open-menu-item"
-                    onClick={openPowerSettings}
-                  >
-                    <IconSettings aria-hidden="true" size={16} />
-                    <span>Power Settings</span>
-                  </DropdownMenuItem>
-                </DropdownMenuContent>
-              </DropdownMenu>
+              </ButtonGroup>
             ) : null}
-            <DropdownMenu
-              onOpenChange={(open, details) =>
-                setTitlebarDropdownOpen(setResourcesMenuOpen, open, details)
-              }
-              open={resourcesMenuOpen}
+            <ButtonGroup
+              className="titlebar-open-group"
+              data-titlebar-dropdown-anchor
+              data-titlebar-hit-region
             >
-              <ButtonGroup className="titlebar-open-group" data-titlebar-hit-region>
                 <Tooltip>
                   <TooltipTrigger
                     render={
                       <Button
                         aria-label="Ghostex resources"
                         className="titlebar-session-button titlebar-resource-button"
-                        onClick={() => {
-                          setResourcesMenuOpen(true);
+                        data-state={nativeDropdownOpen === "resources" ? "open" : undefined}
+                        onClick={(event) => {
+                          showTitlebarDropdownPanel("resources", event.currentTarget);
                         }}
                         onContextMenu={(event) => {
                           event.preventDefault();
-                          setResourcesMenuOpen(true);
+                          showTitlebarDropdownPanel("resources", event.currentTarget);
                         }}
                         type="button"
                         variant="ghost"
@@ -2872,71 +2969,26 @@ function App() {
                       </Button>
                     }
                   />
-                  <TooltipContent>Resources Monitor</TooltipContent>
+                  <TooltipContent side="left">Resources Monitor</TooltipContent>
                 </Tooltip>
-                <DropdownMenuTrigger
-                  render={
-                    <Button
-                      aria-label="Resources menu"
-                      aria-hidden="true"
-                      className="titlebar-session-button titlebar-open-chevron-button titlebar-open-chevron-button-hidden"
-                      tabIndex={-1}
-                      type="button"
-                      variant="ghost"
-                    />
-                  }
-                />
-              </ButtonGroup>
-              <DropdownMenuContent
-                align="end"
-                className="titlebar-open-menu titlebar-resources-menu rounded-none border-border/80 !bg-[#0e0e0e] p-0 text-[13px] text-foreground shadow-2xl"
-                data-titlebar-hit-region
-                sideOffset={6}
-                style={{ backgroundColor: "#0e0e0e" }}
-              >
-                <TitlebarResourcesMenu
-                  browserBundles={resourceViews.browserBundles}
-                  collapsedKeys={collapsedResourceKeys}
-                  daemon={projectState.gxserverDaemon}
-                  groupViews={resourceViews.groupViews}
-                  inactiveTerminalSleepSessionCount={inactiveTerminalSleepSessionIds.length}
-                  onFocusSession={focusResourceSession}
-                  onGxserverAlwaysStartChange={setGxserverAlwaysStart}
-                  onGxserverRestart={restartGxserverDaemon}
-                  onGxserverStart={startGxserverDaemon}
-                  onGxserverStop={stopGxserverDaemon}
-                  onQuit={quitResourceBundles}
-                  onSetSectionsCollapsed={setResourceSectionsCollapsed}
-                  onSleepInactiveSessions={sleepInactiveTerminalSessions}
-                  onToggle={toggleResourceCollapse}
-                  orphanBundles={resourceViews.orphanBundles}
-                  quittingKeys={quittingResourceKeys}
-                  sessionPersistenceProvider={
-                    projectState.sessionPersistenceProvider === "off"
-                      ? undefined
-                      : projectState.sessionPersistenceProvider
-                  }
-                />
-              </DropdownMenuContent>
-            </DropdownMenu>
-            <DropdownMenu
-              onOpenChange={(open, details) =>
-                setTitlebarDropdownOpen(setGitMenuOpen, open, details)
-              }
-              open={gitMenuOpen}
+            </ButtonGroup>
+            <ButtonGroup
+              className="titlebar-open-group titlebar-git-group"
+              data-titlebar-dropdown-anchor
+              data-titlebar-hit-region
             >
-              <ButtonGroup className="titlebar-open-group titlebar-git-group" data-titlebar-hit-region>
                 <Tooltip>
                   <TooltipTrigger
                     render={
                       <Button
                         aria-label={gitPrimaryAction.disabledReason ?? gitPrimaryLabel}
                         className="titlebar-session-button titlebar-open-main-button titlebar-git-main-button"
+                        data-state={nativeDropdownOpen === "git" ? "open" : undefined}
                         disabled={gitPrimaryAction.disabled}
                         onClick={() => runGitAction(gitPrimaryAction.action)}
                         onContextMenu={(event) => {
                           event.preventDefault();
-                          setGitMenuOpen(true);
+                          showTitlebarDropdownPanel("git", event.currentTarget);
                         }}
                         type="button"
                         variant="ghost"
@@ -2966,51 +3018,14 @@ function App() {
                       </Button>
                     }
                   />
-                  <TooltipContent>Commit. Right-click for more actions</TooltipContent>
+                  <TooltipContent side="left">Commit. Right-click for more actions</TooltipContent>
                 </Tooltip>
-                <DropdownMenuTrigger
-                  render={
-                    <Button
-                      aria-label="Git actions menu"
-                      aria-hidden="true"
-                      className="titlebar-session-button titlebar-open-chevron-button titlebar-open-chevron-button-hidden"
-                      tabIndex={-1}
-                      type="button"
-                      variant="ghost"
-                    >
-                      <IconChevronDown aria-hidden="true" size={14} />
-                    </Button>
-                  }
-                />
-              </ButtonGroup>
-              <DropdownMenuContent
-                align="center"
-                alignOffset={TITLEBAR_SPLIT_MENU_CENTER_OFFSET}
-                className="titlebar-open-menu titlebar-git-menu rounded-none border-border/80 !bg-[#0e0e0e] p-1 text-[13px] text-foreground shadow-2xl"
-                data-titlebar-hit-region
-                sideOffset={6}
-                style={{ backgroundColor: "#0e0e0e", minWidth: 240, width: 240 }}
-              >
-                {gitMenuItems.map((item) => (
-                  <DropdownMenuItem
-                    className="titlebar-open-menu-item"
-                    disabled={item.disabled}
-                    key={item.action}
-                    onClick={() => runGitAction(item.action)}
-                  >
-                    {getTitlebarGitActionIcon(item.action)}
-                    <span>{item.label}</span>
-                  </DropdownMenuItem>
-                ))}
-              </DropdownMenuContent>
-            </DropdownMenu>
-            <DropdownMenu
-              onOpenChange={(open, details) =>
-                setTitlebarDropdownOpen(setActionsMenuOpen, open, details)
-              }
-              open={actionsMenuOpen}
+            </ButtonGroup>
+            <ButtonGroup
+              className="titlebar-open-group titlebar-actions-group"
+              data-titlebar-dropdown-anchor
+              data-titlebar-hit-region
             >
-              <ButtonGroup className="titlebar-open-group titlebar-actions-group" data-titlebar-hit-region>
                 <Tooltip>
                   <TooltipTrigger
                     render={
@@ -3021,11 +3036,12 @@ function App() {
                             : "No actions configured"
                         }
                         className="titlebar-session-button titlebar-open-main-button"
+                        data-state={nativeDropdownOpen === "actions" ? "open" : undefined}
                         disabled={!activeAction}
                         onClick={() => runSidebarAction(activeAction)}
                         onContextMenu={(event) => {
                           event.preventDefault();
-                          setActionsMenuOpen(true);
+                          showTitlebarDropdownPanel("actions", event.currentTarget);
                         }}
                         type="button"
                         variant="ghost"
@@ -3034,105 +3050,25 @@ function App() {
                       </Button>
                     }
                   />
-                  <TooltipContent>Click to run. Right-click for actions.</TooltipContent>
+                  <TooltipContent side="left">Click to run. Right-click for actions.</TooltipContent>
                 </Tooltip>
-                <DropdownMenuTrigger
-                  render={
-                    <Button
-                      aria-label="Actions menu"
-                      aria-hidden="true"
-                      className="titlebar-session-button titlebar-open-chevron-button titlebar-open-chevron-button-hidden"
-                      tabIndex={-1}
-                      type="button"
-                      variant="ghost"
-                    >
-                      <IconChevronDown aria-hidden="true" size={14} />
-                    </Button>
-                  }
-                />
-              </ButtonGroup>
-              <DropdownMenuContent
-                align="center"
-                alignOffset={TITLEBAR_SPLIT_MENU_CENTER_OFFSET}
-                className="titlebar-open-menu min-w-[220px] rounded-none border-border/80 !bg-[#0e0e0e] p-1 text-[13px] text-foreground shadow-2xl"
-                data-titlebar-hit-region
-                sideOffset={6}
-                style={{ backgroundColor: "#0e0e0e" }}
-              >
-                {visibleActions.length > 0 ? (
-                  visibleActions.map((command) => {
-                    const actionCommandPreview = getSidebarCommandPreviewLabel(command);
-                    return (
-                      <DropdownMenuItem
-                        className="titlebar-open-menu-item titlebar-action-menu-item"
-                        key={command.commandId}
-                        onClick={() => runSidebarAction(command)}
-                      >
-                        <span className="titlebar-action-menu-icon">{getSidebarActionIcon(command)}</span>
-                        <span className="titlebar-action-menu-copy">
-                          <span className="titlebar-action-menu-title">
-                            {getSidebarActionLabel(command)}
-                          </span>
-                          <Tooltip>
-                            <TooltipTrigger
-                              render={
-                                <span
-                                  className="titlebar-action-command-preview"
-                                  data-unconfigured={String(!isSidebarCommandConfigured(command))}
-                                >
-                                  {actionCommandPreview}
-                                </span>
-                              }
-                            />
-                            <TooltipContent
-                              className="titlebar-action-command-tooltip whitespace-normal text-left"
-                              sideOffset={6}
-                            >
-                              {actionCommandPreview}
-                            </TooltipContent>
-                          </Tooltip>
-                        </span>
-                        {activeAction?.commandId === command.commandId ? (
-                          <IconCheck aria-hidden="true" className="ml-2 size-4 shrink-0 opacity-75" />
-                        ) : null}
-                      </DropdownMenuItem>
-                    );
-                  })
-                ) : (
-                  <div className="px-2 py-2 text-muted-foreground">No Actions configured</div>
-                )}
-                <DropdownMenuSeparator className="bg-border/70" />
-                <DropdownMenuItem
-                  className="titlebar-open-menu-item"
-                  onClick={() =>
-                    window.webkit?.messageHandlers?.ghostexAppModalHost?.postMessage({
-                      modal: "configureActions",
-                      type: "open",
-                    })
-                  }
-                >
-                  <IconSettings aria-hidden="true" size={16} />
-                  <span>Configure</span>
-                </DropdownMenuItem>
-              </DropdownMenuContent>
-            </DropdownMenu>
-            <DropdownMenu
-              onOpenChange={(open, details) =>
-                setTitlebarDropdownOpen(setOpenInMenuOpen, open, details)
-              }
-              open={openInMenuOpen}
+            </ButtonGroup>
+            <ButtonGroup
+              className="titlebar-open-group"
+              data-titlebar-dropdown-anchor
+              data-titlebar-hit-region
             >
-              <ButtonGroup className="titlebar-open-group" data-titlebar-hit-region>
                 <Tooltip>
                   <TooltipTrigger
                     render={
                       <Button
                         aria-label={activeTarget?.label ?? "Open project"}
                         className="titlebar-session-button titlebar-open-main-button"
+                        data-state={nativeDropdownOpen === "openIn" ? "open" : undefined}
                         onClick={() => openTarget(activeTarget)}
                         onContextMenu={(event) => {
                           event.preventDefault();
-                          setOpenInMenuOpen(true);
+                          showTitlebarDropdownPanel("openIn", event.currentTarget);
                         }}
                         type="button"
                         variant="ghost"
@@ -3145,64 +3081,381 @@ function App() {
                       </Button>
                     }
                   />
-                  <TooltipContent>Click to open. Right-click for targets.</TooltipContent>
+                  <TooltipContent side="left">Click to open. Right-click for targets.</TooltipContent>
                 </Tooltip>
-                <DropdownMenuTrigger
-                  render={
-                    <Button
-                      aria-label="Open project menu"
-                      aria-hidden="true"
-                      className="titlebar-session-button titlebar-open-chevron-button titlebar-open-chevron-button-hidden"
-                      tabIndex={-1}
-                      type="button"
-                      variant="ghost"
-                    >
-                      <IconChevronDown aria-hidden="true" size={14} />
-                    </Button>
-                  }
-                />
-              </ButtonGroup>
-              <DropdownMenuContent
-                align="center"
-                alignOffset={TITLEBAR_SPLIT_MENU_CENTER_OFFSET}
-                className="titlebar-open-menu min-w-[220px] rounded-none border-border/80 !bg-[#0e0e0e] p-1 text-[13px] text-foreground shadow-2xl"
-                data-titlebar-hit-region
-                sideOffset={6}
-                style={{ backgroundColor: "#0e0e0e" }}
-              >
-                {visibleTargets.map((target) => (
-                  <DropdownMenuItem
-                    className="titlebar-open-menu-item"
-                    key={target.id}
-                    onClick={() => openTarget(target)}
-                  >
-                    {getOpenTargetIcon(target)}
-                    <span className="min-w-0 flex-1 truncate">{target.label}</span>
-                    {activeTarget?.id === target.id ? (
-                      <IconCheck aria-hidden="true" className="ml-2 size-4 opacity-75" />
-                    ) : null}
-                  </DropdownMenuItem>
-                ))}
-                <DropdownMenuSeparator className="bg-border/70" />
-                <DropdownMenuItem
-                  className="titlebar-open-menu-item"
-                  onClick={() =>
-                    window.webkit?.messageHandlers?.ghostexAppModalHost?.postMessage({
-                      modal: "openTargets",
-                      type: "open",
-                    })
-                  }
-                >
-                  <IconSettings aria-hidden="true" size={16} />
-                  <span>Configure</span>
-                </DropdownMenuItem>
-              </DropdownMenuContent>
-            </DropdownMenu>
+            </ButtonGroup>
           </div>
         </div>
       </div>
     </TooltipProvider>
   );
+}
+
+function TitlebarDropdownPanelSurface({
+  activeKeepAwakeDuration,
+  activeMode,
+  activeTarget,
+  browserBundles,
+  collapsedResourceKeys,
+  daemon,
+  gitItems,
+  inactiveTerminalSleepSessionCount,
+  keepAwakeIsRunning,
+  kind,
+  modeOptions,
+  notices,
+  onClose,
+  onFocusResourceSession,
+  onGxserverAlwaysStartChange,
+  onGxserverRestart,
+  onGxserverStart,
+  onGxserverStop,
+  onMarkAllTipsRead,
+  onMarkTipRead,
+  onOpenNoticeSettings,
+  onOpenPowerSettings,
+  onOpenTarget,
+  onQuitResources,
+  onRunAction,
+  onRunGitAction,
+  onSleepInactiveSessions,
+  onStartKeepAwake,
+  onStopKeepAwake,
+  onToggleResourceCollapse,
+  orphanBundles,
+  resourceProcessSnapshotReady,
+  quittingResourceKeys,
+  readTips,
+  resourceGroupViews,
+  selectedActionCommandId,
+  sessionPersistenceProvider,
+  visibleActions,
+  visibleTargets,
+  unreadTips,
+}: {
+  activeKeepAwakeDuration: KeepAwakeDurationMinutes | undefined;
+  activeMode: TitlebarMode;
+  activeTarget: ResolvedOpenTarget | undefined;
+  browserBundles: ResourceProcessBundle[];
+  collapsedResourceKeys: Set<string>;
+  daemon: TitlebarGxserverDaemonStatus;
+  gitItems: ReturnType<typeof buildSidebarGitMenuItems>;
+  inactiveTerminalSleepSessionCount: number;
+  keepAwakeIsRunning: boolean;
+  kind: TitlebarDropdownPanelKind;
+  modeOptions: TitlebarModeOption[];
+  notices: TitlebarNotice[];
+  onClose: () => void;
+  onFocusResourceSession: (sessionId: string) => void;
+  onGxserverAlwaysStartChange: (enabled: boolean) => void;
+  onGxserverRestart: () => void;
+  onGxserverStart: () => void;
+  onGxserverStop: () => void;
+  onMarkAllTipsRead: () => void;
+  onMarkTipRead: (tipId: string) => void;
+  onOpenNoticeSettings: (target: TitlebarNotice["settingsTarget"]) => void;
+  onOpenPowerSettings: () => void;
+  onOpenTarget: (target: ResolvedOpenTarget | undefined) => void;
+  onQuitResources: (bundles: ResourceProcessBundle[]) => void;
+  onRunAction: (command: SidebarCommandButton | undefined) => void;
+  onRunGitAction: (action: SidebarGitAction) => void;
+  onSleepInactiveSessions: () => void;
+  onStartKeepAwake: (durationMinutes?: KeepAwakeDurationMinutes) => Promise<void>;
+  onStopKeepAwake: () => Promise<void>;
+  onToggleResourceCollapse: (key: string) => void;
+  orphanBundles: ResourceProcessBundle[];
+  resourceProcessSnapshotReady: boolean;
+  quittingResourceKeys: Set<string>;
+  readTips: TitlebarTip[];
+  resourceGroupViews: ResourceGroupView[];
+  selectedActionCommandId: string | undefined;
+  sessionPersistenceProvider: Exclude<SessionPersistenceProvider, "off"> | undefined;
+  visibleActions: SidebarCommandButton[];
+  visibleTargets: ResolvedOpenTarget[];
+  unreadTips: TitlebarTip[];
+}) {
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        onClose();
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [onClose]);
+
+  const closeAfter = (action: () => void) => {
+    action();
+    onClose();
+  };
+
+  return (
+    <div
+      className="dark titlebar-dropdown-panel-root"
+      data-panel-kind={kind}
+    >
+      {kind === "mode" ? (
+        <div className="titlebar-open-menu titlebar-mode-picker-menu min-w-[180px] rounded-none border-border/80 !bg-[#0e0e0e] p-1 text-[13px] text-foreground shadow-2xl">
+          {modeOptions.map((mode) => (
+            <TitlebarPanelMenuItem
+              disabled={mode.disabled}
+              key={mode.value}
+              onClick={() => closeAfter(mode.onSelect)}
+            >
+              {getTitlebarModeIcon(mode.value)}
+              <span className="min-w-0 flex-1 truncate">{mode.label}</span>
+              {mode.value === activeMode ? (
+                <IconCheck aria-hidden="true" className="ml-2 size-4 opacity-75" />
+              ) : null}
+            </TitlebarPanelMenuItem>
+          ))}
+        </div>
+      ) : null}
+      {kind === "tips" ? (
+        <div className="titlebar-open-menu titlebar-tips-menu rounded-none border-border/80 !bg-[#0e0e0e] p-0 text-[13px] text-foreground shadow-2xl">
+          <TitlebarTipsMenu
+            notices={notices}
+            onMarkAllRead={onMarkAllTipsRead}
+            onMarkRead={onMarkTipRead}
+            onOpenNoticeSettings={(target) => closeAfter(() => onOpenNoticeSettings(target))}
+            readTips={readTips}
+            unreadTips={unreadTips}
+          />
+        </div>
+      ) : null}
+      {kind === "keepAwake" ? (
+        <div className="titlebar-open-menu min-w-[220px] rounded-none border-border/80 !bg-[#0e0e0e] p-1 text-[13px] text-foreground shadow-2xl">
+          {KEEP_AWAKE_DURATION_OPTIONS.map((option) => (
+            <TitlebarPanelMenuItem
+              key={option.value}
+              onClick={() => {
+                void onStartKeepAwake(option.value);
+                onClose();
+              }}
+            >
+              <IconCoffee aria-hidden="true" size={14} stroke={1.8} />
+              <span className="min-w-0 flex-1 truncate">Keep awake {option.label.toLowerCase()}</span>
+              {activeKeepAwakeDuration === option.value ? (
+                <IconCheck aria-hidden="true" className="ml-2 size-4 opacity-75" />
+              ) : null}
+            </TitlebarPanelMenuItem>
+          ))}
+          {keepAwakeIsRunning ? (
+            <TitlebarPanelMenuItem
+              onClick={() => {
+                void onStopKeepAwake();
+                onClose();
+              }}
+            >
+              <IconMoon aria-hidden="true" size={14} stroke={1.8} />
+              <span>Allow sleep now</span>
+            </TitlebarPanelMenuItem>
+          ) : null}
+          <TitlebarPanelMenuSeparator />
+          <TitlebarPanelMenuItem onClick={() => closeAfter(onOpenPowerSettings)}>
+            <IconSettings aria-hidden="true" size={16} />
+            <span>Power Settings</span>
+          </TitlebarPanelMenuItem>
+        </div>
+      ) : null}
+      {kind === "resources" ? (
+        <div className="titlebar-open-menu titlebar-resources-menu rounded-none border-border/80 !bg-[#0e0e0e] p-0 text-[13px] text-foreground shadow-2xl">
+          <TitlebarResourcesMenu
+            browserBundles={browserBundles}
+            collapsedKeys={collapsedResourceKeys}
+            daemon={daemon}
+            groupViews={resourceGroupViews}
+            inactiveTerminalSleepSessionCount={inactiveTerminalSleepSessionCount}
+            onFocusSession={(sessionId) => {
+              onFocusResourceSession(sessionId);
+              onClose();
+            }}
+            onGxserverAlwaysStartChange={onGxserverAlwaysStartChange}
+            onGxserverRestart={onGxserverRestart}
+            onGxserverStart={onGxserverStart}
+            onGxserverStop={onGxserverStop}
+            onQuit={onQuitResources}
+            processSnapshotReady={resourceProcessSnapshotReady}
+            onSleepInactiveSessions={onSleepInactiveSessions}
+            onToggle={onToggleResourceCollapse}
+            orphanBundles={orphanBundles}
+            quittingKeys={quittingResourceKeys}
+            sessionPersistenceProvider={sessionPersistenceProvider}
+          />
+        </div>
+      ) : null}
+      {kind === "git" ? (
+        <div className="titlebar-open-menu titlebar-git-menu rounded-none border-border/80 !bg-[#0e0e0e] p-1 text-[13px] text-foreground shadow-2xl">
+          {gitItems.map((item) => (
+            <TitlebarPanelMenuItem
+              disabled={item.disabled}
+              key={item.action}
+              onClick={() => closeAfter(() => onRunGitAction(item.action))}
+            >
+              {getTitlebarGitActionIcon(item.action)}
+              <span>{item.label}</span>
+            </TitlebarPanelMenuItem>
+          ))}
+        </div>
+      ) : null}
+      {kind === "actions" ? (
+        <div className="titlebar-open-menu min-w-[220px] rounded-none border-border/80 !bg-[#0e0e0e] p-1 text-[13px] text-foreground shadow-2xl">
+          {visibleActions.length > 0 ? (
+            visibleActions.map((command) => {
+              const actionCommandPreview = getSidebarCommandPreviewLabel(command);
+              return (
+                <TitlebarPanelMenuItem
+                  className="titlebar-action-menu-item"
+                  key={command.commandId}
+                  onClick={() => closeAfter(() => onRunAction(command))}
+                >
+                  <span className="titlebar-action-menu-icon">{getSidebarActionIcon(command)}</span>
+                  <span className="titlebar-action-menu-copy">
+                    <span className="titlebar-action-menu-title">
+                      {getSidebarActionLabel(command)}
+                    </span>
+                    <Tooltip>
+                      <TooltipTrigger
+                        render={
+                          <span
+                            className="titlebar-action-command-preview"
+                            data-unconfigured={String(!isSidebarCommandConfigured(command))}
+                          >
+                            {actionCommandPreview}
+                          </span>
+                        }
+                      />
+                      <TooltipContent
+                        className="titlebar-action-command-tooltip whitespace-normal text-left"
+                        side="left"
+                        sideOffset={6}
+                      >
+                        {actionCommandPreview}
+                      </TooltipContent>
+                    </Tooltip>
+                  </span>
+                  {selectedActionCommandId === command.commandId ? (
+                    <IconCheck aria-hidden="true" className="ml-2 size-4 shrink-0 opacity-75" />
+                  ) : null}
+                </TitlebarPanelMenuItem>
+              );
+            })
+          ) : (
+            <div className="px-2 py-2 text-muted-foreground">No Actions configured</div>
+          )}
+          <TitlebarPanelMenuSeparator />
+          <TitlebarPanelMenuItem
+            onClick={() =>
+              closeAfter(() =>
+                window.webkit?.messageHandlers?.ghostexAppModalHost?.postMessage({
+                  modal: "configureActions",
+                  type: "open",
+                }),
+              )
+            }
+          >
+            <IconSettings aria-hidden="true" size={16} />
+            <span>Configure</span>
+          </TitlebarPanelMenuItem>
+        </div>
+      ) : null}
+      {kind === "openIn" ? (
+        <div className="titlebar-open-menu min-w-[220px] rounded-none border-border/80 !bg-[#0e0e0e] p-1 text-[13px] text-foreground shadow-2xl">
+          {visibleTargets.map((target) => (
+            <TitlebarPanelMenuItem
+              key={target.id}
+              onClick={() => closeAfter(() => onOpenTarget(target))}
+            >
+              {getOpenTargetIcon(target)}
+              <span className="min-w-0 flex-1 truncate">{target.label}</span>
+              {activeTarget?.id === target.id ? (
+                <IconCheck aria-hidden="true" className="ml-2 size-4 opacity-75" />
+              ) : null}
+            </TitlebarPanelMenuItem>
+          ))}
+          <TitlebarPanelMenuSeparator />
+          <TitlebarPanelMenuItem
+            onClick={() =>
+              closeAfter(() =>
+                window.webkit?.messageHandlers?.ghostexAppModalHost?.postMessage({
+                  modal: "openTargets",
+                  type: "open",
+                }),
+              )
+            }
+          >
+            <IconSettings aria-hidden="true" size={16} />
+            <span>Configure</span>
+          </TitlebarPanelMenuItem>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function TitlebarPanelMenuItem({
+  children,
+  className,
+  disabled,
+  onClick,
+}: {
+  children: ReactNode;
+  className?: string;
+  disabled?: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      className={["titlebar-open-menu-item", className].filter(Boolean).join(" ")}
+      disabled={disabled}
+      onClick={() => {
+        if (!disabled) {
+          onClick();
+        }
+      }}
+      type="button"
+    >
+      {children}
+    </button>
+  );
+}
+
+function TitlebarPanelMenuSeparator() {
+  return <div aria-hidden="true" className="bg-border/70 titlebar-panel-menu-separator" />;
+}
+
+function mergeTitlebarProjectState(
+  current: TitlebarProjectState,
+  state: Partial<TitlebarProjectState>,
+): TitlebarProjectState {
+  return {
+    ...current,
+    ...state,
+    activeMode:
+      state.activeMode === undefined
+        ? current.activeMode
+        : normalizeTitlebarMode(state.activeMode),
+    agentHookStatus: state.agentHookStatus ?? current.agentHookStatus,
+    ghostexCliStatus: state.ghostexCliStatus ?? current.ghostexCliStatus,
+    debuggingMode: state.debuggingMode ?? current.debuggingMode,
+    diffStats: state.diffStats ?? current.diffStats,
+    git: state.git ?? current.git,
+    gxserverDaemon: state.gxserverDaemon ?? current.gxserverDaemon,
+    keepAwake: state.keepAwake ?? current.keepAwake,
+    browserTabs: state.browserTabs ?? current.browserTabs,
+    projectEditorCompanionPaneHidden:
+      state.projectEditorCompanionPaneHidden ?? current.projectEditorCompanionPaneHidden,
+    projectIsQuick: state.projectIsQuick ?? current.projectIsQuick,
+    petOverlayEnabled: state.petOverlayEnabled ?? current.petOverlayEnabled,
+    resourceGroups: state.resourceGroups ?? current.resourceGroups,
+    sidebarActions: state.sidebarActions ?? current.sidebarActions,
+    sessionPersistenceProvider:
+      state.sessionPersistenceProvider ?? current.sessionPersistenceProvider,
+    workspaceOpenTargets: state.workspaceOpenTargets ?? current.workspaceOpenTargets,
+    isFocusModeActive: state.isFocusModeActive ?? current.isFocusModeActive,
+    updateAvailable: state.updateAvailable ?? current.updateAvailable,
+  };
 }
 
 function createInitialProjectState(bootstrap: Record<string, unknown>): TitlebarProjectState {
@@ -3212,7 +3465,7 @@ function createInitialProjectState(bootstrap: Record<string, unknown>): Titlebar
     ? bootstrap.sharedSidebarStorage.settings
     : undefined;
   const settings = normalizeghostexSettings(parseSharedSettings(sharedSettingsJson));
-  return {
+  const initialState: TitlebarProjectState = {
     activeMode: resolveInitialTitlebarMode(bootstrap),
     agentHookStatus: undefined,
     ghostexCliStatus: undefined,
@@ -3249,6 +3502,14 @@ function createInitialProjectState(bootstrap: Record<string, unknown>): Titlebar
     },
     updateAvailable: readInitialTitlebarUpdateAvailable(bootstrap),
   };
+  /*
+   * CDXC:ReactTitlebar 2026-06-11-18:06:
+   * Native dropdown child windows need the latest titlebar project/resource
+   * payload before first render. Swift injects that payload into the bootstrap
+   * object at document start; merge it here so Resources does not briefly or
+   * permanently render default state when the post-load bridge push races React.
+   */
+  return mergeTitlebarProjectState(initialState, bootstrap as Partial<TitlebarProjectState>);
 }
 
 function readInitialTitlebarUpdateAvailable(bootstrap: Record<string, unknown>): boolean {
@@ -3636,7 +3897,7 @@ function TitlebarResourcesMenu({
   onGxserverStart,
   onGxserverStop,
   onQuit,
-  onSetSectionsCollapsed,
+  processSnapshotReady,
   onSleepInactiveSessions,
   onToggle,
   orphanBundles,
@@ -3654,19 +3915,23 @@ function TitlebarResourcesMenu({
   onGxserverStart: () => void;
   onGxserverStop: () => void;
   onQuit: (bundles: ResourceProcessBundle[]) => void;
-  onSetSectionsCollapsed: (keys: string[], collapsed: boolean) => void;
+  processSnapshotReady: boolean;
   onSleepInactiveSessions: () => void;
   onToggle: (key: string) => void;
   orphanBundles: ResourceProcessBundle[];
   quittingKeys: Set<string>;
   sessionPersistenceProvider?: Exclude<SessionPersistenceProvider, "off">;
 }) {
-  const visibleGroupViews = groupViews.filter((view) => view.bundles.length > 0);
-  const allBundles = [
-    ...visibleGroupViews.flatMap((view) => view.bundles),
-    ...browserBundles,
-    ...orphanBundles,
-  ];
+  const visibleGroupViews = processSnapshotReady
+    ? groupViews.filter((view) => view.bundles.length > 0)
+    : [];
+  const allBundles = processSnapshotReady
+    ? [
+        ...visibleGroupViews.flatMap((view) => view.bundles),
+        ...browserBundles,
+        ...orphanBundles,
+      ]
+    : [];
   /**
    * CDXC:TitlebarResources 2026-05-23-10:52:
    * Header actions should be two matching resource controls: one for sleeping
@@ -3697,17 +3962,24 @@ function TitlebarResourcesMenu({
   const sleepAllSessionBundles = visibleGroupViews
     .flatMap((view) => view.bundles)
     .filter((bundle) => bundle.type === "session" && bundle.session?.sessionKind === "terminal");
-  const resourceSectionKeys = createVisibleResourceSectionKeys({
-    browserBundles,
-    groupViews,
-    orphanBundles,
-  });
-  const allResourceSectionsCollapsed =
-    resourceSectionKeys.length > 0 && resourceSectionKeys.every((key) => collapsedKeys.has(key));
-  const nextAllSectionsCollapsed = !allResourceSectionsCollapsed;
-  const ResourceBulkCollapseIcon = allResourceSectionsCollapsed
-    ? IconArrowsDiagonal2
-    : IconArrowsDiagonalMinimize;
+  const [resourceHeaderActionsActive, setResourceHeaderActionsActive] = useState(false);
+  const [sleepInactiveTooltipOpen, setSleepInactiveTooltipOpen] = useState(false);
+  const [sleepAllTooltipOpen, setSleepAllTooltipOpen] = useState(false);
+  /*
+   * CDXC:TitlebarResources 2026-06-12-03:26:
+   * Native child dropdown WebViews can open with stale WebKit :hover/focus state
+   * from the titlebar trigger. Arm the header Sleep actions only after this
+   * panel receives real pointer or keyboard focus activity so the initial Sleep
+   * tooltip stays closed and the buttons get reliable hit testing once shown.
+   */
+  const activateResourceHeaderActions = () => {
+    setResourceHeaderActionsActive(true);
+  };
+  const deactivateResourceHeaderActions = () => {
+    setResourceHeaderActionsActive(false);
+    setSleepInactiveTooltipOpen(false);
+    setSleepAllTooltipOpen(false);
+  };
   /**
    * CDXC:TitlebarResources 2026-05-24-20:58:
    * Resource action tooltips must stay compact enough for the titlebar area.
@@ -3718,45 +3990,50 @@ function TitlebarResourcesMenu({
    * Resource summary tooltips need the same compact width cap as action
    * tooltips so Live CPU and Live memory do not stretch across the toolbar.
    *
-   * CDXC:TitlebarResources 2026-05-28-12:16:
-   * The Resources header needs a compact collapse-all / expand-all control.
+   * CDXC:TitlebarResources 2026-06-11-18:13:
+   * Keep the fixed-size native Resources dropdown stable while the first process table loads.
+   * The native child window stays hidden until this view commits with real snapshot data; the loading copy is only an internal fallback.
    *
-   * CDXC:TitlebarResources 2026-05-28-12:28:
-   * Match the sidebar reference Projects bulk-action icons: Collapse All uses
-   * the diagonal minimize glyph, and the expand-again state uses the diagonal
-   * expand glyph. Do not use the project-row caret here.
-   *
-   * CDXC:TitlebarResources 2026-05-28-12:59:
-   * The Resources bulk toggle should appear only when the Resources header is
-   * hovered or focused, matching Sleep Inactive and Sleep All. Reuse the same
-   * action-button surface and rotate the diagonal icons 90deg clockwise so
-   * Resources and the sidebar share the same bulk-control orientation.
-   *
-   * CDXC:TitlebarResources 2026-06-02-19:54:
-   * Place the Resources bulk toggle in the header action cluster immediately
-   * before Sleep Inactive so all resource actions are grouped on the right side.
+   * CDXC:TitlebarResources 2026-06-11-18:30:
+   * Remove Resources section collapse controls entirely. Project and browser
+   * sections should stay expanded because collapsed headers were not useful and
+   * produced visually broken states in the fixed native dropdown.
    */
   const resourceTooltipStyle = { maxWidth: 220 };
+  const liveCpuLabel = processSnapshotReady ? formatWholePercent(sumBundleCpu(allBundles)) : "--";
+  const liveMemoryLabel = processSnapshotReady ? formatWholeMemory(sumBundleMemory(allBundles)) : "--";
   return (
     <div className="titlebar-resources-panel">
-      <div className="titlebar-resources-header">
+      <div
+        className="titlebar-resources-header"
+        data-actions-active={String(resourceHeaderActionsActive)}
+        onBlurCapture={(event) => {
+          if (event.relatedTarget instanceof Node && event.currentTarget.contains(event.relatedTarget)) {
+            return;
+          }
+          deactivateResourceHeaderActions();
+        }}
+        onFocusCapture={activateResourceHeaderActions}
+        onPointerEnter={activateResourceHeaderActions}
+        onPointerLeave={(event) => {
+          if (document.activeElement instanceof Node && event.currentTarget.contains(document.activeElement)) {
+            return;
+          }
+          deactivateResourceHeaderActions();
+        }}
+        onPointerMove={activateResourceHeaderActions}
+      >
         <div className="titlebar-resources-title">
           <IconDeviceDesktop aria-hidden="true" size={18} />
           <span>Resources</span>
         </div>
         <div className="titlebar-resources-actions">
-          <button
-            aria-label={allResourceSectionsCollapsed ? "Expand all resources" : "Collapse all resources"}
-            className="titlebar-resources-collapse-all-button titlebar-resources-action-button"
-            data-collapsed={String(allResourceSectionsCollapsed)}
-            data-variant="sleep"
-            disabled={resourceSectionKeys.length === 0}
-            onClick={() => onSetSectionsCollapsed(resourceSectionKeys, nextAllSectionsCollapsed)}
-            type="button"
+          <Tooltip
+            onOpenChange={(open) =>
+              setSleepInactiveTooltipOpen(resourceHeaderActionsActive ? open : false)
+            }
+            open={resourceHeaderActionsActive && sleepInactiveTooltipOpen}
           >
-            <ResourceBulkCollapseIcon aria-hidden="true" size={14} stroke={1.9} />
-          </button>
-          <Tooltip>
             <TooltipTrigger
               render={
                 <button
@@ -3779,7 +4056,12 @@ function TitlebarResourcesMenu({
             </TooltipContent>
           </Tooltip>
           {persistentSessionMode ? (
-            <Tooltip>
+            <Tooltip
+              onOpenChange={(open) =>
+                setSleepAllTooltipOpen(resourceHeaderActionsActive ? open : false)
+              }
+              open={resourceHeaderActionsActive && sleepAllTooltipOpen}
+            >
               <TooltipTrigger
                 render={
                   <button
@@ -3807,7 +4089,7 @@ function TitlebarResourcesMenu({
                 render={
                   <span>
                     <IconCpu aria-hidden="true" size={13} stroke={1.8} />
-                    {formatWholePercent(sumBundleCpu(allBundles))}
+                    {liveCpuLabel}
                   </span>
                 }
               />
@@ -3821,7 +4103,7 @@ function TitlebarResourcesMenu({
                 render={
                   <span>
                     <IconDeviceDesktop aria-hidden="true" size={13} stroke={1.8} />
-                    {formatWholeMemory(sumBundleMemory(allBundles))}
+                    {liveMemoryLabel}
                   </span>
                 }
               />
@@ -3833,7 +4115,7 @@ function TitlebarResourcesMenu({
           </div>
         </div>
       </div>
-      <div className="titlebar-resources-scroll">
+      <div className="titlebar-resources-scroll" data-loading={String(!processSnapshotReady)}>
         <TitlebarGxserverDaemonSection
           daemon={daemon}
           onAlwaysStartChange={onGxserverAlwaysStartChange}
@@ -3841,48 +4123,54 @@ function TitlebarResourcesMenu({
           onStart={onGxserverStart}
           onStop={onGxserverStop}
         />
-        <div className="titlebar-resources-info-note">
-          This app uses native Ghostty terminals as they're lighter on CPU & RAM than electron/web terminals.<br />
-          The RAM use you see here is the lowest possible for the Agent CLI that you're using (each CLI uses more/less RAM based on a lot of factors).<br />
-          You can easily sleep all inactive terminals here, and I highly recommend configuring auto sleep in settings.
-        </div>
-        {visibleGroupViews.length > 0 ? (
-          visibleGroupViews.map((view) => (
+        {processSnapshotReady ? (
+          <>
+            <div className="titlebar-resources-info-note">
+              This app uses native Ghostty terminals as they're lighter on CPU & RAM than electron/web terminals.<br />
+              The RAM use you see here is the lowest possible for the Agent CLI that you're using (each CLI uses more/less RAM based on a lot of factors).<br />
+              You can easily sleep all inactive terminals here, and I highly recommend configuring auto sleep in settings.
+            </div>
+            {visibleGroupViews.length > 0 ? (
+              visibleGroupViews.map((view) => (
+                <TitlebarResourceSection
+                  collapsedKeys={collapsedKeys}
+                  key={view.group.groupId}
+                  onQuit={onQuit}
+                  onFocusSession={onFocusSession}
+                  onToggle={onToggle}
+                  quittingKeys={quittingKeys}
+                  title={view.group.title}
+                  bundles={view.bundles}
+                />
+              ))
+            ) : (
+              <div className="titlebar-resources-empty">No grouped sessions matched running processes.</div>
+            )}
             <TitlebarResourceSection
               collapsedKeys={collapsedKeys}
-              key={view.group.groupId}
               onQuit={onQuit}
               onFocusSession={onFocusSession}
               onToggle={onToggle}
               quittingKeys={quittingKeys}
-              sectionKey={`group:${view.group.groupId}`}
-              title={view.group.title}
-              bundles={view.bundles}
+              title="Browser Tabs"
+              bundles={browserBundles}
             />
-          ))
+            <TitlebarResourceSection
+              collapsedKeys={collapsedKeys}
+              onQuit={onQuit}
+              onFocusSession={onFocusSession}
+              onToggle={onToggle}
+              quittingKeys={quittingKeys}
+              title="Orphaned / Detached"
+              bundles={orphanBundles}
+            />
+          </>
         ) : (
-          <div className="titlebar-resources-empty">No grouped sessions matched running processes.</div>
+          <div className="titlebar-resources-loading" role="status" aria-live="polite">
+            <IconLoader2 aria-hidden="true" className="titlebar-resources-loading-icon" size={16} stroke={1.9} />
+            <span>Loading resources...</span>
+          </div>
         )}
-        <TitlebarResourceSection
-          collapsedKeys={collapsedKeys}
-          onQuit={onQuit}
-          onFocusSession={onFocusSession}
-          onToggle={onToggle}
-          quittingKeys={quittingKeys}
-          sectionKey="browser-tabs"
-          title="Browser Tabs"
-          bundles={browserBundles}
-        />
-        <TitlebarResourceSection
-          collapsedKeys={collapsedKeys}
-          onQuit={onQuit}
-          onFocusSession={onFocusSession}
-          onToggle={onToggle}
-          quittingKeys={quittingKeys}
-          sectionKey="orphaned"
-          title="Orphaned / Detached"
-          bundles={orphanBundles}
-        />
       </div>
     </div>
   );
@@ -3985,7 +4273,6 @@ function TitlebarResourceSection({
   onFocusSession,
   onToggle,
   quittingKeys,
-  sectionKey,
   title,
 }: {
   bundles: ResourceProcessBundle[];
@@ -3994,13 +4281,11 @@ function TitlebarResourceSection({
   onFocusSession: (sessionId: string) => void;
   onToggle: (key: string) => void;
   quittingKeys: Set<string>;
-  sectionKey: string;
   title: string;
 }) {
   if (bundles.length === 0) {
     return null;
   }
-  const isCollapsed = collapsedKeys.has(sectionKey);
   const sectionCpu = sumBundleCpu(bundles);
   const sectionMemory = sumBundleMemory(bundles);
   const sortedBundles = sortResourceBundlesForDisplay(bundles, quittingKeys);
@@ -4027,22 +4312,16 @@ function TitlebarResourceSection({
    * session bundles so browser/code resources are not closed by a sleep-labeled
    * control.
    *
-   * CDXC:TitlebarResources 2026-05-28-10:11:
-   * Resource section expand/collapse controls should not show hover tooltips;
-   * the inline totals already explain the group and the tooltip obscures the
-   * Resources modal while users are expanding sections.
+   * CDXC:TitlebarResources 2026-06-11-18:30:
+   * Resource section headers are static labels now: no chevron and no click
+   * target. The Resources dropdown should not allow collapsing project/browser
+   * sections because the collapsed fixed-panel state is visually broken.
    */
   const resourceTooltipStyle = { maxWidth: 220 };
   return (
     <section className="titlebar-resource-section">
       <div className="titlebar-resource-section-heading">
-        <button
-          aria-label={`${isCollapsed ? "Expand" : "Collapse"} ${title}`}
-          className="titlebar-resource-section-toggle"
-          onClick={() => onToggle(sectionKey)}
-          type="button"
-        >
-          <IconChevronDown aria-hidden="true" data-collapsed={String(isCollapsed)} size={14} stroke={1.8} />
+        <div className="titlebar-resource-section-label">
           <span>{title}</span>
           <span className="titlebar-resource-section-summary">
             <span>
@@ -4055,7 +4334,7 @@ function TitlebarResourceSection({
             </span>
             <span className="titlebar-resource-section-count">{bundles.length}</span>
           </span>
-        </button>
+        </div>
         <Tooltip>
           <TooltipTrigger
             render={
@@ -4075,21 +4354,19 @@ function TitlebarResourceSection({
           </TooltipContent>
         </Tooltip>
       </div>
-      {isCollapsed ? null : (
-        <div className="titlebar-resource-section-body">
-          {sortedBundles.map((bundle) => (
-            <TitlebarResourceBundle
-              bundle={bundle}
-              collapsedKeys={collapsedKeys}
-              isQuitting={quittingKeys.has(bundle.key)}
-              key={bundle.key}
-              onFocusSession={onFocusSession}
-              onQuit={onQuit}
-              onToggle={onToggle}
-            />
-          ))}
-        </div>
-      )}
+      <div className="titlebar-resource-section-body">
+        {sortedBundles.map((bundle) => (
+          <TitlebarResourceBundle
+            bundle={bundle}
+            collapsedKeys={collapsedKeys}
+            isQuitting={quittingKeys.has(bundle.key)}
+            key={bundle.key}
+            onFocusSession={onFocusSession}
+            onQuit={onQuit}
+            onToggle={onToggle}
+          />
+        ))}
+      </div>
     </section>
   );
 }
@@ -4408,87 +4685,70 @@ type TitlebarModeOption = {
 function TitlebarModeDropdown({
   activeMode,
   modes,
-  onOpenChange,
-  open,
+  nativeDropdownOpen,
+  onOpenPanel,
 }: {
   activeMode: TitlebarMode;
   modes: TitlebarModeOption[];
-  onOpenChange: (open: boolean, details?: TitlebarDropdownOpenChangeDetails) => void;
-  open: boolean;
+  nativeDropdownOpen: TitlebarDropdownPanelKind | undefined;
+  onOpenPanel: (kind: TitlebarDropdownPanelKind, anchor: HTMLElement) => void;
 }) {
   const activeModeOption = modes.find((mode) => mode.value === activeMode) ?? modes[0];
   if (!activeModeOption) {
     return null;
   }
-  const selectMode = (mode: TitlebarModeOption) => {
-    if (mode.disabled) {
-      return;
-    }
-    onOpenChange(false);
-    mode.onSelect();
-  };
   return (
-    <DropdownMenu onOpenChange={onOpenChange} open={open}>
-      <DropdownMenuTrigger
-        render={
-          <Button
-            aria-label="Mode menu"
-            className="titlebar-session-button titlebar-mode-picker-trigger"
-            data-titlebar-hit-region
-            type="button"
-            variant="ghost"
-          >
-            {/*
-             * CDXC:ModeSwitcher 2026-05-28-10:38:
-             * When app width is below 1050px, Agents/Code/Git/Project moves from
-             * the centered segmented control into a keep-awake-style mode picker
-             * beside the project title. Keep the current mode icon visible on the
-             * main segment so narrow titlebar chrome still exposes the active action.
-             *
-             * CDXC:ModeSwitcher 2026-05-28-11:52:
-             * The compact mode picker should be one button, not a split button:
-             * clicking either the current-mode icon or the chevron opens the same
-             * dropdown so there is no separate immediate mode action in tight chrome.
-             */}
-            <span>{activeModeOption.label}</span>
-            <IconChevronDown aria-hidden="true" size={14} />
-          </Button>
-        }
-      />
-      <DropdownMenuContent
-        align="center"
-        alignOffset={TITLEBAR_SPLIT_MENU_CENTER_OFFSET}
-        className="titlebar-open-menu titlebar-mode-picker-menu min-w-[180px] rounded-none border-border/80 !bg-[#0e0e0e] p-1 text-[13px] text-foreground shadow-2xl"
-        data-titlebar-hit-region
-        sideOffset={6}
-        style={{ backgroundColor: "#0e0e0e", zIndex: 2_200 }}
-      >
-        {modes.map((mode) => (
-          <DropdownMenuItem
-            className="titlebar-open-menu-item"
-            disabled={mode.disabled}
-            key={mode.value}
-            onClick={() => selectMode(mode)}
-          >
-            {getTitlebarModeIcon(mode.value)}
-            <span className="min-w-0 flex-1 truncate">{mode.label}</span>
-            {mode.value === activeMode ? (
-              <IconCheck aria-hidden="true" className="ml-2 size-4 opacity-75" />
-            ) : null}
-          </DropdownMenuItem>
-        ))}
-      </DropdownMenuContent>
-    </DropdownMenu>
+    <Button
+      aria-label="Mode menu"
+      className="titlebar-session-button titlebar-mode-picker-trigger"
+      data-state={nativeDropdownOpen === "mode" ? "open" : undefined}
+      data-titlebar-dropdown-anchor
+      data-titlebar-hit-region
+      onClick={(event) => onOpenPanel("mode", event.currentTarget)}
+      onContextMenu={(event) => {
+        event.preventDefault();
+        onOpenPanel("mode", event.currentTarget);
+      }}
+      type="button"
+      variant="ghost"
+    >
+      {/*
+       * CDXC:ModeSwitcher 2026-05-28-10:38:
+       * When app width is below 1050px, Agents/Code/Git/Project moves from
+       * the centered segmented control into a keep-awake-style mode picker
+       * beside the project title. Keep the current mode icon visible on the
+       * main segment so narrow titlebar chrome still exposes the active action.
+       *
+       * CDXC:ModeSwitcher 2026-05-28-11:52:
+       * The compact mode picker should be one button, not a split button:
+       * clicking either the current-mode icon or the chevron opens the same
+       * dropdown so there is no separate immediate mode action in tight chrome.
+       *
+       * CDXC:ReactTitlebar 2026-06-11-13:22:
+       * The compact mode picker opens a native child-window dropdown so the
+       * titlebar WKWebView remains clipped to the fixed titlebar strip.
+       */}
+      <span>{activeModeOption.label}</span>
+      <IconChevronDown aria-hidden="true" size={14} />
+    </Button>
   );
 }
-
 function TitlebarModeSwitcher({
   activeMode,
+  companionPaneHidden,
   modes,
+  onToggleCompanion,
+  showCompanionToggle,
 }: {
   activeMode: TitlebarMode;
+  companionPaneHidden: boolean;
   modes: TitlebarModeOption[];
+  onToggleCompanion: () => void;
+  showCompanionToggle: boolean;
 }) {
+  const companionToggleLabel = companionPaneHidden
+    ? "Expand Companion Sidepane"
+    : "Hide Companion Sidepane";
   return (
     <div
       aria-label="Mode switcher"
@@ -4521,7 +4781,56 @@ function TitlebarModeSwitcher({
         Titlebar mode tabs should match the sidebar session button roundness
         instead of using fully rounded pills, so the top navigation and session
         controls share one chrome language.
+
+        CDXC:ProjectEditorCompanion 2026-06-12-03:18:
+        The companion sidepane toggle must sit exactly to the left of Agents and
+        share the same segmented border language. Keep it inside the switcher
+        row instead of a floating restore slot so expanding and collapsing use
+        one stable titlebar affordance.
+
+        CDXC:ProjectEditorCompanion 2026-06-12-04:02:
+        The toggle is anchor-positioned off the switcher's left edge so the
+        Agents/Source/GitHub/Kanban group keeps its original centered titlebar
+        geometry. Publish the toggle as its own hit region because it sits
+        outside the switcher's flex-flow bounds.
       */}
+      {showCompanionToggle ? (
+        <Tooltip>
+          <TooltipTrigger
+            render={
+              <button
+                aria-label={companionToggleLabel}
+                className="titlebar-mode-tab titlebar-companion-toggle-button"
+                data-titlebar-hit-region
+                onClick={onToggleCompanion}
+                type="button"
+              >
+                <span className="titlebar-mode-tab-content">
+                  {companionPaneHidden ? (
+                    <IconLayoutSidebarLeftExpand
+                      aria-hidden="true"
+                      size={COMPANION_SIDEPANE_ICON_SIZE}
+                      stroke={1.8}
+                    />
+                  ) : (
+                    <IconLayoutSidebarLeftCollapse
+                      aria-hidden="true"
+                      size={COMPANION_SIDEPANE_ICON_SIZE}
+                      stroke={1.8}
+                    />
+                  )}
+                </span>
+              </button>
+            }
+          />
+          {/*
+           * CDXC:ReactTitlebar 2026-06-11-13:22:
+           * Titlebar tooltips should open to the left instead of below controls
+           * so hover UI stays out of the workspace/editor area.
+           */}
+          <TooltipContent side="left">{companionToggleLabel}</TooltipContent>
+        </Tooltip>
+      ) : null}
       {modes.map((mode) => {
         const isActive = mode.value === activeMode;
         return (
@@ -4771,11 +5080,6 @@ const styles = {
     top: TITLEBAR_CENTER_CONTROLS_TOP,
     transform: "translateX(-50%)",
   },
-  companionRestoreSlot: {
-    position: "absolute",
-    right: "calc(100% + 25px)",
-    top: 1,
-  },
   projectSlot: {
     alignItems: "center",
     display: "flex",
@@ -4818,8 +5122,21 @@ const styles = {
 } satisfies Record<string, CSSProperties>;
 
 document.body.style.margin = "0";
+document.documentElement.style.margin = "0";
+document.documentElement.style.padding = "0";
 document.body.style.background = "transparent";
 document.body.style.overflow = "hidden";
+document.body.style.padding = "0";
+if (initialTitlebarDropdownPanelKind) {
+  document.documentElement.dataset.titlebarDropdownPanel = "true";
+  document.documentElement.style.height = "100%";
+  document.documentElement.style.overflow = "hidden";
+  document.documentElement.style.width = "100%";
+  document.body.dataset.titlebarDropdownPanel = "true";
+  document.body.style.display = "block";
+  document.body.style.height = "100%";
+  document.body.style.width = "100%";
+}
 const styleElement = document.createElement("style");
 styleElement.textContent = `
   :root {
@@ -4836,12 +5153,9 @@ styleElement.textContent = `
   /*
    * CDXC:ReactTitlebar 2026-06-10-23:44:
    * Native AppKit reports whether the pointer is inside a measured titlebar
-   * hit region. Disable root hit testing while outside so stale WebKit :hover
-   * cannot keep titlebar buttons highlighted after mouse exit.
+   * hit region. Keep the DOM interactive and only neutralize stale hover styling
+   * below; AppKit already owns the real titlebar hit boundary.
    */
-  body[data-native-pointer-inside="false"] #root {
-    pointer-events: none;
-  }
   /**
    * CDXC:ReactTitlebar 2026-05-11-09:00
    * The right titlebar controls should read as flat chrome text/icons rather
@@ -4865,7 +5179,16 @@ styleElement.textContent = `
    * native workarea and commands-pane separator lines.
    */
   .titlebar-session-button {
+    /*
+     * CDXC:ReactTitlebar 2026-06-12-02:50:
+     * All clickable macOS titlebar controls must share the same 34px control
+     * height so icon-only menus, compact mode, and text actions align inside
+     * the 35px native titlebar reservation.
+     */
+    box-sizing: border-box;
     height: ${TITLEBAR_CONTROL_HEIGHT}px;
+    max-height: ${TITLEBAR_CONTROL_HEIGHT}px;
+    min-height: ${TITLEBAR_CONTROL_HEIGHT}px;
     min-width: 0;
     border: 0;
     border-left: 1px solid var(--titlebar-button-border-color);
@@ -5041,16 +5364,6 @@ styleElement.textContent = `
     padding: 0 12px;
     width: 42px;
   }
-  .titlebar-companion-restore-button {
-    border-left: 0 !important;
-    padding: 0 12px;
-    width: 42px;
-  }
-  .titlebar-session-button.titlebar-companion-restore-button svg {
-    flex-shrink: 0;
-    height: ${COMPANION_SIDEPANE_ICON_SIZE}px;
-    width: ${COMPANION_SIDEPANE_ICON_SIZE}px;
-  }
   .titlebar-mode-switcher {
     /**
      * CDXC:ModeSwitcher 2026-05-26-13:52:
@@ -5063,10 +5376,13 @@ styleElement.textContent = `
     display: flex;
     flex: 0 1 auto;
     height: ${TITLEBAR_CONTROL_HEIGHT}px;
+    max-height: ${TITLEBAR_CONTROL_HEIGHT}px;
+    min-height: ${TITLEBAR_CONTROL_HEIGHT}px;
     max-width: 100%;
     overflow: visible;
     padding: 0;
     perspective: 1000px;
+    position: relative;
   }
   @media (max-width: 1049px) {
     .titlebar-mode-switcher {
@@ -5102,6 +5418,8 @@ styleElement.textContent = `
     display: inline-flex;
     font: 400 13.55px/${TITLEBAR_CONTROL_HEIGHT}px var(--titlebar-font-family);
     height: ${TITLEBAR_CONTROL_HEIGHT}px;
+    max-height: ${TITLEBAR_CONTROL_HEIGHT}px;
+    min-height: ${TITLEBAR_CONTROL_HEIGHT}px;
     justify-content: center;
     letter-spacing: 0;
     min-width: 70px;
@@ -5112,6 +5430,44 @@ styleElement.textContent = `
   }
   .titlebar-mode-tab:last-child {
     border-right: 1px solid var(--titlebar-button-border-color);
+  }
+  .titlebar-companion-toggle-button {
+    /**
+     * CDXC:ProjectEditorCompanion 2026-06-12-03:18:
+     * The companion toggle is an icon-only mode-switcher segment. Use the same
+     * left-border separator model as Agents/Source/GitHub/Kanban, with Agents'
+     * own left border providing the boundary to its right.
+     *
+     * CDXC:ProjectEditorCompanion 2026-06-12-04:02:
+     * Anchor this control to the left edge of the centered mode switcher without
+     * participating in flex layout, so the Agents/Source/GitHub/Kanban button
+     * group remains centered in the titlebar.
+     *
+     * CDXC:ProjectEditorCompanion 2026-06-12-04:23:
+     * Hover should use #282828 as a clear but restrained affordance for the
+     * icon-only sidepane toggle.
+     */
+    min-width: 42px;
+    padding: 0;
+    position: absolute;
+    right: 100%;
+    top: 0;
+    transition: background-color 120ms ease, color 120ms ease;
+    width: 42px;
+  }
+  .titlebar-companion-toggle-button:hover,
+  .titlebar-companion-toggle-button:focus-visible {
+    background: #282828;
+  }
+  .titlebar-companion-toggle-button .titlebar-mode-tab-content {
+    justify-content: center;
+    width: 100%;
+  }
+  .titlebar-companion-toggle-button .titlebar-mode-tab-content svg {
+    display: block;
+    flex-shrink: 0;
+    height: ${COMPANION_SIDEPANE_ICON_SIZE}px;
+    width: ${COMPANION_SIDEPANE_ICON_SIZE}px;
   }
   .titlebar-mode-tab:hover,
   .titlebar-mode-tab:focus-visible {
@@ -5179,6 +5535,8 @@ styleElement.textContent = `
     display: inline-flex;
     font: 720 12px/${TITLEBAR_CONTROL_HEIGHT}px var(--titlebar-font-family) !important;
     height: ${TITLEBAR_CONTROL_HEIGHT}px !important;
+    max-height: ${TITLEBAR_CONTROL_HEIGHT}px;
+    min-height: ${TITLEBAR_CONTROL_HEIGHT}px;
     letter-spacing: 0;
     margin-top: 0;
     min-width: 0;
@@ -5255,6 +5613,9 @@ styleElement.textContent = `
   }
   .titlebar-open-group {
     gap: 0 !important;
+    height: ${TITLEBAR_CONTROL_HEIGHT}px;
+    max-height: ${TITLEBAR_CONTROL_HEIGHT}px;
+    min-height: ${TITLEBAR_CONTROL_HEIGHT}px;
   }
   .titlebar-open-group > .titlebar-session-button {
     border-radius: 0;
@@ -5280,6 +5641,77 @@ styleElement.textContent = `
     background-color: #0e0e0e !important;
     border: 1px solid rgba(255,255,255,0.14);
     box-shadow: 0 18px 42px rgba(0,0,0,0.44);
+  }
+  /*
+   * CDXC:ReactTitlebar 2026-06-11-13:22:
+   * Native child-window dropdowns reuse the existing web menu components, but
+   * their document is the panel itself rather than Radix portal content inside
+   * the titlebar WKWebView. Remove portal-era viewport offsets so the Swift
+   * child window owns placement.
+   *
+   * CDXC:ReactTitlebar 2026-06-12-02:50:
+   * Native panels are still sized before they open, but compact dropdown height
+   * now comes from the rendered option count while Tips/Resources keep their
+   * larger reading surfaces. The React panel fills the child WebView exactly
+   * without ResizeObserver-driven native resize messages after open.
+   */
+  .titlebar-dropdown-panel-root {
+    background: #0e0e0e;
+    color: rgba(255,255,255,0.92);
+    display: block;
+    height: 100vh;
+    min-height: 1px;
+    overflow: hidden;
+    width: 100vw;
+  }
+  .titlebar-dropdown-panel-root .titlebar-open-menu {
+    box-sizing: border-box;
+    box-shadow: none;
+    height: 100%;
+    max-height: none;
+    max-width: none;
+    min-height: 0;
+    min-width: 0 !important;
+    overflow: auto;
+    position: static;
+    width: 100% !important;
+  }
+  .titlebar-dropdown-panel-root .titlebar-open-menu-item {
+    align-items: center;
+    appearance: none;
+    background: transparent;
+    border: 0;
+    color: inherit;
+    display: flex;
+    padding: 6px 8px;
+    text-align: left;
+    width: 100%;
+  }
+  .titlebar-dropdown-panel-root .titlebar-open-menu-item:not(:disabled):hover {
+    background: rgba(255,255,255,0.08);
+  }
+  .titlebar-dropdown-panel-root .titlebar-open-menu-item:disabled {
+    color: rgba(255,255,255,0.34);
+  }
+  .titlebar-dropdown-panel-root .titlebar-tips-menu,
+  .titlebar-dropdown-panel-root .titlebar-resources-menu {
+    width: 100% !important;
+  }
+  .titlebar-dropdown-panel-root .titlebar-tips-panel,
+  .titlebar-dropdown-panel-root .titlebar-resources-panel {
+    height: 100%;
+    max-height: none;
+    min-height: 0;
+  }
+  .titlebar-dropdown-panel-root .titlebar-tips-scroll,
+  .titlebar-dropdown-panel-root .titlebar-resources-scroll {
+    max-height: none;
+    min-height: 0;
+    overflow: auto;
+  }
+  .titlebar-panel-menu-separator {
+    height: 1px;
+    margin: 4px 0;
   }
   /**
    * CDXC:TitlebarGit 2026-05-24-20:40:
@@ -5604,19 +6036,6 @@ styleElement.textContent = `
     font: 750 14px -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif;
     min-width: 0;
   }
-  .titlebar-resources-collapse-all-button {
-    gap: 0;
-    padding: 0;
-    width: 24px;
-  }
-  .titlebar-resources-action-button.titlebar-resources-collapse-all-button {
-    gap: 0;
-    min-width: 24px;
-    padding: 0;
-  }
-  .titlebar-resources-collapse-all-button svg {
-    transform: rotate(90deg);
-  }
   .titlebar-resource-tooltip {
     background: var(--ghostex-tooltip-background, rgba(24,24,24,0.98));
     border: 1px solid var(--ghostex-tooltip-border, rgba(255,255,255,0.12));
@@ -5662,20 +6081,23 @@ styleElement.textContent = `
     color: rgba(255,255,255,0.3);
     cursor: default;
   }
-  .titlebar-resources-header:hover .titlebar-resources-action-button,
-  .titlebar-resources-header:focus-within .titlebar-resources-action-button {
+  .titlebar-resources-header[data-actions-active="true"] .titlebar-resources-action-button {
     /*
      * CDXC:TitlebarResources 2026-05-23-10:52:
      * The Resources header has exactly two matching actions: sleep inactive
      * sessions and, in persistence modes, sleep all terminal sessions. Keep
      * them hidden until hover/focus so the compact top bar still leads with
      * live metrics.
+     *
+     * CDXC:TitlebarResources 2026-06-12-03:26:
+     * Native child-panel hover can be stale on open, so the header no longer
+     * trusts CSS :hover to reveal or enable the Sleep buttons. React sets this
+     * data attribute only after real pointer/focus activity inside the panel.
      */
     opacity: 1;
     pointer-events: auto;
   }
-  .titlebar-resources-header:hover .titlebar-resources-action-button:disabled,
-  .titlebar-resources-header:focus-within .titlebar-resources-action-button:disabled {
+  .titlebar-resources-header[data-actions-active="true"] .titlebar-resources-action-button:disabled {
     opacity: 0.55;
   }
   .titlebar-resources-action-button[data-variant="sleep"]:not(:disabled):hover {
@@ -5745,6 +6167,22 @@ styleElement.textContent = `
     max-height: min(700px, calc(100vh - 104px));
     overflow: auto;
     padding: 8px 10px 10px;
+  }
+  .titlebar-resources-scroll[data-loading="true"] {
+    grid-template-rows: auto minmax(260px, 1fr);
+  }
+  .titlebar-resources-loading {
+    align-items: center;
+    color: rgba(255,255,255,0.58);
+    display: flex;
+    font: 650 12px -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif;
+    gap: 8px;
+    justify-content: center;
+    min-height: 260px;
+  }
+  .titlebar-resources-loading-icon {
+    animation: titlebar-git-spin 1s linear infinite;
+    flex: 0 0 auto;
   }
   .titlebar-resources-info-note {
     /*
@@ -5880,11 +6318,8 @@ styleElement.textContent = `
     text-transform: uppercase;
     width: 100%;
   }
-  .titlebar-resource-section-toggle {
+  .titlebar-resource-section-label {
     align-items: center;
-    appearance: none;
-    background: transparent;
-    border: 0;
     color: inherit;
     display: inline-flex;
     flex: 1;
@@ -5911,7 +6346,6 @@ styleElement.textContent = `
      */
     opacity: 0;
   }
-  .titlebar-resource-section-heading svg[data-collapsed="true"],
   .titlebar-resource-collapse-button svg[data-collapsed="true"] {
     transform: rotate(-90deg);
   }
@@ -6157,7 +6591,7 @@ styleElement.textContent = `
     pointer-events: none !important;
     visibility: hidden !important;
   }
-  body[data-native-pointer-inside="false"] .titlebar-resources-header:hover:not(:focus-within) .titlebar-resources-action-button,
+  body[data-native-pointer-inside="false"] .titlebar-resources-header[data-actions-active="true"]:not(:focus-within) .titlebar-resources-action-button,
   body[data-native-pointer-inside="false"] .titlebar-resource-section-heading:hover:not(:focus-within) .titlebar-resource-section-quit-button,
   body[data-native-pointer-inside="false"] .titlebar-resource-row:hover:not(:focus-within) .titlebar-resource-focus-button,
   body[data-native-pointer-inside="false"] .titlebar-resource-row:hover:not(:focus-within) .titlebar-resource-kill-button {
@@ -6176,6 +6610,15 @@ styleElement.textContent = `
 document.head.append(styleElement);
 
 const titlebarRootElement = document.getElementById("root");
+if (titlebarRootElement && initialTitlebarDropdownPanelKind) {
+  titlebarRootElement.dataset.titlebarDropdownPanel = "true";
+  titlebarRootElement.style.display = "block";
+  titlebarRootElement.style.height = "100%";
+  titlebarRootElement.style.margin = "0";
+  titlebarRootElement.style.overflow = "hidden";
+  titlebarRootElement.style.padding = "0";
+  titlebarRootElement.style.width = "100%";
+}
 if (titlebarRootElement?.dataset.ghostexTitlebar !== "false") {
   createRoot(titlebarRootElement!).render(<App />);
 }
