@@ -10,7 +10,7 @@
 
 # Ghostex
 
-Native Ghostty-based desktop app for running agent CLIs with persistent terminals, GUI panes, browser panes, notifications, mobile access, and a lightweight code editor.
+macOS Native Ghostty-based desktop app (Not using Electron or Tauri!) for running agent CLIs with persistent terminals, GUI panes, browser panes, notifications, mobile access, and a lightweight code editor.
 
 Ghostex is built for developers who keep multiple agents and terminals alive at once. It combines low-RAM Ghostty terminals, native Swift UI, T3code GUI panes, Chromium CEF browser panes, and Android/iOS session access in one workspace.
 
