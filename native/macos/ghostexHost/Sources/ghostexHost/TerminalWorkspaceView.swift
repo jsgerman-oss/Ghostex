@@ -9938,6 +9938,11 @@ final class TerminalWorkspaceView: NSView {
       return nil
     }
     for view in subviews.reversed() {
+      if let titleBarView = view as? TerminalSessionTitleBarView,
+        let target = directPaneTitleBarEventTarget(titleBarView, at: point)
+      {
+        return target
+      }
       guard let containerView = view as? TerminalPaneLeafContainerView,
         !containerView.isHidden,
         containerView.alphaValue > 0,
@@ -9960,6 +9965,32 @@ final class TerminalWorkspaceView: NSView {
         titleBarView: titleBarView)
     }
     return nil
+  }
+
+  private func directPaneTitleBarEventTarget(
+    _ titleBarView: TerminalSessionTitleBarView,
+    at point: NSPoint
+  ) -> PaneTitleBarEventTarget? {
+    /*
+     CDXC:NativePaneTabClicks 2026-06-12-07:35:
+     GitHub project tabs mount their native titlebar directly under the workspace,
+     not inside a terminal leaf container. The NSWindow prepass must route by the
+     visible titlebar view's own AppKit bounds so the Git tab Add button, tabs, and
+     Close buttons receive the same direct click ownership as normal panes.
+     */
+    guard !titleBarView.isHidden,
+      titleBarView.alphaValue > 0,
+      titleBarView.window != nil
+    else {
+      return nil
+    }
+    let titleBarPoint = convert(point, to: titleBarView)
+    guard titleBarView.bounds.contains(titleBarPoint) else {
+      return nil
+    }
+    return PaneTitleBarEventTarget(
+      titleBarPoint: titleBarPoint,
+      titleBarView: titleBarView)
   }
 
   func setNativeChromeInteractivitySuppressed(_ suppressed: Bool) {

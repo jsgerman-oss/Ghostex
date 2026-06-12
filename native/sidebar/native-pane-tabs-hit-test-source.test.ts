@@ -122,9 +122,41 @@ describe("native pane tab titlebar hit testing", () => {
     expect(helperSource).toContain("private func paneTitleBarEventTarget(at point: NSPoint)");
     expect(helperSource).toContain("guard let target = paneTitleBarEventTarget(at: point)");
     expect(helperSource).toContain("for view in subviews.reversed()");
+    expect(helperSource).toContain("if let titleBarView = view as? TerminalSessionTitleBarView");
+    expect(helperSource).toContain("directPaneTitleBarEventTarget(titleBarView, at: point)");
     expect(helperSource).toContain("let containerPoint = convert(point, to: containerView)");
     expect(helperSource).toContain("titleBarView.frame.contains(containerPoint)");
     expect(helperSource).toContain("return target.titleBarView.hitTest(target.titleBarPoint) ?? target.titleBarView");
+  });
+
+  test("includes directly mounted GitHub project titlebars in workspace prepass", () => {
+    /**
+     * CDXC:NativePaneTabClicks 2026-06-12-07:35:
+     * GitHub project tab strips are mounted directly under TerminalWorkspaceView,
+     * not inside TerminalPaneLeafContainerView. The workspace and NSWindow
+     * prepasses must resolve those direct titlebars by their current AppKit bounds
+     * so the visible Git tab Add button owns its click.
+     */
+    const helperIndex = terminalWorkspaceSource.indexOf("private func paneTitleBarEventTarget(at point: NSPoint)");
+    const helperEndIndex = terminalWorkspaceSource.indexOf("func setNativeChromeInteractivitySuppressed", helperIndex);
+    const helperSource = terminalWorkspaceSource.slice(helperIndex, helperEndIndex);
+    const projectEditorIndex = terminalWorkspaceSource.indexOf("func createProjectEditorPane");
+    const projectEditorSource = terminalWorkspaceSource.slice(
+      projectEditorIndex,
+      terminalWorkspaceSource.indexOf("private func makeProjectEditorBrowserTab", projectEditorIndex),
+    );
+
+    expect(helperIndex).toBeGreaterThan(-1);
+    expect(projectEditorIndex).toBeGreaterThan(-1);
+    expect(projectEditorSource).toContain("view.setDebugContext(ownerSessionId: command.projectId, paneKind: \"projectEditorGit\")");
+    expect(projectEditorSource).toContain("addSubview(titleBarView)");
+    expect(helperSource).toContain("private func directPaneTitleBarEventTarget(");
+    expect(helperSource).toContain("let titleBarPoint = convert(point, to: titleBarView)");
+    expect(helperSource).toContain("titleBarView.bounds.contains(titleBarPoint)");
+    expect(helperSource).toContain("return PaneTitleBarEventTarget(");
+    expect(helperSource.indexOf("if let titleBarView = view as? TerminalSessionTitleBarView")).toBeLessThan(
+      helperSource.indexOf("guard let containerView = view as? TerminalPaneLeafContainerView"),
+    );
   });
 
   test("keeps window-routed titlebar mouse streams on the same pane titlebar", () => {
