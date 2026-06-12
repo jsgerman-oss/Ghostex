@@ -64,6 +64,8 @@ const AGENT_SECONDARY_LABELS: Record<SidebarAgentIcon, readonly string[]> = {
   gemini: ["gemini"],
   "grok-build": ["grok", "grok build"],
   "hermes-agent": ["hermes", "hermes agent"],
+  kiro: ["kiro", "kiro cli", "kiro-cli"],
+  omp: ["omp"],
   opencode: ["open code", "opencode"],
   pi: ["pi", "π"],
   qoder: ["qoder", "qodercli"],

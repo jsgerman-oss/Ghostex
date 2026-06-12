@@ -373,6 +373,9 @@ function BuiltInCommandIcon({ command }: { command: BuiltInPaletteCommand }) {
     return <IconSettings aria-hidden="true" />;
   }
   if (action.kind === "moveSidebar") {
+    return <IconLayoutSidebarRightExpand aria-hidden="true" />;
+  }
+  if (action.kind === "toggleSidebarCollapsed") {
     return <IconLayoutSidebar aria-hidden="true" />;
   }
   if (action.kind === "renameActiveSession") {

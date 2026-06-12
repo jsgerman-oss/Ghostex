@@ -1014,7 +1014,7 @@ export function SessionGroupSection({
   /**
    * CDXC:ProjectStatusIndicators 2026-05-08-09:33
    * Collapsed project headers must expose the hidden session status counts
-   * inline with the project title: attention/done sessions stay green and
+   * inline with the project title: attention/done sessions stay #95d7f6 and
    * working sessions stay amber. Header actions replace this slot on hover.
    * CDXC:ProjectStatusIndicators 2026-05-08-10:48
    * Project-header status counts render in the visual order users scan for

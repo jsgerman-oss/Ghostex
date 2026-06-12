@@ -1976,6 +1976,11 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
       return;
     }
 
+    if (action.kind === "toggleSidebarCollapsed") {
+      toggleSidebarCollapsed();
+      return;
+    }
+
     if (action.kind === "focusedPaneAction" || action.kind === "switchWorkareaView") {
       vscode.postMessage({ actionId: action.id, type: "runGhostexHotkeyAction" });
     }
@@ -3124,6 +3129,16 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
   const moveSidebar = () => {
     setIsOverflowMenuOpen(false);
     vscode.postMessage({ type: "moveSidebarToOtherSide" });
+  };
+
+  const toggleSidebarCollapsed = () => {
+    setIsOverflowMenuOpen(false);
+    /**
+     * CDXC:SidebarCollapse 2026-06-12-02:23:
+     * Sidebar collapse is native chrome state. React requests the toggle, while
+     * AppKit owns hiding the sidebar WebView, divider, and workspace border.
+     */
+    vscode.postMessage({ type: "toggleSidebarCollapsed" });
   };
 
   const openWorkspaceWelcome = () => {

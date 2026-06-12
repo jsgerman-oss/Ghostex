@@ -45,6 +45,7 @@ import {
   type SidebarSessionItem,
 } from "../shared/session-grid-contract";
 import { DEFAULT_ghostex_SETTINGS, type BrowserFeedbackTool } from "../shared/ghostex-settings";
+import { buildSidebarSessionDetailsClipboardText } from "../shared/session-details-copy";
 import {
   getSessionCardTitleTooltip,
   OverflowTooltipText,
@@ -221,6 +222,34 @@ export function runSidebarBulkContextMenuActionInBackground(
   }
 }
 
+function postSidebarSessionCloseInBackground(
+  vscode: WebviewApi,
+  sessionId: string,
+): void {
+  /*
+  CDXC:LocalFirstSidebar 2026-06-12-06:22:
+  Native sidebar message delivery is synchronous in the macOS host. Close clicks must flush the local card removal before asking the host to tear down the terminal/browser/T3 runtime, otherwise closeTerminal work can block the same user gesture and make the sidebar feel delayed.
+  */
+  globalThis.setTimeout(() => {
+    vscode.postMessage({
+      sessionId,
+      type: "closeSession",
+    });
+  }, 0);
+}
+
+function postSidebarSessionsCloseInBackground(
+  vscode: WebviewApi,
+  sessionIds: readonly string[],
+): void {
+  globalThis.setTimeout(() => {
+    vscode.postMessage({
+      sessionIds: [...sessionIds],
+      type: "closeSessions",
+    });
+  }, 0);
+}
+
 function clampContextMenuPosition(
   clientY: number,
   itemCount: number,
@@ -305,6 +334,7 @@ export function SortableSessionCard({
     showLastActiveTime,
     showSessionCloseContextMenuAction,
     showSessionCommandCopyActions,
+    showSessionDetailsCopyAction,
   } = useSidebarStore(
     useShallow((state) => ({
       /*
@@ -348,8 +378,17 @@ export function SortableSessionCard({
       showSessionCommandCopyActions:
         state.hud.settings?.showSessionCommandCopyActions ??
         DEFAULT_ghostex_SETTINGS.showSessionCommandCopyActions,
+      /*
+       * CDXC:SidebarContextMenu 2026-06-11-23:08:
+       * Copy details is an opt-in metadata clipboard action. Gate the menu item
+       * with its own Settings flag instead of tying it to shell command copying.
+       */
+      showSessionDetailsCopyAction:
+        state.hud.settings?.showSessionDetailsCopyAction ??
+        DEFAULT_ghostex_SETTINGS.showSessionDetailsCopyAction,
     })),
   );
+  const sessionGroup = useSidebarStore((state) => state.groupsById[groupId]);
   const [tagSubmenuPosition, setTagSubmenuPosition] = useState<ContextMenuPosition>();
   const [completionFlashRunId, setCompletionFlashRunId] = useState(0);
   const menuRef = useRef<HTMLDivElement>(null);
@@ -370,6 +409,7 @@ export function SortableSessionCard({
     showSessionCommandCopyActions &&
     !isBrowserSession &&
     Boolean(session?.sessionPersistenceProvider && session.sessionPersistenceName);
+  const canCopySessionDetails = showSessionDetailsCopyAction;
   const canFullReloadSession = session ? !isBrowserSession && supportsFullReload(session) : false;
   const canPopOutPane = session ? supportsPopOutPane(session, isBrowserSession, isT3Session) : false;
   const canGenerateSessionTitle = session
@@ -792,20 +832,19 @@ export function SortableSessionCard({
       });
     }
 
-    setContextMenuPosition(undefined);
-    if (shouldKeepLastProjectSessionVisibleOnClose) {
-      /*
-      CDXC:LocalFirstSidebar 2026-06-01-20:52:
-      Closing a project's final sidebar session parks it instead of removing it. Keep the card visible immediately and mark it sleeping locally so the project does not blink out before gxserver publishes the parked-session presentation.
-      */
-      useSidebarStore.getState().setSessionSleepingLocally(session.sessionId, true);
-    } else {
-      useSidebarStore.getState().hideSessionLocally(session.sessionId);
-    }
-    vscode.postMessage({
-      sessionId: session.sessionId,
-      type: "closeSession",
+    flushSync(() => {
+      setContextMenuPosition(undefined);
+      if (shouldKeepLastProjectSessionVisibleOnClose) {
+        /*
+        CDXC:LocalFirstSidebar 2026-06-01-20:52:
+        Closing a project's final sidebar session parks it instead of removing it. Keep the card visible immediately and mark it sleeping locally so the project does not blink out before gxserver publishes the parked-session presentation.
+        */
+        useSidebarStore.getState().setSessionSleepingLocally(session.sessionId, true);
+      } else {
+        useSidebarStore.getState().hideSessionLocally(session.sessionId);
+      }
     });
+    postSidebarSessionCloseInBackground(vscode, session.sessionId);
   };
 
   const requestCopyResumeCommand = () => {
@@ -827,6 +866,15 @@ export function SortableSessionCard({
     vscode.postMessage({
       sessionId: session.sessionId,
       type: "copyAttachCommand",
+    });
+  };
+
+  const requestCopySessionDetails = () => {
+    setContextMenuPosition(undefined);
+    vscode.postMessage({
+      detailsText: buildSidebarSessionDetailsClipboardText(session, sessionGroup),
+      sessionId: session.sessionId,
+      type: "copySessionDetails",
     });
   };
 
@@ -1037,10 +1085,7 @@ export function SortableSessionCard({
       setContextMenuPosition(undefined);
       useSidebarStore.getState().hideSessionsLocally(targetSessionIds);
     });
-    vscode.postMessage({
-      sessionIds: targetSessionIds,
-      type: "closeSessions",
-    });
+    postSidebarSessionsCloseInBackground(vscode, targetSessionIds);
   };
 
   const requestSetSessionTag = (tag: SidebarSessionTag | undefined) => {
@@ -1296,6 +1341,16 @@ export function SortableSessionCard({
       key: "copy-attach",
       label: "Copy attach command",
       onClick: requestCopyAttachCommand,
+    });
+  }
+  if (canCopySessionDetails) {
+    sessionActions.push({
+      icon: (
+        <IconCopy aria-hidden="true" className="session-context-menu-icon" size={16} stroke={1.8} />
+      ),
+      key: "copy-details",
+      label: "Copy details",
+      onClick: requestCopySessionDetails,
     });
   }
   if (canDelayedSend) {

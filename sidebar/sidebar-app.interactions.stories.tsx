@@ -754,6 +754,7 @@ export const SessionCardActions: Story = {
   args: {
     showSessionCloseContextMenuAction: true,
     showSessionCommandCopyActions: true,
+    showSessionDetailsCopyAction: true,
   },
   play: async ({ canvas, canvasElement, step, userEvent }) => {
     const storyDocument = canvasElement.ownerDocument;
@@ -814,6 +815,19 @@ export const SessionCardActions: Story = {
       await userEvent.click(await body.findByRole("menuitem", { name: "Copy resume" }));
 
       await expectMessage({ sessionId: "session-3", type: "copyResumeCommand" });
+    });
+
+    await step("copy session details through the session context menu", async () => {
+      resetSidebarStoryMessages();
+
+      const sessionCard = await findSessionCard();
+      await openContextMenu(sessionCard);
+      await userEvent.click(await body.findByRole("menuitem", { name: "Copy details" }));
+
+      await expectMessage({
+        sessionId: "session-3",
+        type: "copySessionDetails",
+      });
     });
 
     await step("tag favorite through the session context menu", async () => {

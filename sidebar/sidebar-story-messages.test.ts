@@ -16,6 +16,7 @@ const DEFAULT_STORY_ARGS: SidebarStoryArgs = {
   showCloseButtonOnSessionCards: true,
   showSessionCloseContextMenuAction: false,
   showSessionCommandCopyActions: false,
+  showSessionDetailsCopyAction: false,
   theme: "dark-blue",
   viewMode: "grid",
   visibleCount: 1,
@@ -37,5 +38,14 @@ describe("sidebar story messages", () => {
     expect(message.previousSessions).toEqual([]);
     expect(message.revision).toBe(1);
     expect(message.type).toBe("sessionState");
+  });
+
+  test("fixture messages can opt into session details copy actions", () => {
+    const message = createFixtureMessage({
+      ...DEFAULT_STORY_ARGS,
+      showSessionDetailsCopyAction: true,
+    });
+
+    expect(message.hud.settings?.showSessionDetailsCopyAction).toBe(true);
   });
 });

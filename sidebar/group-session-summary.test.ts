@@ -3,7 +3,7 @@ import type { SidebarSessionItem } from "../shared/session-grid-contract";
 import { getGroupSessionSummary } from "./group-session-summary";
 
 describe("getGroupSessionSummary", () => {
-  test("should count attention and working sessions while preserving the green priority indicator", () => {
+  test("should count attention and working sessions while preserving the attention priority indicator", () => {
     expect(
       getGroupSessionSummary([
         createSession("session-1", { activity: "working", lifecycleState: "running" }),
