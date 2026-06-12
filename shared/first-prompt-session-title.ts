@@ -44,7 +44,7 @@ const META_PROMPT_PREFIXES = [
 ] as const;
 
 const GENERIC_SESSION_TITLES_BY_AGENT = new Map<string, ReadonlySet<string>>([
-  ["claude", new Set(["claude", "claude code"])],
+  ["claude", new Set(["claude", "claude code", "claude session"])],
   ["codex", new Set(["codex", "openai codex", "codex cli"])],
   /**
    * CDXC:CursorCLI 2026-05-19-15:35:
@@ -73,14 +73,14 @@ export function resolveFirstPromptAutoRenameStrategy(
   agentName: string | undefined,
 ): FirstPromptAutoRenameStrategy | undefined {
   const normalizedAgentName = agentName?.trim().toLowerCase();
-  if (normalizedAgentName === "claude") {
+  if (normalizedAgentName === "claude" || normalizedAgentName === "claude code") {
     /**
-     * CDXC:SessionTitleSync 2026-05-30-05:42:
-     * Claude Code now names sessions automatically. Disable Ghostex first-prompt
-     * naming for Claude, including the previous bare `/rename` trigger, while
-     * keeping the sendBareRenameCommand strategy available for future reuse.
+     * CDXC:SessionTitleSync 2026-06-12-07:08:
+     * Claude Code can leave newly working sessions at the generic `Claude Code`
+     * title. Use the generated-title `/rename` flow for unrenamed Claude
+     * sessions so hook-detected work receives the same naming path as Codex.
      */
-    return undefined;
+    return "generateTitleAndRename";
   }
 
   if (normalizedAgentName === "codex") {

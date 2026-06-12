@@ -86,13 +86,14 @@ describe("Cursor first-prompt auto naming", () => {
 });
 
 describe("Claude first-prompt auto naming", () => {
-  test("should not auto generate titles or send bare rename because Claude names sessions itself", () => {
+  test("should generate a title and send Claude's rename command strategy for generic titles", () => {
     /**
-     * CDXC:SessionTitleSync 2026-05-30-05:42:
-     * Claude Code owns session titles by default. Ghostex should not generate a
-     * first-prompt title or send the old bare `/rename` command for Claude.
+     * CDXC:SessionTitleSync 2026-06-12-07:08:
+     * Claude Code hook activity can begin before the CLI has a meaningful
+     * session title. Ghostex should generate a first-prompt title and stage
+     * `/rename <title>` for generic Claude titles, matching Codex behavior.
      */
-    expect(resolveFirstPromptAutoRenameStrategy("claude")).toBeUndefined();
+    expect(resolveFirstPromptAutoRenameStrategy("claude")).toBe("generateTitleAndRename");
     expect(
       explainFirstPromptAutoRenameDecision({
         agentName: "claude",
@@ -100,8 +101,9 @@ describe("Claude first-prompt auto naming", () => {
         prompt: "Implement title overlay cancellation",
       }),
     ).toMatchObject({
-      reason: "unsupportedAgent",
-      shouldAutoName: false,
+      reason: "eligible",
+      shouldAutoName: true,
+      strategy: "generateTitleAndRename",
     });
   });
 });
