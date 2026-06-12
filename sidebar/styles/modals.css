@@ -3242,7 +3242,24 @@ html:has(body.app-modal-host-native-window-body) {
 }
 
 .worktree-create-modal-shadcn {
+  /*
+   * CDXC:WorktreeModal 2026-06-12-11:10:
+   * Add Worktree in the macOS native child window must have exactly 18px total
+   * edge padding. The native WKWebView has no separate content inset, so the
+   * native-window override below fills the WebView and makes this React dialog
+   * the single owner of the 18px padding instead of stacking it with the shared
+   * shadcn p-6 and 100vw - 2rem width cap.
+   */
   max-width: min(560px, calc(100vw - 2rem));
+}
+
+.app-modal-host-native-window-body .worktree-create-modal-shadcn {
+  box-sizing: border-box;
+  height: 100vh;
+  max-height: 100vh;
+  max-width: 100vw;
+  padding: 18px;
+  width: 100vw;
 }
 
 .delayed-send-modal-shadcn {

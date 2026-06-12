@@ -5407,6 +5407,7 @@ final class ghostexRootView: NSView {
       "homeDir": FileManager.default.homeDirectoryForCurrentUser.path,
       "ghostexHomeDir": GhostexAppStorage.sharedRootDirectory.path,
       "sharedSidebarStorage": GhostexAppStorage.readSharedSidebarStorage(),
+      "sidebarCollapsed": isSidebarCollapsed,
       "updateAvailable": initialUpdateAvailable,
       "workspaceName": workspaceName.isEmpty ? "Ghostex" : workspaceName,
     ]
@@ -9811,13 +9812,37 @@ final class ghostexRootView: NSView {
      including the WKWebView, resize divider, and workarea border. Preserve the
      expanded sidebarWidth so the next toggle restores the user's resized width
      instead of treating collapse as a zero-width resize.
+
+     CDXC:SidebarCollapse 2026-06-12-10:57:
+     The React titlebar owns the visible sidebar collapse button beside the
+     project name, but AppKit owns the actual collapsed layout. Push the native
+     collapsed boolean back into the titlebar bridge after every toggle so the
+     chevron always shows the next expand/collapse direction.
      */
     isSidebarCollapsed.toggle()
     if isSidebarCollapsed {
       sidebarView.forceNativePointerInside(false)
     }
+    setTitlebarSidebarCollapsed(isSidebarCollapsed)
     needsLayout = true
     workspaceView.scheduleZmxPersistenceRefreshForSurfacedTerminalsAfterResize(reason: "sidebarCollapseToggle")
+  }
+
+  private func setTitlebarSidebarCollapsed(_ collapsed: Bool) {
+    let collapsedLiteral = collapsed ? "true" : "false"
+    let json = "{\"sidebarCollapsed\":\(collapsedLiteral)}"
+    titlebarChromeWebView.evaluateJavaScript(
+      """
+      (() => {
+        const state = \(json);
+        const pending = window.__ghostex_PENDING_TITLEBAR_PROJECT_STATE__;
+        window.__ghostex_PENDING_TITLEBAR_PROJECT_STATE__ =
+          pending && typeof pending === "object" ? Object.assign({}, pending, state) : state;
+        window.__ghostex_TITLEBAR__?.setActiveProjectState(state);
+      })();
+      undefined;
+      """)
+    titlebarDropdownPanelController?.setActiveProjectState(json)
   }
 
   required init?(coder: NSCoder) {
@@ -10503,6 +10528,9 @@ final class ghostexRootView: NSView {
         event: "nativeBridge.appModal.sidebarCommand.received",
         details: String(describing: sidebarMessage)
       )
+      if handleNativeSidebarModalCommand(sidebarMessage) {
+        return
+      }
       dispatchSidebarModalCommand(sidebarMessage)
     default:
       AppDelegate.appendAppModalErrorLog(
@@ -10511,6 +10539,26 @@ final class ghostexRootView: NSView {
         stack: nil
       )
     }
+  }
+
+  private func handleNativeSidebarModalCommand(_ message: Any) -> Bool {
+    guard let command = message as? [String: Any],
+      command["type"] as? String == "runGhostexHotkeyAction",
+      command["actionId"] as? String == "toggleSidebarCollapsed"
+    else {
+      return false
+    }
+    /**
+     CDXC:SidebarCollapse 2026-06-12-10:57:
+     The native Command Palette runs inside an app-modal child WKWebView, so
+     its sidebarCommand envelope cannot rely on the sidebar webview to perform
+     native-only chrome actions. Handle Toggle Sidebar at the AppKit bridge so
+     the palette command collapses or expands the full native sidebar exactly
+     like Cmd+B.
+     */
+    closeNativeAppModalWindow(reason: "commandPaletteToggleSidebar", sendReactClose: true)
+    (window?.contentView as? ghostexRootView)?.toggleSidebarCollapsed()
+    return true
   }
 
   private func promptEditorDebugLogDetails(from rawDetails: Any?) -> [String: Any]? {
@@ -13230,8 +13278,21 @@ private final class AppModalWindowController: NSObject, NSWindowDelegate, WKNavi
       return CGSize(width: 1120, height: 850)
     case "gitFileDiff":
       return CGSize(width: 1180, height: 820)
-    case "gitCommit", "worktree":
-      return CGSize(width: 1000, height: 760)
+    case "gitCommit":
+      /*
+       CDXC:TitlebarGit 2026-06-12-11:30:
+       Commit review needs 20px more horizontal room from the right side of the native modal. Size the child WebView to 1020px wide while the placement helper preserves the old 1000px frame's left edge.
+       */
+      return CGSize(width: 1020, height: 760)
+    case "worktree":
+      /*
+       CDXC:WorktreeModal 2026-06-12-10:51:
+       Add Worktree should be a compact macOS child-window modal sized exactly 570x550, not the larger Git Commit review frame. Keep this modal-specific so commit review still has room for file selection and diff-related controls.
+
+       CDXC:WorktreeModal 2026-06-12-11:10:
+       Add Worktree needs 80px more vertical room after the 570x550 compact pass. Keep the 570px width and lock the native child window at 570x630 so the React/WebView surface can fill the frame with exact 18px edge padding.
+       */
+      return CGSize(width: 570, height: 630)
     case "previousSessions":
       /*
        CDXC:PreviousSessions 2026-06-11-20:39:
@@ -13318,6 +13379,24 @@ private final class AppModalWindowController: NSObject, NSWindowDelegate, WKNavi
     return clampFrameToVisibleScreen(frame, visibleFrame: visibleFrame)
   }
 
+  private func gitCommitContentFrame(size: CGSize, parentWindow: NSWindow) -> CGRect {
+    /*
+     CDXC:TitlebarGit 2026-06-12-11:30:
+     Widening commit review should add space on the right only. Keep the old
+     1000px centered frame's left edge as the anchor so the files/message column
+     stays visually fixed while the right diff pane gains the extra 20px.
+     */
+    let visibleFrame = parentWindow.screen?.visibleFrame ?? parentWindow.frame
+    let previousCenteredWidth: CGFloat = 1000
+    let frame = CGRect(
+      x: parentWindow.frame.midX - previousCenteredWidth / 2,
+      y: parentWindow.frame.midY - size.height / 2,
+      width: size.width,
+      height: size.height
+    )
+    return clampFrameToVisibleScreen(frame, visibleFrame: visibleFrame)
+  }
+
   private func clampFrameToVisibleScreen(_ frame: CGRect, visibleFrame: CGRect) -> CGRect {
     var frame = frame
     frame.origin.x = min(
@@ -13339,6 +13418,9 @@ private final class AppModalWindowController: NSObject, NSWindowDelegate, WKNavi
       if modal == "commandPalette" {
         return commandPaletteContentFrame(size: size, parentWindow: parentWindow)
       }
+      if modal == "gitCommit" {
+        return gitCommitContentFrame(size: size, parentWindow: parentWindow)
+      }
       return centeredFrame(size: size, parentWindow: parentWindow)
     }
     let visibleFrame = parentWindow.screen?.visibleFrame ?? parentWindow.frame
@@ -13354,6 +13436,7 @@ private final class AppModalWindowController: NSObject, NSWindowDelegate, WKNavi
 
   private func shouldLockContentSize(modal: String) -> Bool {
     modal == "previousSessions" || modal == "renameSession" || modal == "delayedSend"
+      || modal == "worktree"
   }
 
   private func minimumContentSize(for modal: String?) -> CGSize {

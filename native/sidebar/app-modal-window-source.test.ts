@@ -40,6 +40,78 @@ describe("native app modal window source", () => {
     expect(defaultSize).toContain("return CGSize(width: 1120, height: 850)");
   });
 
+  test("keeps Add Worktree fixed at 570x630 with exact native-window padding", () => {
+    /*
+    CDXC:WorktreeModal 2026-06-12-10:51:
+    Add Worktree must open as an exact 570x550 native child window in the macOS app, separate from the larger Git Commit review modal size.
+
+    CDXC:WorktreeModal 2026-06-12-11:10:
+    Add Worktree must keep the 570px width, gain 80px of height to 630px, and use exactly 18px total edge padding in the native child-window WebView.
+    */
+    const defaultSize = sourceBetween(
+      appDelegateSource,
+      "private func defaultSize(for modal: String) -> CGSize",
+      "private func constrainedSize(_ size: CGSize, parentWindow: NSWindow) -> CGSize",
+    );
+    expect(defaultSize).toContain('case "gitCommit":');
+    expect(defaultSize).toContain("return CGSize(width: 1020, height: 760)");
+    expect(defaultSize).toContain('case "worktree":');
+    expect(defaultSize).toContain("return CGSize(width: 570, height: 630)");
+
+    const shouldLockContentSize = sourceBetween(
+      appDelegateSource,
+      "private func shouldLockContentSize(modal: String) -> Bool",
+      "private func minimumContentSize(for modal: String?) -> CGSize",
+    );
+    expect(shouldLockContentSize).toContain('|| modal == "worktree"');
+
+    const worktreeStyles = sourceBetween(
+      modalStylesSource,
+      ".worktree-create-modal-shadcn {",
+      ".delayed-send-modal-shadcn {",
+    );
+    expect(worktreeStyles).toContain(
+      ".app-modal-host-native-window-body .worktree-create-modal-shadcn",
+    );
+    expect(worktreeStyles).toContain("height: 100vh;");
+    expect(worktreeStyles).toContain("max-height: 100vh;");
+    expect(worktreeStyles).toContain("max-width: 100vw;");
+    expect(worktreeStyles).toContain("padding: 18px;");
+    expect(worktreeStyles).toContain("width: 100vw;");
+  });
+
+  test("widens Git Commit 20px from the right side in the macOS app", () => {
+    /*
+    CDXC:TitlebarGit 2026-06-12-11:30:
+    Git Commit review must be 20px wider than its prior 1000px native child window, with the old left edge preserved so the added width appears on the right diff side.
+    */
+    const defaultSize = sourceBetween(
+      appDelegateSource,
+      "private func defaultSize(for modal: String) -> CGSize",
+      "private func constrainedSize(_ size: CGSize, parentWindow: NSWindow) -> CGSize",
+    );
+    expect(defaultSize).toContain('case "gitCommit":');
+    expect(defaultSize).toContain("return CGSize(width: 1020, height: 760)");
+
+    const gitCommitFrame = sourceBetween(
+      appDelegateSource,
+      "private func gitCommitContentFrame(size: CGSize, parentWindow: NSWindow) -> CGRect",
+      "private func clampFrameToVisibleScreen",
+    );
+    expect(gitCommitFrame).toContain("let previousCenteredWidth: CGFloat = 1000");
+    expect(gitCommitFrame).toContain("x: parentWindow.frame.midX - previousCenteredWidth / 2");
+
+    const constrainedContentFrame = sourceBetween(
+      appDelegateSource,
+      "private func constrainedContentFrame(",
+      "private func shouldLockContentSize(modal: String) -> Bool",
+    );
+    expect(constrainedContentFrame).toContain('if modal == "gitCommit"');
+    expect(constrainedContentFrame).toContain(
+      "return gitCommitContentFrame(size: size, parentWindow: parentWindow)",
+    );
+  });
+
   test("keeps Rename Session fixed at 570x480 in the macOS app", () => {
     /*
     CDXC:SidebarRename 2026-06-12-05:05:

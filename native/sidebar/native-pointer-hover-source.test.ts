@@ -91,9 +91,16 @@ describe("native pointer hover boundary source", () => {
      * Resources header Sleep actions must not depend on raw CSS :hover in the
      * native child dropdown. Stale WebKit hover can show the tooltip while
      * leaving the buttons unable to receive clicks.
+     *
+     * CDXC:TitlebarResources 2026-06-12-11:20:
+     * Child dropdown documents do not receive the main titlebar strip's AppKit
+     * pointer tracking callbacks. Mark them pointer-inside on mount so visible
+     * Resources header actions stay hit-testable inside the panel WebView.
      */
     expect(titlebarHostSource).toContain("data-actions-active={String(resourceHeaderActionsActive)}");
-    expect(titlebarHostSource).toContain("setSleepInactiveTooltipOpen(resourceHeaderActionsActive ? open : false)");
+    expect(titlebarHostSource).toContain("Sleep header tooltips are temporarily commented out");
+    expect(titlebarHostSource).not.toContain("const [sleepInactiveTooltipOpen");
+    expect(titlebarHostSource).toContain("setTitlebarNativePointerInside(true);");
     expect(titlebarHostSource).not.toContain(".titlebar-resources-header:hover .titlebar-resources-action-button");
 
     expect(sessionCardsSource).toContain('body.native-sidebar-body[data-native-pointer-inside="false"]');

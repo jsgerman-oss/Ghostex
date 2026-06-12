@@ -4,6 +4,8 @@ import {
   IconBrandGithub,
   IconCheck,
   IconChevronDown,
+  IconChevronLeft,
+  IconChevronRight,
   IconChecklist,
   IconCode,
   IconCoffee,
@@ -245,6 +247,7 @@ type TitlebarProjectState = {
   projectPath: string;
   petOverlayEnabled: boolean;
   resourceGroups: TitlebarResourceGroup[];
+  sidebarCollapsed: boolean;
   sidebarActions: TitlebarSidebarActionsSettings;
   showProjectEditorDiffFileCount: boolean;
   sessionPersistenceProvider: SessionPersistenceProvider;
@@ -304,6 +307,7 @@ type NativeTitlebarCommand =
   | { type: "openTasksPlaceholderFromTitlebar" }
   | { type: "refreshWorkspaceOpenTargetAvailabilityFromTitlebar" }
   | { type: "toggleCommandsPanelFromTitlebar" }
+  | { type: "toggleSidebarCollapsed" }
   | { type: "showUpdateDialogFromTitlebar" }
   | { type: "startGxserverFromTitlebar" }
   | { type: "stopGxserverFromTitlebar" }
@@ -1926,6 +1930,7 @@ function App() {
     projectState.projectIconDataUrl,
     projectState.isFocusModeActive,
     projectState.projectName,
+    projectState.sidebarCollapsed,
     projectState.updateAvailable,
     publishSettledHitRegions,
     isDropdownPanel,
@@ -1938,6 +1943,20 @@ function App() {
     window.addEventListener("resize", publishHitRegions);
     return () => window.removeEventListener("resize", publishHitRegions);
   }, [publishHitRegions, isDropdownPanel]);
+
+  useEffect(() => {
+    if (!isDropdownPanel) {
+      return;
+    }
+    /*
+     * CDXC:TitlebarResources 2026-06-12-11:20:
+     * Native dropdown panels render in their own child WKWebView, so the whole
+     * panel document is the interactive pointer surface. Mark it inside on
+     * mount instead of inheriting main-titlebar stale-hover suppression, or the
+     * visible Resources header Sleep buttons can keep pointer-events disabled.
+     */
+    setTitlebarNativePointerInside(true);
+  }, [isDropdownPanel]);
 
   useEffect(() => {
     if (isDropdownPanel) {
@@ -2782,6 +2801,33 @@ function App() {
       <div className="dark" ref={rootRef} style={styles.shell}>
         <div style={styles.titlebar}>
           <div style={styles.projectSlot}>
+            <Button
+              aria-label={projectState.sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}
+              className="titlebar-sidebar-collapse-button"
+              data-titlebar-hit-region
+              onClick={() => postNative({ type: "toggleSidebarCollapsed" })}
+              type="button"
+              variant="ghost"
+            >
+              {/*
+               * CDXC:SidebarCollapse 2026-06-12-10:57:
+               * Users need a traffic-light-sized titlebar button immediately
+               * before the project identity to collapse or expand the entire
+               * native sidebar. The chevron points left while expanded and
+               * right while collapsed so it always indicates the next action.
+               *
+               * CDXC:SidebarCollapse 2026-06-12-11:10:
+               * The update affordance belongs to the right of this collapse
+               * button, with a 9px gap between the two compact titlebar buttons.
+               * Keep the collapse button one pixel lower than its first pass and
+               * use a 10px chevron so the glyph reads clearly inside the 14px dot.
+               */}
+              {projectState.sidebarCollapsed ? (
+                <IconChevronRight aria-hidden="true" size={10} stroke={2.4} />
+              ) : (
+                <IconChevronLeft aria-hidden="true" size={10} stroke={2.4} />
+              )}
+            </Button>
             {projectState.updateAvailable ? (
               <Button
                 aria-label="Download update"
@@ -3500,6 +3546,7 @@ function createInitialProjectState(bootstrap: Record<string, unknown>): Titlebar
     projectPath,
     petOverlayEnabled: settings.petOverlayEnabled,
     resourceGroups: [],
+    sidebarCollapsed: bootstrap.sidebarCollapsed === true,
     sidebarActions: {
       commands: [],
     },
@@ -3733,20 +3780,26 @@ function TitlebarTipsMenu({
             ))}
           </TitlebarTipsSection>
         ) : null}
-        <TitlebarTipsSection
-          count={unreadTips.length}
-          emptyText="All caught up."
-          title="Unread"
-        >
-          {unreadTips.map((tip) => (
-            <TitlebarTipRow
-              key={tip.id}
-              onMarkRead={onMarkRead}
-              read={false}
-              tip={tip}
-            />
-          ))}
-        </TitlebarTipsSection>
+        {/*
+         CDXC:TipsAndTricks 2026-06-12-10:56:
+         Hide the Unread section when every tip is read so the panel does not show an empty "All caught up." block.
+        */}
+        {unreadTips.length > 0 ? (
+          <TitlebarTipsSection
+            count={unreadTips.length}
+            emptyText=""
+            title="Unread"
+          >
+            {unreadTips.map((tip) => (
+              <TitlebarTipRow
+                key={tip.id}
+                onMarkRead={onMarkRead}
+                read={false}
+                tip={tip}
+              />
+            ))}
+          </TitlebarTipsSection>
+        ) : null}
         <TitlebarTipsSection
           count={readTips.length}
           emptyText="No read tips yet."
@@ -3950,22 +4003,22 @@ function TitlebarResourcesMenu({
     .flatMap((view) => view.bundles)
     .filter((bundle) => bundle.type === "session" && bundle.session?.sessionKind === "terminal");
   const [resourceHeaderActionsActive, setResourceHeaderActionsActive] = useState(false);
-  const [sleepInactiveTooltipOpen, setSleepInactiveTooltipOpen] = useState(false);
-  const [sleepAllTooltipOpen, setSleepAllTooltipOpen] = useState(false);
   /*
    * CDXC:TitlebarResources 2026-06-12-03:26:
    * Native child dropdown WebViews can open with stale WebKit :hover/focus state
    * from the titlebar trigger. Arm the header Sleep actions only after this
-   * panel receives real pointer or keyboard focus activity so the initial Sleep
-   * tooltip stays closed and the buttons get reliable hit testing once shown.
+   * panel receives real pointer or keyboard focus activity so the buttons get
+   * reliable hit testing once shown.
+   *
+   * CDXC:TitlebarResources 2026-06-12-11:45:
+   * Sleep header tooltips are temporarily commented out while native Resources
+   * child-panel hover/focus behavior is being stabilized.
    */
   const activateResourceHeaderActions = () => {
     setResourceHeaderActionsActive(true);
   };
   const deactivateResourceHeaderActions = () => {
     setResourceHeaderActionsActive(false);
-    setSleepInactiveTooltipOpen(false);
-    setSleepAllTooltipOpen(false);
   };
   /**
    * CDXC:TitlebarResources 2026-05-24-20:58:
@@ -4015,6 +4068,7 @@ function TitlebarResourcesMenu({
           <span>Resources</span>
         </div>
         <div className="titlebar-resources-actions">
+          {/*
           <Tooltip
             onOpenChange={(open) =>
               setSleepInactiveTooltipOpen(resourceHeaderActionsActive ? open : false)
@@ -4042,33 +4096,59 @@ function TitlebarResourcesMenu({
               <span>Sleeps idle terminals and keeps them restorable in the sidebar.</span>
             </TooltipContent>
           </Tooltip>
+          */}
+          <button
+            className="titlebar-resources-action-button"
+            data-enabled={String(inactiveTerminalSleepSessionCount > 0)}
+            data-variant="sleep"
+            disabled={inactiveTerminalSleepSessionCount === 0}
+            onClick={onSleepInactiveSessions}
+            type="button"
+          >
+            <IconMoon aria-hidden="true" size={14} stroke={1.8} />
+            <span>Sleep Inactive</span>
+          </button>
           {persistentSessionMode ? (
-            <Tooltip
-              onOpenChange={(open) =>
-                setSleepAllTooltipOpen(resourceHeaderActionsActive ? open : false)
-              }
-              open={resourceHeaderActionsActive && sleepAllTooltipOpen}
-            >
-              <TooltipTrigger
-                render={
-                  <button
-                    aria-label="Sleep all terminal sessions"
-                    className="titlebar-resources-action-button"
-                    data-variant="sleep"
-                    disabled={sleepAllSessionBundles.length === 0}
-                    onClick={() => onQuit(sleepAllSessionBundles)}
-                    type="button"
-                  >
-                    <IconMoon aria-hidden="true" size={14} stroke={1.9} />
-                    <span>Sleep All</span>
-                  </button>
+            <>
+              {/*
+              <Tooltip
+                onOpenChange={(open) =>
+                  setSleepAllTooltipOpen(resourceHeaderActionsActive ? open : false)
                 }
-              />
-              <TooltipContent className="titlebar-resource-tooltip" style={resourceTooltipStyle}>
-                <span className="titlebar-resource-tooltip-title">Sleep all sessions</span>
-                <span>Sleeps all terminal sessions and keeps them restorable in the sidebar.</span>
-              </TooltipContent>
-            </Tooltip>
+                open={resourceHeaderActionsActive && sleepAllTooltipOpen}
+              >
+                <TooltipTrigger
+                  render={
+                    <button
+                      aria-label="Sleep all terminal sessions"
+                      className="titlebar-resources-action-button"
+                      data-variant="sleep"
+                      disabled={sleepAllSessionBundles.length === 0}
+                      onClick={() => onQuit(sleepAllSessionBundles)}
+                      type="button"
+                    >
+                      <IconMoon aria-hidden="true" size={14} stroke={1.9} />
+                      <span>Sleep All</span>
+                    </button>
+                  }
+                />
+                <TooltipContent className="titlebar-resource-tooltip" style={resourceTooltipStyle}>
+                  <span className="titlebar-resource-tooltip-title">Sleep all sessions</span>
+                  <span>Sleeps all terminal sessions and keeps them restorable in the sidebar.</span>
+                </TooltipContent>
+              </Tooltip>
+              */}
+              <button
+                className="titlebar-resources-action-button"
+                data-variant="sleep"
+                disabled={sleepAllSessionBundles.length === 0}
+                onClick={() => onQuit(sleepAllSessionBundles)}
+                type="button"
+              >
+                <IconMoon aria-hidden="true" size={14} stroke={1.9} />
+                <span>Sleep All</span>
+              </button>
+            </>
           ) : null}
           <div className="titlebar-resources-summary">
             <Tooltip>
@@ -4178,6 +4258,7 @@ function TitlebarGxserverDaemonSection({
 }) {
   const isRunning = daemon.state === "running";
   const isStarting = daemon.state === "starting";
+  const shouldShowReloadApp = !isRunning;
   const statusLabel = daemon.version
     ? `${daemon.state} - v${daemon.version}`
     : daemon.state;
@@ -4186,12 +4267,16 @@ function TitlebarGxserverDaemonSection({
       <div className="titlebar-gxserver-daemon-main">
         <span className="titlebar-gxserver-daemon-dot" data-state={daemon.ok === false ? "error" : daemon.state} />
         <div className="titlebar-gxserver-daemon-copy">
-          <span>Daemon</span>
+          {daemon.message ? <span>{daemon.message}</span> : null}
           <span>{statusLabel}</span>
         </div>
       </div>
       <div className="titlebar-gxserver-daemon-controls">
-        <Tooltip>
+        {/*
+         * CDXC:TitlebarDaemonControls 2026-06-12-11:51:
+         * The Resources dropdown should expose Restart as the primary daemon action. Hide manual Start/Stop controls so users do not manage daemon lifecycle from this compact status row.
+         */}
+        {/* <Tooltip>
           <TooltipTrigger
             render={
               <button
@@ -4206,7 +4291,7 @@ function TitlebarGxserverDaemonSection({
             }
           />
           <TooltipContent className="titlebar-resource-tooltip">Start daemon</TooltipContent>
-        </Tooltip>
+        </Tooltip> */}
         <Tooltip>
           <TooltipTrigger
             render={
@@ -4223,7 +4308,30 @@ function TitlebarGxserverDaemonSection({
           />
           <TooltipContent className="titlebar-resource-tooltip">Restart daemon</TooltipContent>
         </Tooltip>
-        <Tooltip>
+        {shouldShowReloadApp ? (
+          <Tooltip>
+            <TooltipTrigger
+              render={
+                <button
+                  aria-label="Reload Ghostex"
+                  className="titlebar-gxserver-daemon-icon-button"
+                  onClick={() => {
+                    window.location.reload();
+                  }}
+                  type="button"
+                >
+                  <IconRefresh aria-hidden="true" size={14} stroke={1.9} />
+                </button>
+              }
+            />
+            <TooltipContent className="titlebar-resource-tooltip">Reload app</TooltipContent>
+          </Tooltip>
+        ) : null}
+        {/*
+         * CDXC:TitlebarDaemonControls 2026-06-12-11:51:
+         * If gxserver is off unexpectedly, show Reload App as the recovery action so the webview can rehydrate and reconnect instead of asking users to manually start the daemon here.
+         */}
+        {/* <Tooltip>
           <TooltipTrigger
             render={
               <button
@@ -4238,17 +4346,20 @@ function TitlebarGxserverDaemonSection({
             }
           />
           <TooltipContent className="titlebar-resource-tooltip">Stop daemon</TooltipContent>
-        </Tooltip>
-        <label className="titlebar-gxserver-daemon-checkbox">
+        </Tooltip> */}
+        {/*
+         * CDXC:TitlebarDaemonControls 2026-06-12-11:56:
+         * Hide the Always start checkbox from the compact Resources daemon row; this status surface should only offer Restart, plus Reload App when gxserver is off.
+         */}
+        {/* <label className="titlebar-gxserver-daemon-checkbox">
           <input
             checked={daemon.alwaysStart}
             onChange={(event) => onAlwaysStartChange(event.currentTarget.checked)}
             type="checkbox"
           />
           <span>Always start</span>
-        </label>
+        </label> */}
       </div>
-      {daemon.message ? <div className="titlebar-gxserver-daemon-message">{daemon.message}</div> : null}
     </section>
   );
 }
@@ -5206,6 +5317,49 @@ styleElement.textContent = `
     max-width: 210px;
     padding: 0 10px;
   }
+  .titlebar-sidebar-collapse-button {
+    /*
+     * CDXC:SidebarCollapse 2026-06-12-10:57:
+     * The sidebar collapse affordance belongs beside the macOS traffic lights,
+     * not in the sidebar content. Match the requested 14px gray traffic-light
+     * footprint and keep a compact gap before the next titlebar affordance.
+     *
+     * CDXC:SidebarCollapse 2026-06-12-11:10:
+     * Visual review moved the button 1px lower, increased the chevron to 10px,
+     * and made the next titlebar affordance sit 9px to the right of this button.
+     *
+     * CDXC:SidebarCollapse 2026-06-12-11:36:
+     * The first gray traffic-light styling disappeared on the dark titlebar
+     * because the shadcn ghost button reset background/color. Keep the 14px
+     * footprint but use light chrome and !important so collapse/expand stays visible.
+     */
+    align-items: center;
+    background: rgba(255,255,255,0.16) !important;
+    border: 1px solid rgba(255,255,255,0.24) !important;
+    border-radius: 999px;
+    box-shadow: none;
+    color: rgba(255,255,255,0.86) !important;
+    display: inline-flex;
+    flex: 0 0 14px;
+    height: 14px !important;
+    justify-content: center;
+    margin: 0 9px 0 0;
+    min-height: 14px !important;
+    min-width: 14px !important;
+    padding: 0 !important;
+    transform: translateY(2px);
+    width: 14px !important;
+  }
+  .titlebar-sidebar-collapse-button:hover,
+  .titlebar-sidebar-collapse-button:focus-visible {
+    background: rgba(255,255,255,0.24) !important;
+    color: rgba(255,255,255,0.96) !important;
+    outline: none;
+  }
+  .titlebar-sidebar-collapse-button svg {
+    height: 10px;
+    width: 10px;
+  }
   .titlebar-update-button {
     /**
      * CDXC:AutoUpdate 2026-05-28-14:19:
@@ -5218,9 +5372,14 @@ styleElement.textContent = `
      * window edge. Its hover label must render as a local titlebar-strip
      * pseudo-tooltip instead of a portaled Radix tooltip because the promoted
      * sidebar layer can cover any tooltip that drops below the titlebar webview.
+     *
+     * CDXC:SidebarCollapse 2026-06-12-11:10:
+     * When both compact titlebar affordances are visible, the update button
+     * sits to the right of the sidebar collapse button. Let the collapse button
+     * own the 9px inter-button gap instead of adding a second left margin here.
      */
     color: rgba(255,255,255,0.46);
-    margin-left: 6px;
+    margin-left: 0;
     border-left: 0 !important;
     margin-right: 7px;
     padding: 0;
@@ -6175,6 +6334,9 @@ styleElement.textContent = `
     /*
      * CDXC:TitlebarResources 2026-05-31-03:56:
      * The Resources dropdown must expose gxserver daemon status, version, stop/restart controls, and a small Always start checkbox without changing the sidebar session restore list.
+     *
+     * CDXC:TitlebarResources 2026-06-12-11:30:
+     * The gxserver status headline should show the live status message (for example "gxserver is running and uses the expected protocol.") beside the state dot instead of a generic "Daemon" label, with the state/version line directly underneath.
      */
     align-items: center;
     background: rgba(255,255,255,0.045);
@@ -6266,14 +6428,6 @@ styleElement.textContent = `
     height: 12px;
     margin: 0;
     width: 12px;
-  }
-  .titlebar-gxserver-daemon-message {
-    color: rgba(255,255,255,0.48);
-    font: 600 10px/1.25 -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif;
-    grid-column: 1 / -1;
-    max-height: 26px;
-    overflow: hidden;
-    text-overflow: ellipsis;
   }
   .titlebar-resource-section + .titlebar-resource-section {
     margin-top: 8px;
