@@ -54,7 +54,7 @@ export type DefaultEditorCommand =
 export type SessionPersistenceProvider = "off" | "tmux" | "zmx" | "zellij";
 export type SessionStatusIndicatorSize = "small" | "medium" | "large" | "x-large";
 export type SidebarSide = "left" | "right";
-export type SidebarSettingsPresetId = "codex" | "minimal" | "detailed";
+export type SidebarSettingsPresetId = "codex" | "minimal" | "detailed" | "recommended";
 export type PromptEditorBackend = "inherit" | "monaco" | "gte" | "custom";
 export type SessionTitleGenerationAgent = "codex" | "cursor" | "claude" | "grok" | "custom";
 export type AppShotsHotkey = "both-command" | "double-left-shift" | "double-left-option";
@@ -206,6 +206,13 @@ export type ghostexSettings = {
    */
   showSessionCommandCopyActions: boolean;
   /**
+   * CDXC:SidebarContextMenu 2026-06-11-23:08:
+   * Copy details is an explicit session-card context-menu opt-in. Keep it hidden
+   * by default because it copies project/session metadata, including paths and
+   * provider ids, into the system clipboard.
+   */
+  showSessionDetailsCopyAction: boolean;
+  /**
    * CDXC:AutoSleep 2026-05-28-08:06:
    * Auto Sleep is a settings-owned policy for retiring idle VS Code, Git,
    * Project, browser, and agent sessions through their native sleep paths.
@@ -326,8 +333,11 @@ export type SidebarSettingsPresetSettings = Pick<ghostexSettings, SidebarSetting
 
 /**
  * CDXC:SidebarSettingsPresets 2026-05-16-10:11:
- * The Settings top row exposes Codex, Minimal, and Detailed sidebar UI presets as toggle buttons.
+ * The Settings top row exposes Codex, Minimal, Detailed, and Recommended sidebar UI presets as toggle buttons.
  * Preset state is derived from the controlled sidebar settings instead of persisted separately, so manual deviations show Custom without adding another source of truth.
+ *
+ * CDXC:SidebarSettingsPresets 2026-06-12-07:10:
+ * Recommended matches Detailed chrome but keeps session agent icons hover-only so dense sidebars stay readable without losing icon access on demand.
  */
 export const SIDEBAR_SETTINGS_PRESET_SETTINGS = {
   codex: {
@@ -360,6 +370,16 @@ export const SIDEBAR_SETTINGS_PRESET_SETTINGS = {
     hideFloatingSessionStatusIndicators: false,
     hideMenuBarSessionStatusIndicators: false,
   },
+  recommended: {
+    hideSessionAgentIconUntilHover: true,
+    hideBrowserFaviconUntilHover: false,
+    showCloseButtonOnSessionCards: false,
+    hideLastActiveTimeOnSessionCards: false,
+    hideProjectHeaderDiffStats: false,
+    showProjectEditorDiffFileCount: false,
+    hideFloatingSessionStatusIndicators: false,
+    hideMenuBarSessionStatusIndicators: false,
+  },
 } as const satisfies Record<SidebarSettingsPresetId, SidebarSettingsPresetSettings>;
 
 export const SIDEBAR_SETTINGS_PRESETS: ReadonlyArray<{
@@ -370,6 +390,11 @@ export const SIDEBAR_SETTINGS_PRESETS: ReadonlyArray<{
   { id: "codex", label: "Codex", settings: SIDEBAR_SETTINGS_PRESET_SETTINGS.codex },
   { id: "minimal", label: "Minimal", settings: SIDEBAR_SETTINGS_PRESET_SETTINGS.minimal },
   { id: "detailed", label: "Detailed", settings: SIDEBAR_SETTINGS_PRESET_SETTINGS.detailed },
+  {
+    id: "recommended",
+    label: "Recommended",
+    settings: SIDEBAR_SETTINGS_PRESET_SETTINGS.recommended,
+  },
 ];
 
 export const DEFAULT_ghostex_SETTINGS: ghostexSettings = {
@@ -504,6 +529,7 @@ export const DEFAULT_ghostex_SETTINGS: ghostexSettings = {
     SIDEBAR_SETTINGS_PRESET_SETTINGS.codex.hideLastActiveTimeOnSessionCards,
   showSessionCloseContextMenuAction: false,
   showSessionCommandCopyActions: false,
+  showSessionDetailsCopyAction: false,
   /**
    * CDXC:AutoSleep 2026-05-28-08:06:
    * Background VS Code, Project, and Git panes auto-sleep after fifteen minutes
@@ -614,7 +640,11 @@ export const DEFAULT_ghostex_SETTINGS: ghostexSettings = {
   /**
    * CDXC:SidebarPlacement 2026-05-06-17:32
    * Sidebar side is a first-class setting so users can choose left or right
-   * placement from Settings instead of relying only on the move-sidebar hotkey.
+   * placement from Settings instead of relying on sidebar placement shortcuts.
+   *
+   * CDXC:SidebarCollapse 2026-06-12-02:23:
+   * Cmd+B is reserved for complete sidebar collapse, so sidebar side placement
+   * should remain an explicit setting or user-assigned command.
    */
   sidebarSide: "left",
   /**
@@ -1080,6 +1110,11 @@ export function normalizeghostexSettings(candidate: unknown): ghostexSettings {
       source,
       "showSessionCommandCopyActions",
       DEFAULT_ghostex_SETTINGS.showSessionCommandCopyActions,
+    ),
+    showSessionDetailsCopyAction: readBoolean(
+      source,
+      "showSessionDetailsCopyAction",
+      DEFAULT_ghostex_SETTINGS.showSessionDetailsCopyAction,
     ),
     /**
      * CDXC:AutoSleep 2026-05-28-08:06:

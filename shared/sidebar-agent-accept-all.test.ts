@@ -1,5 +1,6 @@
 import { describe, expect, test } from "vitest";
 import {
+  AGENT_ACCEPT_ALL_MODE_SELECT_ITEMS,
   normalizeAgentAcceptAllMode,
   resolveAgentAcceptAllFlagSpec,
   resolveAgentAcceptAllSpec,
@@ -12,6 +13,14 @@ describe("sidebar Accept All support metadata", () => {
     expect(normalizeAgentAcceptAllMode("enabled")).toBe("enabled");
     expect(normalizeAgentAcceptAllMode("disabled")).toBe("disabled");
     expect(normalizeAgentAcceptAllMode("invalid")).toBeUndefined();
+  });
+
+  test("should expose user-facing labels for collapsed Accept All selects", () => {
+    expect(AGENT_ACCEPT_ALL_MODE_SELECT_ITEMS).toEqual([
+      { label: "Inherit global setting", value: "inherit" },
+      { label: "Accept All", value: "enabled" },
+      { label: "Ask for permission", value: "disabled" },
+    ]);
   });
 
   test("should expose support detection without shaping commands in the sidebar", () => {

@@ -27,6 +27,14 @@ describe("normalizeghostexHotkeySettings", () => {
      */
     expect(DEFAULT_ghostex_HOTKEYS.openCommandsPanel).toBe("f12");
     expect(DEFAULT_ghostex_HOTKEYS.openSettings).toBe("cmd+,");
+    /**
+     * CDXC:SidebarCollapse 2026-06-12-02:23:
+     * Cmd+B is the complete sidebar collapse toggle. Moving the sidebar between
+     * left and right remains available as an explicit command, but it starts
+     * without a default shortcut.
+     */
+    expect(DEFAULT_ghostex_HOTKEYS.toggleSidebarCollapsed).toBe("cmd+b");
+    expect(DEFAULT_ghostex_HOTKEYS.moveSidebar).toBe("");
     expect(DEFAULT_ghostex_HOTKEYS.focusPreviousSession).toBe("cmd+shift+tab");
     expect(DEFAULT_ghostex_HOTKEYS.focusNextSession).toBe("cmd+tab");
     expect(DEFAULT_ghostex_HOTKEYS.focusPreviousGroup).toBe("cmd+[");
@@ -96,6 +104,28 @@ describe("normalizeghostexHotkeySettings", () => {
     );
   });
 
+  test("matches Cmd+B to the sidebar collapse toggle", () => {
+    /**
+     * CDXC:SidebarCollapse 2026-06-12-02:23:
+     * The default Cmd+B action should collapse or expand the sidebar, not switch
+     * the sidebar placement side.
+     */
+    expect(getghostexHotkeyActionIdForKey(DEFAULT_ghostex_HOTKEYS, "cmd+b")).toBe(
+      "toggleSidebarCollapsed",
+    );
+  });
+
+  test("does not assign Cmd+Q to configurable app hotkeys by default", () => {
+    /**
+     * CDXC:MacQuit 2026-06-12-03:09:
+     * Cmd+Q must remain the native app quit shortcut. No configurable Ghostex
+     * hotkey should claim it by default; any previous default owner would need
+     * to start unassigned so the native app command wins.
+     */
+    expect(Object.values(DEFAULT_ghostex_HOTKEYS)).not.toContain("cmd+q");
+    expect(getghostexHotkeyActionIdForKey(DEFAULT_ghostex_HOTKEYS, "cmd+q")).toBeUndefined();
+  });
+
   test("matches workarea view switcher hotkeys", () => {
     expect(getghostexHotkeyActionIdForKey(DEFAULT_ghostex_HOTKEYS, "alt+1")).toBe(
       "switchAgentsView",
@@ -140,6 +170,7 @@ describe("normalizeghostexHotkeySettings", () => {
         focusPreviousSession: "cmd+[",
         focusRight: "cmd+right",
         createSession: "cmd+n",
+        moveSidebar: "cmd+b",
         openBrowserPane: "ctrl+shift+b",
       }),
     ).toMatchObject({
@@ -150,7 +181,9 @@ describe("normalizeghostexHotkeySettings", () => {
       focusPreviousGroup: "cmd+[",
       focusPreviousSession: "cmd+shift+tab",
       focusRight: "cmd+alt+right",
+      moveSidebar: "",
       openBrowserPane: "cmd+n",
+      toggleSidebarCollapsed: "cmd+b",
     });
   });
 

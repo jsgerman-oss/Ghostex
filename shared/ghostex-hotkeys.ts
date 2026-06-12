@@ -14,6 +14,7 @@ export type ghostexHotkeyActionId =
   | "reloadSession"
   | "renameActiveSession"
   | "rotatePanesClockwise"
+  | "toggleSidebarCollapsed"
   | "focusPreviousGroup"
   | "focusNextGroup"
   | "focusPreviousSession"
@@ -58,6 +59,7 @@ export type ghostexHotkeyAction =
   | { id: ghostexHotkeyActionId; kind: "runActionSlot"; slotNumber: number }
   | { id: ghostexHotkeyActionId; kind: "setViewMode"; viewMode: TerminalViewMode }
   | { id: ghostexHotkeyActionId; kind: "switchWorkareaView"; view: "agents" | "github" | "kanban" | "source" }
+  | { id: ghostexHotkeyActionId; kind: "toggleSidebarCollapsed" }
   | { direction: "horizontal" | "vertical"; id: ghostexHotkeyActionId; kind: "splitFocusedPane" };
 
 export type ghostexHotkeyDefinition = {
@@ -122,10 +124,26 @@ export const GHOSTEX_HOTKEY_DEFINITIONS: readonly ghostexHotkeyDefinition[] = [
     title: "Open Settings",
   },
   {
-    action: { id: "moveSidebar", kind: "moveSidebar" },
+    action: { id: "toggleSidebarCollapsed", kind: "toggleSidebarCollapsed" },
+    /**
+     * CDXC:SidebarCollapse 2026-06-12-02:23:
+     * Cmd+B should completely collapse or expand the native sidebar chrome. Keep this separate from sidebar placement so the same shortcut never moves the sidebar between left and right sides.
+     */
     defaultKey: "cmd+b",
+    description: "Collapse or expand the sidebar.",
+    id: "toggleSidebarCollapsed",
+    title: "Toggle Sidebar",
+  },
+  {
+    action: { id: "moveSidebar", kind: "moveSidebar" },
+    /**
+     * CDXC:SidebarCollapse 2026-06-12-02:23:
+     * Sidebar side switching remains configurable, but it must be unassigned by default now that Cmd+B is the complete sidebar collapse toggle.
+     */
+    defaultKey: "",
     description: "Move the sidebar to the other side.",
     id: "moveSidebar",
+    retiredDefaultKeys: ["cmd+b"],
     title: "Move Sidebar",
   },
   {

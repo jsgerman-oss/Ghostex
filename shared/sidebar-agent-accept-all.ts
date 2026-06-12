@@ -13,6 +13,22 @@ import {
  */
 export type AgentAcceptAllMode = "inherit" | "enabled" | "disabled";
 
+/**
+ * CDXC:SidebarAgents 2026-06-11-17:08:
+ * Accept All selects must render the user-facing option label while collapsed,
+ * not the raw mode key. Base UI needs root item metadata before the popup is
+ * mounted, so keep the labels next to the mode type and reuse them in Settings
+ * and standalone agent configuration.
+ */
+export const AGENT_ACCEPT_ALL_MODE_SELECT_ITEMS: ReadonlyArray<{
+  label: string;
+  value: AgentAcceptAllMode;
+}> = [
+  { label: "Inherit global setting", value: "inherit" },
+  { label: "Accept All", value: "enabled" },
+  { label: "Ask for permission", value: "disabled" },
+];
+
 export type AgentAcceptAllFlagSpec = {
   kind: "flag";
   aliases: readonly string[];
@@ -86,6 +102,8 @@ export const AGENT_ACCEPT_ALL_SPECS: Readonly<Record<DefaultSidebarAgentId, Agen
     canonicalFlag: "--always-approve",
   },
   "hermes-agent": null,
+  kiro: null,
+  omp: null,
   opencode: { kind: "runtimeConfig" },
   pi: null,
   qoder: null,

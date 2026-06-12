@@ -275,6 +275,15 @@ describe("normalizeghostexSettings", () => {
       getSidebarSettingsPresetId(applySidebarSettingsPreset(DEFAULT_ghostex_SETTINGS, "detailed")),
     ).toBe("detailed");
     expect(
+      getSidebarSettingsPresetId(
+        applySidebarSettingsPreset(DEFAULT_ghostex_SETTINGS, "recommended"),
+      ),
+    ).toBe("recommended");
+    expect(SIDEBAR_SETTINGS_PRESET_SETTINGS.recommended.hideSessionAgentIconUntilHover).toBe(
+      true,
+    );
+    expect(SIDEBAR_SETTINGS_PRESET_SETTINGS.recommended.hideProjectHeaderDiffStats).toBe(false);
+    expect(
       getSidebarSettingsPresetId({
         ...DEFAULT_ghostex_SETTINGS,
         showProjectEditorDiffFileCount: true,
@@ -326,6 +335,21 @@ describe("normalizeghostexSettings", () => {
     });
     expect(normalizeghostexSettings({ showSessionCloseContextMenuAction: true })).toMatchObject({
       showSessionCloseContextMenuAction: true,
+    });
+  });
+
+  test("hides the session details copy context-menu option unless explicitly enabled", () => {
+    /**
+     * CDXC:SidebarContextMenu 2026-06-11-23:08:
+     * Copy details writes session metadata to the clipboard. Missing settings
+     * must keep the action hidden by default while an explicit opt-in persists.
+     */
+    expect(DEFAULT_ghostex_SETTINGS.showSessionDetailsCopyAction).toBe(false);
+    expect(normalizeghostexSettings({})).toMatchObject({
+      showSessionDetailsCopyAction: false,
+    });
+    expect(normalizeghostexSettings({ showSessionDetailsCopyAction: true })).toMatchObject({
+      showSessionDetailsCopyAction: true,
     });
   });
 
@@ -511,7 +535,8 @@ describe("normalizeghostexSettings", () => {
     /**
      * CDXC:SidebarPlacement 2026-05-06-17:32
      * Sidebar placement is persisted with the rest of Settings so users can
-     * choose right-side chrome from the top Sidebar setting, while invalid
+     * choose right-side chrome from the top Sidebar setting or an explicit
+     * move-sidebar command, while invalid
      * values still normalize to the left-side default AppKit layout.
      */
     expect(DEFAULT_ghostex_SETTINGS.sidebarSide).toBe("left");

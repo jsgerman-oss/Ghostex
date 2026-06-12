@@ -19,6 +19,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import {
+  AGENT_ACCEPT_ALL_MODE_SELECT_ITEMS,
   type AgentAcceptAllMode,
   supportsAgentAcceptAll,
 } from "../shared/sidebar-agent-accept-all";
@@ -227,6 +228,7 @@ export function AgentConfigModal({ draft, isOpen, onCancel, onSave }: AgentConfi
             </FieldContent>
             <Select
               disabled={!acceptAllSupported}
+              items={AGENT_ACCEPT_ALL_MODE_SELECT_ITEMS}
               onValueChange={(value) => setAcceptAllMode(value as AgentAcceptAllMode)}
               value={acceptAllMode}
             >
@@ -235,9 +237,11 @@ export function AgentConfigModal({ draft, isOpen, onCancel, onSave }: AgentConfi
               </SelectTrigger>
               <SelectContent>
                 <SelectGroup>
-                  <SelectItem value="inherit">Inherit global setting</SelectItem>
-                  <SelectItem value="enabled">Accept All</SelectItem>
-                  <SelectItem value="disabled">Ask for permission</SelectItem>
+                  {AGENT_ACCEPT_ALL_MODE_SELECT_ITEMS.map((item) => (
+                    <SelectItem key={item.value} value={item.value}>
+                      {item.label}
+                    </SelectItem>
+                  ))}
                 </SelectGroup>
               </SelectContent>
             </Select>
