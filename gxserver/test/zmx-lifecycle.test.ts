@@ -15,12 +15,13 @@ import {
   buildZmxShellProviderCommand,
   decideStartupTextDisposition,
   GXSERVER_ZMX_SEND_TEXT_LIMIT_BYTES,
+  parseZmxSessionProcessIdentities,
   probeZmxSession,
   runZshScript,
   selectStartupRestoreSessionIds,
   summarizeZmxChildEnvironmentSanitization,
 } from "../src/zmx-lifecycle.js";
-import type { GxserverSessionDomainState } from "../protocol/index.js";
+import type { GxserverSessionDomainState, GxserverZmxSessionName } from "../protocol/index.js";
 import type { GxserverZmxCommandResult } from "../src/zmx-lifecycle.js";
 
 test("zmx attach command preserves the renderer shell contract", () => {
@@ -42,6 +43,7 @@ test("zmx attach command preserves the renderer shell contract", () => {
   assert.match(command, /unset .*GHOSTEX_GLOBAL_SESSION_REF/);
   assert.match(command, /unset .*ZMX_SESSION ZMX_SESSION_PREFIX/);
   assert.match(command, /export GHOSTEX_GLOBAL_SESSION_REF="\$zmx_global_session_ref"/);
+  assert.match(command, /export GHOSTEX_SESSION_ID="\$zmx_session"/);
   assert.match(command, /export GHOSTEX_GXSERVER_AUTH_TOKEN_FILE="\$zmx_gxserver_auth_token_file"/);
   assert.match(command, /export GHOSTEX_GXSERVER_BASE_URL="\$zmx_gxserver_base_url"/);
   assert.match(command, /export GHOSTEX_GXSERVER_PROTOCOL_VERSION="\$zmx_gxserver_protocol_version"/);
@@ -189,6 +191,27 @@ test("probe runner failures probe as unknown with error details", async () => {
   assert.match(probe.error ?? "", /spawn \/bin\/zsh ENOENT/);
 });
 
+test("zmx process identity parser prefers live Codex child over unrelated agent processes", () => {
+  const sessionName = "S90-P3lv0-G0p1k" as GxserverZmxSessionName;
+  const identities = parseZmxSessionProcessIdentities({
+    psOutput: `
+81395     1 /bundle/zmx run S90-P3lv0-G0p1k -d --initial-command /bin/zsh -lic gx f
+81396 81395 /bin/zsh -lic gx f
+81557 81396 node /Applications/Ghostex.app/Contents/Resources/CLI/ghostex-cli.mjs f
+81582 81557 /Applications/Ghostex.app/Contents/Resources/Web/bin/zehn --accept-all
+82148 81582 node /Users/madda/.local/bin/codex --yolo resume 019EB8D0-D27B-7F30-B6D7-7A04AB8FAE78
+82149 82148 /Users/madda/.local/lib/codex --yolo resume 019eb8d0-d27b-7f30-b6d7-7a04ab8fae78
+94784 93944 /Users/madda/.local/bin/claude --resume 303d77cf-4871-48da-871f-47782e834307
+`.trim(),
+    sessionNames: [sessionName],
+    zmxListOutput: `  name=${sessionName}\tpid=81396\tclients=1\tcreated=1781219985\tstart_dir=/repo`,
+  });
+  assert.deepEqual(identities.get(sessionName), {
+    agentId: "codex",
+    agentSessionId: "019eb8d0-d27b-7f30-b6d7-7a04ab8fae78",
+  });
+});
+
 test("sleep and close kill commands use bundled zmx directly", () => {
   const command = buildZmxKillCommand({
     sessionName: "S1a-P3a91-G8v20",
@@ -234,15 +257,22 @@ test("zmx run startup command is prefixed once for Atuin history ignore", () => 
   });
 
   assert.match(command, /zmx_startup_text=' codex resume abc'/);
+  assert.match(command, /ghostex_prompt_editor_home="\$\{GHOSTEX_HOME:-\$HOME\/\.ghostex\}"/);
   assert.match(command, /ghostex_prompt_editor_wrapper="\$ghostex_prompt_editor_home\/state\/prompt-editor"/);
+  assert.match(command, /mkdir -p "\$\{ghostex_prompt_editor_wrapper:h\}"/);
   assert.match(command, /export EDITOR="\$ghostex_prompt_editor_wrapper"/);
+  assert.match(command, /export GHOSTEX_PROMPT_EDITOR_BACKEND="\$\{GHOSTEX_PROMPT_EDITOR_BACKEND:-monaco\}"/);
+  assert.match(command, /if \[ -n "\$\{GHOSTEX_ZMX_BIN:-\}" \] && \[ -x "\$\{GHOSTEX_ZMX_BIN:-\}" \]; then/);
   assert.match(command, /GHOSTEX_CLI_EXECUTABLE/);
   assert.match(command, /exec "\$GHOSTEX_CLI_EXECUTABLE" prompt-editor "\$@"/);
   assert.match(command, /exec ghostex prompt-editor "\$@"/);
   assert.match(command, /exec gte "\$@"/);
+  assert.doesNotMatch(command, /\\\$\{/);
   assert.match(command, /zmx_startup_command='[\s\S]* codex resume abc\nexec \/bin\/zsh -li'/);
   assert.match(command, /export GHOSTEX_ZMX_BIN="\$zmx_bin"/);
   assert.match(command, /unset .*GHOSTEX_NATIVE_SESSION_ID/);
+  assert.match(command, /export GHOSTEX_GLOBAL_SESSION_REF="\$zmx_global_session_ref"/);
+  assert.match(command, /export GHOSTEX_SESSION_ID="\$zmx_session"/);
   assert.match(command, /exec "\$zmx_bin" run "\$zmx_session" -d --initial-command \/bin\/zsh -lic "\$zmx_startup_command"/);
 
   const alreadyPrefixed = buildZmxRunCommand({
@@ -261,6 +291,11 @@ test("zmx shell provider command installs the neutral prompt-editor wrapper befo
   Plain terminal providers can be created by non-desktop clients and later used
   from macOS/Electron. Assert the provider starts with the same neutral wrapper
   as agent providers without writing setup text into an already-live terminal.
+
+  CDXC:GxserverVerification 2026-06-11-18:15:
+  The provider script must expose expanded editor paths to the agent process.
+  Escaped shell parameter syntax leaks literal `${...}` strings into EDITOR and
+  makes Ctrl+G fail before Ghostex can choose Monaco or gte.
   */
   const command = buildZmxShellProviderCommand({
     cwd: "/repo/ghostex",
@@ -272,11 +307,17 @@ test("zmx shell provider command installs the neutral prompt-editor wrapper befo
     zmxExecutablePath: "/bundle/zmx",
   });
 
+  assert.match(command, /ghostex_prompt_editor_home="\$\{GHOSTEX_HOME:-\$HOME\/\.ghostex\}"/);
   assert.match(command, /zmx_shell_command='[\s\S]*ghostex_prompt_editor_wrapper="\$ghostex_prompt_editor_home\/state\/prompt-editor"/);
+  assert.match(command, /mkdir -p "\$\{ghostex_prompt_editor_wrapper:h\}"/);
   assert.match(command, /export EDITOR="\$ghostex_prompt_editor_wrapper"/);
+  assert.match(command, /export GHOSTEX_PROMPT_EDITOR_BACKEND="\$\{GHOSTEX_PROMPT_EDITOR_BACKEND:-monaco\}"/);
   assert.match(command, /exec "\$GHOSTEX_CLI_EXECUTABLE" prompt-editor "\$@"/);
   assert.match(command, /exec ghostex prompt-editor "\$@"/);
   assert.match(command, /exec gte "\$@"/);
+  assert.doesNotMatch(command, /\\\$\{/);
+  assert.match(command, /export GHOSTEX_GLOBAL_SESSION_REF="\$zmx_global_session_ref"/);
+  assert.match(command, /export GHOSTEX_SESSION_ID="\$zmx_session"/);
   assert.match(command, /exec "\$zmx_bin" run "\$zmx_session" -d --initial-command \/bin\/zsh -lic "\$zmx_shell_command"/);
   assert.doesNotMatch(command, /--initial-command \/bin\/zsh -li$/);
 });

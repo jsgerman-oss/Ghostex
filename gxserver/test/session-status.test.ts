@@ -220,3 +220,125 @@ test("same-title Codex spinner stop clears explicit hook working", () => {
   assert.equal(stoppedSpinner.workingSource, undefined);
   assert.equal(stoppedSpinner.lastTitle, "Ghostex 4.0.0 Beta");
 });
+
+test("trusted settled Codex title clears explicit working when spinner was missed", () => {
+  /*
+  CDXC:SessionStatus 2026-06-12-04:06:
+  A missed Codex Stop hook must not leave a session orange forever when gxserver later observes the stable task title that matches the trusted session title. Keep the fallback exact-title and age gated so editor titles or startup snapshots do not downgrade real work.
+  */
+  const working = applyAgentActivityTransition({
+    activity: "working",
+    agentId: "codex",
+    nowMs: Date.parse("2026-06-12T00:02:06.814Z"),
+    previous: {
+      activity: "idle",
+      agentName: "codex",
+      hasSeenWorking: false,
+      isAcknowledged: true,
+      lastChangedAt: "2026-06-12T00:02:00.000Z",
+    },
+  });
+  assert.equal(working.activity, "working");
+  assert.equal(working.workingSource, "explicit");
+
+  const startupSnapshot = applyAgentActivityTransition({
+    agentId: "codex",
+    event: "title",
+    nowMs: Date.parse("2026-06-12T00:02:09.000Z"),
+    previous: working,
+    settledTitle: "Agents Hub Visibility Fix",
+    title: "Agents Hub Visibility Fix",
+  });
+  assert.equal(startupSnapshot.activity, "working");
+  assert.equal(startupSnapshot.workingSource, "explicit");
+
+  const unrelatedTitle = applyAgentActivityTransition({
+    agentId: "codex",
+    event: "title",
+    nowMs: Date.parse("2026-06-12T00:02:20.000Z"),
+    previous: startupSnapshot,
+    settledTitle: "Agents Hub Visibility Fix",
+    title: "Monaco Ctrl+G Switch",
+  });
+  assert.equal(unrelatedTitle.activity, "working");
+  assert.equal(unrelatedTitle.workingSource, "explicit");
+
+  const settledTitle = applyAgentActivityTransition({
+    agentId: "codex",
+    event: "title",
+    nowMs: Date.parse("2026-06-12T00:04:03.548Z"),
+    previous: unrelatedTitle,
+    settledTitle: "Agents Hub Visibility Fix",
+    title: "Agents Hub Visibility Fix",
+  });
+  assert.equal(settledTitle.activity, "attention");
+  assert.equal(settledTitle.workingSource, undefined);
+  assert.equal(settledTitle.lastTitle, "Agents Hub Visibility Fix");
+});
+
+test("trusted settled Codex title respects acknowledged working state", () => {
+  const settledTitle = applyAgentActivityTransition({
+    agentId: "codex",
+    event: "title",
+    nowMs: Date.parse("2026-06-12T00:04:03.548Z"),
+    previous: {
+      activity: "working",
+      agentName: "codex",
+      attentionSuppressedUntil: "2026-06-12T00:03:33.187Z",
+      hasSeenWorking: true,
+      isAcknowledged: true,
+      lastChangedAt: "2026-06-12T00:02:06.814Z",
+      workingSource: "explicit",
+      workingStartedAt: "2026-06-12T00:02:06.814Z",
+    },
+    settledTitle: "Agents Hub Visibility Fix",
+    title: "Agents Hub Visibility Fix",
+  });
+
+  assert.equal(settledTitle.activity, "idle");
+  assert.equal(settledTitle.workingSource, undefined);
+  assert.equal(settledTitle.workingStartedAt, undefined);
+});
+
+test("Claude idle terminal titles settle without synthesizing done attention", () => {
+  /*
+  CDXC:ClaudeSessionStatus 2026-06-11-21:43:
+  Claude Code uses idle terminal titles as a settled-running UI state. gxserver must not convert those title observations into Done/attention because Claude's explicit notification hooks are the user-attention signal shared by every client.
+  */
+  const titleWorking = applyAgentActivityTransition({
+    agentId: "claude",
+    event: "title",
+    nowMs: Date.parse("2026-06-11T17:43:00.000Z"),
+    title: "✶ Claude Code",
+  });
+  assert.equal(titleWorking.activity, "working");
+  assert.equal(titleWorking.agentName, "claude");
+
+  const explicitWorking = applyAgentActivityTransition({
+    activity: "working",
+    agentId: "claude",
+    nowMs: Date.parse("2026-06-11T17:43:01.000Z"),
+    previous: titleWorking,
+  });
+  assert.equal(explicitWorking.activity, "working");
+
+  const settledIdle = applyAgentActivityTransition({
+    agentId: "claude",
+    event: "title",
+    nowMs: Date.parse("2026-06-11T17:43:08.000Z"),
+    previous: explicitWorking,
+    title: "✳ Claude Code",
+  });
+  assert.equal(settledIdle.activity, "idle");
+  assert.equal(settledIdle.attentionEventId, undefined);
+
+  const staleWorking = applyAgentActivityTransition({
+    agentId: "claude",
+    event: "title",
+    nowMs: Date.parse("2026-06-11T17:43:20.000Z"),
+    previous: titleWorking,
+    title: "✶ Claude Code",
+  });
+  assert.equal(staleWorking.activity, "idle");
+  assert.equal(staleWorking.attentionEventId, undefined);
+});

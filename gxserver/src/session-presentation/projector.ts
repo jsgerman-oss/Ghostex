@@ -107,6 +107,8 @@ export function projectPresentationSession(
   const activityState = normalizePresentationActivityState(session.runtimeSettings.agentActivity, generatedAt);
   const titleObservation = normalizeTitleObservationState(session.runtimeSettings.zmxTitleObservation);
   const agentName = readText(session.runtimeSettings.agentName) ?? session.agentId;
+  const agentSessionId = readText(session.runtimeSettings.agentSessionId);
+  const agentSessionPath = readText(session.runtimeSettings.agentSessionPath);
   const subtitle = session.cwd ?? project.path;
   const presentationLastActiveAt = resolvePresentationSessionLastActiveAt(session);
   const lifecycleState = effectivePresentationLifecycleState(session);
@@ -115,6 +117,12 @@ export function projectPresentationSession(
     activity: activityState.activity,
     ...(agentName ? { agentName } : {}),
     ...(session.agentId ? { agentId: session.agentId, agentIcon: session.agentId } : {}),
+    /*
+    CDXC:GxserverPresentationIdentity 2026-06-11-23:58:
+    Agent hook identity is server-owned presentation data. Publish captured provider session ids and paths with the row so macOS, mobile, CLI, and future clients can show and resume the same Codex/Claude session instead of only receiving the routed Ghostex session id.
+    */
+    ...(agentSessionId ? { agentSessionId } : {}),
+    ...(agentSessionPath ? { agentSessionPath } : {}),
     ...(activityState.attention ? { attention: activityState.attention } : {}),
     createdAt: session.createdAt,
     ...(session.cwd ? { cwd: session.cwd } : {}),

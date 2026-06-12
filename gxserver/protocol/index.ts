@@ -1033,6 +1033,8 @@ export interface GxserverPresentationSession {
   agentIcon?: string;
   agentId?: string;
   agentName?: string;
+  agentSessionId?: string;
+  agentSessionPath?: string;
   attention?: GxserverPresentationAttentionState;
   createdAt: string;
   cwd?: string;
@@ -1304,6 +1306,7 @@ export interface GxserverAgentActivityInput {
   event?: GxserverAgentActivityEvent;
   nowIso?: string;
   nowMs?: number;
+  settledTitle?: string;
   previous?: unknown;
   title?: string;
 }
@@ -1313,6 +1316,7 @@ export interface GxserverUpdateAgentActivityParams extends GxserverSessionLifecy
   agentName?: string;
   event?: GxserverAgentActivityEvent;
   nowMs?: number;
+  settledTitle?: string;
   title?: string;
 }
 

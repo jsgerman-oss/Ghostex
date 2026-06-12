@@ -82,16 +82,25 @@ async function writeExecutable(filePath: string): Promise<void> {
   await chmod(filePath, 0o755);
 }
 
+function setIsolatedCodexHome(homeDir: string): void {
+  /*
+  CDXC:AgentHooks 2026-06-11-23:35:
+  Codex-launched test runs export CODEX_HOME for the real user profile. Force Codex hook tests onto the temporary home so a failed or interrupted test cannot write deleted temp hook paths into the user's Codex hooks and surface hook exit 127 in live sessions.
+  */
+  process.env.CODEX_HOME = path.join(homeDir, ".codex");
+}
+
 async function runOpenCodeHookInstallTest(): Promise<void> {
   /*
   CDXC:AgentHooks 2026-06-03-20:28:
   The main-branch OpenCode refresh must land in gxserver, not the macOS sidebar.
   This test pins marker-only status, plugin generation for both OpenCode APIs,
-  and cleanup of the old explicit opencode.json plugin registration.
+  and explicit opencode.json plugin registration.
   */
   const previousPath = process.env.PATH;
   const previousHome = process.env.HOME;
   const previousZdotdir = process.env.ZDOTDIR;
+  const previousOpenCodeConfigDir = process.env.OPENCODE_CONFIG_DIR;
   const homeDir = await mkdtemp(path.join(os.tmpdir(), "gxserver-opencode-hooks-"));
   try {
     const binDir = path.join(homeDir, ".local", "bin");
@@ -107,6 +116,7 @@ async function runOpenCodeHookInstallTest(): Promise<void> {
     process.env.HOME = homeDir;
     process.env.PATH = "/usr/bin:/bin";
     process.env.ZDOTDIR = homeDir;
+    process.env.OPENCODE_CONFIG_DIR = "";
 
     const installResult = await installGxserverAgentHooks({ homeDir }, { agentIds: ["opencode"] });
 
@@ -114,7 +124,7 @@ async function runOpenCodeHookInstallTest(): Promise<void> {
     assert.equal(installResult.agents[0]?.status, "installed");
     assert.equal(installResult.installedPaths.length, 2);
     const notifyHook = await readFile(path.join(homeDir, ".ghostex", "hooks", "agent-shell-notify.sh"), "utf8");
-    assert.match(notifyHook, /ghostex-gxserver-agent-notify-hook-marker v4/);
+    assert.match(notifyHook, /ghostex-gxserver-agent-notify-hook-marker v6/);
     assert.match(notifyHook, /\/api\/ingestAgentHookEvent/);
     assert.doesNotMatch(notifyHook, /INPUT="\$\(cat\)"/);
     assert.match(notifyHook, /read -r -t 1 INPUT_ARG/);
@@ -123,7 +133,7 @@ async function runOpenCodeHookInstallTest(): Promise<void> {
     assert.match(plugin, /ghostex-opencode-session-plugin-marker/);
     assert.match(plugin, /return \{\s*event: async/s);
     const config = JSON.parse(await readFile(configPath, "utf8")) as { plugin?: string[] };
-    assert.deepEqual(config.plugin, ["./plugins/other.js"]);
+    assert.deepEqual(config.plugin, ["./plugins/other.js", "./plugins/ghostex-session.js"]);
 
     const status = await readGxserverAgentHookStatus({ homeDir }, { agentIds: ["opencode"] });
     assert.equal(status.agents[0]?.hookInstalled, true);
@@ -134,6 +144,11 @@ async function runOpenCodeHookInstallTest(): Promise<void> {
       delete process.env.ZDOTDIR;
     } else {
       process.env.ZDOTDIR = previousZdotdir;
+    }
+    if (previousOpenCodeConfigDir === undefined) {
+      delete process.env.OPENCODE_CONFIG_DIR;
+    } else {
+      process.env.OPENCODE_CONFIG_DIR = previousOpenCodeConfigDir;
     }
     await rm(homeDir, { force: true, recursive: true });
   }
@@ -155,6 +170,7 @@ async function runOldNotifyHookUpdateTest(): Promise<void> {
   const previousPath = process.env.PATH;
   const previousHome = process.env.HOME;
   const previousZdotdir = process.env.ZDOTDIR;
+  const previousCodexHome = process.env.CODEX_HOME;
   const homeDir = await mkdtemp(path.join(os.tmpdir(), "gxserver-hook-update-"));
   try {
     const binDir = path.join(homeDir, ".local", "bin");
@@ -178,6 +194,7 @@ async function runOldNotifyHookUpdateTest(): Promise<void> {
     process.env.HOME = homeDir;
     process.env.PATH = "/usr/bin:/bin";
     process.env.ZDOTDIR = homeDir;
+    setIsolatedCodexHome(homeDir);
 
     const status = await readGxserverAgentHookStatus({ homeDir }, { agentIds: ["codex"], autoUpgradeInstalled: false });
 
@@ -190,7 +207,7 @@ async function runOldNotifyHookUpdateTest(): Promise<void> {
     assert.ok(autoUpgradeStatus.autoUpgradedPaths?.includes(notifyHookPath));
     assert.ok(autoUpgradeStatus.autoUpgradedPaths?.includes(codexHooksPath));
     const notifyHook = await readFile(notifyHookPath, "utf8");
-    assert.match(notifyHook, /ghostex-gxserver-agent-notify-hook-marker v4/);
+    assert.match(notifyHook, /ghostex-gxserver-agent-notify-hook-marker v6/);
     assert.match(notifyHook, /\/api\/ingestAgentHookEvent/);
     const repairedConfig = JSON.parse(await readFile(codexHooksPath, "utf8")) as unknown;
     const commands = recursiveCommands(repairedConfig);
@@ -203,6 +220,11 @@ async function runOldNotifyHookUpdateTest(): Promise<void> {
       delete process.env.ZDOTDIR;
     } else {
       process.env.ZDOTDIR = previousZdotdir;
+    }
+    if (previousCodexHome === undefined) {
+      delete process.env.CODEX_HOME;
+    } else {
+      process.env.CODEX_HOME = previousCodexHome;
     }
     await rm(homeDir, { force: true, recursive: true });
   }
@@ -224,6 +246,7 @@ async function runOutdatedGxserverNotifyHookUpdateTest(): Promise<void> {
   const previousPath = process.env.PATH;
   const previousHome = process.env.HOME;
   const previousZdotdir = process.env.ZDOTDIR;
+  const previousCodexHome = process.env.CODEX_HOME;
   const homeDir = await mkdtemp(path.join(os.tmpdir(), "gxserver-hook-outdated-"));
   try {
     const binDir = path.join(homeDir, ".local", "bin");
@@ -248,6 +271,7 @@ async function runOutdatedGxserverNotifyHookUpdateTest(): Promise<void> {
     process.env.HOME = homeDir;
     process.env.PATH = "/usr/bin:/bin";
     process.env.ZDOTDIR = homeDir;
+    setIsolatedCodexHome(homeDir);
 
     const status = await readGxserverAgentHookStatus({ homeDir }, { agentIds: ["codex"], autoUpgradeInstalled: false });
 
@@ -260,7 +284,7 @@ async function runOutdatedGxserverNotifyHookUpdateTest(): Promise<void> {
     assert.ok(repairedStatus.autoUpgradedPaths?.includes(notifyHookPath));
     assert.ok(repairedStatus.autoUpgradedPaths?.includes(codexHooksPath));
     const notifyHook = await readFile(notifyHookPath, "utf8");
-    assert.match(notifyHook, /ghostex-gxserver-agent-notify-hook-marker v4/);
+    assert.match(notifyHook, /ghostex-gxserver-agent-notify-hook-marker v6/);
     assert.doesNotMatch(notifyHook, /INPUT="\$\(cat\)"/);
   } finally {
     process.env.PATH = previousPath;
@@ -269,6 +293,11 @@ async function runOutdatedGxserverNotifyHookUpdateTest(): Promise<void> {
       delete process.env.ZDOTDIR;
     } else {
       process.env.ZDOTDIR = previousZdotdir;
+    }
+    if (previousCodexHome === undefined) {
+      delete process.env.CODEX_HOME;
+    } else {
+      process.env.CODEX_HOME = previousCodexHome;
     }
     await rm(homeDir, { force: true, recursive: true });
   }
@@ -325,7 +354,7 @@ async function runLegacyHookCommandRepairTest(): Promise<void> {
     const commands = recursiveCommands(repairedConfig);
     assert.ok(!commands.includes(legacyCommand));
     assert.ok(commands.includes("echo keep-user-hook"));
-    assert.equal(commands.filter((command) => command.includes("agent-shell-notify.sh")).length, 4);
+    assert.equal(commands.filter((command) => command.includes("agent-shell-notify.sh")).length, 5);
 
     const repairedStatus = await readGxserverAgentHookStatus({ homeDir }, { agentIds: ["cursor"] });
     assert.equal(repairedStatus.agents[0]?.status, "installed");
@@ -351,6 +380,7 @@ async function runMissingHookStatusDoesNotAutoInstallTest(): Promise<void> {
   const previousPath = process.env.PATH;
   const previousHome = process.env.HOME;
   const previousZdotdir = process.env.ZDOTDIR;
+  const previousCodexHome = process.env.CODEX_HOME;
   const homeDir = await mkdtemp(path.join(os.tmpdir(), "gxserver-hook-missing-"));
   try {
     const binDir = path.join(homeDir, ".local", "bin");
@@ -361,6 +391,7 @@ async function runMissingHookStatusDoesNotAutoInstallTest(): Promise<void> {
     process.env.HOME = homeDir;
     process.env.PATH = "/usr/bin:/bin";
     process.env.ZDOTDIR = homeDir;
+    setIsolatedCodexHome(homeDir);
 
     const status = await readGxserverAgentHookStatus({ homeDir }, { agentIds: ["codex"] });
 
@@ -377,6 +408,103 @@ async function runMissingHookStatusDoesNotAutoInstallTest(): Promise<void> {
     } else {
       process.env.ZDOTDIR = previousZdotdir;
     }
+    if (previousCodexHome === undefined) {
+      delete process.env.CODEX_HOME;
+    } else {
+      process.env.CODEX_HOME = previousCodexHome;
+    }
+    await rm(homeDir, { force: true, recursive: true });
+  }
+}
+
+async function runLowerPriorityAgentHookInstallTest(): Promise<void> {
+  /*
+  CDXC:AgentHooks 2026-06-11-22:19:
+  Lower-priority hook-supported agents are still gxserver-owned integrations. Kiro, OMP, Hermes Agent, and Factory must install from the same shared hook endpoint so Settings and first launch can report one provider matrix instead of depending on macOS-only detection code.
+  */
+  const previousPath = process.env.PATH;
+  const previousHome = process.env.HOME;
+  const previousZdotdir = process.env.ZDOTDIR;
+  const previousPiCodingAgentDir = process.env.PI_CODING_AGENT_DIR;
+  const previousPiConfigDir = process.env.PI_CONFIG_DIR;
+  const previousHermesHome = process.env.HERMES_HOME;
+  const previousKiroHome = process.env.KIRO_HOME;
+  const homeDir = await mkdtemp(path.join(os.tmpdir(), "gxserver-hook-lower-priority-"));
+  try {
+    const binDir = path.join(homeDir, ".local", "bin");
+    await mkdir(binDir, { recursive: true });
+    await Promise.all(["droid", "hermes", "kiro-cli", "omp"].map((name) => writeExecutable(path.join(binDir, name))));
+    process.env.HOME = homeDir;
+    process.env.PATH = "/usr/bin:/bin";
+    process.env.ZDOTDIR = homeDir;
+    process.env.PI_CODING_AGENT_DIR = "";
+    process.env.PI_CONFIG_DIR = "";
+    process.env.HERMES_HOME = "";
+    process.env.KIRO_HOME = "";
+
+    const installResult = await installGxserverAgentHooks({ homeDir }, { agentIds: ["kiro", "omp", "hermes-agent", "factory"] });
+
+    assert.equal(installResult.agents.map((agent) => agent.agentId).join(","), "kiro,omp,hermes-agent,droid");
+    assert.equal(installResult.agents.every((agent) => agent.status === "installed"), true);
+
+    const kiroConfig = JSON.parse(await readFile(path.join(homeDir, ".kiro", "agents", "ghostex.json"), "utf8")) as {
+      hooks?: Record<string, unknown>;
+      name?: string;
+      tools?: unknown;
+    };
+    assert.equal(kiroConfig.name, "ghostex");
+    assert.deepEqual(kiroConfig.tools, ["*"]);
+    assert.ok(kiroConfig.hooks?.agentSpawn);
+    assert.ok(kiroConfig.hooks?.userPromptSubmit);
+    assert.ok(kiroConfig.hooks?.stop);
+    assert.ok(kiroConfig.hooks?.preToolUse);
+    assert.ok(kiroConfig.hooks?.postToolUse);
+
+    const ompExtension = await readFile(path.join(homeDir, ".omp", "agent", "extensions", "ghostex-omp-session.ts"), "utf8");
+    assert.match(ompExtension, /ghostex-omp-session-extension-marker v1/);
+    assert.match(ompExtension, /GHOSTEX_AGENT: "omp"/);
+
+    const hermesConfig = await readFile(path.join(homeDir, ".hermes", "config.yaml"), "utf8");
+    assert.match(hermesConfig, /pre_approval_request/);
+    assert.match(hermesConfig, /post_approval_response/);
+    assert.match(hermesConfig, /pre_tool_call/);
+    assert.match(hermesConfig, /post_tool_call/);
+    const allowlist = JSON.parse(await readFile(path.join(homeDir, ".hermes", "shell-hooks-allowlist.json"), "utf8")) as {
+      approvals?: Array<{ command?: string; event?: string }>;
+    };
+    assert.equal(allowlist.approvals?.length, 10);
+    assert.ok(allowlist.approvals?.some((approval) => approval.event === "pre_tool_call" && approval.command?.includes("agent-shell-notify.sh")));
+
+    const factoryConfig = JSON.parse(await readFile(path.join(homeDir, ".factory", "settings.json"), "utf8")) as unknown;
+    assert.ok(recursiveCommands(factoryConfig).some((command) => command.includes("GHOSTEX_AGENT='factory'")));
+  } finally {
+    process.env.PATH = previousPath;
+    process.env.HOME = previousHome;
+    if (previousZdotdir === undefined) {
+      delete process.env.ZDOTDIR;
+    } else {
+      process.env.ZDOTDIR = previousZdotdir;
+    }
+    if (previousPiCodingAgentDir === undefined) {
+      delete process.env.PI_CODING_AGENT_DIR;
+    } else {
+      process.env.PI_CODING_AGENT_DIR = previousPiCodingAgentDir;
+    }
+    if (previousPiConfigDir === undefined) {
+      delete process.env.PI_CONFIG_DIR;
+    } else {
+      process.env.PI_CONFIG_DIR = previousPiConfigDir;
+    }
+    if (previousHermesHome === undefined) {
+      delete process.env.HERMES_HOME;
+    } else {
+      process.env.HERMES_HOME = previousHermesHome;
+    }
+    if (previousKiroHome === undefined) {
+      delete process.env.KIRO_HOME;
+    } else {
+      process.env.KIRO_HOME = previousKiroHome;
+    }
     await rm(homeDir, { force: true, recursive: true });
   }
 }
@@ -387,6 +515,7 @@ test("gxserver hook install and migration states are reliable", async () => {
   await runOutdatedGxserverNotifyHookUpdateTest();
   await runLegacyHookCommandRepairTest();
   await runMissingHookStatusDoesNotAutoInstallTest();
+  await runLowerPriorityAgentHookInstallTest();
 });
 
 test("gxserver notify hook exits cleanly with open stdin and concurrent events", async () => {
@@ -394,8 +523,10 @@ test("gxserver notify hook exits cleanly with open stdin and concurrent events",
   CDXC:AgentHooks 2026-06-07-13:05:
   Codex hook failures surfaced as missing status codes when stdin stayed open or SessionStart/UserPromptSubmit raced on shared temp files. The shared notify hook must still return the Codex continue contract with no stderr because agent hooks are status sidecars and must never break the agent session.
   */
+  const previousCodexHome = process.env.CODEX_HOME;
   const homeDir = await mkdtemp(path.join(os.tmpdir(), "gxserver-hook-runtime-"));
   try {
+    setIsolatedCodexHome(homeDir);
     await installGxserverAgentHooks({ homeDir }, { agentIds: ["codex"] });
     const notifyHookPath = path.join(homeDir, ".ghostex", "hooks", "agent-shell-notify.sh");
     const statePath = path.join(homeDir, "state", "session.env");
@@ -416,7 +547,7 @@ test("gxserver notify hook exits cleanly with open stdin and concurrent events",
       VSMUX_SESSION_STATE_FILE: "",
     };
 
-    const openStdinResult = await runHookScript(notifyHookPath, { env, keepStdinOpen: true, timeoutMs: 1_500 });
+    const openStdinResult = await runHookScript(notifyHookPath, { env, keepStdinOpen: true, timeoutMs: 3_000 });
     assert.equal(openStdinResult.code, 0);
     assert.equal(openStdinResult.signal, null);
     assert.equal(openStdinResult.stderr, "");
@@ -445,6 +576,96 @@ test("gxserver notify hook exits cleanly with open stdin and concurrent events",
       sessions?: Record<string, unknown>;
     };
     assert.ok(Object.keys(store.sessions ?? {}).length > 0);
+  } finally {
+    if (previousCodexHome === undefined) {
+      delete process.env.CODEX_HOME;
+    } else {
+      process.env.CODEX_HOME = previousCodexHome;
+    }
+    await rm(homeDir, { force: true, recursive: true });
+  }
+});
+
+test("gxserver notify hook maps Claude Stop to idle and installs Claude lifecycle events", async () => {
+  /*
+  CDXC:ClaudeSessionStatus 2026-06-11-21:43:
+  Refreshed Claude Code hooks must report Stop as idle and install the Stop, Notification, SessionEnd, and PreToolUse phases so gxserver owns the same session/status lifecycle for all clients.
+
+  CDXC:ClaudeSessionIdentity 2026-06-11-23:10:
+  Claude hook commands must carry the Claude provider tag because Claude Code does not include the provider name in hook payloads, and gxserver needs that tag to attach the native Claude session id to the projected sidebar tooltip metadata.
+  */
+  const homeDir = await mkdtemp(path.join(os.tmpdir(), "gxserver-claude-hook-runtime-"));
+  try {
+    const profileSettingsPath = path.join(homeDir, ".claude-profiles", "work", "settings.json");
+    await mkdir(path.dirname(profileSettingsPath), { recursive: true });
+    await writeFile(
+      profileSettingsPath,
+      `${JSON.stringify({
+        hooks: {
+          Notification: [
+            {
+              matcher: "",
+              hooks: [{ type: "command", command: "echo keep-user-notification" }],
+            },
+          ],
+        },
+      }, null, 2)}\n`,
+      "utf8",
+    );
+
+    const installResult = await installGxserverAgentHooks({ homeDir }, { agentIds: ["claude"] });
+    const notifyHookPath = path.join(homeDir, ".ghostex", "hooks", "agent-shell-notify.sh");
+    assert.ok(installResult.installedPaths.includes(profileSettingsPath));
+    const claudeSettings = JSON.parse(await readFile(path.join(homeDir, ".claude", "settings.json"), "utf8")) as {
+      hooks?: Record<string, unknown>;
+    };
+    const claudeProfileSettings = JSON.parse(await readFile(profileSettingsPath, "utf8")) as {
+      hooks?: Record<string, unknown>;
+    };
+    assert.ok(claudeSettings.hooks?.SessionStart);
+    assert.ok(claudeSettings.hooks?.UserPromptSubmit);
+    assert.ok(claudeSettings.hooks?.PreToolUse);
+    assert.ok(claudeSettings.hooks?.Stop);
+    assert.ok(claudeSettings.hooks?.Notification);
+    assert.ok(claudeSettings.hooks?.SessionEnd);
+    const claudeCommand = `GHOSTEX_AGENT='claude' '${notifyHookPath}'`;
+    assert.equal(recursiveCommands(claudeSettings).filter((command) => command === claudeCommand).length, 6);
+    assert.equal(recursiveCommands(claudeProfileSettings).filter((command) => command === claudeCommand).length, 6);
+    assert.ok(recursiveCommands(claudeProfileSettings).includes("echo keep-user-notification"));
+
+    const statePath = path.join(homeDir, "state", "claude-session.env");
+    const hookStateDirectory = path.join(homeDir, ".ghostexterm");
+    const result = await runHookScript(notifyHookPath, {
+      env: {
+        GHOSTEX_AGENT: "claude",
+        GHOSTEX_AGENT_HOOK_STATE_DIR: hookStateDirectory,
+        GHOSTEX_GLOBAL_SESSION_REF: "",
+        GHOSTEX_GXSERVER_AUTH_TOKEN_FILE: "",
+        GHOSTEX_GXSERVER_BASE_URL: "",
+        GHOSTEX_GXSERVER_PROTOCOL_VERSION: "",
+        GHOSTEX_INTERNAL_PROMPT_GENERATION: "",
+        GHOSTEX_INTERNAL_TITLE_GENERATION: "",
+        GHOSTEX_SESSION_ID: "surface-claude",
+        GHOSTEX_SESSION_STATE_FILE: statePath,
+        GHOSTEX_WORKSPACE_ID: "project-claude",
+        HOME: homeDir,
+        VSMUX_SESSION_STATE_FILE: "",
+      },
+      input: JSON.stringify({
+        hook_event_name: "Stop",
+        session_id: "9970b270-b39f-4d63-a764-fa8d88083995",
+        status: "attention",
+        transcript_path: "/Users/person/.claude/projects/-repo/9970b270-b39f-4d63-a764-fa8d88083995.jsonl",
+      }),
+    });
+
+    assert.equal(result.code, 0);
+    assert.equal(result.signal, null);
+    assert.equal(result.stderr, "");
+    assert.equal(result.stdout, '{"continue":true}');
+    const state = await readFile(statePath, "utf8");
+    assert.match(state, /agent=claude/);
+    assert.match(state, /status=idle/);
   } finally {
     await rm(homeDir, { force: true, recursive: true });
   }

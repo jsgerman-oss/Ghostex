@@ -16,6 +16,8 @@ export type GxserverRestorableAgentId =
   | "gemini"
   | "grok"
   | "hermes-agent"
+  | "kiro"
+  | "omp"
   | "opencode"
   | "pi"
   | "qoder"

@@ -33,6 +33,8 @@ const AGENT_COMMAND_EXECUTABLE_NAMES = new Set([
   "gemini",
   "grok",
   "hermes",
+  "kiro-cli",
+  "omp",
   "opencode",
   "pi",
   "qodercli",

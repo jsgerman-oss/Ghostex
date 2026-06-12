@@ -78,7 +78,8 @@ export function applyAgentActivityTransition(input: GxserverAgentActivityInput):
     previous.activity === "working" &&
     previous.workingSource === "explicit" &&
     titleSignal?.state !== "attention" &&
-    !isTrustedSpinnerStopTitle(input, previous, titleSignal)
+    !isTrustedSpinnerStopTitle(input, previous, titleSignal) &&
+    !isTrustedSettledTitleStop(input, previous, titleSignal, nowMs)
   ) {
     const shouldTrackTitleWhilePreserving = titleSignal?.state === "working";
     return {
@@ -237,6 +238,37 @@ function isTrustedSpinnerStopTitle(
   return previousSignature !== undefined && previousSignature === currentSignature;
 }
 
+function isTrustedSettledTitleStop(
+  input: GxserverAgentActivityInput,
+  previous: GxserverAgentActivityState,
+  titleSignal: GxserverTitleStatusSignal | undefined,
+  nowMs: number,
+): boolean {
+  if (
+    input.event !== "title" ||
+    previous.activity !== "working" ||
+    previous.workingSource !== "explicit" ||
+    titleSignal?.state !== "idle" ||
+    !requiresObservedTitleTransitions(titleSignal.agentName)
+  ) {
+    return false;
+  }
+  const settledSignature = createTitleActivitySignature(input.settledTitle, undefined);
+  const titleSignature = createTitleActivitySignature(input.title, titleSignal);
+  if (!settledSignature || settledSignature !== titleSignature) {
+    return false;
+  }
+  const workingStartedMs = previous.workingStartedAt ? Date.parse(previous.workingStartedAt) : Number.NaN;
+  if (!Number.isFinite(workingStartedMs) || nowMs - workingStartedMs < GXSERVER_MIN_WORKING_DURATION_BEFORE_ATTENTION_MS) {
+    return false;
+  }
+  /*
+  CDXC:SessionStatus 2026-06-12-04:06:
+  Codex hook starts can win the race before gxserver observes a spinner title. If the Stop hook is missed, a later stable terminal title equal to the trusted session title is the best server-owned proof that the agent settled; allow that exact title to clear explicit working without letting unrelated plain terminal titles downgrade active work.
+  */
+  return true;
+}
+
 export function getEffectiveAgentActivityState(
   value: unknown,
   fallback: Pick<GxserverAgentActivityState, "activity"> = { activity: "idle" },
@@ -363,10 +395,20 @@ function activityFromTitleSignal(
     return signal;
   }
   if (signal === "idle") {
+    /*
+    CDXC:ClaudeSessionStatus 2026-06-11-21:43:
+    Claude Code reports a settled idle title after a turn ends; that title means the session is idle, not that Ghostex should synthesize a Done/attention event. Reserve Claude attention for explicit hook notifications, permission prompts, terminal bells, and terminal errors so all clients avoid false completion badges and sounds.
+    */
+    if (agentName === "claude") {
+      return "idle";
+    }
     const sameAgent = previous.agentName === undefined || agentName === undefined || previous.agentName === agentName;
     return sameAgent && previous.hasSeenWorking && !previous.isAcknowledged ? "attention" : "idle";
   }
   if (event === "title" && previous.hasSeenWorking) {
+    if (previous.agentName === "claude") {
+      return "idle";
+    }
     return previous.isAcknowledged ? "idle" : "attention";
   }
   return undefined;
@@ -453,7 +495,11 @@ function stateForStaleTitleWorking(
   titleTransition: Pick<GxserverAgentActivityState, "lastTitle" | "lastTitleChangeAt">,
   nowIso: string,
 ): GxserverAgentActivityState {
-  const nextActivity = previous.hasSeenWorking && !previous.isAcknowledged ? "attention" : "idle";
+  const nextActivity = agentName === "claude"
+    ? "idle"
+    : previous.hasSeenWorking && !previous.isAcknowledged
+      ? "attention"
+      : "idle";
   return {
     ...previous,
     activity: nextActivity,

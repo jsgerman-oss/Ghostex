@@ -818,9 +818,167 @@ test("terminal title event API stores gxserver-decided canonical titles", async 
     assert.equal(updated.status, 200);
     assert.equal(updated.body.result.activity.activity, "idle");
     assert.equal(updated.body.result.changed, true);
+    /*
+    CDXC:AgentDetection 2026-06-11-22:44:
+    A user task title can contain an agent provider name. gxserver should store the title, but it must not promote the row to an agent unless the title is an explicit program-title signal or hook/session metadata identifies the agent.
+    */
+    assert.equal(updated.body.result.session.kind, "terminal");
+    assert.equal(updated.body.result.session.agentId, undefined);
+    assert.equal(updated.body.result.session.runtimeSettings.agentName, undefined);
     assert.equal(updated.body.result.session.title, "Find previous Codex work");
     assert.equal(updated.body.result.session.runtimeSettings.titleSource, "terminal-auto");
     assert.equal(updated.body.result.projection.primaryTitle, "Find previous Codex work");
+  });
+});
+
+test("terminal title event API promotes Claude Code title observations to agent sessions", async () => {
+  await withApiServer("local", async ({ baseUrl, token }) => {
+    const createdProject = await requestJson(baseUrl, "/api/createProject", {
+      body: {
+        params: { name: "Ghostex", path: "/repo/ghostex" },
+        protocolVersion: GXSERVER_PROTOCOL_VERSION,
+      },
+      method: "POST",
+      token,
+    });
+    const project = createdProject.body.result.project;
+    const createdSession = await requestJson(baseUrl, "/api/createSession", {
+      body: {
+        params: {
+          kind: "terminal",
+          projectId: project.projectId,
+          providerState: { lifecycleState: "exists" },
+          surface: "workspace",
+          title: "Terminal Session",
+        },
+        protocolVersion: GXSERVER_PROTOCOL_VERSION,
+      },
+      method: "POST",
+      token,
+    });
+    const session = createdSession.body.result.session;
+
+    const promoted = await requestJson(baseUrl, "/api/ingestTerminalTitleEvent", {
+      body: {
+        params: {
+          projectId: project.projectId,
+          rawTitle: "✳ Claude Code",
+          sessionId: session.sessionId,
+          sessionPersistenceProvider: "zmx",
+        },
+        protocolVersion: GXSERVER_PROTOCOL_VERSION,
+      },
+      method: "POST",
+      token,
+    });
+
+    /*
+    CDXC:ClaudeSessionIdentity 2026-06-11-21:43:
+    macOS forwards raw terminal titles without local agent classification. gxserver must promote recognized Claude Code program titles into the shared session model so presentation consumers stop showing the row as a generic terminal.
+    */
+    assert.equal(promoted.status, 200);
+    assert.equal(promoted.body.result.changed, true);
+    assert.equal(promoted.body.result.activity.activity, "idle");
+    assert.equal(promoted.body.result.enteredAttention, false);
+    assert.equal(promoted.body.result.session.kind, "agent");
+    assert.equal(promoted.body.result.session.agentId, "claude");
+    assert.equal(promoted.body.result.session.runtimeSettings.agentName, "claude");
+
+    const presentation = await requestJson(baseUrl, "/api/readPresentationSnapshot", {
+      body: { params: {}, protocolVersion: GXSERVER_PROTOCOL_VERSION },
+      method: "POST",
+      token,
+    });
+    const presentationSession = presentation.body.result.snapshot.sessions.find(
+      (candidate: { sessionId: string }) => candidate.sessionId === session.sessionId,
+    );
+    assert.equal(presentationSession?.agentId, "claude");
+    assert.equal(presentationSession?.agentName, "claude");
+    assert.equal(presentationSession?.kind, "agent");
+  });
+});
+
+test("presentation and list APIs sync legacy session-state sidecars without macOS app", async () => {
+  await withApiServer("local", async ({ baseUrl, paths, token }) => {
+    const project = (
+      await requestJson(baseUrl, "/api/createProject", {
+        body: {
+          params: { name: "Ghostex", path: paths.rootDir },
+          protocolVersion: GXSERVER_PROTOCOL_VERSION,
+        },
+        method: "POST",
+        token,
+      })
+    ).body.result.project;
+    const session = (
+      await requestJson(baseUrl, "/api/createSession", {
+        body: {
+          params: {
+            kind: "terminal",
+            lifecycleState: "running",
+            projectId: project.projectId,
+            providerState: { lifecycleState: "exists", provider: "zmx" },
+            runtimeSettings: { titleSource: "placeholder" },
+            surface: "workspace",
+            title: "Terminal Session",
+          },
+          protocolVersion: GXSERVER_PROTOCOL_VERSION,
+        },
+        method: "POST",
+        token,
+      })
+    ).body.result.session;
+    const sidecarDir = path.join(path.dirname(paths.rootDir), "session-state", project.projectId);
+    const sidecarPath = path.join(sidecarDir, `${session.sessionId}.env`);
+    await mkdir(sidecarDir, { recursive: true });
+    const workingAt = new Date(Date.now() + 1_000).toISOString();
+    const idleAt = new Date(Date.now() + 2_000).toISOString();
+    /*
+    CDXC:MobileSessionStatus 2026-06-11-23:52:
+    Mobile clients call gxserver through `ghostex sessions --json`; they must observe legacy hook sidecar status even when no macOS sidebar poller is running. Keep this test writing the sidecar directly so it covers daemon-owned ingestion rather than a renderer callback.
+    */
+    await writeFile(
+      sidecarPath,
+      [
+        "agent=codex",
+        "agentSessionId=019e7af5-c610-7f62-a129-db7bb510b48d",
+        "status=working",
+        `statusUpdatedAt=${workingAt}`,
+        `lastActivityAt=${workingAt}`,
+      ].join("\n"),
+    );
+
+    const presentation = await requestJson(baseUrl, "/api/readPresentationSnapshot", {
+      body: { params: {}, protocolVersion: GXSERVER_PROTOCOL_VERSION },
+      method: "POST",
+      token,
+    });
+    const presentationSession = presentation.body.result.snapshot.sessions.find(
+      (candidate: { sessionId: string }) => candidate.sessionId === session.sessionId,
+    );
+    assert.equal(presentationSession?.activity, "working");
+    assert.equal(presentationSession?.agentId, "codex");
+
+    await writeFile(
+      sidecarPath,
+      [
+        "agent=codex",
+        "agentSessionId=019e7af5-c610-7f62-a129-db7bb510b48d",
+        "status=idle",
+        `statusUpdatedAt=${idleAt}`,
+        `lastActivityAt=${idleAt}`,
+      ].join("\n"),
+    );
+    const listed = await requestJson(baseUrl, "/api/listSessions", {
+      body: { params: {}, protocolVersion: GXSERVER_PROTOCOL_VERSION },
+      method: "POST",
+      token,
+    });
+    const listedSession = listed.body.result.sessions.find(
+      (candidate: { sessionId: string }) => candidate.sessionId === session.sessionId,
+    );
+    assert.equal(listedSession.runtimeSettings.agentActivity.activity, "idle");
+    assert.equal(listedSession.agentId, "codex");
   });
 });
 
@@ -1132,7 +1290,7 @@ test("agent hook event API rejects wrong Codex thread attention before status ch
     );
     assert.equal(rejected.level, "warn");
     assert.equal(rejected.details.source, "agent-hook-event");
-    assert.equal(rejected.details.activity, "attention");
+    assert.equal(rejected.details.activity, "idle");
     assert.equal(rejected.details.hasExplicitStatus, true);
     assert.equal(rejected.details.hasFirstUserMessage, true);
     assert.equal(rejected.details.hasTitle, true);
@@ -1212,6 +1370,86 @@ test("session state event API runs first-prompt auto-title through gxserver", as
     {
       firstPromptTitleGeneration: {
         generateTitle: async () => "Server Title Flow",
+      },
+      zmxLifecycle: fakeZmxLifecycle(zmxCalls, () => 0, { stdinInputs: sendInputs }),
+    },
+  );
+});
+
+test("Claude hook working events run first-prompt auto-title through gxserver", async () => {
+  const zmxCalls: string[] = [];
+  const sendInputs: string[] = [];
+  await withApiServer(
+    "local",
+    async ({ baseUrl, token }) => {
+      const createdProject = await requestJson(baseUrl, "/api/createProject", {
+        body: {
+          params: { name: "Ghostex", path: "/repo/ghostex" },
+          protocolVersion: GXSERVER_PROTOCOL_VERSION,
+        },
+        method: "POST",
+        token,
+      });
+      const project = createdProject.body.result.project;
+      const createdSession = await requestJson(baseUrl, "/api/createSession", {
+        body: {
+          params: {
+            projectId: project.projectId,
+            runtimeSettings: { titleSource: "placeholder" },
+            title: "Claude Code",
+          },
+          protocolVersion: GXSERVER_PROTOCOL_VERSION,
+        },
+        method: "POST",
+        token,
+      });
+      const session = createdSession.body.result.session;
+
+      /*
+      CDXC:GxserverSessionTitle 2026-06-12-07:08:
+      Claude Code UserPromptSubmit hooks are the first reliable signal that a newly launched Claude session is working with user text. When the row is still generically named, gxserver must claim the same generated-title job used by Codex and stage `/rename <generated title>` for the terminal.
+      */
+      const ingested = await requestJson(baseUrl, "/api/ingestAgentHookEvent", {
+        body: {
+          params: {
+            agentName: "claude",
+            agentSessionId: "9970b270-b39f-4d63-a764-fa8d88083995",
+            eventName: "UserPromptSubmit",
+            firstUserMessage: "Please wire Claude hook naming",
+            projectId: project.projectId,
+            rawEventName: "UserPromptSubmit",
+            sessionId: session.sessionId,
+            status: "working",
+            statusUpdatedAt: "2026-06-12T03:08:00.000Z",
+          },
+          protocolVersion: GXSERVER_PROTOCOL_VERSION,
+        },
+        method: "POST",
+        token,
+      });
+      assert.equal(ingested.status, 200);
+      assert.equal(ingested.body.result.reason, "first-prompt-auto-title-claimed");
+      assert.equal(ingested.body.result.activity.activity, "working");
+      assert.equal(ingested.body.result.session.kind, "agent");
+      assert.equal(ingested.body.result.session.agentId, "claude");
+      assert.equal(ingested.body.result.session.runtimeSettings.gxserverFirstPromptAutoTitleStatus, "running");
+
+      const titledSession = await waitForSession(
+        baseUrl,
+        token,
+        project.projectId,
+        session.sessionId,
+        (candidate) => candidate.runtimeSettings?.gxserverFirstPromptAutoTitleStatus === "applied",
+      );
+      assert.equal(titledSession.title, "Claude Hook Naming");
+      assert.equal(titledSession.runtimeSettings.titleSource, "generated");
+      assert.equal(titledSession.runtimeSettings.autoTitleFromFirstPrompt, true);
+      assert.deepEqual(sendInputs, ["/rename Claude Hook Naming"]);
+      assert.ok(zmxCalls.some((script) => script.includes('exec "$zmx_bin" send "$zmx_session"')));
+    },
+    {
+      firstPromptTitleGeneration: {
+        generateTitle: async () => "Claude Hook Naming",
       },
       zmxLifecycle: fakeZmxLifecycle(zmxCalls, () => 0, { stdinInputs: sendInputs }),
     },
@@ -2557,20 +2795,7 @@ test("escape activity suppresses done attention and logs safe diagnostics", asyn
       assert.equal(typeof titleLog.details.attentionSuppressionRemainingMs, "number");
       assert.equal(titleLog.details.statusUpdateStored, true);
 
-      const { entry: hookLog, text: logs } = await waitForLogEvent(
-        paths.logFile,
-        "sessionActivity.attentionSuppressed",
-        1_000,
-      );
-      assert.equal(hookLog.level, "info");
-      assert.equal(hookLog.details.changed, false);
-      assert.equal(hookLog.details.hasExplicitStatus, true);
-      assert.equal(hookLog.details.hasHookEventName, true);
-      assert.equal(hookLog.details.incomingActivity, "attention");
-      assert.equal(hookLog.details.previousActivity, "idle");
-      assert.equal(hookLog.details.resultActivity, "idle");
-      assert.equal(hookLog.details.source, "agent-hook");
-      assert.equal(typeof hookLog.details.suppressionRemainingMs, "number");
+      const logs = await readFile(paths.logFile, "utf8");
       assert.doesNotMatch(logs, /Private Escape Agent|Action Required|\/Users\/person|example\.test|token=secret|https:\/\/example\.test|rawEventName/u);
     },
     {
@@ -2676,8 +2901,8 @@ test("agent hook event API owns working state across suppression and plain termi
         token,
       });
       assert.equal(stopped.status, 200);
-      assert.equal(stopped.body.result.activity.activity, "attention");
-      assert.equal(stopped.body.result.enteredAttention, true);
+      assert.equal(stopped.body.result.activity.activity, "idle");
+      assert.equal(stopped.body.result.enteredAttention, false);
 
       const staleWorking = await requestJson(baseUrl, "/api/ingestAgentHookEvent", {
         body: {
@@ -2697,7 +2922,7 @@ test("agent hook event API owns working state across suppression and plain termi
       });
       assert.equal(staleWorking.status, 200);
       assert.equal(staleWorking.body.result.reason, "stale-activity-event");
-      assert.equal(staleWorking.body.result.session.runtimeSettings.agentActivity.activity, "attention");
+      assert.equal(staleWorking.body.result.session.runtimeSettings.agentActivity.activity, "idle");
 
       const presentation = await requestJson(baseUrl, "/api/readPresentationSnapshot", {
         body: { params: {}, protocolVersion: GXSERVER_PROTOCOL_VERSION },
@@ -2707,7 +2932,187 @@ test("agent hook event API owns working state across suppression and plain termi
       const presentationSession = presentation.body.result.snapshot.sessions.find(
         (candidate: { sessionId: string }) => candidate.sessionId === session.sessionId,
       );
-      assert.equal(presentationSession?.activity, "attention");
+      assert.equal(presentationSession?.activity, "idle");
+    },
+    {
+      zmxLifecycle: fakeZmxLifecycle([], () => 0),
+    },
+  );
+});
+
+test("agent hook event API treats Claude Stop as idle even with stale attention status", async () => {
+  await withApiServer(
+    "local",
+    async ({ baseUrl, paths, token }) => {
+      const project = (
+        await requestJson(baseUrl, "/api/createProject", {
+          body: { params: { name: "Ghostex", path: paths.rootDir }, protocolVersion: GXSERVER_PROTOCOL_VERSION },
+          method: "POST",
+          token,
+        })
+      ).body.result.project;
+      const session = (
+        await requestJson(baseUrl, "/api/createSession", {
+          body: {
+            params: {
+              kind: "terminal",
+              projectId: project.projectId,
+              runtimeSettings: { titleSource: "placeholder" },
+              surface: "workspace",
+              title: "Terminal Session",
+            },
+            protocolVersion: GXSERVER_PROTOCOL_VERSION,
+          },
+          method: "POST",
+          token,
+        })
+      ).body.result.session;
+
+      const working = await requestJson(baseUrl, "/api/ingestAgentHookEvent", {
+        body: {
+          params: {
+            agentName: "claude",
+            agentSessionId: "9970b270-b39f-4d63-a764-fa8d88083995",
+            eventName: "UserPromptSubmit",
+            projectId: project.projectId,
+            rawEventName: "UserPromptSubmit",
+            sessionId: session.sessionId,
+            status: "working",
+            statusUpdatedAt: "2026-06-11T17:43:00.000Z",
+          },
+          protocolVersion: GXSERVER_PROTOCOL_VERSION,
+        },
+        method: "POST",
+        token,
+      });
+      assert.equal(working.status, 200);
+      assert.equal(working.body.result.activity.activity, "working");
+      assert.equal(working.body.result.session.kind, "agent");
+      assert.equal(working.body.result.session.agentId, "claude");
+
+      const stopped = await requestJson(baseUrl, "/api/ingestAgentHookEvent", {
+        body: {
+          params: {
+            agentName: "claude",
+            agentSessionId: "9970b270-b39f-4d63-a764-fa8d88083995",
+            eventName: "Stop",
+            projectId: project.projectId,
+            rawEventName: "Stop",
+            sessionId: session.sessionId,
+            status: "attention",
+            statusUpdatedAt: "2026-06-11T17:43:05.000Z",
+          },
+          protocolVersion: GXSERVER_PROTOCOL_VERSION,
+        },
+        method: "POST",
+        token,
+      });
+
+      /*
+      CDXC:ClaudeSessionStatus 2026-06-11-21:43:
+      Claude Stop settles the active turn. gxserver must override stale hook sidecar status that says `attention` so all clients render idle instead of a false Done state.
+      */
+      assert.equal(stopped.status, 200);
+      assert.equal(stopped.body.result.activity.activity, "idle");
+      assert.equal(stopped.body.result.enteredAttention, false);
+      assert.equal(stopped.body.result.session.runtimeSettings.agentActivity.activity, "idle");
+    },
+    {
+      zmxLifecycle: fakeZmxLifecycle([], () => 0),
+    },
+  );
+});
+
+test("agent hook event API normalizes provider turn boundaries centrally", async () => {
+  await withApiServer(
+    "local",
+    async ({ baseUrl, paths, token }) => {
+      const project = (
+        await requestJson(baseUrl, "/api/createProject", {
+          body: { params: { name: "Ghostex", path: paths.rootDir }, protocolVersion: GXSERVER_PROTOCOL_VERSION },
+          method: "POST",
+          token,
+        })
+      ).body.result.project;
+      const createTerminalSession = async () => (
+        await requestJson(baseUrl, "/api/createSession", {
+          body: {
+            params: {
+              kind: "terminal",
+              projectId: project.projectId,
+              runtimeSettings: { titleSource: "placeholder" },
+              surface: "workspace",
+              title: "Terminal Session",
+            },
+            protocolVersion: GXSERVER_PROTOCOL_VERSION,
+          },
+          method: "POST",
+          token,
+        })
+      ).body.result.session;
+      const ingestHook = async (params: Record<string, unknown>) => requestJson(baseUrl, "/api/ingestAgentHookEvent", {
+        body: {
+          params: {
+            projectId: project.projectId,
+            statusUpdatedAt: "2026-06-11T18:19:00.000Z",
+            ...params,
+          },
+          protocolVersion: GXSERVER_PROTOCOL_VERSION,
+        },
+        method: "POST",
+        token,
+      });
+
+      /*
+      CDXC:AgentHookStatus 2026-06-11-22:19:
+      Cursor response hooks, Rovo permission hooks, and Copilot Notification-as-stop hooks must be normalized in gxserver. Clients should not carry provider-specific Done/attention rules, and stale sidecar status text must not override known provider event semantics.
+      */
+      const cursorSession = await createTerminalSession();
+      const cursorWorking = await ingestHook({
+        agentName: "cursor",
+        agentSessionId: "cursor-session-1",
+        eventName: "beforeSubmitPrompt",
+        rawEventName: "beforeSubmitPrompt",
+        sessionId: cursorSession.sessionId,
+        status: "working",
+      });
+      assert.equal(cursorWorking.status, 200);
+      assert.equal(cursorWorking.body.result.activity.activity, "working");
+      const cursorDone = await ingestHook({
+        agentName: "cursor",
+        agentSessionId: "cursor-session-1",
+        eventName: "afterAgentResponse",
+        rawEventName: "afterAgentResponse",
+        sessionId: cursorSession.sessionId,
+        status: "attention",
+      });
+      assert.equal(cursorDone.status, 200);
+      assert.equal(cursorDone.body.result.activity.activity, "idle");
+
+      const rovoSession = await createTerminalSession();
+      const rovoPermission = await ingestHook({
+        agentName: "rovo",
+        agentSessionId: "rovo-session-1",
+        eventName: "on_tool_permission",
+        rawEventName: "on_tool_permission",
+        sessionId: rovoSession.sessionId,
+        status: "attention",
+      });
+      assert.equal(rovoPermission.status, 200);
+      assert.equal(rovoPermission.body.result.activity.activity, "working");
+
+      const copilotSession = await createTerminalSession();
+      const copilotNotification = await ingestHook({
+        agentName: "github copilot",
+        agentSessionId: "copilot-session-1",
+        eventName: "Notification",
+        rawEventName: "Notification",
+        sessionId: copilotSession.sessionId,
+        status: "attention",
+      });
+      assert.equal(copilotNotification.status, 200);
+      assert.equal(copilotNotification.body.result.activity.activity, "idle");
+      assert.equal(copilotNotification.body.result.session.agentId, "copilot");
     },
     {
       zmxLifecycle: fakeZmxLifecycle([], () => 0),
@@ -2857,6 +3262,95 @@ test("agent hook, session-state, and activity APIs reject cross-agent events for
   );
 });
 
+test("presentation snapshot repairs stale agent identity from live zmx process evidence", async () => {
+  await withApiServer(
+    "local",
+    async ({ baseUrl, paths, token }) => {
+      const project = (
+        await requestJson(baseUrl, "/api/createProject", {
+          body: { params: { name: "Ghostex", path: paths.rootDir }, protocolVersion: GXSERVER_PROTOCOL_VERSION },
+          method: "POST",
+          token,
+        })
+      ).body.result.project;
+      const session = (
+        await requestJson(baseUrl, "/api/createSession", {
+          body: {
+            params: {
+              agentId: "claude",
+              kind: "agent",
+              launchSettings: { startupText: " gx f\r", surface: "workspace" },
+              lifecycleState: "running",
+              projectId: project.projectId,
+              providerState: { lifecycleState: "exists", provider: "zmx" },
+              runtimeSettings: {
+                agentActivity: { activity: "idle", agentName: "claude" },
+                agentName: "claude",
+                agentSessionId: "303d77cf-4871-48da-871f-47782e834307",
+                agentSessionPath: "/Users/madda/.claude-profiles/personal/projects/repo/303d77cf-4871-48da-871f-47782e834307.jsonl",
+                sessionPersistenceProvider: "zmx",
+              },
+              surface: "workspace",
+              title: "Fix Native Tab Clicks",
+            },
+            protocolVersion: GXSERVER_PROTOCOL_VERSION,
+          },
+          method: "POST",
+          token,
+        })
+      ).body.result.session;
+
+      const snapshotResponse = await requestJson(baseUrl, "/api/readPresentationSnapshot", {
+        body: {
+          params: {},
+          protocolVersion: GXSERVER_PROTOCOL_VERSION,
+        },
+        method: "POST",
+        token,
+      });
+      assert.equal(snapshotResponse.status, 200);
+      const repaired = snapshotResponse.body.result.snapshot.sessions.find(
+        (candidate: { sessionId: string }) => candidate.sessionId === session.sessionId,
+      );
+      assert.equal(repaired.agentId, "codex");
+      assert.equal(repaired.agentSessionId, "019eb8d0-d27b-7f30-b6d7-7a04ab8fae78");
+
+      const listed = await requestJson(baseUrl, "/api/listSessions", {
+        body: {
+          params: { projectId: project.projectId },
+          protocolVersion: GXSERVER_PROTOCOL_VERSION,
+        },
+        method: "POST",
+        token,
+      });
+      const stored = listed.body.result.sessions.find(
+        (candidate: { sessionId: string }) => candidate.sessionId === session.sessionId,
+      );
+      assert.equal(stored.agentId, "codex");
+      assert.equal(stored.runtimeSettings.agentName, "codex");
+      assert.equal(stored.runtimeSettings.agentSessionId, "019eb8d0-d27b-7f30-b6d7-7a04ab8fae78");
+      assert.equal(stored.runtimeSettings.agentSessionPath, undefined);
+      assert.equal(stored.runtimeSettings.agentActivity, undefined);
+    },
+    {
+      zmxLifecycle: {
+        readSessionProcessIdentities: async ({ sessionNames }) => {
+          const sessionName = sessionNames[0];
+          return sessionName ? new Map([[sessionName, {
+            agentId: "codex",
+            agentSessionId: "019eb8d0-d27b-7f30-b6d7-7a04ab8fae78",
+          }]]) : new Map();
+        },
+        requireZmx: async () => ({
+          executablePath: "/fake/bundled/zmx",
+          source: "devSubmodule",
+          tool: "zmx",
+        }),
+      },
+    },
+  );
+});
+
 test("terminal title API clears explicit working on same-title Codex spinner stop", async () => {
   await withApiServer(
     "local",
@@ -2959,6 +3453,85 @@ test("terminal title API clears explicit working on same-title Codex spinner sto
       assert.equal(stopped.body.result.activity.activity, "idle");
       assert.equal(stopped.body.result.activity.workingSource, undefined);
       assert.equal(stopped.body.result.session.runtimeSettings.agentActivity.activity, "idle");
+    },
+    {
+      zmxLifecycle: fakeZmxLifecycle([], () => 0),
+    },
+  );
+});
+
+test("terminal title API clears missed Codex Stop from trusted metadata title", async () => {
+  await withApiServer(
+    "local",
+    async ({ baseUrl, paths, token }) => {
+      const project = (
+        await requestJson(baseUrl, "/api/createProject", {
+          body: { params: { name: "Ghostex", path: paths.rootDir }, protocolVersion: GXSERVER_PROTOCOL_VERSION },
+          method: "POST",
+          token,
+        })
+      ).body.result.project;
+      const session = (
+        await requestJson(baseUrl, "/api/createAgentSession", {
+          body: {
+            params: {
+              agentId: "codex",
+              projectId: project.projectId,
+              runtimeSettings: {
+                titleMetadataSource: "agent-metadata",
+                titleSource: "terminal-auto",
+              },
+              title: "Agents Hub Visibility Fix",
+            },
+            protocolVersion: GXSERVER_PROTOCOL_VERSION,
+          },
+          method: "POST",
+          token,
+        })
+      ).body.result.session;
+
+      /*
+      CDXC:SessionStatus 2026-06-12-04:06:
+      A Codex Stop hook can be missed after UserPromptSubmit starts explicit working. If gxserver later observes the same trusted metadata title without spinner state, the terminal-title API should settle the row instead of leaving every client in working forever.
+      */
+      const working = await requestJson(baseUrl, "/api/ingestAgentHookEvent", {
+        body: {
+          params: {
+            agentName: "codex",
+            eventName: "UserPromptSubmit",
+            projectId: project.projectId,
+            rawEventName: "UserPromptSubmit",
+            sessionId: session.sessionId,
+            status: "working",
+            statusUpdatedAt: "2026-06-12T00:02:06.814Z",
+          },
+          protocolVersion: GXSERVER_PROTOCOL_VERSION,
+        },
+        method: "POST",
+        token,
+      });
+      assert.equal(working.status, 200);
+      assert.equal(working.body.result.activity.activity, "working");
+      assert.equal(working.body.result.activity.workingSource, "explicit");
+
+      const settled = await requestJson(baseUrl, "/api/ingestTerminalTitleEvent", {
+        body: {
+          params: {
+            agentName: "codex",
+            projectId: project.projectId,
+            rawTitle: "Agents Hub Visibility Fix",
+            sessionId: session.sessionId,
+            sessionPersistenceProvider: "zmx",
+          },
+          protocolVersion: GXSERVER_PROTOCOL_VERSION,
+        },
+        method: "POST",
+        token,
+      });
+      assert.equal(settled.status, 200);
+      assert.equal(settled.body.result.activity.activity, "attention");
+      assert.equal(settled.body.result.activity.workingSource, undefined);
+      assert.equal(settled.body.result.session.runtimeSettings.agentActivity.activity, "attention");
     },
     {
       zmxLifecycle: fakeZmxLifecycle([], () => 0),

@@ -64,12 +64,18 @@ type DefaultAgentId =
   | "gemini"
   | "grok"
   | "hermes-agent"
+  | "kiro"
+  | "omp"
   | "opencode"
   | "pi"
   | "qoder"
   | "rovodev"
   | "t3";
 
+/*
+CDXC:AgentResume 2026-06-11-22:49:
+Hook-supported Kiro and OMP sessions have native exact-id resume commands. Keep them in gxserver's restorable-agent set so wake, resume, and future clients share the same lifecycle planner instead of treating those lower-priority integrations as hook-only rows.
+*/
 type RestorableAgentId = Exclude<DefaultAgentId, "t3">;
 
 interface AgentAcceptAllFlagSpec {
@@ -98,6 +104,8 @@ const DEFAULT_AGENT_COMMANDS: Readonly<Record<DefaultAgentId, string>> = {
   gemini: "gemini",
   grok: "grok",
   "hermes-agent": "hermes",
+  kiro: "kiro-cli chat --agent ghostex",
+  omp: "omp",
   opencode: "opencode",
   pi: "pi",
   qoder: "qodercli",
@@ -117,6 +125,8 @@ const DEFAULT_AGENT_ICON_TO_ID: Readonly<Record<string, DefaultAgentId>> = {
   gemini: "gemini",
   "grok-build": "grok",
   "hermes-agent": "hermes-agent",
+  kiro: "kiro",
+  omp: "omp",
   opencode: "opencode",
   pi: "pi",
   qoder: "qoder",
@@ -146,6 +156,8 @@ const ACCEPT_ALL_SPECS: Readonly<Record<DefaultAgentId, AgentAcceptAllSpec | nul
   gemini: { kind: "flag", aliases: ["-y", "--yolo"], canonicalFlag: "--yolo" },
   grok: { kind: "flag", aliases: ["--always-approve"], canonicalFlag: "--always-approve" },
   "hermes-agent": null,
+  kiro: null,
+  omp: null,
   opencode: {
     kind: "environment",
     assignments: [{ name: "OPENCODE_CONFIG_CONTENT", value: OPENCODE_ACCEPT_ALL_CONFIG_CONTENT }],
@@ -437,6 +449,10 @@ export function buildAgentResumeCommand(
       return exactReference ? `${agentCommand} --resume ${quoteShellDoubleArg(exactReference)}` : undefined;
     case "grok":
       return exactReference ? `${agentCommand} -r ${quoteShellDoubleArg(exactReference)}` : undefined;
+    case "kiro":
+      return exactReference ? `${agentCommand} --resume-id ${quoteShellDoubleArg(exactReference)}` : undefined;
+    case "omp":
+      return exactReference ? `${agentCommand} --session ${quoteShellDoubleArg(exactReference)}` : undefined;
     case "codex":
       if (!codexReference) {
         return undefined;
@@ -507,6 +523,10 @@ function buildAgentResumeCopyCommand(input: GxserverAgentResumeInput): string | 
       return exactReference ? `${agentCommand} --resume ${quoteShellDoubleArg(exactReference)}` : undefined;
     case "grok":
       return exactReference ? `${agentCommand} -r ${quoteShellDoubleArg(exactReference)}` : undefined;
+    case "kiro":
+      return exactReference ? `${agentCommand} --resume-id ${quoteShellDoubleArg(exactReference)}` : undefined;
+    case "omp":
+      return exactReference ? `${agentCommand} --session ${quoteShellDoubleArg(exactReference)}` : undefined;
     case "codex": {
       const codexReference = getCodexSessionReference(input);
       return codexReference ? `${agentCommand} resume ${quoteShellDoubleArg(codexReference)}` : undefined;

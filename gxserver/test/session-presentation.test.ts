@@ -8,6 +8,7 @@ import {
   applySessionStateEvent,
   createAgentTitleDebouncer,
   GxserverPresentationDeltaCoalescer,
+  parseAgentResumeIdentity,
   projectGxserverPresentationSnapshot,
   reconcileAgentMetadataTitle,
   searchGxserverPreviousSessions,
@@ -59,6 +60,21 @@ test("session state events resolve Codex resume identity to previous trusted tit
   assert.equal(result.session.runtimeSettings.titleSource, "terminal-auto");
   assert.equal(result.session.title, "Shorter native tabs bar");
   assert.equal(result.projection.primaryTitle, "Shorter native tabs bar");
+});
+
+test("resume identity parser recognizes Kiro and OMP startup text", () => {
+  /*
+  CDXC:AgentResume 2026-06-11-22:49:
+  Startup text is a server-owned identity observation. Kiro and OMP restore commands should classify sessions before hook metadata arrives, matching the rest of the gxserver resume parser.
+  */
+  assert.deepEqual(
+    parseAgentResumeIdentity('kiro-cli chat --agent ghostex --resume-id "kiro-thread-123"'),
+    { agentId: "kiro", agentSessionId: "kiro-thread-123" },
+  );
+  assert.deepEqual(
+    parseAgentResumeIdentity("omp --session 'omp-thread-456'"),
+    { agentId: "omp", agentSessionId: "omp-thread-456" },
+  );
 });
 
 test("session state events preserve an already trusted current title", () => {
@@ -225,6 +241,37 @@ test("passive Cursor transcript paths correct stale Codex identity without agent
   assert.equal(result.session.runtimeSettings.agentSessionPath, cursorSessionPath);
 });
 
+test("Claude transcript paths promote terminal rows to Claude sessions without agent name", () => {
+  /*
+  CDXC:ClaudeSessionIdentity 2026-06-11-21:43:
+  Hook/session-state payloads may carry only a Claude transcript path. gxserver must infer the Claude identity from that path so presentation rows, session search, resume metadata, and native pane icons do not depend on macOS-local agent detection.
+  */
+  const claudeSessionId = "9970b270-b39f-4d63-a764-fa8d88083995";
+  const claudeSessionPath =
+    `/Users/person/.claude/projects/-Users-person-dev-active-zmux/${claudeSessionId}.jsonl`;
+  const project = projectFixture({});
+  const session = sessionFixture({
+    runtimeSettings: { titleSource: "placeholder" },
+    title: "Terminal Session",
+  });
+  const repository = new MockPresentationRepository(project, [session]);
+
+  const result = applySessionStateEvent(repository, {
+    agentSessionId: claudeSessionId,
+    agentSessionPath: claudeSessionPath,
+    identityUpdateSource: "passive",
+    projectId: session.projectId,
+    sessionId: session.sessionId,
+  });
+
+  assert.equal(result.changed, true);
+  assert.equal(result.session.kind, "agent");
+  assert.equal(result.session.agentId, "claude");
+  assert.equal(result.session.runtimeSettings.agentName, "claude");
+  assert.equal(result.session.runtimeSettings.agentSessionId, claudeSessionId);
+  assert.equal(result.session.runtimeSettings.agentSessionPath, claudeSessionPath);
+});
+
 test("stored Cursor transcript paths repair stale Codex rows on metadata-only events", () => {
   const cursorSessionId = "866a452b-3a52-4f27-9b26-fd717a2f1c16";
   const cursorSessionPath =
@@ -283,6 +330,93 @@ test("cross-agent corrections clear stale Codex session metadata when Cursor has
   assert.equal(result.session.runtimeSettings.agentName, "cursor");
   assert.equal(result.session.runtimeSettings.agentSessionId, undefined);
   assert.equal(result.session.runtimeSettings.agentSessionPath, undefined);
+});
+
+test("passive Codex hooks correct stale non-Codex session identity", () => {
+  /*
+  CDXC:GxserverSessionIdentity 2026-06-12-02:44:
+  When multiple hook stores have observations for the same surface, gxserver must let an explicit Codex hook replace stale Claude/other identity. Only an existing Codex-owned thread id should block passive Codex replacement; otherwise a previous UUID-shaped agent id can keep sidebar tooltips, status, search, and resume metadata on the wrong agent.
+  */
+  const staleClaudeSessionId = "870ae852-ddf1-4cfb-b49e-a9ee1d97dae3";
+  const codexSessionId = "019eb834-893d-71b2-97e3-3ad431f4ef46";
+  const codexSessionPath =
+    `/Users/person/.codex/sessions/2026/06/11/rollout-2026-06-11T23-41-51-${codexSessionId}.jsonl`;
+  const project = projectFixture({});
+  const session = sessionFixture({
+    agentId: "claude",
+    kind: "agent",
+    runtimeSettings: {
+      agentActivity: {
+        activity: "idle",
+        agentName: "claude",
+        hasSeenWorking: false,
+        isAcknowledged: true,
+        lastChangedAt: "2026-06-11T22:41:40.403Z",
+      },
+      agentName: "claude",
+      agentSessionId: staleClaudeSessionId,
+      agentSessionPath: `/Users/person/.claude-profiles/personal/projects/-repo/${staleClaudeSessionId}.jsonl`,
+      titleSource: "terminal-auto",
+    },
+    title: "Agents Pane Resize Issue",
+  });
+  const repository = new MockPresentationRepository(project, [session]);
+  const conflicts: unknown[] = [];
+
+  const result = applySessionStateEvent(repository, {
+    agentName: "codex",
+    agentSessionId: codexSessionId,
+    agentSessionPath: codexSessionPath,
+    identityUpdateSource: "passive",
+    onIdentityConflict: (conflict) => conflicts.push(conflict),
+    projectId: session.projectId,
+    sessionId: session.sessionId,
+  });
+
+  assert.equal(result.changed, true);
+  assert.equal(result.session.agentId, "codex");
+  assert.equal(result.session.runtimeSettings.agentName, "codex");
+  assert.equal(result.session.runtimeSettings.agentSessionId, codexSessionId);
+  assert.equal(result.session.runtimeSettings.agentSessionPath, codexSessionPath);
+  assert.equal(result.session.runtimeSettings.agentActivity, undefined);
+  assert.deepEqual(conflicts, []);
+});
+
+test("passive Codex hooks clear stale non-Codex activity after identity was already corrected", () => {
+  const codexSessionId = "019eb834-893d-71b2-97e3-3ad431f4ef46";
+  const project = projectFixture({});
+  const session = sessionFixture({
+    agentId: "codex",
+    kind: "agent",
+    runtimeSettings: {
+      agentActivity: {
+        activity: "idle",
+        agentName: "claude",
+        hasSeenWorking: false,
+        isAcknowledged: true,
+        lastChangedAt: "2026-06-11T22:41:40.403Z",
+      },
+      agentName: "codex",
+      agentSessionId: codexSessionId,
+      titleSource: "terminal-auto",
+    },
+    title: "Agents Pane Resize Issue",
+  });
+  const repository = new MockPresentationRepository(project, [session]);
+
+  const result = applySessionStateEvent(repository, {
+    agentName: "codex",
+    agentSessionId: codexSessionId,
+    identityUpdateSource: "passive",
+    projectId: session.projectId,
+    sessionId: session.sessionId,
+  });
+
+  assert.equal(result.changed, true);
+  assert.equal(result.session.agentId, "codex");
+  assert.equal(result.session.runtimeSettings.agentName, "codex");
+  assert.equal(result.session.runtimeSettings.agentSessionId, codexSessionId);
+  assert.equal(result.session.runtimeSettings.agentActivity, undefined);
 });
 
 test("passive session state events cannot replace an existing Codex identity", () => {
@@ -721,6 +855,41 @@ test("presentation snapshot carries gxserver title projection semantics", () => 
   assert.equal(presentation.isTemporaryTitle, false);
   assert.equal(presentation.titleSource, "terminal-auto");
   assert.equal(presentation.trustedResumeTitle, "Missing sidebar sessions");
+});
+
+test("presentation snapshot carries captured agent session identity", () => {
+  /*
+  CDXC:GxserverPresentationIdentity 2026-06-11-23:58:
+  Sidebar tooltips and resume actions need the provider session id from gxserver presentation, not only the routed Ghostex session id. Project the captured identity fields from runtime settings so clients do not have to read hook stores or terminal state files.
+  */
+  const codexSessionId = "019eb83e-9f8a-7743-9c35-01f5dfd27e1c";
+  const codexSessionPath = `/Users/person/.codex/sessions/2026/06/11/rollout-2026-06-11T23-52-52-${codexSessionId}.jsonl`;
+  const project = projectFixture({});
+  const session = sessionFixture({
+    agentId: "codex",
+    kind: "agent",
+    runtimeSettings: {
+      agentName: "codex",
+      agentSessionId: codexSessionId,
+      agentSessionPath: codexSessionPath,
+      titleSource: "generated",
+    },
+    title: "General Greeting",
+  });
+
+  const snapshot = projectGxserverPresentationSnapshot({
+    generatedAt: "2026-06-11T19:53:08.000Z",
+    projects: [project],
+    revision: 1 as GxserverPresentationRevision,
+    sessions: [session],
+  });
+
+  const presentation = snapshot.sessions[0];
+  assert.ok(presentation, "presentation session exists");
+  assert.equal(presentation.agentId, "codex");
+  assert.equal(presentation.agentName, "codex");
+  assert.equal(presentation.agentSessionId, codexSessionId);
+  assert.equal(presentation.agentSessionPath, codexSessionPath);
 });
 
 test("presentation snapshot resolves missing last-active timestamps from createdAt", () => {

@@ -1,6 +1,8 @@
 import http from "node:http";
 import { execFile } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
+import { readFile, stat } from "node:fs/promises";
+import path from "node:path";
 import type { Duplex } from "node:stream";
 import { promisify } from "node:util";
 import {
@@ -48,7 +50,7 @@ import {
   updateSessionActivitySettings,
 } from "./agents/lifecycle.js";
 import { GxserverAgentSettingsRepository } from "./agents/settings.js";
-import { applyTerminalTitleEvent } from "./session-title/index.js";
+import { applyTerminalTitleEvent, getVisibleTerminalTitle } from "./session-title/index.js";
 import { projectSessionTitle } from "./session-title/projection.js";
 import { applySessionTransition, normalizeSessionTransitionParams } from "./session-transition/index.js";
 import {
@@ -72,7 +74,7 @@ import {
   type GxserverLaunchAgentMismatch,
   type GxserverSessionIdentityConflict,
 } from "./session-presentation/index.js";
-import { normalizeAgentActivityState } from "./session-status/index.js";
+import { classifyTerminalTitleStatus, normalizeAgentActivityState } from "./session-status/index.js";
 import { type GxserverPaths, getGxserverPaths } from "./paths.js";
 import { browseProjectDirectories } from "./project-directory-browser.js";
 import { GxserverProjectPathError, normalizeExistingDirectoryPath, resolveProjectOperationDirectory } from "./project-paths.js";
@@ -110,6 +112,7 @@ import {
   probeZmxSession,
   providerStatePatch,
   providerZmxSessionName,
+  readZmxSessionProcessIdentities,
   summarizeZmxChildEnvironmentSanitization,
   GXSERVER_ZMX_HISTORY_STDOUT_LIMIT_BYTES,
   GXSERVER_ZMX_SEND_TEXT_LIMIT_BYTES,
@@ -118,6 +121,7 @@ import {
   type GxserverZmxCommandResult,
   type GxserverZmxCommandOptions,
   type GxserverZmxCommandRunner,
+  type GxserverZmxProcessIdentityReader,
 } from "./zmx-lifecycle.js";
 import { GxserverZmxTitleObserver, type GxserverZmxTitleObservationStateChange } from "./zmx-title-observer.js";
 import type {
@@ -180,6 +184,7 @@ import type {
   GxserverUpdateSessionParams,
   GxserverFirstPromptTitleGenerationAgent,
   GxserverAgentActivityState,
+  GxserverZmxSessionName,
 } from "../protocol/index.js";
 import { createSourceGxserverBuildIdentity, isGxserverBuildIdentityReusable } from "./build-identity.js";
 
@@ -214,6 +219,7 @@ export interface GxserverApiRuntime {
   zmxTitleObserver?: GxserverZmxTitleObserver;
   zmxLifecycle?: {
     cwdExists?: GxserverCwdExists;
+    readSessionProcessIdentities?: GxserverZmxProcessIdentityReader;
     requireZmx?: () => Promise<GxserverResolvedTool>;
     runZsh?: GxserverZmxCommandRunner;
   };
@@ -229,6 +235,7 @@ const GXSERVER_AGENT_TITLE_METADATA_DEBOUNCE_MS = 3_000;
 const GXSERVER_FIRST_PROMPT_TITLE_SOURCE_MAX_LENGTH = 250;
 const GXSERVER_GENERATED_SESSION_TITLE_MAX_LENGTH = 39;
 const GXSERVER_FIRST_PROMPT_TITLE_GENERATION_TIMEOUT_MS = 30_000;
+const GXSERVER_SESSION_STATE_SIDECAR_MAX_BYTES = 1024 * 1024;
 const GXSERVER_COMMAND_COLOR_DISABLING_ENVIRONMENT_KEYS = [
   "ANSI_COLORS_DISABLED",
   "NO_COLOR",
@@ -254,39 +261,47 @@ const GXSERVER_INTERNAL_PROMPT_GENERATION_ENVIRONMENT_KEYS = [
 const GXSERVER_AGENT_HOOK_WORKING_EVENTS = new Set([
   "BeforeAgent",
   "PreInvocation",
+  "PreToolUse",
   "UserPromptSubmit",
   "agent.start",
   "agent_start",
+  "agentSpawn",
   "beforeShellExecution",
   "beforeSubmitPrompt",
+  "on_session_reset",
+  "on_session_start",
+  "on_tool_permission",
+  "post_approval_response",
+  "postToolUse",
   "pre_llm_call",
   "pre_tool_call",
+  "preToolUse",
+  "userPromptSubmit",
 ]);
 const GXSERVER_AGENT_HOOK_ATTENTION_EVENTS = new Set([
-  "AfterAgent",
   "Notification",
   "PermissionRequest",
+  "message.updated",
+  "permission.updated",
+  "pre_approval_request",
+  "session.updated",
+]);
+const GXSERVER_AGENT_HOOK_IDLE_EVENTS = new Set([
+  "AfterAgent",
+  "SessionEnd",
   "Stop",
   "afterAgentResponse",
   "agent.end",
   "agent_end",
-  "message.updated",
   "on_complete",
   "on_error",
-  "on_tool_permission",
-  "permission.updated",
-  "session.updated",
-  "stop",
-  "turn-completion",
-]);
-const GXSERVER_AGENT_HOOK_IDLE_EVENTS = new Set([
-  "SessionEnd",
+  "on_session_end",
+  "on_session_finalize",
   "release",
   "session.end",
   "session_shutdown",
-  "on_session_end",
-  "on_session_finalize",
-  "on_session_reset",
+  "stop",
+  "turn-completion",
 ]);
 const agentTitleMetadataDebouncer = createAgentTitleDebouncer({
   delayMs: GXSERVER_AGENT_TITLE_METADATA_DEBOUNCE_MS,
@@ -390,6 +405,10 @@ export async function runGxserverForeground(options: GxserverForegroundOptions):
   eventHub.setPresentationSnapshotProvider(async ({ clientId, lastRevision }) => {
     const db = openGxserverDatabase(paths);
     try {
+      const repository = new GxserverDomainRepository(db, metadata.serverId);
+      await syncSessionStateSidecars(runtime, repository, {
+        reason: "presentation-snapshot-provider",
+      });
       const snapshot = readGxserverPresentationSnapshot(db, metadata.serverId);
       await logger.log({
         client: clientId,
@@ -1037,6 +1056,11 @@ async function dispatchDomainStateEndpoint(
       if (!project) {
         throw new GxserverDomainStateError("notFound", `Project ${projectId} does not exist.`);
       }
+      await syncLiveZmxProcessIdentities(runtime, repository, {
+        projectId,
+        reason: "read-project-status",
+        requestId,
+      });
       scheduleAgentTitleMetadataChecksForSessions(runtime, repository, repository.listSessions(projectId), "read-project-status");
       return { project, sessions: repository.listSessions(projectId) };
     }
@@ -1239,7 +1263,11 @@ async function dispatchDomainStateEndpoint(
       CDXC:AgentHooks 2026-06-09-21:59:
       Hook events may come from globally installed agent integrations. Reject cross-agent hook identity before applying passive metadata or explicit activity so a Cursor hook cannot relabel or pin working state on a gxserver-launched Codex fork.
       */
-      const hookActivity = normalizeAgentHookActivity(hookEvent.status, hookEvent.eventName ?? hookEvent.rawEventName);
+      const hookActivity = normalizeAgentHookActivity(
+        hookEvent.status,
+        hookEvent.eventName ?? hookEvent.rawEventName,
+        hookEvent.agentName,
+      );
       const hookObservedIdentity = resolveSessionIdentity({
         agentName: hookEvent.agentName,
         agentSessionId: hookEvent.agentSessionId,
@@ -1491,11 +1519,16 @@ async function dispatchDomainStateEndpoint(
         sessionId: lifecycle.sessionId,
       });
       const titledSession = decision.session ?? repository.getSession(lifecycle.projectId, lifecycle.sessionId) ?? current;
+      const titleDetectedAgentName = getTerminalTitleDetectedAgentName(titleEvent.rawTitle);
       const presentation =
-        decision.agentSessionId
+        decision.agentSessionId || titleDetectedAgentName
           ? applySessionStateEvent(repository, {
-              agentName: titleEvent.agentName,
-              agentSessionId: decision.agentSessionId,
+              /*
+              CDXC:ClaudeSessionIdentity 2026-06-11-21:43:
+              A Claude Code terminal can expose only the program title before any hook metadata arrives. Promote that recognized title observation through gxserver's normal session-identity reducer so every client receives the same Claude agent row instead of macOS keeping a local-only terminal classification.
+              */
+              agentName: titleEvent.agentName ?? titleDetectedAgentName,
+              ...(decision.agentSessionId ? { agentSessionId: decision.agentSessionId } : {}),
               identityUpdateSource: "terminal-title",
               onIdentityConflict: logSessionIdentityConflict(runtime, lifecycle.projectId, lifecycle.sessionId),
               projectId: lifecycle.projectId,
@@ -1512,11 +1545,12 @@ async function dispatchDomainStateEndpoint(
         ? Date.parse(previousActivityState.attentionSuppressedUntil)
         : Number.NaN;
       const statusUpdate = updateSessionActivitySettings(presentedSession, {
-        agentName: titleEvent.agentName,
+        agentName: titleEvent.agentName ?? titleDetectedAgentName,
         event: "title",
         nowMs: titleActivityNowMs,
         projectId: lifecycle.projectId,
         sessionId: lifecycle.sessionId,
+        settledTitle: readAgentMetadataSettledTitle(presentedSession),
         title: titleEvent.rawTitle,
       });
       const activitySuppressedByWindow =
@@ -1585,10 +1619,11 @@ async function dispatchDomainStateEndpoint(
       void runtime.logger.log({
         details: {
           activity: statusUpdate.activity,
-          agentName: titleEvent.agentName,
+          agentName: titleEvent.agentName ?? titleDetectedAgentName,
           agentSessionIdCaptured: decision.agentSessionId !== undefined,
           agentSessionIdCapturedHash: hashLogIdentity(decision.agentSessionId),
           agentSessionIdUpdateSource: decision.agentSessionId !== undefined ? "terminal-title" : undefined,
+          agentDetectedFromTitle: titleDetectedAgentName,
           activitySuppressedByWindow,
           activitySuppressedUntil: previousActivityState.suppressedUntil,
           activitySuppressionRemainingMs: activitySuppressedByWindow
@@ -1702,6 +1737,10 @@ async function dispatchDomainStateEndpoint(
       };
     }
     case "/api/readPresentationSnapshot":
+      await syncSessionStateSidecars(runtime, repository, {
+        reason: "read-presentation-snapshot",
+        requestId,
+      });
       return {
         snapshot: readGxserverPresentationSnapshot(db, runtime.metadata.serverId),
       };
@@ -1744,9 +1783,17 @@ async function dispatchDomainStateEndpoint(
       }
       return { sessions };
     }
-    case "/api/listSessions":
-      scheduleAgentTitleMetadataChecksForSessions(runtime, repository, repository.listSessions(readOptionalProjectId(params)), "list-sessions");
-      return { sessions: repository.listSessions(readOptionalProjectId(params)) };
+    case "/api/listSessions": {
+      const projectId = readOptionalProjectId(params);
+      await syncSessionStateSidecars(runtime, repository, {
+        projectId,
+        reason: "list-sessions",
+        requestId,
+      });
+      const sessions = repository.listSessions(projectId);
+      scheduleAgentTitleMetadataChecksForSessions(runtime, repository, sessions, "list-sessions");
+      return { sessions };
+    }
     case "/api/removeSession": {
       const removeParams = params as unknown as GxserverRemoveSessionParams;
       const session = repository.removeSession(removeParams);
@@ -1763,6 +1810,372 @@ async function dispatchDomainStateEndpoint(
     }
     default:
       throw new GxserverDomainStateError("notFound", `${endpointPath} is not a gxserver domain-state endpoint.`);
+  }
+}
+
+interface GxserverSessionStateSidecar {
+  agentName?: string;
+  agentSessionId?: string;
+  agentSessionPath?: string;
+  firstUserMessage?: string;
+  lastActivityAt?: string;
+  pendingFirstPromptAutoRenamePrompt?: string;
+  status?: GxserverAgentActivityState["activity"];
+  statusUpdatedAt?: string;
+  title?: string;
+}
+
+async function syncSessionStateSidecars(
+  runtime: GxserverApiRuntime,
+  repository: GxserverDomainRepository,
+  input: {
+    projectId?: GxserverProjectId;
+    reason: string;
+    requestId?: string;
+  },
+): Promise<void> {
+  /*
+  CDXC:MobileSessionStatus 2026-06-11-23:52:
+  Android and iOS session cards must receive agent working/attention/idle state from gxserver alone when they connect over SSH. Read the legacy hook sidecar files at the daemon boundary before list/snapshot responses so the macOS app can be closed without becoming the status-forwarding service.
+  */
+  for (const session of repository.listSessions(input.projectId)) {
+    if (!shouldSyncSessionStateSidecar(session)) {
+      continue;
+    }
+    const sidecar = await readSessionStateSidecar(runtime.paths, session);
+    if (!sidecar || !hasSessionStateSidecarPayload(sidecar)) {
+      continue;
+    }
+    applySessionStateSidecar(runtime, repository, session, sidecar, input);
+  }
+  await syncLiveZmxProcessIdentities(runtime, repository, input);
+}
+
+function shouldSyncSessionStateSidecar(session: GxserverSessionDomainState): boolean {
+  return session.lifecycleState === "running" && session.surface !== "commands";
+}
+
+async function syncLiveZmxProcessIdentities(
+  runtime: GxserverApiRuntime,
+  repository: GxserverDomainRepository,
+  input: {
+    projectId?: GxserverProjectId;
+    reason: string;
+    requestId?: string;
+  },
+): Promise<void> {
+  const sessions = repository.listSessions(input.projectId).filter(shouldSyncLiveZmxProcessIdentity);
+  const sessionNames = sessions.map((session) => providerZmxSessionName(session));
+  if (sessionNames.length === 0) {
+    return;
+  }
+  let zmx: GxserverResolvedTool;
+  try {
+    zmx = await (runtime.zmxLifecycle?.requireZmx ?? requireBundledZmx)();
+  } catch (error) {
+    await runtime.logger.log({
+      details: {
+        reason: input.reason,
+        sessionCount: sessionNames.length,
+      },
+      error: error instanceof Error ? error.message : String(error),
+      event: "sessionIdentity.liveProcessSync.skipped",
+      level: "debug",
+      requestId: input.requestId,
+      serverId: runtime.metadata.serverId,
+    });
+    return;
+  }
+  let identities: ReadonlyMap<GxserverZmxSessionName, { agentId?: string; agentSessionId?: string; agentSessionPath?: string }>;
+  try {
+    identities = await (runtime.zmxLifecycle?.readSessionProcessIdentities ?? readZmxSessionProcessIdentities)({
+      runZsh: runtime.zmxLifecycle?.runZsh,
+      sessionNames,
+      zmxExecutablePath: zmx.executablePath,
+    });
+  } catch (error) {
+    await runtime.logger.log({
+      details: {
+        reason: input.reason,
+        sessionCount: sessionNames.length,
+      },
+      error: error instanceof Error ? error.message : String(error),
+      event: "sessionIdentity.liveProcessSync.failed",
+      level: "debug",
+      requestId: input.requestId,
+      serverId: runtime.metadata.serverId,
+    });
+    return;
+  }
+  for (const originalSession of sessions) {
+    const current = repository.getSession(originalSession.projectId, originalSession.sessionId);
+    if (!current || !shouldSyncLiveZmxProcessIdentity(current)) {
+      continue;
+    }
+    const identity = identities.get(providerZmxSessionName(current));
+    if (!identity?.agentId) {
+      continue;
+    }
+    const launchAgentMismatch = resolveSessionLaunchAgentMismatch(current, identity.agentId);
+    if (launchAgentMismatch) {
+      logSessionLaunchAgentMismatch(runtime, {
+        projectId: current.projectId,
+        sessionId: current.sessionId,
+      }, launchAgentMismatch, "live-process-identity", {
+        hasAgentSessionId: identity.agentSessionId !== undefined,
+        hasAgentSessionPath: identity.agentSessionPath !== undefined,
+      });
+      continue;
+    }
+    const result = applySessionStateEvent(repository, {
+      agentName: identity.agentId,
+      agentSessionId: identity.agentSessionId,
+      agentSessionPath: identity.agentSessionPath,
+      identityUpdateSource: "live-process",
+      onIdentityConflict: logSessionIdentityConflict(runtime, current.projectId, current.sessionId),
+      projectId: current.projectId,
+      sessionId: current.sessionId,
+    });
+    const reconciled = result.changed
+      ? scheduleAgentTitleMetadataCheck(runtime, repository, {
+          force: true,
+          projectId: current.projectId,
+          reason: "live-process-identity",
+          sessionId: current.sessionId,
+        })
+      : undefined;
+    if (result.changed || reconciled?.changed === true) {
+      schedulePresentationSessionDelta(runtime, repository, {
+        projectId: current.projectId,
+        reason: input.reason,
+        sessionId: current.sessionId,
+      });
+    }
+  }
+}
+
+function shouldSyncLiveZmxProcessIdentity(session: GxserverSessionDomainState): boolean {
+  /*
+  CDXC:GxserverSessionIdentity 2026-06-12-04:41:
+  Hook metadata can be stale when a generic terminal helper starts a different live agent, e.g. a Claude-labeled row whose active zmx process tree is Codex. Let gxserver repair only running zmx-backed workspace sessions from live process evidence so all clients get the current agent/session id while stopped history and command panes keep their stored metadata.
+  */
+  return (
+    session.lifecycleState === "running" &&
+    session.surface !== "commands" &&
+    readRuntimeText(session.runtimeSettings, "sessionPersistenceProvider") === "zmx"
+  );
+}
+
+async function readSessionStateSidecar(
+  paths: GxserverPaths,
+  session: Pick<GxserverSessionDomainState, "projectId" | "sessionId">,
+): Promise<GxserverSessionStateSidecar | undefined> {
+  const statePath = buildSessionStateSidecarPath(paths, session.projectId, session.sessionId);
+  const fileStats = await stat(statePath).catch(() => undefined);
+  if (!fileStats?.isFile() || fileStats.size > GXSERVER_SESSION_STATE_SIDECAR_MAX_BYTES) {
+    return undefined;
+  }
+  const rawState = await readFile(statePath, "utf8").catch(() => undefined);
+  return rawState?.trim() ? parseSessionStateSidecar(rawState) : undefined;
+}
+
+function buildSessionStateSidecarPath(
+  paths: GxserverPaths,
+  projectId: GxserverProjectId,
+  sessionId: GxserverSessionId,
+): string {
+  return path.join(
+    path.dirname(paths.rootDir),
+    "session-state",
+    sanitizeSessionStateSidecarPathPart(projectId),
+    `${sanitizeSessionStateSidecarPathPart(sessionId)}.env`,
+  );
+}
+
+function sanitizeSessionStateSidecarPathPart(value: string): string {
+  return value.replace(/[^a-z0-9._-]+/giu, "-").replace(/^-+|-+$/gu, "") || "session";
+}
+
+function parseSessionStateSidecar(rawState: string): GxserverSessionStateSidecar {
+  const state: GxserverSessionStateSidecar = {};
+  for (const line of rawState.split(/\r?\n/gu)) {
+    const separator = line.indexOf("=");
+    if (separator < 0) {
+      continue;
+    }
+    const key = line.slice(0, separator);
+    const rawValue = line.slice(separator + 1).trim();
+    const value =
+      key === "firstUserMessageBase64" || key === "agentSessionPath"
+        ? rawValue
+        : rawValue.replace(/\s+/gu, " ");
+    if (!value) {
+      continue;
+    }
+    if (key === "agent") {
+      state.agentName = value;
+    } else if (key === "agentSessionId") {
+      state.agentSessionId = value;
+    } else if (key === "agentSessionPath") {
+      state.agentSessionPath = value;
+    } else if (key === "firstUserMessageBase64") {
+      state.firstUserMessage = decodeSessionStateSidecarBase64(value);
+    } else if (key === "lastActivityAt") {
+      state.lastActivityAt = normalizeSidecarIsoTimestamp(value);
+    } else if (key === "pendingFirstPromptAutoRenamePrompt") {
+      state.pendingFirstPromptAutoRenamePrompt = value;
+    } else if (key === "status" && (value === "attention" || value === "idle" || value === "working")) {
+      state.status = value;
+    } else if (key === "statusUpdatedAt") {
+      state.statusUpdatedAt = normalizeSidecarIsoTimestamp(value);
+    } else if (key === "title") {
+      state.title = getVisibleTerminalTitle(value);
+    }
+  }
+  state.firstUserMessage = state.firstUserMessage ?? state.pendingFirstPromptAutoRenamePrompt;
+  return state;
+}
+
+function hasSessionStateSidecarPayload(state: GxserverSessionStateSidecar): boolean {
+  return Boolean(
+    state.agentName ||
+      state.agentSessionId ||
+      state.agentSessionPath ||
+      state.firstUserMessage ||
+      state.status ||
+      state.title,
+  );
+}
+
+function decodeSessionStateSidecarBase64(value: string): string | undefined {
+  try {
+    const decoded = Buffer.from(value, "base64").toString("utf8").trim();
+    return decoded || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function normalizeSidecarIsoTimestamp(value: string): string | undefined {
+  const timestamp = Date.parse(value);
+  return Number.isFinite(timestamp) ? new Date(timestamp).toISOString() : undefined;
+}
+
+function applySessionStateSidecar(
+  runtime: GxserverApiRuntime,
+  repository: GxserverDomainRepository,
+  originalSession: GxserverSessionDomainState,
+  sidecar: GxserverSessionStateSidecar,
+  input: {
+    reason: string;
+    requestId?: string;
+  },
+): void {
+  const current = repository.getSession(originalSession.projectId, originalSession.sessionId);
+  if (!current) {
+    return;
+  }
+  const params: GxserverIngestAgentHookEventParams = {
+    agentName: sidecar.agentName,
+    agentSessionId: sidecar.agentSessionId,
+    agentSessionPath: sidecar.agentSessionPath,
+    eventName: "legacy-session-state",
+    firstUserMessage: sidecar.firstUserMessage,
+    projectId: current.projectId,
+    sessionId: current.sessionId,
+    status: sidecar.status,
+    statusUpdatedAt: sidecar.statusUpdatedAt ?? sidecar.lastActivityAt,
+    title: sidecar.title,
+  };
+  const sidecarActivity = normalizeAgentHookActivity(params.status, params.eventName, params.agentName);
+  const observedIdentity = resolveSessionIdentity({
+    agentName: params.agentName,
+    agentSessionId: params.agentSessionId,
+    agentSessionPath: params.agentSessionPath,
+  });
+  const launchAgentMismatch = resolveSessionLaunchAgentMismatch(current, observedIdentity.agentId);
+  if (launchAgentMismatch) {
+    logSessionLaunchAgentMismatch(runtime, {
+      projectId: current.projectId,
+      sessionId: current.sessionId,
+    }, launchAgentMismatch, "agent-hook-event", {
+      activity: sidecarActivity,
+      hasAgentSessionId: params.agentSessionId !== undefined,
+      hasAgentSessionPath: params.agentSessionPath !== undefined,
+      hasExplicitStatus: params.status !== undefined,
+      hasFirstUserMessage: params.firstUserMessage !== undefined,
+      hasHookEventName: false,
+    });
+    return;
+  }
+
+  const metadata = applySessionStateEvent(repository, {
+    ...params,
+    identityUpdateSource: "passive",
+    onIdentityConflict: logSessionIdentityConflict(runtime, current.projectId, current.sessionId),
+  });
+  if (isRejectedPassiveSessionIdentityConflict(metadata.identityConflict)) {
+    logPassiveSessionIdentityEventRejected(runtime, {
+      projectId: current.projectId,
+      sessionId: current.sessionId,
+    }, metadata.identityConflict, "agent-hook-event", {
+      activity: sidecarActivity,
+      hasAgentSessionId: params.agentSessionId !== undefined,
+      hasAgentSessionPath: params.agentSessionPath !== undefined,
+      hasExplicitStatus: params.status !== undefined,
+      hasFirstUserMessage: params.firstUserMessage !== undefined,
+      hasHookEventName: false,
+      hasTitle: params.title !== undefined,
+    });
+    return;
+  }
+
+  let session = metadata.session;
+  let activityChanged = false;
+  if (sidecarActivity) {
+    const sidecarActivityNowMs = parseAgentHookActivityTimestamp(params.statusUpdatedAt) ?? Date.now();
+    if (!isStaleAgentHookActivityEvent(session.runtimeSettings.agentActivity, sidecarActivityNowMs)) {
+      const activityUpdate = updateSessionActivitySettings(session, {
+        activity: sidecarActivity,
+        agentName: params.agentName,
+        nowMs: sidecarActivityNowMs,
+        projectId: current.projectId,
+        sessionId: current.sessionId,
+      });
+      activityChanged = shouldPersistSessionStatusUpdate(session, activityUpdate);
+      if (activityChanged) {
+        session = repository.updateSession({
+          lastActiveAt: activityUpdate.lastActiveAt,
+          projectId: session.projectId,
+          runtimeSettings: activityUpdate.runtimeSettings,
+          sessionId: session.sessionId,
+        });
+        scheduleStaleActivityPresentationRefresh(runtime, session, "session-state-sidecar-stale-activity");
+      }
+    }
+  }
+
+  const reconciled = scheduleAgentTitleMetadataCheck(runtime, repository, {
+    force: true,
+    projectId: current.projectId,
+    reason: "session-state-sidecar",
+    sessionId: current.sessionId,
+  });
+  session = reconciled?.session ?? repository.getSession(current.projectId, current.sessionId) ?? session;
+  const autoTitleClaim = claimGxserverFirstPromptAutoTitle(repository, session, params.firstUserMessage);
+  if (autoTitleClaim.claimed) {
+    scheduleGxserverFirstPromptAutoTitleJob(runtime, {
+      projectId: current.projectId,
+      requestId: input.requestId ?? "session-state-sidecar",
+      sessionId: current.sessionId,
+    });
+  }
+  if (metadata.changed || activityChanged || reconciled?.changed === true || autoTitleClaim.claimed) {
+    schedulePresentationSessionDelta(runtime, repository, {
+      projectId: current.projectId,
+      reason: input.reason,
+      sessionId: current.sessionId,
+    });
   }
 }
 
@@ -2274,18 +2687,142 @@ function shouldPersistSessionStatusUpdate(
   );
 }
 
+function getTerminalTitleDetectedAgentName(rawTitle: unknown): string | undefined {
+  const title = typeof rawTitle === "string" ? rawTitle.trim().replace(/\s+/gu, " ") : "";
+  if (!title) {
+    return undefined;
+  }
+  const signal = classifyTerminalTitleStatus(title);
+  if (!signal?.agentName) {
+    return undefined;
+  }
+  return isExplicitAgentProgramTerminalTitle(title, signal.agentName) ? signal.agentName : undefined;
+}
+
+function isExplicitAgentProgramTerminalTitle(title: string, agentName: string): boolean {
+  /*
+  CDXC:AgentDetection 2026-06-11-22:44:
+  Terminal-title promotion is an identity bootstrap for explicit agent program titles only. Real task titles can mention provider names, so gxserver must wait for hook/session metadata instead of relabeling those terminal rows from classifier-only word matches.
+  */
+  switch (agentName) {
+    case "antigravity":
+      return /^(?:🔔\s*)?agy$/iu.test(title);
+    case "claude":
+      return /^(?:[✳*⠐⠂·✶✻✽✸✹✺✷✴]\s*)?Claude Code$/iu.test(title);
+    case "codex":
+      return /^(?:[\u2800-\u28ff·•⋅◦]\s*)?Codex(?: CLI)?$/iu.test(title);
+    case "copilot":
+      return /^(?:[🤖🔔]\s*)?(?:GitHub\s+)?Copilot(?: CLI)?$/iu.test(title);
+    case "cursor":
+      return /^Cursor Agent(?:\s*-\s*✅ Ready)?$/iu.test(title);
+    case "gemini":
+      return /^(?:[✦◇]\s*)?Gemini(?: CLI)?$/iu.test(title);
+    case "pi":
+      return /^[\s\u2800-\u28ff·•⋅◦✳*✦◇🤖🔔]*π\s*-/u.test(title);
+    default:
+      return false;
+  }
+}
+
 function normalizeAgentHookActivity(
   status: unknown,
   eventName: unknown,
+  agentName?: unknown,
 ): GxserverAgentActivityState["activity"] | undefined {
+  const normalizedAgentName = normalizeAgentHookAgentName(agentName);
+  const normalizedEventName = typeof eventName === "string" ? eventName.trim() : "";
+  const lowerEventName = normalizedEventName.toLowerCase();
+  /*
+  CDXC:AgentHookStatus 2026-06-11-22:19:
+  gxserver must normalize hook status by provider event semantics before trusting sidecar status text. Older installed hooks may still write `attention` for Stop/agent-response events; these are settled turn boundaries for the supported hook agents and should not produce a false Done/needs-attention state in any client.
+  */
+  if (normalizedAgentName === "claude") {
+    if (lowerEventName === "stop" || lowerEventName === "idle") {
+      return "idle";
+    }
+    if (lowerEventName === "notification" || lowerEventName === "notify" || lowerEventName === "permissionrequest") {
+      return "attention";
+    }
+    if (
+      lowerEventName === "userpromptsubmit" ||
+      lowerEventName === "prompt-submit" ||
+      lowerEventName === "pretooluse" ||
+      lowerEventName === "pre-tool-use"
+    ) {
+      return "working";
+    }
+    if (lowerEventName === "sessionend" || lowerEventName === "session-end") {
+      return "idle";
+    }
+  }
+  if (
+    normalizedAgentName === "copilot" ||
+    normalizedAgentName === "codebuddy" ||
+    normalizedAgentName === "droid" ||
+    normalizedAgentName === "qoder"
+  ) {
+    if (
+      lowerEventName === "stop" ||
+      lowerEventName === "notification" ||
+      lowerEventName === "sessionend" ||
+      lowerEventName === "session-end"
+    ) {
+      return "idle";
+    }
+    if (lowerEventName === "pretooluse" || lowerEventName === "pre-tool-use") {
+      return "working";
+    }
+  }
+  if (normalizedAgentName === "antigravity") {
+    if (
+      lowerEventName === "stop" ||
+      lowerEventName === "turn-completion" ||
+      lowerEventName === "sessionend" ||
+      lowerEventName === "session-end"
+    ) {
+      return "idle";
+    }
+    if (lowerEventName === "preinvocation" || lowerEventName === "pretooluse" || lowerEventName === "posttooluse") {
+      return "working";
+    }
+  }
+  if (
+    lowerEventName === "stop" ||
+    lowerEventName === "agent-response" ||
+    lowerEventName === "afteragent" ||
+    lowerEventName === "afteragentresponse" ||
+    lowerEventName === "agent.end" ||
+    lowerEventName === "agent_end" ||
+    lowerEventName === "on_complete" ||
+    lowerEventName === "on_error" ||
+    lowerEventName === "post_llm_call" ||
+    lowerEventName === "turn-completion"
+  ) {
+    return "idle";
+  }
+  if (
+    lowerEventName === "on_tool_permission" ||
+    lowerEventName === "post_approval_response" ||
+    lowerEventName === "pretooluse" ||
+    lowerEventName === "posttooluse" ||
+    lowerEventName === "pre_tool_call" ||
+    lowerEventName === "beforeagent" ||
+    lowerEventName === "preinvocation" ||
+    lowerEventName === "userpromptsubmit" ||
+    lowerEventName === "userpromptsubmit" ||
+    lowerEventName === "agent.start" ||
+    lowerEventName === "agent_start" ||
+    lowerEventName === "beforeshellexecution" ||
+    lowerEventName === "beforesubmitprompt"
+  ) {
+    return "working";
+  }
   if (status === "attention" || status === "idle" || status === "working") {
     return status;
   }
-  const normalizedEventName = typeof eventName === "string" ? eventName.trim() : "";
   if (!normalizedEventName) {
     return undefined;
   }
-  const lowerEventName = normalizedEventName.toLowerCase();
   if (
     GXSERVER_AGENT_HOOK_WORKING_EVENTS.has(normalizedEventName) ||
     GXSERVER_AGENT_HOOK_WORKING_EVENTS.has(lowerEventName)
@@ -2305,6 +2842,38 @@ function normalizeAgentHookActivity(
     return "idle";
   }
   return undefined;
+}
+
+function normalizeAgentHookAgentName(value: unknown): string | undefined {
+  const normalized = typeof value === "string" ? value.trim().toLowerCase().replace(/\s+/gu, " ") : "";
+  if (!normalized) {
+    return undefined;
+  }
+  const aliases: Record<string, string> = {
+    "agy": "antigravity",
+    "amp cli": "amp",
+    "antigravity cli": "antigravity",
+    "claude code": "claude",
+    "code buddy": "codebuddy",
+    "codex cli": "codex",
+    "cursor agent": "cursor",
+    "cursor cli": "cursor",
+    "cursor-agent": "cursor",
+    "factory": "droid",
+    "factory droid": "droid",
+    "gemini cli": "gemini",
+    "github copilot": "copilot",
+    "hermes": "hermes-agent",
+    "hermes agent": "hermes-agent",
+    "kiro cli": "kiro",
+    "kiro-cli": "kiro",
+    "open code": "opencode",
+    "qodercli": "qoder",
+    "rovo": "rovodev",
+    "rovo dev": "rovodev",
+    "π": "pi",
+  };
+  return aliases[normalized] ?? normalized;
 }
 
 function parseAgentHookActivityTimestamp(value: unknown): number | undefined {
@@ -2364,7 +2933,7 @@ function logSessionLaunchAgentMismatch(
   runtime: GxserverApiRuntime,
   lifecycle: GxserverSessionLifecycleParams,
   mismatch: GxserverLaunchAgentMismatch,
-  source: "agent-hook-event" | "session-state-event" | "update-agent-activity",
+  source: "agent-hook-event" | "live-process-identity" | "session-state-event" | "update-agent-activity",
   extraDetails: Record<string, unknown>,
 ): void {
   /*
@@ -3535,7 +4104,11 @@ function resolveGxserverFirstPromptAutoTitleStrategy(
   agentName: string | undefined,
 ): "generateTitleAndRename" | "generateTitleAndName" | undefined {
   const normalized = normalizeGxserverAgentName(agentName);
-  if (normalized === "codex") {
+  if (normalized === "codex" || normalized === "claude") {
+    /*
+    CDXC:GxserverSessionTitle 2026-06-12-07:08:
+    Claude Code hooks expose the first user prompt when the session starts working, but unrenamed Claude rows can remain at the generic `Claude Code` title. Treat Claude like Codex for gxserver-owned first-prompt title generation so the hook-backed flow stages `/rename <generated title>` as soon as work starts while meaningful existing titles still block automation.
+    */
     return "generateTitleAndRename";
   }
   if (normalized === "pi") {
@@ -3556,6 +4129,9 @@ function normalizeGxserverAgentName(value: string | undefined): string | undefin
   if (normalized === "openai codex" || normalized === "codex cli") {
     return "codex";
   }
+  if (normalized === "claude code") {
+    return "claude";
+  }
   if (normalized === "π") {
     return "pi";
   }
@@ -3573,6 +4149,9 @@ function isGxserverGenericAgentSessionTitle(agentName: string | undefined, title
     "terminal session",
     "agent",
     "agent session",
+    "claude",
+    "claude code",
+    "claude session",
     "codex",
     "codex cli",
     "codex session",
@@ -4395,6 +4974,17 @@ function readRuntimeText(value: unknown, key: string): string | undefined {
   }
   const candidate = value[key];
   return typeof candidate === "string" && candidate.trim() ? candidate.trim() : undefined;
+}
+
+function readAgentMetadataSettledTitle(session: GxserverSessionDomainState): string | undefined {
+  /*
+  CDXC:SessionStatus 2026-06-12-04:06:
+  Only agent-metadata titles can act as settled-title evidence for clearing missed Codex Stop hooks. User, placeholder, and generic terminal titles are useful display text, but they are not enough proof to downgrade explicit hook-owned working after arbitrary title observations.
+  */
+  if (readRuntimeText(session.runtimeSettings, "titleMetadataSource") !== "agent-metadata") {
+    return undefined;
+  }
+  return getVisibleTerminalTitle(session.title)?.trim();
 }
 
 function readOptionalText(value: unknown): string | undefined {

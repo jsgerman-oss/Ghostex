@@ -55,6 +55,9 @@ export function normalizeAgentId(value: unknown): string | undefined {
   if (["pi", "π"].includes(normalized)) {
     return "pi";
   }
+  if (["omp"].includes(normalized)) {
+    return "omp";
+  }
   if (["agy", "antigravity", "antigravity cli"].includes(normalized)) {
     return "antigravity";
   }
@@ -69,6 +72,9 @@ export function normalizeAgentId(value: unknown): string | undefined {
   }
   if (["grok", "grok build"].includes(normalized)) {
     return "grok";
+  }
+  if (["kiro", "kiro cli", "kiro-cli"].includes(normalized)) {
+    return "kiro";
   }
   if (["hermes", "hermes agent", "hermes-agent"].includes(normalized)) {
     return "hermes-agent";
@@ -98,13 +104,23 @@ export function parseAgentResumeIdentity(value: unknown): GxserverResolvedSessio
   /*
   CDXC:GxserverSessionIdentity 2026-05-31-21:10:
   Raw terminal startup text such as `cd ... && codex resume "<uuid>"` is an identity observation, not a title. Extract the agent and exact resume target in gxserver so clients do not need per-platform command parsers to classify restored Codex/Claude/Cursor/OpenCode/Pi sessions.
+
+  CDXC:GxserverSessionIdentity 2026-06-12-04:41:
+  Codex resume commands can include runtime flags before the verb, such as `codex --yolo resume <id>`. Parse that shape in the shared identity reducer so live zmx process evidence and startup text repair stale agent metadata the same way for every client.
   */
   const patterns: Array<{ agentId: string; pattern: RegExp }> = [
+    { agentId: "codex", pattern: /\bcodex(?:\s+--[a-z0-9][a-z0-9-]*(?:=(?:"[^"]+"|'[^']+'|[^\s;&|]+))?)*\s+(?:resume|fork)\s+(?:"([^"]+)"|'([^']+)'|([^\s;&|]+))/iu },
     { agentId: "codex", pattern: /\bcodex\s+resume\s+(?:"([^"]+)"|'([^']+)'|([^\s;&|]+))/iu },
     { agentId: "claude", pattern: /\bclaude\s+--resume\s+(?:"([^"]+)"|'([^']+)'|([^\s;&|]+))/iu },
     { agentId: "cursor", pattern: /\bcursor-agent\s+--resume\s+(?:"([^"]+)"|'([^']+)'|([^\s;&|]+))/iu },
     { agentId: "opencode", pattern: /\bopencode\s+(?:--session|-s)\s+(?:"([^"]+)"|'([^']+)'|([^\s;&|]+))/iu },
     { agentId: "pi", pattern: /\bpi\s+--session\s+(?:"([^"]+)"|'([^']+)'|([^\s;&|]+))/iu },
+    /*
+    CDXC:AgentResume 2026-06-11-22:49:
+    Kiro and OMP restore commands can arrive as startup text before hook metadata. Parse their exact resume flags in gxserver so session identity stays server-owned across clients.
+    */
+    { agentId: "kiro", pattern: /\bkiro-cli\s+chat\b[^\n;&|]*--resume-id\s+(?:"([^"]+)"|'([^']+)'|([^\s;&|]+))/iu },
+    { agentId: "omp", pattern: /\bomp\s+--session\s+(?:"([^"]+)"|'([^']+)'|([^\s;&|]+))/iu },
   ];
   for (const { agentId, pattern } of patterns) {
     const match = pattern.exec(text);
@@ -154,8 +170,58 @@ function inferAgentIdFromIdentityPath(path: string | undefined): string | undefi
   ) {
     return "cursor";
   }
+  /*
+  CDXC:ClaudeSessionIdentity 2026-06-11-21:43:
+  Claude Code transcript paths are durable session identity. Promote rows with `.claude` transcript metadata to Claude in gxserver so macOS, mobile, CLI, and future clients render the agent icon/title and resume metadata from the same server-owned classification instead of leaving the row as a plain terminal.
+  */
+  if (
+    (lowerPath.includes("/.claude/") || lowerPath.includes("/.claude-profiles/")) &&
+    lowerPath.endsWith(".jsonl")
+  ) {
+    return "claude";
+  }
   if (lowerPath.includes("/.codex/") || lowerPath.includes("/.codex-profiles/")) {
     return "codex";
+  }
+  /*
+  CDXC:AgentSessionIdentity 2026-06-11-22:19:
+  Hook metadata for lower-priority agents can arrive before a clean agentName. Keep provider path inference in gxserver so all clients classify those rows from the same server-owned identity evidence instead of duplicating macOS-only detection code.
+  */
+  if (lowerPath.includes("/.grok/")) {
+    return "grok";
+  }
+  if (lowerPath.includes("/.opencode/") || lowerPath.includes("/.config/opencode/")) {
+    return "opencode";
+  }
+  if (lowerPath.includes("/.pi/agent/")) {
+    return "pi";
+  }
+  if (lowerPath.includes("/.omp/agent/")) {
+    return "omp";
+  }
+  if (lowerPath.includes("/.gemini/config/")) {
+    return "antigravity";
+  }
+  if (lowerPath.includes("/.copilot/")) {
+    return "copilot";
+  }
+  if (lowerPath.includes("/.factory/")) {
+    return "droid";
+  }
+  if (lowerPath.includes("/.kiro/agents/")) {
+    return "kiro";
+  }
+  if (lowerPath.includes("/.hermes/")) {
+    return "hermes-agent";
+  }
+  if (lowerPath.includes("/.codebuddy/")) {
+    return "codebuddy";
+  }
+  if (lowerPath.includes("/.qoder/")) {
+    return "qoder";
+  }
+  if (lowerPath.includes("/.rovodev/")) {
+    return "rovodev";
   }
   return undefined;
 }

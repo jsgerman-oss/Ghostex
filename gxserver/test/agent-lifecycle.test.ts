@@ -463,6 +463,41 @@ test("OpenCode exact resume uses runtime permission config without legacy flags"
   assert.equal(plan.copyCommand, `${OPENCODE_ACCEPT_ALL_ENV} opencode --session "opencode-session-123"`);
 });
 
+test("lower-priority resume plan supports Kiro and OMP exact ids", () => {
+  /*
+  CDXC:AgentResume 2026-06-11-22:49:
+  Kiro and OMP are lower-priority hook integrations, but their exact session ids still need first-class gxserver resume plans so clients do not need separate local restore rules.
+  */
+  const project = projectFixture();
+  const kiro = sessionFixture({
+    agentId: "kiro",
+    runtimeSettings: {
+      agentCommand: "kiro-cli chat --agent ghostex",
+      agentSessionId: "kiro-thread-123",
+      titleSource: "user",
+    },
+    title: "Kiro thread",
+  });
+  const kiroPlan = buildAgentResumePlan(project, kiro);
+  assert.equal(kiroPlan.primaryCommand, 'kiro-cli chat --agent ghostex --resume-id "kiro-thread-123"');
+  assert.equal(kiroPlan.displayCommand, kiroPlan.primaryCommand);
+  assert.equal(kiroPlan.copyCommand, kiroPlan.primaryCommand);
+
+  const omp = sessionFixture({
+    agentId: "omp",
+    runtimeSettings: {
+      agentCommand: "omp",
+      agentSessionId: "omp-thread-456",
+      titleSource: "user",
+    },
+    title: "OMP thread",
+  });
+  const ompPlan = buildAgentResumePlan(project, omp);
+  assert.equal(ompPlan.primaryCommand, 'omp --session "omp-thread-456"');
+  assert.equal(ompPlan.displayCommand, ompPlan.primaryCommand);
+  assert.equal(ompPlan.copyCommand, ompPlan.primaryCommand);
+});
+
 test("temporary Search by Text titles are not trusted resume fallbacks", () => {
   const project = projectFixture();
   const searchSession = sessionFixture({

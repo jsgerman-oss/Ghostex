@@ -9,6 +9,11 @@ import type {
   GxserverSessionId,
   GxserverZmxSessionName,
 } from "../protocol/index.js";
+import {
+  parseAgentResumeIdentity,
+  type GxserverResolvedSessionIdentity,
+} from "./session-presentation/identity.js";
+import { inferAgentIdFromCommand } from "./session-presentation/launch-identity.js";
 
 export interface GxserverZmxCommandResult {
   exitCode: number;
@@ -29,6 +34,12 @@ export interface GxserverZmxCommandOptions {
 
 export type GxserverZmxCommandRunner = (script: string, options?: GxserverZmxCommandOptions) => Promise<GxserverZmxCommandResult>;
 export type GxserverCwdExists = (cwd: string) => Promise<boolean>;
+export type GxserverZmxProcessIdentity = GxserverResolvedSessionIdentity;
+export type GxserverZmxProcessIdentityReader = (input: {
+  runZsh?: GxserverZmxCommandRunner;
+  sessionNames: readonly GxserverZmxSessionName[];
+  zmxExecutablePath: string;
+}) => Promise<ReadonlyMap<GxserverZmxSessionName, GxserverZmxProcessIdentity>>;
 
 /*
 CDXC:GxserverZmxLifecycle 2026-05-30-19:37:
@@ -42,6 +53,7 @@ export const GXSERVER_ZMX_COMMAND_STDOUT_LIMIT_BYTES = 512 * 1024;
 export const GXSERVER_ZMX_COMMAND_STDERR_LIMIT_BYTES = 64 * 1024;
 export const GXSERVER_ZMX_HISTORY_STDOUT_LIMIT_BYTES = 256 * 1024;
 export const GXSERVER_ZMX_SEND_TEXT_LIMIT_BYTES = 512 * 1024;
+const GXSERVER_ZMX_PROCESS_SNAPSHOT_STDOUT_LIMIT_BYTES = 1024 * 1024;
 
 const GXSERVER_COLOR_DISABLING_ENVIRONMENT_KEYS = [
   "ANSI_COLORS_DISABLED",
@@ -162,6 +174,13 @@ CDXC:PromptEditor 2026-06-07-08:09:
 Prompt-editor capability checks must use the same bundled zmx binary that
 gxserver uses for attach/run. Export GHOSTEX_ZMX_BIN into zmx shells so Ctrl+G
 does not resolve a stale PATH zmx before deciding whether Monaco is available.
+
+CDXC:GenerateTitleSkill 2026-06-12-04:10:
+Generate-title and other self-session agent workflows may run inside plain zmx
+shells that only know the provider session name. Export GHOSTEX_SESSION_ID from
+the current zmx provider name during attach/run launches so legacy skill copies
+do not report missing-session, while GHOSTEX_GLOBAL_SESSION_REF remains the
+preferred exact selector when available.
 */
 
 export function buildZmxAttachCommand(input: GxserverZmxAttachCommandInput): string {
@@ -187,6 +206,9 @@ export GHOSTEX_ZMX_BIN="$zmx_bin"
 ${zmxSessionIdentityResetShellCommand()}
 if [ -n "$zmx_global_session_ref" ]; then
   export GHOSTEX_GLOBAL_SESSION_REF="$zmx_global_session_ref"
+fi
+if [ -n "$zmx_session" ]; then
+  export GHOSTEX_SESSION_ID="$zmx_session"
 fi
 if [ -n "$zmx_gxserver_auth_token_file" ]; then
   export GHOSTEX_GXSERVER_AUTH_TOKEN_FILE="$zmx_gxserver_auth_token_file"
@@ -297,6 +319,9 @@ ${zmxSessionIdentityResetShellCommand()}
 if [ -n "$zmx_global_session_ref" ]; then
   export GHOSTEX_GLOBAL_SESSION_REF="$zmx_global_session_ref"
 fi
+if [ -n "$zmx_session" ]; then
+  export GHOSTEX_SESSION_ID="$zmx_session"
+fi
 if [ -n "$zmx_gxserver_auth_token_file" ]; then
   export GHOSTEX_GXSERVER_AUTH_TOKEN_FILE="$zmx_gxserver_auth_token_file"
 fi
@@ -342,6 +367,9 @@ ${zmxSessionIdentityResetShellCommand()}
 if [ -n "$zmx_global_session_ref" ]; then
   export GHOSTEX_GLOBAL_SESSION_REF="$zmx_global_session_ref"
 fi
+if [ -n "$zmx_session" ]; then
+  export GHOSTEX_SESSION_ID="$zmx_session"
+fi
 if [ -n "$zmx_gxserver_auth_token_file" ]; then
   export GHOSTEX_GXSERVER_AUTH_TOKEN_FILE="$zmx_gxserver_auth_token_file"
 fi
@@ -367,8 +395,14 @@ function zmxProviderPromptEditorSetupShellCommand(): string {
   and gte from clients that did not advertise Monaco. Keep this in the zmx
   initial-command shell, not terminalReady startup text, so restore wrappers are
   never pasted into an already-live terminal.
+
+  CDXC:PromptEditor 2026-06-11-18:15:
+  The generated provider script must contain real zsh parameter expansions, not
+  literal escaped strings. Agent CLIs execute EDITOR as argv[0], so exporting
+  `${GHOSTEX_HOME:-...}/state/prompt-editor` literally makes Ctrl+G fail before
+  Ghostex can route Monaco vs gte.
   */
-  return String.raw`
+  return `
 ghostex_prompt_editor_home="\${GHOSTEX_HOME:-$HOME/.ghostex}"
 ghostex_prompt_editor_wrapper="$ghostex_prompt_editor_home/state/prompt-editor"
 mkdir -p "\${ghostex_prompt_editor_wrapper:h}" 2>/dev/null || true
@@ -425,6 +459,71 @@ if [ "$zmx_list_status" -ne 0 ]; then
 fi
 printf '%s\\n' "$zmx_sessions" | grep -F -x -- "$zmx_session" >/dev/null 2>&1
 `.trim();
+}
+
+export function buildZmxProcessSnapshotCommand(input: {
+  zmxExecutablePath: string;
+}): string {
+  /*
+  CDXC:GxserverSessionIdentity 2026-06-12-04:41:
+  Generic terminal launches such as helper commands can start a real agent after gxserver creates the zmx provider. Capture live zmx root PIDs plus their process descendants in one bounded server-side snapshot so gxserver can repair stale hook identity for every client without logging command text or pushing process parsing into macOS.
+  */
+  return `
+zmx_bin=${shellQuote(input.zmxExecutablePath)}
+if [ ! -x "$zmx_bin" ]; then
+  printf '%s\\n' 'session persistence is set to zmx, but Ghostex bundled zmx was not found.' >&2
+  exit 127
+fi
+unset ZMX_SESSION ZMX_SESSION_PREFIX
+printf '%s\\n' '__GHOSTEX_ZMX_LIST__'
+"$zmx_bin" list
+printf '%s\\n' '__GHOSTEX_PS__'
+ps -axo pid=,ppid=,command=
+`.trim();
+}
+
+export async function readZmxSessionProcessIdentities(input: {
+  runZsh?: GxserverZmxCommandRunner;
+  sessionNames: readonly GxserverZmxSessionName[];
+  zmxExecutablePath: string;
+}): Promise<ReadonlyMap<GxserverZmxSessionName, GxserverZmxProcessIdentity>> {
+  if (input.sessionNames.length === 0) {
+    return new Map();
+  }
+  const result = await (input.runZsh ?? runZshScript)(buildZmxProcessSnapshotCommand(input), {
+    stdoutLimitBytes: GXSERVER_ZMX_PROCESS_SNAPSHOT_STDOUT_LIMIT_BYTES,
+  });
+  if (result.exitCode !== 0) {
+    return new Map();
+  }
+  const { psOutput, zmxListOutput } = parseZmxProcessSnapshotSections(result.stdout);
+  return parseZmxSessionProcessIdentities({
+    psOutput,
+    sessionNames: input.sessionNames,
+    zmxListOutput,
+  });
+}
+
+export function parseZmxSessionProcessIdentities(input: {
+  psOutput: string;
+  sessionNames: readonly GxserverZmxSessionName[];
+  zmxListOutput: string;
+}): ReadonlyMap<GxserverZmxSessionName, GxserverZmxProcessIdentity> {
+  const rootPidsBySessionName = parseZmxRootPids(input.zmxListOutput, input.sessionNames);
+  const processes = parseProcessRows(input.psOutput);
+  const childrenByParentPid = groupProcessesByParentPid(processes);
+  const identities = new Map<GxserverZmxSessionName, GxserverZmxProcessIdentity>();
+  for (const sessionName of input.sessionNames) {
+    const rootPid = rootPidsBySessionName.get(sessionName);
+    if (rootPid === undefined) {
+      continue;
+    }
+    const identity = resolveProcessTreeAgentIdentity(rootPid, processes, childrenByParentPid);
+    if (identity?.agentId) {
+      identities.set(sessionName, identity);
+    }
+  }
+  return identities;
 }
 
 export async function probeZmxSession(input: {
@@ -656,6 +755,115 @@ function zmxKillThrownErrorMessage(error: unknown): string {
     return `${error.name || "Error"}${code}: ${error.message}`;
   }
   return `zmx kill command failed: ${String(error)}`;
+}
+
+function parseZmxProcessSnapshotSections(stdout: string): { psOutput: string; zmxListOutput: string } {
+  const zmxMarker = "__GHOSTEX_ZMX_LIST__";
+  const psMarker = "__GHOSTEX_PS__";
+  const zmxIndex = stdout.indexOf(zmxMarker);
+  const psIndex = stdout.indexOf(psMarker);
+  if (zmxIndex < 0 || psIndex < 0 || psIndex <= zmxIndex) {
+    return { psOutput: "", zmxListOutput: "" };
+  }
+  return {
+    psOutput: stdout.slice(psIndex + psMarker.length).trim(),
+    zmxListOutput: stdout.slice(zmxIndex + zmxMarker.length, psIndex).trim(),
+  };
+}
+
+function parseZmxRootPids(
+  zmxListOutput: string,
+  sessionNames: readonly GxserverZmxSessionName[],
+): Map<GxserverZmxSessionName, number> {
+  const wanted = new Set(sessionNames);
+  const rootPids = new Map<GxserverZmxSessionName, number>();
+  for (const line of zmxListOutput.split(/\r?\n/gu)) {
+    const name = /(?:^|[\s→])name=([^\t\s]+)/u.exec(line)?.[1] as GxserverZmxSessionName | undefined;
+    if (!name || !wanted.has(name)) {
+      continue;
+    }
+    const pid = Number(/(?:^|\s)pid=(\d+)/u.exec(line)?.[1]);
+    if (Number.isInteger(pid) && pid > 0) {
+      rootPids.set(name, pid);
+    }
+  }
+  return rootPids;
+}
+
+interface GxserverProcessRow {
+  command: string;
+  pid: number;
+  ppid: number;
+}
+
+function parseProcessRows(psOutput: string): GxserverProcessRow[] {
+  const rows: GxserverProcessRow[] = [];
+  for (const line of psOutput.split(/\r?\n/gu)) {
+    const match = /^\s*(\d+)\s+(\d+)\s+(.*)$/u.exec(line);
+    if (!match) {
+      continue;
+    }
+    rows.push({
+      command: match[3] ?? "",
+      pid: Number(match[1]),
+      ppid: Number(match[2]),
+    });
+  }
+  return rows;
+}
+
+function groupProcessesByParentPid(processes: readonly GxserverProcessRow[]): Map<number, GxserverProcessRow[]> {
+  const grouped = new Map<number, GxserverProcessRow[]>();
+  for (const processRow of processes) {
+    const children = grouped.get(processRow.ppid) ?? [];
+    children.push(processRow);
+    grouped.set(processRow.ppid, children);
+  }
+  return grouped;
+}
+
+function resolveProcessTreeAgentIdentity(
+  rootPid: number,
+  processes: readonly GxserverProcessRow[],
+  childrenByParentPid: ReadonlyMap<number, readonly GxserverProcessRow[]>,
+): GxserverZmxProcessIdentity | undefined {
+  const rowsByPid = new Map<number, GxserverProcessRow>(
+    processes.map((processRow) => [processRow.pid, processRow] as const),
+  );
+  const candidates: Array<{ depth: number; identity: GxserverZmxProcessIdentity }> = [];
+  const queue: Array<{ depth: number; pid: number }> = [{ depth: 0, pid: rootPid }];
+  const seen = new Set<number>();
+  for (let index = 0; index < queue.length; index += 1) {
+    const item = queue[index];
+    if (!item || seen.has(item.pid)) {
+      continue;
+    }
+    seen.add(item.pid);
+    const row = rowsByPid.get(item.pid);
+    if (row) {
+      const identity = resolveProcessCommandAgentIdentity(row.command);
+      if (identity?.agentId) {
+        candidates.push({ depth: item.depth, identity });
+      }
+    }
+    for (const child of childrenByParentPid.get(item.pid) ?? []) {
+      queue.push({ depth: item.depth + 1, pid: child.pid });
+    }
+  }
+  candidates.sort((left, right) => {
+    const idScore = Number(Boolean(right.identity.agentSessionId)) - Number(Boolean(left.identity.agentSessionId));
+    return idScore || right.depth - left.depth;
+  });
+  return candidates[0]?.identity;
+}
+
+function resolveProcessCommandAgentIdentity(command: string): GxserverZmxProcessIdentity | undefined {
+  const resumeIdentity = parseAgentResumeIdentity(command);
+  if (resumeIdentity.agentId) {
+    return resumeIdentity;
+  }
+  const agentId = inferAgentIdFromCommand(command);
+  return agentId ? { agentId } : undefined;
 }
 
 export function buildGxserverZmxChildEnvironment(environment: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {

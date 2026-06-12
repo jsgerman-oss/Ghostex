@@ -29,7 +29,7 @@ export interface GxserverSessionPresentationRepository {
   updateSession(input: GxserverUpdateSessionParams): GxserverSessionDomainState;
 }
 
-export type GxserverSessionIdentityUpdateSource = "lifecycle" | "passive" | "terminal-title";
+export type GxserverSessionIdentityUpdateSource = "lifecycle" | "live-process" | "passive" | "terminal-title";
 
 export interface GxserverSessionIdentityConflict {
   agentId: string;
@@ -172,6 +172,7 @@ export function applySessionStateEvent(
     runtimeSettings.firstPromptTitleGenerationCommand !==
       session.runtimeSettings.firstPromptTitleGenerationCommand ||
     runtimeSettings.firstUserMessage !== session.runtimeSettings.firstUserMessage ||
+    runtimeSettings.agentActivity !== session.runtimeSettings.agentActivity ||
     runtimeSettings.titleSource !== session.runtimeSettings.titleSource;
 
   if (!needsUpdate) {
@@ -218,7 +219,8 @@ function resolveAllowedSessionIdentity(input: {
   const currentAgentId = normalizeAgentId(input.currentIdentity.agentId);
   const resolvedAgentId = normalizeAgentId(input.resolvedIdentity.agentId);
   const incomingAgentSessionId = normalizeCodexSessionId(input.observedIdentity.agentSessionId);
-  const currentAgentSessionId = normalizeCodexSessionId(input.currentIdentity.agentSessionId);
+  const currentCodexSessionId =
+    currentAgentId === "codex" ? normalizeCodexSessionId(input.currentIdentity.agentSessionId) : undefined;
   const isPassiveCodexObservation =
     input.source === "passive" &&
     incomingAgentSessionId !== undefined &&
@@ -226,10 +228,14 @@ function resolveAllowedSessionIdentity(input: {
   if (!isPassiveCodexObservation) {
     return input.resolvedIdentity;
   }
-  if (currentAgentSessionId && currentAgentSessionId !== incomingAgentSessionId) {
+  /*
+  CDXC:GxserverSessionIdentity 2026-06-12-02:44:
+  Passive Codex hooks may correct stale non-Codex identity on the same surface. Protect only a current Codex-owned thread id from passive replacement; Claude and other agent ids are also UUID-shaped, and treating them as Codex ids can pin a newer Codex session to the wrong agent for every client.
+  */
+  if (currentCodexSessionId && currentCodexSessionId !== incomingAgentSessionId) {
     input.onIdentityConflict?.({
       agentId: "codex",
-      currentAgentSessionId,
+      currentAgentSessionId: currentCodexSessionId,
       incomingAgentSessionId,
       reason: "passive-agent-session-id-replacement",
       source: input.source,
@@ -243,7 +249,7 @@ function resolveAllowedSessionIdentity(input: {
     */
     return keepCurrentSessionIdentity(input.resolvedIdentity, input.currentIdentity);
   }
-  if (!currentAgentSessionId) {
+  if (!currentCodexSessionId) {
     const owner = findActiveCodexIdentityOwner(input.sessions, input.currentSession, incomingAgentSessionId);
     if (owner) {
       input.onIdentityConflict?.({
@@ -317,6 +323,8 @@ function applySessionIdentityRuntimeSettings(input: {
   const currentAgentId = normalizeAgentId(input.currentIdentity.agentId);
   const nextAgentId = normalizeAgentId(input.identity.agentId);
   const agentChanged = Boolean(currentAgentId && nextAgentId && currentAgentId !== nextAgentId);
+  const activityAgentId = readAgentActivityAgentId(runtimeSettings.agentActivity);
+  const activityOwnerChanged = Boolean(nextAgentId && activityAgentId && activityAgentId !== nextAgentId);
   if (input.identity.agentId) {
     runtimeSettings.agentName = input.identity.agentId;
   }
@@ -333,7 +341,21 @@ function applySessionIdentityRuntimeSettings(input: {
   if (agentChanged) {
     delete runtimeSettings.agentId;
   }
+  if (agentChanged || activityOwnerChanged) {
+    /*
+    CDXC:GxserverSessionIdentity 2026-06-12-02:44:
+    Identity repair invalidates activity when its nested owner no longer matches the resolved agent. Drop that payload so a stale Claude/Cursor/etc. status blob cannot keep influencing a corrected Codex row; the next hook or title event rebuilds activity under the repaired agent identity.
+    */
+    delete runtimeSettings.agentActivity;
+  }
   return runtimeSettings;
+}
+
+function readAgentActivityAgentId(value: unknown): string | undefined {
+  if (typeof value !== "object" || value === null) {
+    return undefined;
+  }
+  return normalizeAgentId((value as Record<string, unknown>).agentName);
 }
 
 function findActiveCodexIdentityOwner(

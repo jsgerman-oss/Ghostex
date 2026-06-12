@@ -29,6 +29,7 @@ export function updateSessionActivitySettings(
     nowIso: new Date(nowMs).toISOString(),
     nowMs,
     previous,
+    settledTitle: normalizeText(params.settledTitle),
     title: normalizeText(params.title),
   });
   return {
