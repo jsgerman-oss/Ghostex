@@ -1,13 +1,14 @@
 #!/usr/bin/env bun
 
 import { spawnSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { validateMacosAppBundle } from "./validate-macos-app-bundle.mjs";
 
-const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const scriptPath = fileURLToPath(import.meta.url);
+const repoRoot = path.resolve(path.dirname(scriptPath), "..");
 const hostScriptDir = path.join(repoRoot, "native", "macos", "ghostexHost");
 const projectPath = path.join(hostScriptDir, "ghostex.xcodeproj");
 const installDir = process.env.INSTALL_DIR || "/Applications";
@@ -53,6 +54,8 @@ buildEnv.GHOSTEX_BUILT_APP_PATH_FILE = builtAppPathFile;
 const xcodeDestination = `platform=macOS,arch=${arch}`;
 const installedApp = path.join(installDir, `${appName}.app`);
 const installedExecutable = path.join(installedApp, "Contents", "MacOS", appName);
+const localStartLockFile = path.join(repoRoot, "build", "ghostex-local-start.lock");
+reexecUnderLocalStartLock();
 ensureCodeServerDevelopmentRuntime();
 
 /*
@@ -82,6 +85,30 @@ if (!existsSync(builtApp)) {
 await closeInstalledApp();
 await stopRunningGxserverControlPlaneBeforeLaunch(builtApp);
 await installAndOpenApp(builtApp);
+
+function reexecUnderLocalStartLock() {
+  /*
+  CDXC:LocalStartConcurrency 2026-06-11-18:59:
+  Local starts share one DerivedData app bundle that temporarily removes generated CEF payloads before Xcode runs. Hold a repository-wide lock across build, install, and LaunchServices open so overlapping starts cannot delete CEF while another start is rsyncing the signed app into /Applications.
+  */
+  if (process.env.GHOSTEX_START_LOCK_HELD === "1") {
+    return;
+  }
+  mkdirSync(path.dirname(localStartLockFile), { recursive: true });
+  const result = spawnSync(
+    "/usr/bin/lockf",
+    ["-k", localStartLockFile, process.execPath, scriptPath, ...process.argv.slice(2)],
+    {
+      cwd: repoRoot,
+      env: { ...process.env, GHOSTEX_START_LOCK_HELD: "1" },
+      stdio: "inherit",
+    },
+  );
+  if (result.error) {
+    throw result.error;
+  }
+  process.exit(result.status ?? 1);
+}
 
 function validateStartArguments(args, envVariant) {
   const normalizedEnvVariant = envVariant?.trim();
