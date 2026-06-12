@@ -4433,8 +4433,12 @@ function IntegrationsSettingsTab({
             </Button>
           </IntegrationSettingsRow>
 
+          {/*
+           * CDXC:AppShots 2026-06-12-11:12:
+           * Settings copy must describe App Shots as an agent-session feature because captured context now targets the focused or recent agent instead of Codex only.
+           */}
           <IntegrationSettingsRow
-            description="Capture the frontmost app window and available Accessibility text, then stage it in the recent Codex session as local image context."
+            description="Capture the frontmost app window and available Accessibility text, then stage it in the focused or recent agent session as local image context."
             icon={IconDeviceDesktop}
             status={appShotsEnabled ? "Enabled" : "Disabled"}
             tone={appShotsEnabled ? "success" : "neutral"}

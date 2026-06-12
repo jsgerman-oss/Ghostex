@@ -39599,35 +39599,40 @@ function createNativeLayoutItems(
 function handleNativeAppShotCaptured(
   appShot: Extract<NativeHostEvent, { type: "appShotCaptured" }>,
 ): void {
-  void stageNativeAppShotInCodexSession(appShot).catch((error) => {
+  void stageNativeAppShotInAgentSession(appShot).catch((error) => {
     const message = error instanceof Error ? error.message : String(error);
+    const errorName = error instanceof Error ? error.name || "Error" : typeof error;
     appendAgentDetectionDebugLog("nativeSidebar.appShots.failed", {
-      appName: appShot.appName ?? "",
-      imagePath: appShot.imagePath,
-      message,
+      errorName,
+      hasAppName: Boolean(appShot.appName?.trim()),
+      hasImagePath: Boolean(appShot.imagePath.trim()),
     });
     showAppToast("error", "App Shot Failed", message);
   });
 }
 
-async function stageNativeAppShotInCodexSession(
+/*
+CDXC:AppShots 2026-06-12-11:12:
+App Shots must stage captured app context in the focused or recently used agent session regardless of provider. Only create a configured default prompt-agent session when no live workspace agent is available, so the feature is not Codex-only.
+*/
+async function stageNativeAppShotInAgentSession(
   appShot: Extract<NativeHostEvent, { type: "appShotCaptured" }>,
 ): Promise<void> {
   const prompt = formatNativeAppShotPrompt(appShot);
   let targetSession = resolveNativeAppShotTargetSession();
   let createdNewSession = false;
   if (!targetSession) {
-    const codexAgent = resolveSidebarAgentButtonById(DEFAULT_PROMPT_AGENT_ID);
-    if (!codexAgent?.command?.trim()) {
-      throw new Error("No configured Codex agent is available for App Shots.");
+    const agent = resolveDefaultPromptAgent();
+    if (!agent?.command?.trim()) {
+      throw new Error("No configured agent is available for App Shots.");
     }
-    const createdSession = await launchAgentTerminal(codexAgent, activeWorkspaceGroup().groupId, {
+    const createdSession = await launchAgentTerminal(agent, activeWorkspaceGroup().groupId, {
       focusAfterCreate: true,
       initialPromptText: prompt,
     });
     targetSession = createdSession?.kind === "terminal" ? createdSession : undefined;
     if (!targetSession) {
-      throw new Error("Could not create a Codex session for the App Shot.");
+      throw new Error("Could not create an agent session for the App Shot.");
     }
     createdNewSession = true;
   }
@@ -39636,7 +39641,7 @@ async function stageNativeAppShotInCodexSession(
   if (!targetSession || targetSession.sessionId === undefined) {
     return;
   }
-  if (!createdNewSession && isNativeAppShotCodexSession(targetSession)) {
+  if (!createdNewSession && isNativeAppShotAgentSession(targetSession)) {
     const nativeSessionId = nativeSessionIdForSidebarSession(targetSession.sessionId);
     postNative({ sessionId: nativeSessionId, text: prompt, type: "writeTerminalText" });
   }
@@ -39650,26 +39655,26 @@ function resolveNativeAppShotTargetSession(): TerminalSessionRecord | undefined 
     lastAppShotTargetSessionId && now - lastAppShotTargetAt <= APP_SHOT_RECENT_TARGET_MS
       ? findTerminalSession(lastAppShotTargetSessionId)
       : undefined;
-  if (isNativeAppShotCodexSession(recentTarget)) {
+  if (isNativeAppShotAgentSession(recentTarget)) {
     return recentTarget;
   }
   const focusedSessionId = activeSnapshot().focusedSessionId;
   const focusedSession = focusedSessionId ? findTerminalSession(focusedSessionId) : undefined;
-  if (isNativeAppShotCodexSession(focusedSession)) {
+  if (isNativeAppShotAgentSession(focusedSession)) {
     return focusedSession;
   }
   return undefined;
 }
 
-function isNativeAppShotCodexSession(
+function isNativeAppShotAgentSession(
   session: TerminalSessionRecord | undefined,
 ): session is TerminalSessionRecord {
   if (!session || session.isSleeping === true || session.surface === "commands") {
     return false;
   }
   const terminalState = terminalStateById.get(session.sessionId);
-  const agentName = (terminalState?.agentName ?? session.agentName ?? "").trim().toLowerCase();
-  return agentName === DEFAULT_PROMPT_AGENT_ID;
+  const agentName = (terminalState?.agentName ?? session.agentName ?? "").trim();
+  return Boolean(agentName);
 }
 
 function formatNativeAppShotPrompt(
