@@ -61,7 +61,6 @@ const GXSERVER_LOG_PATH = path.join(GXSERVER_ROOT, "logs", "gxserver.jsonl");
 const GXSERVER_STATE_DB_PATH = path.join(GXSERVER_ROOT, "state.db");
 const GXSERVER_CONNECTIONS_PATH = path.join(homedir(), ".ghostex", "clients", "connections.json");
 const SESSION_ALIAS_CACHE_PATH = path.join(CLI_DIR, "session-aliases.json");
-const SHARED_PROJECTS_PATH = path.join(GHOSTEX_HOME, "state", "native-sidebar-projects.json");
 const SHARED_SETTINGS_PATH = path.join(GHOSTEX_HOME, "state", "native-sidebar-settings.json");
 const GHOSTEX_AGENT_SKILL_INSTALL_ROOT = path.join(homedir(), "agents", "skills");
 const GHOSTEX_BROWSER_SKILL_NAME = "ghostex-browser-use";
@@ -191,6 +190,7 @@ const COMMANDS = new Map([
   ["install-generate-title-skill", installGenerateTitleSkillCommand],
   ["manage-beads", manageBeadsCommand],
   ["install-manage-beads-skill", installManageBeadsSkillCommand],
+  ["toggle-sidebar", bridgeAction("toggleSidebarCollapsed")],
   ["move-sidebar", bridgeAction("moveSidebar")],
   ["assert-card", bridgeAction("assertSidebarCard", parseAssertCard, { assertOk: true })],
   ["wait-for", bridgeAction("waitFor", parseWaitFor, { assertOk: true })],
@@ -521,10 +521,15 @@ async function installGenerateTitleSkillCommand(args) {
    * Generated title sessions should not leave `/rename <title>` staged in the
    * agent CLI. Use `rename-command` so macOS stages the command and sends Enter
    * through the same native bridge path used by Delayed Send.
+   *
+   * CDXC:GenerateTitleSkill 2026-06-12-04:10:
+   * zmx-backed terminals can expose the exact gxserver global ref or provider
+   * session name without GHOSTEX_SESSION_ID. The installed skill must prefer
+   * stable self-session selectors and never fall back to title/alias guessing.
    */
   await installGhostexAgentSkill({
     args,
-    command: "ghostex rename-command --session-id \"$GHOSTEX_SESSION_ID\" --title \"<title>\"",
+    command: "ghostex rename-command --session-id \"${GHOSTEX_GLOBAL_SESSION_REF:-${GHOSTEX_SESSION_ID:-${ZMX_SESSION:-}}}\" --title \"<title>\"",
     envVars: ["GHOSTEX_GENERATE_TITLE_SKILL_SOURCE"],
     legacySkillNames: GHOSTEX_GENERATE_TITLE_LEGACY_SKILL_NAMES,
     skillName: GHOSTEX_GENERATE_TITLE_SKILL_NAME,
@@ -4190,19 +4195,10 @@ async function sendMessageCommand(args) {
 }
 
 async function fetchSessionList(flags = {}, options = {}) {
-  let result;
-  try {
-    result = await sendSidebarCliCommand("listSessions", {}, flags);
-  } catch (error) {
-    result = await readPersistedSidebarSessionList(error);
-  }
+  const result = await sendSidebarCliCommand("listSessions", {}, flags);
   /**
-   * CDXC:AndroidRemoteSessions 2026-05-17-21:03:
-   * `ghostex sessions --json` is Android reconnect's inventory contract. A
-   * bridge transport failure must either fall back to real persisted sidebar
-   * state or fail the CLI; never return an empty success-shaped session list,
-   * otherwise Android would show a misleading "No sessions" state when Ghostex
-   * is unreachable.
+   * CDXC:AndroidRemoteSessions 2026-06-11-23:52:
+   * `ghostex sessions --json` is the Android and iOS reconnect/status contract. The inventory must come from gxserver list/snapshot APIs, including gxserver's server-side hook sidecar ingestion, and must not read the retired macOS sidebar persistence file when the daemon is unreachable.
    */
   if (isFailedCliResult(result)) {
     throw new Error(result.error ?? "Could not list Ghostex sessions.");
@@ -4216,131 +4212,6 @@ async function fetchSessionList(flags = {}, options = {}) {
     });
   }
   return { ...result, sessions };
-}
-
-async function readPersistedSidebarSessionList(cause, statePath = SHARED_PROJECTS_PATH) {
-  const causeMessage = cause instanceof Error ? cause.message : String(cause || "unknown error");
-  const text = await readFile(statePath, "utf8").catch((error) => {
-    throw new Error(`${causeMessage} Persisted sidebar state fallback unavailable: ${error.message}`);
-  });
-  const state = parseJson(text);
-  if (!state || typeof state !== "object") {
-    throw new Error(`${causeMessage} Persisted sidebar state fallback is not valid JSON.`);
-  }
-
-  const sessions = [];
-  const projects = Array.isArray(state.projects) ? state.projects : [];
-  for (const project of projects) {
-    if (!project || project.isRecentProject) {
-      continue;
-    }
-    const projectId = stringOrNull(project.projectId ?? project.id);
-    const projectName = stringOrNull(project.name ?? project.title ?? project.path);
-    const projectPath = stringOrNull(project.path ?? project.projectPath);
-    const groups = Array.isArray(project.workspace?.groups) ? project.workspace.groups : [];
-    for (const group of groups) {
-      const snapshot = group?.snapshot || {};
-      const groupId = stringOrNull(group.groupId ?? group.id);
-      const groupTitle = stringOrNull(group.title ?? group.name);
-      const visibleSessionIds = new Set(Array.isArray(snapshot.visibleSessionIds) ? snapshot.visibleSessionIds : []);
-      const focusedSessionId = stringOrNull(snapshot.focusedSessionId);
-      const rows = Array.isArray(snapshot.sessions) ? snapshot.sessions : [];
-      for (const session of rows) {
-        if (!session || (session.kind && session.kind !== "terminal")) {
-          continue;
-        }
-        const rawSessionId = stringOrNull(session.sessionId ?? session.id);
-        if (!rawSessionId) {
-          continue;
-        }
-        const provider = stringOrNull(
-          session.sessionPersistenceProvider ?? session.provider ?? session.persistenceProvider,
-        );
-        const providerSessionName = stringOrNull(
-          session.sessionPersistenceName ??
-            session.providerSessionName ??
-            session.persistenceName ??
-            session.sessionName ??
-            rawSessionId,
-        );
-        const activity = normalizePersistedSessionActivity(
-          session.restoreActivity ?? session.activity ?? session.sidebarActivity,
-        );
-        const attachCommand = buildPersistedSessionAttachCommand(provider, providerSessionName);
-        sessions.push({
-          activity,
-          agent: stringOrNull(session.agentName ?? session.agent),
-          alias: sessions.length + 1,
-          attachCommand,
-          fallbackSource: "persisted-sidebar-state",
-          groupId,
-          groupTitle,
-          isFavorite: Boolean(session.isFavorite),
-          isFocused: focusedSessionId === rawSessionId,
-          isLive: !session.isSleeping,
-          isVisible: visibleSessionIds.size === 0 || visibleSessionIds.has(rawSessionId),
-          lastInteractionAt: stringOrNull(
-            session.lastActivityAt ?? session.lastAccessedAt ?? session.lastStartedAt ?? session.createdAt,
-          ),
-          nativePaneState: session.nativePaneState || null,
-          projectId,
-          projectName,
-          projectPath,
-          provider,
-          providerSessionName,
-          providerSessionState: "unknown",
-          resumeCommand: attachCommand,
-          resumeFallbackCommand: attachCommand,
-          sessionId: buildCombinedProjectSessionId(projectId, rawSessionId) || rawSessionId,
-          status: session.isSleeping ? "sleep" : activity,
-          title: stringOrNull(session.title ?? session.name ?? rawSessionId),
-        });
-      }
-    }
-  }
-
-  return {
-    fallback: "persisted-sidebar-state",
-    fallbackPath: statePath,
-    fallbackReason: causeMessage,
-    ok: true,
-    sessions,
-  };
-}
-
-function stringOrNull(value) {
-  if (typeof value !== "string") {
-    return null;
-  }
-  const trimmed = value.trim();
-  return trimmed.length > 0 ? trimmed : null;
-}
-
-function normalizePersistedSessionActivity(value) {
-  const normalized = String(value ?? "").trim();
-  return ["attention", "idle", "working"].includes(normalized) ? normalized : "idle";
-}
-
-function buildCombinedProjectSessionId(projectId, sessionId) {
-  return projectId && sessionId
-    ? `combined-session:${encodeURIComponent(projectId)}:${encodeURIComponent(sessionId)}`
-    : null;
-}
-
-function buildPersistedSessionAttachCommand(provider, sessionName) {
-  if (!provider || !sessionName) {
-    return null;
-  }
-  if (provider === "zmx") {
-    return `zmx attach ${shellQuote(sessionName)}`;
-  }
-  if (provider === "tmux") {
-    return `tmux attach-session -t ${shellQuote(sessionName)}`;
-  }
-  if (provider === "zellij") {
-    return `zellij attach ${shellQuote(sessionName)}`;
-  }
-  return null;
 }
 
 async function writeSessionAliasCache(cache) {
@@ -5048,7 +4919,7 @@ function parseSessionSelector(rest, flags) {
 function parseRename(rest, flags) {
   /**
    * CDXC:AndroidRemoteSessions 2026-05-17-13:23:
-   * Ghostex Android invokes remote rename through `ghostex rename-session --session-id <id> --title <title> --json` so SSH quoting can keep the stable session id and user-entered title as separate CLI arguments. Keep positional parsing for human CLI usage, but treat the flag form as part of the Android/macOS bridge contract.
+   * Ghostex Android invokes remote rename through `ghostex rename-session --session-id <id> --title <title> --json` so SSH quoting can keep the stable session id and user-entered title as separate CLI arguments. Keep positional parsing for human CLI usage, but treat the flag form as part of the Android gxserver CLI contract.
    */
   return {
     ...parseSessionSelector(rest, flags),
@@ -5369,6 +5240,7 @@ function usage() {
     formatHelpCommand("agent-orchestration --help", "Show Ghostex Agent Orchestration skill setup"),
     formatHelpCommand("generate-title --help", "Show Ghostex Generate Title skill setup"),
     formatHelpCommand("manage-beads --help", "Show Ghostex Manage Beads skill setup"),
+    formatHelpCommand("toggle-sidebar", "Collapse or expand the sidebar"),
     formatHelpCommand("move-sidebar", "Move the sidebar"),
   ].join("\n");
 
@@ -5589,6 +5461,10 @@ function generateTitleUsage() {
    * CDXC:GenerateTitleSkill 2026-06-09-17:49:
    * Document `rename-command` rather than `send-text` because generated titles
    * must submit through the macOS native Enter bridge used by Delayed Send.
+   *
+   * CDXC:GenerateTitleSkill 2026-06-12-04:10:
+   * Document the same stable self-selector chain as the installed skill so zmx
+   * terminals without GHOSTEX_SESSION_ID do not report missing-session.
    */
   return `Ghostex Generate Title - install the agent skill for naming Ghostex sessions
 
@@ -5600,11 +5476,11 @@ Agent skill:
   Use $ghostex-generate-title when a task needs a concise Ghostex session title.
 
 What the skill does:
-  Generate one title shorter than 47 characters.
+  Generate one title shorter than 60 characters.
   Then submit /rename <title> in the current Ghostex session with rename-command.
 
 Self-session command:
-  ghostex rename-command --session-id "$GHOSTEX_SESSION_ID" --title "<title>"
+  ghostex rename-command --session-id "\${GHOSTEX_GLOBAL_SESSION_REF:-\${GHOSTEX_SESSION_ID:-\${ZMX_SESSION:-}}}" --title "<title>"
 `;
 }
 

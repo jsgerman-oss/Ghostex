@@ -950,6 +950,11 @@ printf '%s\\n' "$@" > ${JSON.stringify(markerFile)}
      * CDXC:GenerateTitleSkill 2026-06-09-17:49:
      * The installed skill must use `rename-command` so generated titles submit
      * through the native Enter bridge used by Delayed Send.
+     *
+     * CDXC:GenerateTitleSkill 2026-06-12-04:10:
+     * zmx terminals may only expose GHOSTEX_GLOBAL_SESSION_REF or ZMX_SESSION.
+     * The installed skill must prefer exact self-session selectors before
+     * giving up, and must not guess by title or alias.
      */
     const tempDir = await mkdtemp(path.join(tmpdir(), "ghostex-generate-title-skill-"));
     try {
@@ -971,9 +976,12 @@ printf '%s\\n' "$@" > ${JSON.stringify(markerFile)}
         targetDir,
       });
       expect(payload.command).toContain("ghostex rename-command");
+      expect(payload.command).toContain("${GHOSTEX_GLOBAL_SESSION_REF:-${GHOSTEX_SESSION_ID:-${ZMX_SESSION:-}}}");
       expect(skillMarkdown).toContain("# ghostex-generate-title");
       expect(skillMarkdown).toContain("under 60 characters");
-      expect(skillMarkdown).toContain('ghostex rename-command --session-id "$GHOSTEX_SESSION_ID" --title "<generated title>"');
+      expect(skillMarkdown).toContain('ghostex_session_selector="${GHOSTEX_GLOBAL_SESSION_REF:-${GHOSTEX_SESSION_ID:-${ZMX_SESSION:-}}}"');
+      expect(skillMarkdown).toContain('ghostex rename-command --session-id "$ghostex_session_selector" --title "<generated title>"');
+      expect(skillMarkdown).toContain("not guess a session by title, alias, project, or recent activity");
       expect(skillMarkdown).toContain("same native Enter path used by Delayed Send");
       expect(skillMarkdown).not.toContain("Do not press Enter");
     } finally {
@@ -1077,8 +1085,9 @@ printf '%s\\n' "$@" > ${JSON.stringify(markerFile)}
     expect(cliHelpResult.stdout).toBe(`${help}\n`);
     expect(help).toContain("gx generate-title install-skill");
     expect(help).toContain("$ghostex-generate-title");
-    expect(help).toContain("shorter than 47 characters");
+    expect(help).toContain("shorter than 60 characters");
     expect(help).toContain("ghostex rename-command");
+    expect(help).toContain("${GHOSTEX_GLOBAL_SESSION_REF:-${GHOSTEX_SESSION_ID:-${ZMX_SESSION:-}}}");
     expect(help).not.toContain("Do not press Enter");
   });
 
@@ -1816,6 +1825,76 @@ printf '%s\\n' "$@" > ${JSON.stringify(markerFile)}
         { timeoutMs: 50 },
       ),
     ).rejects.toThrow(/Start it with "gx server start"/);
+  });
+
+  test("sessions command does not fall back to persisted macOS sidebar state", async () => {
+    const home = await mkdtemp(path.join(tmpdir(), "ghostex-cli-no-sidebar-fallback-"));
+    try {
+      await mkdir(path.join(home, "state"), { recursive: true });
+      await writeFile(
+        path.join(home, "state", "native-sidebar-projects.json"),
+        JSON.stringify({
+          projects: [
+            {
+              name: "Stale",
+              projectId: "Pold",
+              workspace: {
+                groups: [
+                  {
+                    snapshot: {
+                      sessions: [
+                        {
+                          sessionId: "Gold",
+                          sessionPersistenceName: "stale-zmx",
+                          sessionPersistenceProvider: "zmx",
+                          title: "Stale sidebar session",
+                        },
+                      ],
+                    },
+                  },
+                ],
+              },
+            },
+          ],
+        }),
+      );
+      let failed;
+      try {
+        await execFileAsync(process.execPath, [
+          path.resolve("scripts/ghostex-cli.mjs"),
+          "sessions",
+          "--json",
+          "--server",
+          "http://127.0.0.1:9",
+          "--token",
+          "test-token",
+          "--timeout-ms",
+          "50",
+        ], {
+          env: {
+            ...process.env,
+            GHOSTEX_HOME: home,
+          },
+        });
+      } catch (error) {
+        failed = error;
+      }
+
+      /**
+       * CDXC:MobileSessionStatus 2026-06-11-23:52:
+       * Mobile session inventory must fail when gxserver is unreachable instead of
+       * reading retired macOS sidebar persistence. Stale local JSON can contain
+       * old statuses, so returning it would recreate the "macOS app must be open"
+       * dependency under a different name.
+       */
+      expect(failed).toBeTruthy();
+      const body = JSON.parse(failed.stdout);
+      expect(body.ok).toBe(false);
+      expect(body.error).toMatch(/Start it with "gx server start"/);
+      expect(failed.stdout).not.toContain("Stale sidebar session");
+    } finally {
+      await rm(home, { force: true, recursive: true });
+    }
   });
 
   test("plans remote ssh targets and direct trusted-network targets with explicit tokens", async () => {
