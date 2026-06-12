@@ -1,6 +1,6 @@
 {
   "name": "ghostex",
-  "version": "4.1.5",
+  "version": "4.10.0",
   "private": true,
   "description": "ghostex native macOS workarea and sessions UI.",
   "type": "module",
