@@ -162,6 +162,27 @@ export const DEFAULT_SIDEBAR_AGENTS = [
     icon: "qoder",
     name: "Qoder",
   },
+  /*
+   * CDXC:AgentHooks 2026-06-11-22:19:
+   * Kiro CLI and OMP are hook-supported lower-priority agents. Keep them hidden
+   * from the primary launcher by default, but include them in the shared agent
+   * registry so Settings and first launch request gxserver hook status for the
+   * same provider set that the server can install.
+   */
+  {
+    agentId: "kiro",
+    command: "kiro-cli chat --agent ghostex",
+    hiddenByDefault: true,
+    icon: "kiro",
+    name: "Kiro CLI",
+  },
+  {
+    agentId: "omp",
+    command: "omp",
+    hiddenByDefault: true,
+    icon: "omp",
+    name: "OMP",
+  },
 ] as const;
 
 export type DefaultSidebarAgent = (typeof DEFAULT_SIDEBAR_AGENTS)[number];

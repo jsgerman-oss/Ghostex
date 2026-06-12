@@ -10,6 +10,8 @@ import factoryDroidLogo from "../src/assets/factory-droid.svg" with { type: "tex
 import geminiLogo from "../src/assets/gemini.svg" with { type: "text" };
 import grokBuildLogo from "../src/assets/grok-build.svg" with { type: "text" };
 import hermesAgentLogo from "../src/assets/hermes-agent.svg" with { type: "text" };
+import kiroLogo from "../src/assets/kiro.svg" with { type: "text" };
+import ompLogo from "../src/assets/omp.svg" with { type: "text" };
 import opencodeLogo from "../src/assets/opencode.svg" with { type: "text" };
 import piLogo from "../src/assets/pi.svg" with { type: "text" };
 import qoderLogo from "../src/assets/qoder.svg" with { type: "text" };
@@ -48,6 +50,8 @@ export const AGENT_LOGOS: Record<SidebarAgentIcon, string> = {
   gemini: svgTextToDataUrl(geminiLogo),
   "grok-build": svgTextToDataUrl(grokBuildLogo),
   "hermes-agent": svgTextToDataUrl(hermesAgentLogo),
+  kiro: svgTextToDataUrl(kiroLogo),
+  omp: svgTextToDataUrl(ompLogo),
   opencode: svgTextToDataUrl(opencodeLogo),
   pi: svgTextToDataUrl(piLogo),
   qoder: svgTextToDataUrl(qoderLogo),
@@ -75,6 +79,8 @@ export const AGENT_LOGO_COLORS: Record<SidebarAgentIcon, string> = {
   gemini: "#8b9aff",
   "grok-build": "#ffffff",
   "hermes-agent": "#f3c46b",
+  kiro: "#a6e3ff",
+  omp: "#c8ff62",
   opencode: "#6d96c0",
   pi: "#c8ff62",
   qoder: "#a991ff",
