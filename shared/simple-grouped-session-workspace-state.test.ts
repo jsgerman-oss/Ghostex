@@ -4485,6 +4485,90 @@ describe("setSessionSleepingInSimpleWorkspace", () => {
     });
   });
 
+  test("should keep passive virtual tab materialization from merging split panes", () => {
+    const leftOwnerSessionId = sessionIdForDisplay(0);
+    const leftSiblingSessionId = sessionIdForDisplay(1);
+    const rightOwnerSessionId = sessionIdForDisplay(2);
+    const rightSiblingSessionId = sessionIdForDisplay(3);
+    const missingVirtualTabSessionId = sessionIdForDisplay(4);
+
+    const result = ensureAllSessionsInFocusedPaneTabGroupInSimpleWorkspace(
+      createWorkspaceSnapshot({
+        activeGroupId: DEFAULT_MAIN_GROUP_ID,
+        groups: [
+          {
+            groupId: DEFAULT_MAIN_GROUP_ID,
+            snapshot: {
+              focusedSessionId: rightOwnerSessionId,
+              fullscreenRestoreVisibleCount: undefined,
+              paneLayout: {
+                children: [
+                  {
+                    activeSessionId: leftOwnerSessionId,
+                    kind: "tabs",
+                    sessionIds: [leftSiblingSessionId, leftOwnerSessionId],
+                  },
+                  {
+                    activeSessionId: rightOwnerSessionId,
+                    kind: "tabs",
+                    sessionIds: [rightSiblingSessionId, rightOwnerSessionId],
+                  },
+                ],
+                direction: "horizontal",
+                kind: "split",
+              },
+              sessions: [
+                { ...createSessionRecord(1, 0), isSleeping: true },
+                { ...createSessionRecord(2, 1), isSleeping: true },
+                createSessionRecord(3, 2),
+                createSessionRecord(4, 3),
+                { ...createSessionRecord(5, 4), isSleeping: true },
+              ],
+              viewMode: "grid",
+              visibleCount: 2,
+              visibleSessionIds: [rightOwnerSessionId],
+            },
+            title: "Main",
+          },
+        ],
+        nextGroupNumber: 2,
+        nextSessionDisplayId: 5,
+        nextSessionNumber: 6,
+      }),
+      DEFAULT_MAIN_GROUP_ID,
+      { intent: "passiveSync" },
+    );
+
+    expect(result.changed).toBe(true);
+    /*
+     * CDXC:PaneTabs 2026-06-12-09:18:
+     * Passive publish can materialize missing virtual tabs, but it must not
+     * turn an existing two-pane split into one tab group when visible/awake
+     * owner state is stale. Only explicit pane close, Focus, or Merge actions
+     * are allowed to reduce the split topology.
+     */
+    expect(result.snapshot.groups[0]?.snapshot.paneLayout).toEqual({
+      children: [
+        {
+          activeSessionId: leftOwnerSessionId,
+          kind: "tabs",
+          sessionIds: [leftSiblingSessionId, leftOwnerSessionId],
+        },
+        {
+          activeSessionId: rightOwnerSessionId,
+          kind: "tabs",
+          sessionIds: [
+            rightSiblingSessionId,
+            rightOwnerSessionId,
+            missingVirtualTabSessionId,
+          ],
+        },
+      ],
+      direction: "horizontal",
+      kind: "split",
+    });
+  });
+
   test("should relocate offscreen layout sessions into the focused split tab group", () => {
     const leftSessionId = sessionIdForDisplay(0);
     const focusedSessionId = sessionIdForDisplay(1);

@@ -188,6 +188,7 @@ import {
   syncSessionOrderInSimpleWorkspace,
   toggleFullscreenSessionInSimpleWorkspace,
   wakePaneTabSessionInSimpleWorkspace,
+  type VirtualPaneTabMaterializationIntent,
   type VisibleSessionPlacement,
   type SessionPaneDropPlacement,
   type SessionPaneTabReorderPosition,
@@ -5565,14 +5566,14 @@ async function installGteFromBrew(): Promise<void> {
   );
 }
 
-let nativeGhostexCliSymlinkEnsurePromise: Promise<boolean> | undefined;
+let nativeGhostexCliCommandEnsurePromise: Promise<boolean> | undefined;
 
 function isProductionGhostexBundle(): boolean {
   const bundleIdentifier = window.__ghostex_NATIVE_HOST__?.bundleIdentifier?.trim() ?? "";
   return !bundleIdentifier.startsWith("com.madda.ghostex-dev");
 }
 
-async function ensureNativeGhostexCliSymlinks(showSuccessMessage = false): Promise<boolean> {
+async function ensureNativeGhostexCliCommands(showSuccessMessage = false): Promise<boolean> {
   /**
    * CDXC:IntegrationsSetup 2026-05-27-04:17:
    * The CLI setup path is machine-local because PATH ownership is macOS state,
@@ -5581,7 +5582,7 @@ async function ensureNativeGhostexCliSymlinks(showSuccessMessage = false): Promi
    * CDXC:CliInstall 2026-06-07-13:53:
    * DMG and Homebrew installs both bundle the latest CLI under
    * Contents/Resources/CLI. Production app startup should repair Ghostex-owned
-   * symlinks to that bundled runtime automatically instead of reinstalling the
+   * commands to that bundled runtime automatically instead of reinstalling the
    * cask through Homebrew. Do not auto-link from ghostex-dev bundles because
    * local starts must not take over the user's public ghostex/gx commands.
    *
@@ -5594,17 +5595,23 @@ async function ensureNativeGhostexCliSymlinks(showSuccessMessage = false): Promi
    * Startup repair must replace dangling ghostex/gx symlinks because PATH can
    * contain an executable name that exists but points at a removed app or temp
    * build. Treat that as broken Ghostex install state, not a protected command.
+   *
+   * CDXC:CliInstall 2026-06-12-09:31:
+   * Public PATH commands must be wrapper files outside Ghostex.app. macOS can
+   * kill direct execution of app-bundled shell scripts while syspolicyd assesses
+   * the sealed resource tree, so wrappers execute Node directly and read the
+   * bundled CLI module as data.
    */
   const cliResourceDirectory = nativeSidebarCliResourceDirectory();
   if (!cliResourceDirectory || !isProductionGhostexBundle()) {
     return false;
   }
-  if (nativeGhostexCliSymlinkEnsurePromise) {
-    return nativeGhostexCliSymlinkEnsurePromise;
+  if (nativeGhostexCliCommandEnsurePromise) {
+    return nativeGhostexCliCommandEnsurePromise;
   }
 
-  nativeGhostexCliSymlinkEnsurePromise = (async () => {
-    const result = await runNativeNodeScript(getNativeGhostexCliSymlinkInstallNodeScript(), [], {
+  nativeGhostexCliCommandEnsurePromise = (async () => {
+    const result = await runNativeNodeScript(getNativeGhostexCliCommandInstallNodeScript(), [], {
       env: {
         GHOSTEX_BUNDLE_IDENTIFIER: window.__ghostex_NATIVE_HOST__?.bundleIdentifier ?? "",
         GHOSTEX_CLI_RESOURCE_DIR: cliResourceDirectory,
@@ -5613,7 +5620,7 @@ async function ensureNativeGhostexCliSymlinks(showSuccessMessage = false): Promi
     });
     if (result.exitCode === 0) {
       if (showSuccessMessage) {
-        showAppToast("success", "Ghostex CLI linked", "ghostex and gx now point at this app build where available.");
+        showAppToast("success", "Ghostex CLI linked", "ghostex and gx now launch this app build where available.");
       }
       return true;
     }
@@ -5621,35 +5628,38 @@ async function ensureNativeGhostexCliSymlinks(showSuccessMessage = false): Promi
     if (showSuccessMessage) {
       showNativeMessage(
         "error",
-        `Ghostex CLI link repair failed: ${(result.stderr || result.stdout || "symlink repair failed").trim()}`,
+        `Ghostex CLI command repair failed: ${(result.stderr || result.stdout || "command repair failed").trim()}`,
       );
     }
     return false;
   })();
 
   try {
-    return await nativeGhostexCliSymlinkEnsurePromise;
+    return await nativeGhostexCliCommandEnsurePromise;
   } finally {
-    nativeGhostexCliSymlinkEnsurePromise = undefined;
+    nativeGhostexCliCommandEnsurePromise = undefined;
   }
 }
 
-async function repairNativeGhostexCliSymlinksFromSettings(): Promise<void> {
-  await ensureNativeGhostexCliSymlinks(true);
+async function repairNativeGhostexCliCommandsFromSettings(): Promise<void> {
+  await ensureNativeGhostexCliCommands(true);
   await requestNativeGhostexCliStatus();
 }
 
-function getNativeGhostexCliSymlinkInstallNodeScript(): string {
+function getNativeGhostexCliCommandInstallNodeScript(): string {
   return String.raw`
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
+const { execFileSync } = require("node:child_process");
 
 const cliDir = String(process.env.GHOSTEX_CLI_RESOURCE_DIR || "").trim();
+const cliScriptPath = path.join(cliDir, "ghostex-cli.mjs");
 const bundleIdentifier = String(process.env.GHOSTEX_BUNDLE_IDENTIFIER || "").trim();
 const commands = ["ghostex", "gx"];
 const home = os.homedir();
 const userBin = path.join(home, ".local", "bin");
+const wrapperMarker = "CDXC:CliInstall 2026-06-12-09:31";
 
 if (bundleIdentifier.startsWith("com.madda.ghostex-dev")) {
   console.log(JSON.stringify({ skipped: true, reason: "dev-bundle" }));
@@ -5661,15 +5671,9 @@ if (!cliDir || !isDirectory(cliDir)) {
   process.exit(1);
 }
 
-const targets = Object.fromEntries(commands.map((name) => [name, path.join(cliDir, name)]));
-for (const [name, target] of Object.entries(targets)) {
-  if (!isFile(target)) {
-    console.error("Bundled Ghostex CLI launcher is missing.");
-    process.exit(1);
-  }
-  try {
-    fs.chmodSync(target, 0o755);
-  } catch {}
+if (!isFile(cliScriptPath)) {
+  console.error("Bundled Ghostex CLI module is missing.");
+  process.exit(1);
 }
 
 function expandHome(value) {
@@ -5709,6 +5713,14 @@ function isFile(filePath) {
   }
 }
 
+function isRegularFile(filePath) {
+  try {
+    return fs.lstatSync(filePath).isFile();
+  } catch {
+    return false;
+  }
+}
+
 function pathExistsOrIsSymlink(filePath) {
   try {
     fs.lstatSync(filePath);
@@ -5723,6 +5735,49 @@ function realpathOrSelf(filePath) {
     return fs.realpathSync(filePath);
   } catch {
     return filePath;
+  }
+}
+
+function shellSingleQuote(value) {
+  return "'" + String(value).replace(/'/g, "'\\''") + "'";
+}
+
+function commandWrapperContent() {
+  return [
+    "#!/bin/bash",
+    "set -euo pipefail",
+    "# " + wrapperMarker + ": Public PATH commands live outside Ghostex.app so macOS does not directly execute app-bundled shell scripts during policy assessment.",
+    "exec /usr/bin/env node " + shellSingleQuote(cliScriptPath) + ' "$@"',
+    "",
+  ].join("\n");
+}
+
+function clearMacosExecutionPolicyXattrs(filePath) {
+  /*
+   * CDXC:CliInstall 2026-06-12-09:31:
+   * Wrapper ownership is determined by file content, but replaced Homebrew
+   * entries may retain execution-policy xattrs on some macOS builds. Clear them
+   * opportunistically without failing command repair when macOS keeps them.
+   */
+  for (const attribute of ["com.apple.provenance", "com.apple.quarantine"]) {
+    try {
+      execFileSync("/usr/bin/xattr", ["-d", attribute, filePath], {
+        stdio: "ignore",
+        timeout: 2_000,
+      });
+    } catch {}
+  }
+}
+
+function isGhostexWrapperFile(filePath) {
+  if (!isRegularFile(filePath)) {
+    return false;
+  }
+  try {
+    const content = fs.readFileSync(filePath, "utf8");
+    return content.includes(wrapperMarker) && content.includes("ghostex-cli.mjs");
+  } catch {
+    return false;
   }
 }
 
@@ -5742,13 +5797,13 @@ const commonDirs = uniquePaths(["/opt/homebrew/bin", "/usr/local/bin", userBin])
 
 function isGhostexOwnedPath(command, filePath) {
   const real = realpathOrSelf(filePath);
-  const targetReal = realpathOrSelf(targets[command]);
-  if (real === targetReal) {
+  if (isGhostexWrapperFile(filePath)) {
     return true;
   }
   const normalized = real.toLowerCase();
   return normalized.includes("/ghostex.app/contents/resources/cli/" + command)
     || normalized.includes("/ghostex.app/contents/resources/web/cli/" + command)
+    || normalized.includes("/ghostex.app/contents/resources/cli/ghostex-cli.mjs")
     || (command === "ghostex" && normalized.includes("/ghostex.app/contents/macos/ghostex"));
 }
 
@@ -5800,7 +5855,7 @@ function ensureDirectoryWritable(directory) {
 }
 
 function installCommand(command) {
-  const target = targets[command];
+  const wrapper = commandWrapperContent();
   for (const directory of installDirs) {
     if (!ensureDirectoryWritable(directory)) {
       continue;
@@ -5810,12 +5865,16 @@ function installCommand(command) {
       if (!canReplaceExistingCommand(command, linkPath)) {
         return { blocked: true, changed: false, path: null };
       }
-      if (realpathOrSelf(linkPath) === realpathOrSelf(target) && fs.lstatSync(linkPath).isSymbolicLink()) {
+      if (!fs.lstatSync(linkPath).isSymbolicLink() && isRegularFile(linkPath) && fs.readFileSync(linkPath, "utf8") === wrapper) {
+        fs.chmodSync(linkPath, 0o755);
+        clearMacosExecutionPolicyXattrs(linkPath);
         return { blocked: false, changed: false, path: linkPath };
       }
       fs.unlinkSync(linkPath);
     }
-    fs.symlinkSync(target, linkPath);
+    fs.writeFileSync(linkPath, wrapper, { mode: 0o755 });
+    fs.chmodSync(linkPath, 0o755);
+    clearMacosExecutionPolicyXattrs(linkPath);
     return { blocked: false, changed: true, path: linkPath };
   }
   return { blocked: false, changed: false, path: null };
@@ -5823,7 +5882,7 @@ function installCommand(command) {
 
 const results = Object.fromEntries(commands.map((command) => [command, installCommand(command)]));
 if (!results.ghostex.path) {
-  console.error("Ghostex could not create a writable PATH symlink for the ghostex command.");
+  console.error("Ghostex could not create a writable PATH wrapper for the ghostex command.");
   process.exit(1);
 }
 
@@ -16827,9 +16886,11 @@ function ensureActiveWorkspaceVirtualPaneTabs(reason: string): boolean {
   const project = activeProject();
   const group = activeWorkspaceGroup();
   const beforePaneLayout = summarizeSessionPaneLayout(group.snapshot.paneLayout);
+  const materializationIntent = getVirtualPaneTabMaterializationIntent(reason);
   const result = ensureAllSessionsInFocusedPaneTabGroupInSimpleWorkspace(
     project.workspace,
     group.groupId,
+    { intent: materializationIntent },
   );
   if (!result.changed) {
     return false;
@@ -16840,6 +16901,12 @@ function ensureActiveWorkspaceVirtualPaneTabs(reason: string): boolean {
    * active group. Materialize display-only virtual tab ids into paneLayout
    * before publishing so selection, context menus, drag/drop, and persisted
    * restart layout all operate on the same focused tab group.
+   *
+   * CDXC:PaneTabs 2026-06-12-09:18:
+   * Publish-time materialization is a passive layout sync, so it must not merge
+   * split panes by reducing the pane owner topology. Explicit pane actions use
+   * their dedicated reducers before publish and remain the only path allowed to
+   * collapse, split, or merge panes intentionally.
    */
   updateActiveProjectWorkspace(() => result.snapshot);
   appendPaneLayoutTraceDebugLog("nativeSidebar.virtualPaneTabs.materialized", {
@@ -16847,10 +16914,17 @@ function ensureActiveWorkspaceVirtualPaneTabs(reason: string): boolean {
     afterPaneLayout: summarizeSessionPaneLayout(activeWorkspaceGroup().snapshot.paneLayout),
     beforePaneLayout,
     groupId: group.groupId,
+    materializationIntent,
     reason,
     sessionIds: group.snapshot.sessions.map((session) => session.sessionId),
   });
   return true;
+}
+
+function getVirtualPaneTabMaterializationIntent(
+  reason: string,
+): VirtualPaneTabMaterializationIntent {
+  return reason === "publish" ? "passiveSync" : "explicitLayoutMutation";
 }
 
 function syncNativeT3RuntimeSessionState(sidebarMessage: SidebarHydrateMessage): void {
@@ -18055,10 +18129,10 @@ function nativeSidebarCliResourceDirectory(): string | undefined {
 async function requestNativeGhostexCliStatus(): Promise<void> {
   /**
    * CDXC:FirstLaunchSetup 2026-05-26-17:12:
-   * CLI setup status belongs in native because PATH symlink ownership is
+   * CLI setup status belongs in native because PATH command ownership is
    * machine-local. Treat `ghostex` as the primary installed signal, and report
-   * `gx` as usable only when it resolves to Ghostex's app bundle so setup does
-   * not claim another tool's command.
+   * `gx` as usable only when it resolves to a Ghostex-owned wrapper or native
+   * executable so setup does not claim another tool's command.
    *
    * CDXC:BrowserAgentControl 2026-05-27-06:58:
    * First-launch setup must check the renamed Ghostex Browser Use skill, not
@@ -18075,11 +18149,16 @@ async function requestNativeGhostexCliStatus(): Promise<void> {
    * instead of reusing Ghostex's own Accessibility grant.
    *
    * CDXC:CliInstall 2026-06-07-13:53:
-   * Status reads should first repair production CLI symlinks to the current
-   * app-bundled Resources/CLI launchers. First launch can then describe the CLI
+   * Status reads should first repair production CLI commands to the current
+   * app-bundled Resources/CLI module. First launch can then describe the CLI
    * as already installed with the app instead of offering install/refresh buttons.
+   *
+   * CDXC:CliInstall 2026-06-12-09:31:
+   * Status accepts Ghostex-owned wrapper files because wrappers are now the
+   * supported public command shape; old app-bundled script symlinks should be
+   * repaired before status is reported.
    */
-  await ensureNativeGhostexCliSymlinks(false);
+  await ensureNativeGhostexCliCommands(false);
   const result = await runNativeNodeScript(getNativeGhostexCliStatusNodeScript(), [], {
     env: {
       GHOSTEX_WEB_RESOURCE_DIR: nativeSidebarWebResourceDirectory() ?? "",
@@ -18185,9 +18264,23 @@ function isGhostexCommandRealpath(filePath, command) {
     return false;
   }
   const normalized = filePath.toLowerCase();
-  return normalized.includes("/ghostex.app/contents/resources/cli/" + command)
-    || normalized.includes("/ghostex.app/contents/resources/web/cli/" + command)
-    || (command === "ghostex" && normalized.includes("/ghostex.app/contents/macos/ghostex"));
+  return command === "ghostex" && normalized.includes("/ghostex.app/contents/macos/ghostex");
+}
+
+function isGhostexCommandWrapper(filePath) {
+  if (!filePath) {
+    return false;
+  }
+  try {
+    const stats = fs.lstatSync(filePath);
+    if (!stats.isFile()) {
+      return false;
+    }
+    const content = fs.readFileSync(filePath, "utf8");
+    return content.includes("CDXC:CliInstall 2026-06-12-09:31") && content.includes("ghostex-cli.mjs");
+  } catch {
+    return false;
+  }
 }
 
 function parseCuaPermission(output, label) {
@@ -18210,8 +18303,8 @@ const ghostexPath = which("ghostex");
 const gxPath = which("gx");
 const ghostexRealpath = realpathOrNull(ghostexPath);
 const gxRealpath = realpathOrNull(gxPath);
-const ghostexUsable = isGhostexCommandRealpath(ghostexRealpath, "ghostex");
-const gxUsable = isGhostexCommandRealpath(gxRealpath, "gx");
+const ghostexUsable = isGhostexCommandWrapper(ghostexPath) || isGhostexCommandRealpath(ghostexRealpath, "ghostex");
+const gxUsable = isGhostexCommandWrapper(gxPath) || isGhostexCommandRealpath(gxRealpath, "gx");
 const gxBlocked = Boolean(gxPath && !gxUsable);
 const browserSkillPath = path.join(home, "agents", "skills", "ghostex-browser-use", "SKILL.md");
 const browserSkillInstalled = isFile(browserSkillPath);
@@ -36847,7 +36940,7 @@ function handleSidebarMessage(message: SidebarToExtensionMessage): void {
       void requestNativeGhostexCliStatus();
       return;
     case "installGhostexCli":
-      void repairNativeGhostexCliSymlinksFromSettings();
+      void repairNativeGhostexCliCommandsFromSettings();
       return;
     case "installBrowserControl":
       void installNativeBrowserControlSkill();
@@ -41351,7 +41444,7 @@ if (
     startFirstPromptAutoRenameMonitor();
     startQuickFileMissingMonitor();
     startNativeAutoSleepMonitor();
-    void ensureNativeGhostexCliSymlinks(false);
+    void ensureNativeGhostexCliCommands(false);
     runLocalGxserverStartupTasksWhenReady("startup");
     if (restoreActiveProjectEditorAtStartup()) {
       publish();

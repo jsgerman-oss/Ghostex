@@ -1514,9 +1514,14 @@ function FirstLaunchCliPage({
   /**
    * CDXC:CliInstall 2026-06-07-13:53:
    * First launch should present the Ghostex CLI as included with the macOS app.
-   * Production startup auto-repairs ghostex/gx symlinks to the bundled
+   * Production startup auto-repairs ghostex/gx commands to the bundled
    * Resources/CLI runtime, so onboarding must explain what the commands unlock
    * instead of showing install or refresh controls.
+   *
+   * CDXC:CliInstall 2026-06-12-09:31:
+   * Startup repair now installs wrapper commands instead of app-bundled
+   * symlinks, but onboarding copy stays focused on the user-facing command
+   * names rather than the implementation detail.
    */
   const commandLabel = isChecking
     ? "checking command links"

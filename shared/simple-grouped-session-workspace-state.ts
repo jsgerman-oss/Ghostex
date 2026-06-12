@@ -76,6 +76,16 @@ type CreateSessionInSimpleWorkspaceOptions = {
   visiblePlacement?: VisibleSessionPlacement;
 };
 
+export type VirtualPaneTabMaterializationIntent = "explicitLayoutMutation" | "passiveSync";
+
+type EnsureVirtualPaneTabsOptions = {
+  intent?: VirtualPaneTabMaterializationIntent;
+};
+
+type MaterializeVirtualPaneTabsOptions = {
+  preserveSplitTopology?: boolean;
+};
+
 type MoveSessionInPaneLayoutOptions = {
   wakeSourceSession?: boolean;
 };
@@ -3059,6 +3069,7 @@ function getPaneSessionIds(snapshot: SessionGroupRecord["snapshot"]): string[] {
 export function ensureAllSessionsInFocusedPaneTabGroupInSimpleWorkspace(
   snapshot: GroupedSessionWorkspaceSnapshot,
   groupId: string,
+  options: EnsureVirtualPaneTabsOptions = {},
 ): WorkspaceMutationResult {
   const normalizedSnapshot = normalizeSimpleGroupedSessionWorkspaceSnapshot(snapshot);
   const group = getGroupById(normalizedSnapshot, groupId);
@@ -3079,7 +3090,9 @@ export function ensureAllSessionsInFocusedPaneTabGroupInSimpleWorkspace(
       snapshot: normalizedSnapshot,
     };
   }
-  const nextGroupSnapshot = materializeAllSessionsInFocusedPaneTabGroup(group.snapshot);
+  const nextGroupSnapshot = materializeAllSessionsInFocusedPaneTabGroup(group.snapshot, {
+    preserveSplitTopology: options.intent === "passiveSync",
+  });
   const nextSnapshot = updateGroup(normalizedSnapshot, groupId, (targetGroup) => ({
     ...targetGroup,
     snapshot: nextGroupSnapshot,
@@ -3092,6 +3105,7 @@ export function ensureAllSessionsInFocusedPaneTabGroupInSimpleWorkspace(
 
 function materializeAllSessionsInFocusedPaneTabGroup(
   snapshot: SessionGroupRecord["snapshot"],
+  options: MaterializeVirtualPaneTabsOptions = {},
 ): SessionGroupRecord["snapshot"] {
   if (snapshot.visibleCount === 1 && snapshot.fullscreenRestoreVisibleCount !== undefined) {
     /*
@@ -3116,6 +3130,7 @@ function materializeAllSessionsInFocusedPaneTabGroup(
     awakeSessionIds,
     snapshot.visibleSessionIds,
     snapshot.focusedSessionId,
+    options,
   );
   if (!nextPaneLayout) {
     return normalizeGroupSnapshot(snapshot);
@@ -3148,6 +3163,7 @@ function normalizeSessionsIntoFocusedPaneTabGroup(
   awakeSessionIds: readonly string[],
   visibleSessionIds: readonly string[],
   focusedSessionId: string | undefined,
+  options: MaterializeVirtualPaneTabsOptions = {},
 ): SessionPaneLayoutNode | undefined {
   const allowedSessionIds = dedupeVisibleSessionIds(sessionIds);
   const allowedSessionIdSet = new Set(allowedSessionIds);
@@ -3214,26 +3230,160 @@ function normalizeSessionsIntoFocusedPaneTabGroup(
   const backgroundSessionIds = allowedSessionIds.filter(
     (sessionId) => !baseLayoutSessionIds.has(sessionId),
   );
-  if (backgroundSessionIds.length === 0) {
-    return baseLayout;
+  const materializedLayout = (() => {
+    if (backgroundSessionIds.length === 0) {
+      return baseLayout;
+    }
+    const targetSessionId = resolveFocusedPaneTabGroupTargetSessionId(
+      baseLayout,
+      focusedSessionId,
+      visiblePaneOwnerSessionIds,
+      allowedSessionIds,
+    );
+    if (targetSessionId) {
+      const appendedToFocusedGroup = appendSessionsToPaneTabGroupPreservingActive(
+        baseLayout,
+        targetSessionId,
+        backgroundSessionIds,
+      );
+      if (appendedToFocusedGroup) {
+        return appendedToFocusedGroup;
+      }
+    }
+    return appendSessionsToFirstPaneTabGroupPreservingActive(baseLayout, backgroundSessionIds).node;
+  })();
+  if (!options.preserveSplitTopology || !layout) {
+    return materializedLayout;
+  }
+
+  const topologyPreservingLayout = createSplitTopologyPreservingVirtualTabLayout(
+    layout,
+    allowedSessionIds,
+    visiblePaneOwnerSessionIds,
+    focusedSessionId,
+  );
+  if (
+    topologyPreservingLayout &&
+    doesVirtualTabMaterializationReduceSplitTopology(
+      topologyPreservingLayout,
+      materializedLayout,
+    )
+  ) {
+    /*
+     * CDXC:PaneTabs 2026-06-12-09:18:
+     * Publish-time virtual tab materialization is passive synchronization, not
+     * pane mutation. If stale visible/awake state would reduce an existing
+     * split tree, keep the prior pane owner slots and append only missing
+     * virtual tab ids into the focused tab group; explicit close, split, drag,
+     * Focus, and Merge All Tabs actions own intentional topology changes.
+     */
+    return topologyPreservingLayout;
+  }
+  return materializedLayout;
+}
+
+function createSplitTopologyPreservingVirtualTabLayout(
+  layout: SessionPaneLayoutNode,
+  allowedSessionIds: readonly string[],
+  visiblePaneOwnerSessionIds: readonly string[],
+  focusedSessionId: string | undefined,
+): SessionPaneLayoutNode | undefined {
+  const allowedSessionIdSet = new Set(allowedSessionIds);
+  const preservedLayout = preserveExistingPaneLayoutTopology(
+    layout,
+    allowedSessionIdSet,
+    focusedSessionId,
+  );
+  if (!preservedLayout) {
+    return undefined;
+  }
+  const preservedSessionIdSet = new Set(getPaneLayoutSessionIds(preservedLayout));
+  const missingSessionIds = allowedSessionIds.filter(
+    (sessionId) => !preservedSessionIdSet.has(sessionId),
+  );
+  if (missingSessionIds.length === 0) {
+    return preservedLayout;
   }
   const targetSessionId = resolveFocusedPaneTabGroupTargetSessionId(
-    baseLayout,
+    preservedLayout,
     focusedSessionId,
     visiblePaneOwnerSessionIds,
     allowedSessionIds,
   );
   if (targetSessionId) {
-    const appendedToFocusedGroup = appendSessionsToPaneTabGroupPreservingActive(
-      baseLayout,
+    const appendedLayout = appendSessionsToPaneTabGroupPreservingActive(
+      preservedLayout,
       targetSessionId,
-      backgroundSessionIds,
+      missingSessionIds,
     );
-    if (appendedToFocusedGroup) {
-      return appendedToFocusedGroup;
+    if (appendedLayout) {
+      return appendedLayout;
     }
   }
-  return appendSessionsToFirstPaneTabGroupPreservingActive(baseLayout, backgroundSessionIds).node;
+  return appendSessionsToFirstPaneTabGroupPreservingActive(preservedLayout, missingSessionIds).node;
+}
+
+function preserveExistingPaneLayoutTopology(
+  node: SessionPaneLayoutNode,
+  allowedSessionIdSet: ReadonlySet<string>,
+  focusedSessionId: string | undefined,
+): SessionPaneLayoutNode | undefined {
+  if (node.kind === "leaf") {
+    return allowedSessionIdSet.has(node.sessionId) ? node : undefined;
+  }
+  if (node.kind === "tabs") {
+    const sessionIds = dedupeVisibleSessionIds(node.sessionIds).filter((sessionId) =>
+      allowedSessionIdSet.has(sessionId),
+    );
+    if (sessionIds.length === 0) {
+      return undefined;
+    }
+    const activeSessionId =
+      (node.activeSessionId && sessionIds.includes(node.activeSessionId)
+        ? node.activeSessionId
+        : undefined) ??
+      (focusedSessionId && sessionIds.includes(focusedSessionId) ? focusedSessionId : undefined) ??
+      sessionIds[0];
+    return sessionIds.length === 1
+      ? { kind: "leaf", sessionId: sessionIds[0]! }
+      : { activeSessionId, kind: "tabs", sessionIds };
+  }
+  const children = node.children
+    .map((child) =>
+      preserveExistingPaneLayoutTopology(child, allowedSessionIdSet, focusedSessionId),
+    )
+    .filter((child): child is SessionPaneLayoutNode => child !== undefined);
+  if (children.length === 0) {
+    return undefined;
+  }
+  if (children.length === 1) {
+    return children[0];
+  }
+  return flattenPaneLayoutSplit({ ...node, children });
+}
+
+function doesVirtualTabMaterializationReduceSplitTopology(
+  previousLayout: SessionPaneLayoutNode,
+  nextLayout: SessionPaneLayoutNode,
+): boolean {
+  const previousOwnerSlotCount = countPaneLayoutOwnerSlots(previousLayout);
+  const nextOwnerSlotCount = countPaneLayoutOwnerSlots(nextLayout);
+  if (previousOwnerSlotCount > 1 && nextOwnerSlotCount < previousOwnerSlotCount) {
+    return true;
+  }
+  const previousSplitCount = countPaneLayoutSplitNodes(previousLayout);
+  const nextSplitCount = countPaneLayoutSplitNodes(nextLayout);
+  return previousSplitCount > 0 && nextSplitCount < previousSplitCount;
+}
+
+function countPaneLayoutSplitNodes(layout: SessionPaneLayoutNode): number {
+  if (layout.kind !== "split") {
+    return 0;
+  }
+  return 1 + layout.children.reduce(
+    (count, child) => count + countPaneLayoutSplitNodes(child),
+    0,
+  );
 }
 
 function retainRenderedPaneLayoutSessions(
