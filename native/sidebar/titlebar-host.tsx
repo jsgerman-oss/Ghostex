@@ -415,7 +415,13 @@ const RESOURCE_POLL_INTERVAL_MS = 5_000;
  */
 const TITLEBAR_PANEL_QUERY_PARAM = "ghostexTitlebarPanel";
 const TITLEBAR_DROPDOWN_COMPACT_PANEL_WIDTH = 240;
-const TITLEBAR_DROPDOWN_READING_PANEL_WIDTH = 656;
+const TITLEBAR_DROPDOWN_RESOURCES_PANEL_WIDTH = 656;
+/**
+ * CDXC:TipsAndTricks 2026-06-12-08:56:
+ * The macOS Tips & Tricks child panel should be 100px narrower than the shared
+ * Resources reading panel while preserving the always-expanded section layout.
+ */
+const TITLEBAR_DROPDOWN_TIPS_PANEL_WIDTH = 556;
 const TITLEBAR_DROPDOWN_READING_PANEL_HEIGHT = 650;
 const TITLEBAR_DROPDOWN_MENU_CHROME_HEIGHT = 10;
 const TITLEBAR_DROPDOWN_MENU_ITEM_HEIGHT = 30;
@@ -478,10 +484,14 @@ function createTitlebarDropdownPanelPreferredSize(
    */
   switch (kind) {
     case "resources":
+      return {
+        height: TITLEBAR_DROPDOWN_READING_PANEL_HEIGHT,
+        width: TITLEBAR_DROPDOWN_RESOURCES_PANEL_WIDTH,
+      };
     case "tips":
       return {
         height: TITLEBAR_DROPDOWN_READING_PANEL_HEIGHT,
-        width: TITLEBAR_DROPDOWN_READING_PANEL_WIDTH,
+        width: TITLEBAR_DROPDOWN_TIPS_PANEL_WIDTH,
       };
     case "actions": {
       const actionRows = Math.max(0, counts.actionCount);
@@ -5761,10 +5771,14 @@ styleElement.textContent = `
      * Tips should use the same maximum dropdown height as Resources and keep
      * the authored array order on screen. The menu is a reading surface, not an
      * editor, so it stays dense and square like the Resources manager.
+     *
+     * CDXC:TipsAndTricks 2026-06-12-08:56:
+     * The macOS Tips & Tricks child panel is 100px narrower than the Resources
+     * reading panel so the guide occupies less horizontal space.
      */
     background: #0e0e0e !important;
     background-color: #0e0e0e !important;
-    width: min(656px, calc(100vw - 24px));
+    width: min(556px, calc(100vw - 24px));
     max-height: min(760px, calc(100vh - 46px));
     overflow: hidden;
   }

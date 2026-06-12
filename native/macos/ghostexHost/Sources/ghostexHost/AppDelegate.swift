@@ -13849,8 +13849,17 @@ private final class TitlebarDropdownPanelController: NSObject, NSWindowDelegate,
 
   private func defaultSize(for kind: String) -> CGSize {
     switch kind {
-    case "resources", "tips":
+    case "resources":
       return CGSize(width: 656, height: 650)
+    case "tips":
+      /*
+       CDXC:TipsAndTricks 2026-06-12-08:56:
+       The macOS Tips & Tricks child panel should be 100px narrower than the
+       Resources reading panel. Keep Swift's native fallback aligned with the
+       titlebar React preferred size so stale or missing preferred-size payloads
+       do not reopen the wider frame.
+       */
+      return CGSize(width: 556, height: 650)
     default:
       return CGSize(width: 240, height: 130)
     }
