@@ -72,7 +72,7 @@ function AgentsHubModalStory({ initialTab }: { initialTab: AgentsHubTab }) {
   return (
     <div
       style={{
-        background: "#050505",
+        background: "#0e0e0e",
         height: "100vh",
         width: "100vw",
       }}

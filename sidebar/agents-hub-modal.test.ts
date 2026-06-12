@@ -74,4 +74,41 @@ describe("applySavedAgentsHubContents", () => {
     expect(updated.skills[0]!.files[0]!.content).toBe("old skill");
     expect(catalog.groupsByTab.mds[0]!.files[0]!.content).toBe("old instructions");
   });
+
+  test("adds saved editor contents to metadata-only catalog rows", () => {
+    /*
+     * CDXC:AgentsHub 2026-06-12-02:53:
+     * Native catalog rows no longer include full file buffers on open. A saved
+     * in-modal edit should still hydrate matching metadata-only rows so
+     * reselecting the file shows the persisted editor text immediately.
+     */
+    const metadataOnlyCatalog: AgentsHubCatalogMessage = {
+      ...catalog,
+      groupsByTab: {
+        configs: [],
+        hooks: [],
+        mds: [
+          {
+            ...catalog.groupsByTab.mds[0]!,
+            files: [
+              {
+                id: "shared-main",
+                language: "markdown",
+                name: "main.md",
+                path: "/Users/madda/.agents/main.md",
+              },
+            ],
+          },
+        ],
+        skills: [],
+      },
+    };
+
+    const updated = applySavedAgentsHubContents(metadataOnlyCatalog.groupsByTab, {
+      "/Users/madda/.agents/main.md": "new instructions",
+    });
+
+    expect(updated.mds[0]!.files[0]!.content).toBe("new instructions");
+    expect(metadataOnlyCatalog.groupsByTab.mds[0]!.files[0]!.content).toBeUndefined();
+  });
 });

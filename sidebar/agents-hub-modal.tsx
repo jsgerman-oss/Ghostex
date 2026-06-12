@@ -6,7 +6,6 @@ import {
   IconFile,
   IconFolderOpen,
   IconRefresh,
-  IconSearch,
   IconX,
 } from "@tabler/icons-react";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -33,6 +32,7 @@ import { applySavedAgentsHubContents } from "../shared/agents-hub-catalog";
 import type {
   AgentsHubCatalogMessage,
   AgentsHubFile,
+  AgentsHubFileContentMessage,
   AgentsHubGroup,
   AgentsHubProfile,
   AgentsHubTab,
@@ -85,14 +85,20 @@ type AgentsHubSavedContentOverlay = {
   contentsByPath: Record<string, string>;
 };
 
+type LoadedAgentsHubFile = AgentsHubFile & {
+  content: string;
+};
+
 export function AgentsHubModal({
   catalog,
+  fileContent,
   initialTab,
   isOpen,
   onClose,
   vscode,
 }: {
   catalog?: AgentsHubCatalogMessage;
+  fileContent?: AgentsHubFileContentMessage;
   initialTab?: AgentsHubTab;
   isOpen: boolean;
   onClose: () => void;
@@ -107,18 +113,21 @@ export function AgentsHubModal({
         <DialogContent className="agents-hub-dialog ghostex-settings-shadcn" showCloseButton={false}>
           <button
             aria-label="Close Agents Hub"
-            className="agents-hub-close"
+            className="ghostex-modal-icon-close agents-hub-close"
             onClick={onClose}
             type="button"
           >
             <IconX aria-hidden="true" />
           </button>
-          <DialogHeader className="agents-hub-header">
-            <DialogTitle>Agents Hub</DialogTitle>
+          <DialogHeader className="ghostex-modal-heading-bar agents-hub-header">
+            <DialogTitle className="ghostex-modal-heading-title agents-hub-title">
+              Agents Hub
+            </DialogTitle>
           </DialogHeader>
           <AgentsHubSurface
             catalog={catalog}
             editorCommand={editorCommand}
+            fileContent={fileContent}
             initialTab={initialTab}
             isOpen={isOpen}
             vscode={vscode}
@@ -132,16 +141,25 @@ export function AgentsHubModal({
 function AgentsHubSurface({
   catalog,
   editorCommand,
+  fileContent,
   initialTab = "mds",
   isOpen,
   vscode,
 }: {
   catalog?: AgentsHubCatalogMessage;
   editorCommand: string;
+  fileContent?: AgentsHubFileContentMessage;
   initialTab?: AgentsHubTab;
   isOpen: boolean;
   vscode: WebviewApi;
 }) {
+  const [fileContentsByPath, setFileContentsByPath] = useState<Record<string, string>>({});
+  const [fileContentErrorsByPath, setFileContentErrorsByPath] = useState<Record<string, string>>(
+    {},
+  );
+  const [pendingFileContentRequestsByPath, setPendingFileContentRequestsByPath] = useState<
+    Record<string, string>
+  >({});
   const [savedContentOverlay, setSavedContentOverlay] = useState<AgentsHubSavedContentOverlay>({
     contentsByPath: emptySavedContentsByPath,
   });
@@ -177,6 +195,19 @@ function AgentsHubSurface({
   }, [isOpen, vscode]);
 
   useEffect(() => {
+    /*
+     * CDXC:AgentsHub 2026-06-12-02:53:
+     * The Hub catalog is metadata-only so opening the modal does not bridge
+     * every local agent file buffer. Clear per-file editor caches whenever
+     * native returns a new catalog generation, then fetch only the selected
+     * file content through a separate small request.
+     */
+    setFileContentsByPath({});
+    setFileContentErrorsByPath({});
+    setPendingFileContentRequestsByPath({});
+  }, [catalog?.generatedAt]);
+
+  useEffect(() => {
     setSelectedFileIds((current) => ({
       configs: findFile(groupsByTab, "configs", current.configs)
         ? current.configs
@@ -205,6 +236,88 @@ function AgentsHubSurface({
   }, [groupsByTab]);
 
   const activeFile = findFile(groupsByTab, activeTab, selectedFileIds[activeTab]);
+  const activeFileContent =
+    activeFile === undefined
+      ? undefined
+      : activeFile.content ?? fileContentsByPath[activeFile.path];
+  const activeFileLoadError =
+    activeFile === undefined ? undefined : fileContentErrorsByPath[activeFile.path];
+  const isActiveFileContentLoading =
+    activeFile !== undefined && activeFileContent === undefined && activeFileLoadError === undefined;
+
+  useEffect(() => {
+    if (!fileContent) {
+      return;
+    }
+
+    setPendingFileContentRequestsByPath((current) => {
+      if (current[fileContent.filePath] !== fileContent.requestId) {
+        return current;
+      }
+      const next = { ...current };
+      delete next[fileContent.filePath];
+      return next;
+    });
+
+    if (typeof fileContent.content === "string") {
+      setFileContentsByPath((current) => ({
+        ...current,
+        [fileContent.filePath]: fileContent.content!,
+      }));
+      setFileContentErrorsByPath((current) => {
+        if (!(fileContent.filePath in current)) {
+          return current;
+        }
+        const next = { ...current };
+        delete next[fileContent.filePath];
+        return next;
+      });
+      return;
+    }
+
+    setFileContentErrorsByPath((current) => ({
+      ...current,
+      [fileContent.filePath]: fileContent.errorMessage ?? "Unable to load file contents.",
+    }));
+  }, [fileContent]);
+
+  useEffect(() => {
+    if (
+      !isOpen ||
+      !activeFile ||
+      activeFileContent !== undefined ||
+      pendingFileContentRequestsByPath[activeFile.path]
+    ) {
+      return;
+    }
+
+    const requestId = `agents-hub-file-${Date.now().toString(36)}-${Math.random()
+      .toString(36)
+      .slice(2)}`;
+    setPendingFileContentRequestsByPath((current) => ({
+      ...current,
+      [activeFile.path]: requestId,
+    }));
+    setFileContentErrorsByPath((current) => {
+      if (!(activeFile.path in current)) {
+        return current;
+      }
+      const next = { ...current };
+      delete next[activeFile.path];
+      return next;
+    });
+    vscode.postMessage({
+      filePath: activeFile.path,
+      requestId,
+      type: "requestAgentsHubFileContent",
+    });
+  }, [
+    activeFile,
+    activeFileContent,
+    isOpen,
+    pendingFileContentRequestsByPath,
+    vscode,
+  ]);
 
   return (
     <Tabs
@@ -223,8 +336,13 @@ function AgentsHubSurface({
         <TabsContent className="agents-hub-tab-content" key={tab} value={tab}>
           <section className="agents-hub-layout">
             <aside className="agents-hub-list-pane">
+              {/*
+               * CDXC:AgentsHub 2026-06-12-02:53:
+               * Agents Hub should not render search icons in the search field,
+               * empty list, or editor loading states. Repeated magnifiers make
+               * the modal look broken when the catalog is still loading.
+               */}
               <div className="agents-hub-search">
-                <IconSearch data-icon="inline-start" />
                 <Input
                   aria-label={`Search ${tabLabels[tab]}`}
                   onChange={(event) => setQuery(event.target.value)}
@@ -253,15 +371,16 @@ function AgentsHubSurface({
                     });
                   }}
                   groupsByTab={groupsByTab}
+                  isCatalogLoading={!catalog}
                   query={query}
                   vscode={vscode}
                 />
               </ScrollArea>
             </aside>
-            {activeFile ? (
+            {activeFile && activeFileContent !== undefined ? (
               <EditorPane
                 editorCommand={editorCommand}
-                file={activeFile}
+                file={{ ...activeFile, content: activeFileContent }}
                 onRefreshCatalog={() => {
                   /**
                    * CDXC:AgentsHub 2026-06-04-20:08:
@@ -289,10 +408,15 @@ function AgentsHubSurface({
                 }}
                 vscode={vscode}
               />
+            ) : activeFile ? (
+              <FileContentStatePane
+                errorMessage={activeFileLoadError}
+                file={activeFile}
+                isLoading={isActiveFileContentLoading}
+              />
             ) : (
               <div className="agents-hub-editor-frame">
                 <div className="agents-hub-empty">
-                  <IconSearch data-icon="inline-start" />
                   <span>{catalog ? "No files found." : "Loading agent files..."}</span>
                 </div>
               </div>
@@ -309,6 +433,7 @@ function GroupList({
   activeTab,
   expandedIds,
   groupsByTab,
+  isCatalogLoading,
   onSelectFile,
   onToggleExpanded,
   query,
@@ -318,6 +443,7 @@ function GroupList({
   activeTab: AgentsHubTab;
   expandedIds: Set<string>;
   groupsByTab: Record<AgentsHubTab, AgentsHubGroup[]>;
+  isCatalogLoading: boolean;
   onSelectFile: (fileId: string) => void;
   onToggleExpanded: (groupId: string) => void;
   query: string;
@@ -329,8 +455,7 @@ function GroupList({
   if (groups.length === 0) {
     return (
       <div className="agents-hub-empty">
-        <IconSearch data-icon="inline-start" />
-        <span>No matching files.</span>
+        <span>{isCatalogLoading ? "Loading agent files..." : "No matching files."}</span>
       </div>
     );
   }
@@ -480,6 +605,31 @@ function getAgentProfileBadge(profilePath: string): string | undefined {
   return profileFolder?.match(/[a-z0-9]/i)?.[0]?.toUpperCase();
 }
 
+function FileContentStatePane({
+  errorMessage,
+  file,
+  isLoading,
+}: {
+  errorMessage?: string;
+  file: AgentsHubFile;
+  isLoading: boolean;
+}) {
+  return (
+    <div className="agents-hub-editor-frame">
+      <div className="agents-hub-editor-toolbar">
+        <div className="agents-hub-editor-file">
+          <span className="agents-hub-editor-name">{file.name}</span>
+          <span className="agents-hub-path">{file.path}</span>
+        </div>
+      </div>
+      <Separator />
+      <div className="agents-hub-empty">
+        <span>{errorMessage ?? (isLoading ? "Loading file..." : "Select a file.")}</span>
+      </div>
+    </div>
+  );
+}
+
 function EditorPane({
   editorCommand,
   file,
@@ -488,7 +638,7 @@ function EditorPane({
   vscode,
 }: {
   editorCommand: string;
-  file: AgentsHubFile;
+  file: LoadedAgentsHubFile;
   onRefreshCatalog: () => void;
   onSaveContent: (filePath: string, content: string) => void;
   vscode: WebviewApi;

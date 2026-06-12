@@ -12,6 +12,49 @@ function sourceBetween(start: string, end: string): string {
 }
 
 describe("Native Agents Hub catalog source", () => {
+  test("resolves the sidebar helper runtime from the bundled code-server Node", () => {
+    /*
+     * CDXC:AgentsHub 2026-06-12-03:05:
+     * Agents Hub native helper scripts must use the same app-bundled
+     * code-server Node as gxserver. The sidebar resource directory is already
+     * the Web directory, so adding "../code-server" points at an unbundled
+     * Resources/code-server path and leaves the hub stuck loading.
+     */
+    const nodePathSource = sourceBetween(
+      "function nativeSidebarBundledCodeServerNodePath",
+      "function nativeNodeUnavailableResult",
+    );
+    expect(nodePathSource).toContain("/code-server/lib/node");
+    expect(nodePathSource).not.toContain("../code-server/lib/node");
+    expect(nodePathSource.indexOf("const bundledNodePath")).toBeLessThan(
+      nodePathSource.indexOf("const statusNodePath"),
+    );
+  });
+
+  test("keeps catalog rows metadata-only and reads selected file content separately", () => {
+    /*
+     * CDXC:AgentsHub 2026-06-12-02:53:
+     * Agents Hub must render large agent/profile trees without sending every
+     * file buffer through the native process-result bridge. The catalog source
+     * should therefore build file rows from metadata, while a selected-file
+     * helper owns the smaller editor-buffer read.
+     */
+    const fileItemSource = sourceBetween(
+      "function fileItem(candidatePath, root)",
+      "function addGroup(tab, groupId, name, rootPath, description, files, groupProfiles)",
+    );
+    expect(fileItemSource).toContain("isReadableCatalogFile(resolved)");
+    expect(fileItemSource).toContain("return { id: fileId(resolved)");
+    expect(fileItemSource).not.toContain("content, id");
+
+    const contentRequestSource = sourceBetween(
+      "async function requestAgentsHubFileContent",
+      "function getAgentsHubCatalogNodeScript()",
+    );
+    expect(contentRequestSource).toContain('type: "agentsHubFileContent"');
+    expect(contentRequestSource).toContain('fs.readFileSync(filePath, "utf8")');
+  });
+
   test("classifies discrete hook files under Hooks instead of Configs", () => {
     /**
      * CDXC:AgentsHub 2026-06-04-19:45:
