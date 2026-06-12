@@ -162,8 +162,11 @@ import {
 } from "./primary-agent-launcher";
 import { ProjectAgentLauncherIcon } from "./project-agent-launcher-icon";
 
+type SidebarEventSource = Pick<Window, "addEventListener" | "removeEventListener">;
+
 export type SidebarAppProps = {
-  messageSource?: Pick<Window, "addEventListener" | "removeEventListener">;
+  messageSource?: SidebarEventSource;
+  nativeHostEventSource?: SidebarEventSource | null;
   vscode: WebviewApi;
 };
 
@@ -580,7 +583,11 @@ function writeSidebarUiCollapseState(
   }
 }
 
-export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) {
+export function SidebarApp({
+  messageSource = window,
+  nativeHostEventSource = window,
+  vscode,
+}: SidebarAppProps) {
   const [initialUiCollapseStateRead] = useState(readSidebarUiCollapseState);
   const initialUiCollapseState = initialUiCollapseStateRead.state;
   const [isStartupInteractionBlocked, setIsStartupInteractionBlocked] = useState(true);
@@ -1496,6 +1503,10 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
   }, [handleWindowMessage, messageSource]);
 
   useEffect(() => {
+    if (!nativeHostEventSource) {
+      return;
+    }
+
     const handleNativeHostEvent = (event: Event) => {
       if (!(event instanceof CustomEvent)) {
         return;
@@ -1511,13 +1522,16 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
     /**
      * CDXC:Hotkeys 2026-06-05-21:17:
      * Native macOS shortcuts arrive through the Ghostex host custom event, while extension-style traffic arrives through postMessage. Route both into the same sidebar action handler so Cmd+number uses the visible-row slot resolver consistently.
+     *
+     * CDXC:Hotkeys 2026-06-12-12:33:
+     * The native sidebar wrapper owns typed nativeHotkey host events. Allow that wrapper to disable this shared listener so Cmd+T creates one terminal tab instead of running both the wrapper action and the shared SidebarApp createSession bridge.
      */
-    window.addEventListener("ghostex-native-host-event", handleNativeHostEvent);
+    nativeHostEventSource.addEventListener("ghostex-native-host-event", handleNativeHostEvent);
 
     return () => {
-      window.removeEventListener("ghostex-native-host-event", handleNativeHostEvent);
+      nativeHostEventSource.removeEventListener("ghostex-native-host-event", handleNativeHostEvent);
     };
-  }, [handleWindowMessage]);
+  }, [handleWindowMessage, nativeHostEventSource]);
 
   useEffect(() => {
     return () => {

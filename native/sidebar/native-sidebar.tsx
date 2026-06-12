@@ -41417,7 +41417,8 @@ function NativeSidebarRoot() {
     <div className="native-sidebar-shell" data-sidebar-mode="combined">
       {/* CDXC:ProjectListRemoval 2026-06-03-15:12: The far-left project list is not mounted; combined project groups receive the full sidebar width. */}
       <main className="native-sidebar-main">
-        <SidebarApp messageSource={sidebarBus} vscode={vscode} />
+        {/* CDXC:Hotkeys 2026-06-12-12:33: The native wrapper owns typed nativeHotkey host events, so the embedded shared SidebarApp must not also consume them. Cmd+T must create exactly one terminal tab. */}
+        <SidebarApp messageSource={sidebarBus} nativeHostEventSource={null} vscode={vscode} />
       </main>
     </div>
   );
