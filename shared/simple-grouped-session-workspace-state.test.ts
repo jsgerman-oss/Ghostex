@@ -1821,6 +1821,103 @@ describe("removeSessionInSimpleWorkspace", () => {
       kind: "split",
     });
   });
+
+  test("should keep three split panes stable when closing a tab in the third pane", () => {
+    const firstPaneOwnerId = sessionIdForDisplay(3);
+    const firstPaneSiblingId = sessionIdForDisplay(4);
+    const middlePaneOwnerId = sessionIdForDisplay(0);
+    const thirdPaneLeftId = sessionIdForDisplay(1);
+    const closingThirdPaneTabId = sessionIdForDisplay(5);
+    const thirdPaneRightId = sessionIdForDisplay(2);
+
+    const result = removeSessionInSimpleWorkspace(
+      createWorkspaceSnapshot({
+        activeGroupId: DEFAULT_MAIN_GROUP_ID,
+        groups: [
+          {
+            groupId: DEFAULT_MAIN_GROUP_ID,
+            snapshot: {
+              focusedSessionId: closingThirdPaneTabId,
+              fullscreenRestoreVisibleCount: undefined,
+              paneLayout: {
+                children: [
+                  {
+                    activeSessionId: firstPaneOwnerId,
+                    kind: "tabs",
+                    sessionIds: [firstPaneOwnerId, firstPaneSiblingId],
+                  },
+                  {
+                    children: [
+                      { kind: "leaf", sessionId: middlePaneOwnerId },
+                      {
+                        activeSessionId: closingThirdPaneTabId,
+                        kind: "tabs",
+                        sessionIds: [thirdPaneLeftId, closingThirdPaneTabId, thirdPaneRightId],
+                      },
+                    ],
+                    direction: "vertical",
+                    kind: "split",
+                  },
+                ],
+                direction: "horizontal",
+                kind: "split",
+              },
+              sessions: [
+                createSessionRecord(1, 0),
+                createSessionRecord(2, 1),
+                createSessionRecord(3, 2),
+                createSessionRecord(4, 3),
+                createSessionRecord(5, 4),
+                createSessionRecord(6, 5),
+              ],
+              viewMode: "grid",
+              visibleCount: 2,
+              visibleSessionIds: [middlePaneOwnerId, closingThirdPaneTabId],
+            },
+            title: "Main",
+          },
+        ],
+        nextGroupNumber: 2,
+        nextSessionDisplayId: 6,
+        nextSessionNumber: 7,
+      }),
+      closingThirdPaneTabId,
+    );
+
+    const materialized = ensureAllSessionsInFocusedPaneTabGroupInSimpleWorkspace(
+      result.snapshot,
+      DEFAULT_MAIN_GROUP_ID,
+    );
+
+    /*
+     * CDXC:PaneTabs 2026-06-12-06:35:
+     * Three-way split panes must remain stable when a tab opens or closes in the third pane.
+     * Virtual-tab materialization may append true background sessions, but it must not relocate another live split pane's tab group into the focused pane just because legacy visibleSessionIds omitted that pane owner.
+     */
+    expect(materialized.snapshot.groups[0]?.snapshot.paneLayout).toEqual({
+      children: [
+        {
+          activeSessionId: firstPaneOwnerId,
+          kind: "tabs",
+          sessionIds: [firstPaneOwnerId, firstPaneSiblingId],
+        },
+        {
+          children: [
+            { kind: "leaf", sessionId: middlePaneOwnerId },
+            {
+              activeSessionId: thirdPaneRightId,
+              kind: "tabs",
+              sessionIds: [thirdPaneLeftId, thirdPaneRightId],
+            },
+          ],
+          direction: "vertical",
+          kind: "split",
+        },
+      ],
+      direction: "horizontal",
+      kind: "split",
+    });
+  });
 });
 
 describe("syncSessionOrderInSimpleWorkspace", () => {

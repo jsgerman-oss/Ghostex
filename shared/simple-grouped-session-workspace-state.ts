@@ -3102,12 +3102,18 @@ function materializeAllSessionsInFocusedPaneTabGroup(
     return normalizeGroupSnapshot(snapshot);
   }
   const sessionIds = dedupeVisibleSessionIds(snapshot.sessions.map((session) => session.sessionId));
+  const awakeSessionIds = dedupeVisibleSessionIds(
+    snapshot.sessions
+      .filter((session) => session.isSleeping !== true)
+      .map((session) => session.sessionId),
+  );
   if (sessionIds.length === 0) {
     return normalizeGroupSnapshot(snapshot);
   }
   const nextPaneLayout = normalizeSessionsIntoFocusedPaneTabGroup(
     snapshot.paneLayout,
     sessionIds,
+    awakeSessionIds,
     snapshot.visibleSessionIds,
     snapshot.focusedSessionId,
   );
@@ -3139,12 +3145,25 @@ function materializeAllSessionsInFocusedPaneTabGroup(
 function normalizeSessionsIntoFocusedPaneTabGroup(
   layout: SessionPaneLayoutNode | undefined,
   sessionIds: readonly string[],
+  awakeSessionIds: readonly string[],
   visibleSessionIds: readonly string[],
   focusedSessionId: string | undefined,
 ): SessionPaneLayoutNode | undefined {
   const allowedSessionIds = dedupeVisibleSessionIds(sessionIds);
   const allowedSessionIdSet = new Set(allowedSessionIds);
+  const awakeSessionIdSet = new Set(
+    awakeSessionIds.filter((sessionId) => allowedSessionIdSet.has(sessionId)),
+  );
+  /*
+   * CDXC:PaneTabs 2026-06-12-06:35:
+   * Opening or closing tabs can leave legacy visibleSessionIds missing a split's selected owner while paneLayout still has the stable pane owner.
+   * Treat awake active owners from the existing paneLayout as rendered owners before virtual-tab materialization, so live split panes are not pruned and their tab inventories cannot be appended into another pane.
+   */
+  const activePaneOwnerSessionIds = layout
+    ? getRenderedPaneOwnerSessionIds(layout, awakeSessionIdSet)
+    : [];
   const visiblePaneOwnerSessionIds = dedupeVisibleSessionIds([
+    ...activePaneOwnerSessionIds,
     ...visibleSessionIds.filter((sessionId) => allowedSessionIdSet.has(sessionId)),
   ]);
   const seedSessionIds = dedupeVisibleSessionIds([
