@@ -47,7 +47,7 @@ export type AgentsHubProfile = {
 };
 
 export type AgentsHubFile = {
-  content: string;
+  content?: string;
   id: string;
   language: string;
   name: string;
@@ -67,6 +67,14 @@ export type AgentsHubCatalogMessage = {
   generatedAt: string;
   groupsByTab: Record<AgentsHubTab, AgentsHubGroup[]>;
   type: "agentsHubCatalog";
+};
+
+export type AgentsHubFileContentMessage = {
+  content?: string;
+  errorMessage?: string;
+  filePath: string;
+  requestId: string;
+  type: "agentsHubFileContent";
 };
 
 export type SidebarAgentHookStatus = "installed" | "missing" | "cliMissing" | "notRequired" | "updateRequired";
@@ -748,6 +756,7 @@ export type ExtensionToSidebarMessage =
   | SidebarSessionStateMessage
   | SidebarNativeHotkeyMessage
   | AgentsHubCatalogMessage
+  | AgentsHubFileContentMessage
   | SidebarSessionPresentationChangedMessage
   | SidebarGroupsChangedMessage
   | SidebarHudChangedMessage
@@ -927,6 +936,14 @@ export type SidebarToExtensionMessage =
     }
   | {
       /**
+       * CDXC:SidebarCollapse 2026-06-12-02:23:
+       * Cmd+B and command-palette execution need a native chrome command that
+       * collapses the whole AppKit sidebar, not only React sidebar content.
+       */
+      type: "toggleSidebarCollapsed";
+    }
+  | {
+      /**
        * CDXC:SidebarContextMenu 2026-05-20-13:05:
        * Session and project context menus notify native when open so clicks on
        * terminal, titlebar, and other non-sidebar surfaces dismiss the menu
@@ -1006,8 +1023,24 @@ export type SidebarToExtensionMessage =
        * CDXC:AgentsHub 2026-05-14-08:29:
        * Agents Hub must show the real files installed on the user's machine, including files owned by Claude/Codex profiles and plugin caches.
        * The modal host requests a fresh native filesystem catalog whenever the Hub opens instead of relying on a bundled placeholder list.
+       *
+       * CDXC:AgentsHub 2026-06-12-02:53:
+       * Catalog requests return metadata only so large profile/plugin trees can
+       * paint the Hub immediately without pushing every file buffer through the
+       * native process-result bridge.
        */
       type: "requestAgentsHubCatalog";
+    }
+  | {
+      /**
+       * CDXC:AgentsHub 2026-06-12-02:53:
+       * Agents Hub reads file contents only after selection because the left
+       * tree needs metadata, while editor buffers can be large enough to block
+       * the modal bridge when loaded for every file at once.
+       */
+      filePath: string;
+      requestId: string;
+      type: "requestAgentsHubFileContent";
     }
   | {
       /**
@@ -1411,6 +1444,16 @@ export type SidebarToExtensionMessage =
     }
   | {
       type: "copyAttachCommand";
+      sessionId: string;
+    }
+  | {
+      /**
+       * CDXC:SidebarContextMenu 2026-06-11-23:08:
+       * The React sidebar builds Copy details text from its rendered session row
+       * and sends only that user-requested clipboard payload to native.
+       */
+      type: "copySessionDetails";
+      detailsText: string;
       sessionId: string;
     }
   | {
