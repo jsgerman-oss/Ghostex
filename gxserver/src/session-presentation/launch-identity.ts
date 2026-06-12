@@ -56,22 +56,26 @@ export function inferAgentIdFromCommand(value: unknown): string | undefined {
   if (!command) {
     return undefined;
   }
+  /*
+  CDXC:GxserverSessionIdentity 2026-06-12-12:09:
+  Live zmx process evidence can report agent CLIs as absolute executable paths, for example a Node shim running `/.../bin/codex --yolo resume` after macOS `ps` omits the resume id. Treat path separators as command-token boundaries so gxserver can repair a stale cross-agent hook label from the active process tree and clear the old transcript identity for every client.
+  */
   const patterns: Array<[string, RegExp]> = [
-    ["cursor", /(?:^|[\s;&|()])cursor-agent(?:$|[\s;&|()])/u],
-    ["hermes-agent", /(?:^|[\s;&|()])hermes(?:$|[\s;&|()])/u],
-    ["codebuddy", /(?:^|[\s;&|()])codebuddy(?:$|[\s;&|()])/u],
-    ["antigravity", /(?:^|[\s;&|()])agy(?:$|[\s;&|()])/u],
-    ["opencode", /(?:^|[\s;&|()])opencode(?:$|[\s;&|()])/u],
-    ["rovodev", /(?:^|[\s;&|()])(?:acli\s+rovodev\s+run|rovodev)(?:$|[\s;&|()])/u],
-    ["qoder", /(?:^|[\s;&|()])qodercli(?:$|[\s;&|()])/u],
-    ["claude", /(?:^|[\s;&|()])claude(?:$|[\s;&|()])/u],
-    ["copilot", /(?:^|[\s;&|()])copilot(?:$|[\s;&|()])/u],
-    ["gemini", /(?:^|[\s;&|()])gemini(?:$|[\s;&|()])/u],
-    ["codex", /(?:^|[\s;&|()])codex(?:$|[\s;&|()])/u],
-    ["droid", /(?:^|[\s;&|()])droid(?:$|[\s;&|()])/u],
-    ["grok", /(?:^|[\s;&|()])grok(?:$|[\s;&|()])/u],
-    ["amp", /(?:^|[\s;&|()])amp(?:$|[\s;&|()])/u],
-    ["pi", /(?:^|[\s;&|()])pi(?:$|[\s;&|()])/u],
+    ["cursor", /(?:^|[\s;&|()/])cursor-agent(?:$|[\s;&|()/])/u],
+    ["hermes-agent", /(?:^|[\s;&|()/])hermes(?:$|[\s;&|()/])/u],
+    ["codebuddy", /(?:^|[\s;&|()/])codebuddy(?:$|[\s;&|()/])/u],
+    ["antigravity", /(?:^|[\s;&|()/])agy(?:$|[\s;&|()/])/u],
+    ["opencode", /(?:^|[\s;&|()/])opencode(?:$|[\s;&|()/])/u],
+    ["rovodev", /(?:^|[\s;&|()/])(?:acli\s+rovodev\s+run|rovodev)(?:$|[\s;&|()/])/u],
+    ["qoder", /(?:^|[\s;&|()/])qodercli(?:$|[\s;&|()/])/u],
+    ["claude", /(?:^|[\s;&|()/])claude(?:$|[\s;&|()/])/u],
+    ["copilot", /(?:^|[\s;&|()/])copilot(?:$|[\s;&|()/])/u],
+    ["gemini", /(?:^|[\s;&|()/])gemini(?:$|[\s;&|()/])/u],
+    ["codex", /(?:^|[\s;&|()/])codex(?:$|[\s;&|()/])/u],
+    ["droid", /(?:^|[\s;&|()/])droid(?:$|[\s;&|()/])/u],
+    ["grok", /(?:^|[\s;&|()/])grok(?:$|[\s;&|()/])/u],
+    ["amp", /(?:^|[\s;&|()/])amp(?:$|[\s;&|()/])/u],
+    ["pi", /(?:^|[\s;&|()/])pi(?:$|[\s;&|()/])/u],
   ];
   for (const [agentId, pattern] of patterns) {
     if (pattern.test(command)) {

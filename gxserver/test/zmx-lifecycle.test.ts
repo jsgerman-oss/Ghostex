@@ -212,6 +212,24 @@ test("zmx process identity parser prefers live Codex child over unrelated agent 
   });
 });
 
+test("zmx process identity parser classifies path-based Codex descendants without a visible resume id", () => {
+  const sessionName = "S90-P3lv0-G8z6g" as GxserverZmxSessionName;
+  const identities = parseZmxSessionProcessIdentities({
+    psOutput: `
+82603 82602 /bin/zsh -li
+91171 82603 node /Users/person/.local/share/mise/installs/node/24.14.1/bin/codex --yolo resume
+91172 91171 /Users/person/.local/share/mise/installs/node/24.14.1/lib/node_modules/@openai/codex/node_modules/@openai/codex-darwin-arm64/vendor/aarch64-apple-darwin/bin/codex --yolo resume
+93898 91172 /Applications/Codex.app/Contents/Resources/cua_node/bin/node_repl
+`.trim(),
+    sessionNames: [sessionName],
+    zmxListOutput: `  name=${sessionName}\tpid=82603\tclients=1\tcreated=1781251054\tstart_dir=/repo`,
+  });
+
+  assert.deepEqual(identities.get(sessionName), {
+    agentId: "codex",
+  });
+});
+
 test("sleep and close kill commands use bundled zmx directly", () => {
   const command = buildZmxKillCommand({
     sessionName: "S1a-P3a91-G8v20",

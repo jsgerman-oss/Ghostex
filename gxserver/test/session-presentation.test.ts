@@ -382,6 +382,44 @@ test("passive Codex hooks correct stale non-Codex session identity", () => {
   assert.deepEqual(conflicts, []);
 });
 
+test("live process identity without a session id clears stale cross-agent transcript metadata", () => {
+  const staleClaudeSessionId = "ef30d096-b233-4895-b4e7-e9d4abca61b8";
+  const project = projectFixture({});
+  const session = sessionFixture({
+    agentId: "claude",
+    kind: "agent",
+    runtimeSettings: {
+      agentActivity: {
+        activity: "idle",
+        agentName: "claude",
+        hasSeenWorking: false,
+        isAcknowledged: true,
+        lastChangedAt: "2026-06-12T07:58:06.269Z",
+      },
+      agentName: "claude",
+      agentSessionId: staleClaudeSessionId,
+      agentSessionPath: `/Users/person/.claude-profiles/work/projects/-repo/${staleClaudeSessionId}.jsonl`,
+      titleSource: "terminal-auto",
+    },
+    title: "Hide Buttons Except Restart",
+  });
+  const repository = new MockPresentationRepository(project, [session]);
+
+  const result = applySessionStateEvent(repository, {
+    agentName: "codex",
+    identityUpdateSource: "live-process",
+    projectId: session.projectId,
+    sessionId: session.sessionId,
+  });
+
+  assert.equal(result.changed, true);
+  assert.equal(result.session.agentId, "codex");
+  assert.equal(result.session.runtimeSettings.agentName, "codex");
+  assert.equal(result.session.runtimeSettings.agentSessionId, undefined);
+  assert.equal(result.session.runtimeSettings.agentSessionPath, undefined);
+  assert.equal(result.session.runtimeSettings.agentActivity, undefined);
+});
+
 test("passive Codex hooks clear stale non-Codex activity after identity was already corrected", () => {
   const codexSessionId = "019eb834-893d-71b2-97e3-3ad431f4ef46";
   const project = projectFixture({});
