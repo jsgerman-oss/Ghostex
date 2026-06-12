@@ -3685,17 +3685,6 @@ function TitlebarTipsMenu({
   readTips: TitlebarTip[];
   unreadTips: TitlebarTip[];
 }) {
-  const [readSectionCollapsed, setReadSectionCollapsed] = useState(unreadTips.length > 0);
-  useEffect(() => {
-    /**
-     * CDXC:TipsAndTricks 2026-05-30-08:31:
-     * Old tips should stay out of the way while unread tips exist, but once the
-     * user has read everything the Read section should open automatically so
-     * the completed set remains visible without an extra click.
-     */
-    setReadSectionCollapsed(unreadTips.length > 0);
-  }, [unreadTips.length]);
-  const readSectionOpen = !readSectionCollapsed;
   const unreadTotal = notices.length + unreadTips.length;
   return (
     <div className="titlebar-tips-panel" onClick={(event) => event.stopPropagation()}>
@@ -3749,10 +3738,8 @@ function TitlebarTipsMenu({
           ))}
         </TitlebarTipsSection>
         <TitlebarTipsSection
-          collapsed={!readSectionOpen}
           count={readTips.length}
           emptyText="No read tips yet."
-          onToggle={() => setReadSectionCollapsed((current) => !current)}
           title="Read"
         >
           {readTips.map((tip) => (
@@ -3769,41 +3756,31 @@ function TitlebarTipsMenu({
   );
 }
 
+/**
+ * CDXC:TipsAndTricks 2026-06-12-08:20:
+ * Tips & Tricks section headers must stay expanded. Collapsible Notices, Unread,
+ * and Read groups hid content behind extra clicks without improving scanability.
+ */
 function TitlebarTipsSection({
   children,
-  collapsed = false,
   count,
   emptyText,
-  onToggle,
   title,
 }: {
   children: ReactNode;
-  collapsed?: boolean;
   count: number;
   emptyText: string;
-  onToggle?: () => void;
   title: string;
 }) {
   return (
     <section className="titlebar-tips-section">
       <div className="titlebar-tips-section-heading">
-        <button
-          aria-expanded={!collapsed}
-          className="titlebar-tips-section-toggle"
-          disabled={!onToggle}
-          onClick={onToggle}
-          type="button"
-        >
-          <IconChevronDown aria-hidden="true" data-collapsed={String(collapsed)} size={14} stroke={1.8} />
-          <span>{title}</span>
-          <span className="titlebar-tips-section-count">{count}</span>
-        </button>
+        <span>{title}</span>
+        <span className="titlebar-tips-section-count">{count}</span>
       </div>
-      {collapsed ? null : (
-        <div className="titlebar-tips-list">
-          {count > 0 ? children : <div className="titlebar-tips-empty">{emptyText}</div>}
-        </div>
-      )}
+      <div className="titlebar-tips-list">
+        {count > 0 ? children : <div className="titlebar-tips-empty">{emptyText}</div>}
+      </div>
     </section>
   );
 }
@@ -5808,7 +5785,7 @@ styleElement.textContent = `
   .titlebar-tips-title,
   .titlebar-tips-actions,
   .titlebar-tips-summary,
-  .titlebar-tips-section-toggle,
+  .titlebar-tips-section-heading,
   .titlebar-tip-read-button,
   .titlebar-tip-read-state {
     align-items: center;
@@ -5867,29 +5844,11 @@ styleElement.textContent = `
     display: flex;
     font: 750 11px -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif;
     gap: 6px;
+    justify-content: space-between;
     letter-spacing: 0.08em;
     padding: 4px 2px 7px;
     text-transform: uppercase;
     width: 100%;
-  }
-  .titlebar-tips-section-toggle {
-    background: transparent;
-    border: 0;
-    color: inherit;
-    flex: 1;
-    font: inherit;
-    gap: 6px;
-    justify-content: flex-start;
-    letter-spacing: inherit;
-    min-width: 0;
-    padding: 0;
-    text-transform: inherit;
-  }
-  .titlebar-tips-section-toggle:disabled {
-    cursor: default;
-  }
-  .titlebar-tips-section-toggle svg[data-collapsed="true"] {
-    transform: rotate(-90deg);
   }
   .titlebar-tips-section-count {
     color: rgba(255,255,255,0.38);

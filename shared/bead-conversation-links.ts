@@ -88,6 +88,7 @@ export type ProjectBoardBridgeAction =
   | "automationSetEnabled"
   | "getState"
   | "jumpToConversation"
+  | "projectEditorFocusOwnerChanged"
   | "startWork"
   | "unlinkConversation";
 

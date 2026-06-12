@@ -2274,6 +2274,13 @@ final class TerminalWorkspaceView: NSView {
     let sessionId: String
   }
 
+  private struct ProjectEditorFocusOwnerState {
+    let event: String
+    let projectEditorId: String
+    let recordedAt: Date
+    let revision: UInt64
+  }
+
   private enum WebPaneFrameMode: Equatable {
     case normal
     case projectEditorCompanion
@@ -2423,6 +2430,7 @@ final class TerminalWorkspaceView: NSView {
    The companion pane width is a user preference shared by every project and app restart. New installs start at 32% of the workarea, and user resize/reset writes the same normalized ratio to native settings instead of storing it on a per-project workspace snapshot.
    */
   private static let defaultProjectEditorCompanionWidthRatio: CGFloat = 0.32
+  private static let projectEditorFocusOwnerProtectionInterval: TimeInterval = 8.0
   private static let projectEditorMinimumWidth: CGFloat = 360
   private static let floatingCommandsPanelMargin: CGFloat = 25
   /**
@@ -2496,10 +2504,17 @@ final class TerminalWorkspaceView: NSView {
   private var focusedSessionId: String?
   private var lastEmittedFocusedSessionId: String?
   /**
-   CDXC:NativeTerminalFocus 2026-06-09-23:14:
-   Passive sidebar first-responder recovery must return to the terminal that actually owned keyboard focus before sidebar WKWebView churn. Track that responder separately because focusTerminal intentionally suppresses AppKit first-responder callbacks during programmatic native focus changes.
-   */
+  CDXC:NativeTerminalFocus 2026-06-09-23:14:
+  Passive sidebar first-responder recovery must return to the terminal that actually owned keyboard focus before sidebar WKWebView churn. Track that responder separately because focusTerminal intentionally suppresses AppKit first-responder callbacks during programmatic native focus changes.
+  */
   private var lastTerminalFirstResponderSessionId: String?
+  /*
+   CDXC:ProjectBoardFocus 2026-06-12-08:44:
+   Kanban and other project-editor surfaces must be explicit keyboard-focus owners, not anonymous WK/CEF responders.
+   Track only sanitized owner metadata so passive sidebar hydration and delayed companion focus repairs cannot route typing into the companion terminal after the user is editing the Project board.
+   */
+  private var projectEditorFocusOwnerRevision: UInt64 = 0
+  private var lastProjectEditorFocusOwnerState: ProjectEditorFocusOwnerState?
   private var lastAppliedLayoutFocusRequestId: Int?
   private var workspaceBackgroundColorValue: String?
   private let defaultWorkspaceBackgroundColor: NSColor
@@ -2585,6 +2600,129 @@ final class TerminalWorkspaceView: NSView {
       return false
     }
     return bounds.intersects(hostFrame)
+  }
+
+  func currentProjectEditorFocusOwnerRevision() -> UInt64 {
+    projectEditorFocusOwnerRevision
+  }
+
+  func hasProjectEditorFocusOwnerChanged(since revision: UInt64) -> Bool {
+    projectEditorFocusOwnerRevision != revision
+  }
+
+  @discardableResult
+  func restoreProjectEditorFocusAfterPassiveSidebarFirstResponder(now: Date = Date()) -> Bool {
+    guard let state = recentProjectEditorFocusOwnerState(now: now),
+      let session = projectEditorPaneSessions[state.projectEditorId],
+      activeProjectEditorId == state.projectEditorId
+    else {
+      return false
+    }
+    let targetResponder = projectEditorFocusTargetResponder(for: session)
+    guard let targetView = targetResponder as? NSView,
+      let targetWindow = targetView.window,
+      !isViewHiddenFromWindow(targetView),
+      !targetView.bounds.isEmpty
+    else {
+      TerminalFocusDebugLog.append(
+        event: "nativeFocusTrace.passiveSidebarProjectEditorRestoreSkipped",
+        details: [
+          "activeProjectEditorId": nullableString(activeProjectEditorId),
+          "focusOwnerEvent": state.event,
+          "focusOwnerRevision": state.revision,
+          "projectEditorId": state.projectEditorId,
+          "responder": responderSnapshot(),
+          "skipReason": "missingVisibleTarget",
+        ])
+      return false
+    }
+    let responderBefore = targetWindow.firstResponder
+    programmaticFocusDepth += 1
+    let didFocus = targetWindow.makeFirstResponder(targetResponder)
+    programmaticFocusDepth -= 1
+    TerminalFocusDebugLog.append(
+      event: "nativeFocusTrace.passiveSidebarProjectEditorFirstResponderRestored",
+      details: [
+        "didFocus": didFocus,
+        "focusOwnerAgeMs": Int(now.timeIntervalSince(state.recordedAt) * 1000),
+        "focusOwnerEvent": state.event,
+        "focusOwnerRevision": state.revision,
+        "projectEditorId": state.projectEditorId,
+        "responderAfter": responderSnapshot(),
+        "responderBeforeClass": responderBefore.map { String(describing: type(of: $0)) } ?? "nil",
+      ])
+    return didFocus
+  }
+
+  private func markProjectEditorFocusOwner(projectEditorId: String, event: String, reason: String) {
+    let normalizedProjectEditorId = projectEditorId.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !normalizedProjectEditorId.isEmpty,
+      projectEditorPaneSessions[normalizedProjectEditorId] != nil
+    else {
+      return
+    }
+    projectEditorFocusOwnerRevision += 1
+    lastProjectEditorFocusOwnerState = ProjectEditorFocusOwnerState(
+      event: normalizedProjectEditorFocusOwnerEvent(event),
+      projectEditorId: normalizedProjectEditorId,
+      recordedAt: Date(),
+      revision: projectEditorFocusOwnerRevision)
+    TerminalFocusDebugLog.append(
+      event: "nativeFocusTrace.projectEditorFocusOwnerChanged",
+      details: [
+        "activeProjectEditorId": nullableString(activeProjectEditorId),
+        "focusOwnerEvent": lastProjectEditorFocusOwnerState?.event ?? "unknown",
+        "focusOwnerRevision": projectEditorFocusOwnerRevision,
+        "projectEditorId": normalizedProjectEditorId,
+        "reason": reason,
+      ])
+  }
+
+  private func clearProjectEditorFocusOwner(reason: String) {
+    guard lastProjectEditorFocusOwnerState != nil else {
+      return
+    }
+    projectEditorFocusOwnerRevision += 1
+    let previousState = lastProjectEditorFocusOwnerState
+    lastProjectEditorFocusOwnerState = nil
+    TerminalFocusDebugLog.append(
+      event: "nativeFocusTrace.projectEditorFocusOwnerCleared",
+      details: [
+        "focusOwnerRevision": projectEditorFocusOwnerRevision,
+        "previousEvent": previousState?.event ?? "none",
+        "previousProjectEditorId": previousState?.projectEditorId ?? "none",
+        "reason": reason,
+      ])
+  }
+
+  private func recentProjectEditorFocusOwnerState(now: Date) -> ProjectEditorFocusOwnerState? {
+    guard let state = lastProjectEditorFocusOwnerState,
+      activeProjectEditorId == state.projectEditorId,
+      projectEditorPaneSessions[state.projectEditorId] != nil,
+      now.timeIntervalSince(state.recordedAt) <= Self.projectEditorFocusOwnerProtectionInterval
+    else {
+      return nil
+    }
+    return state
+  }
+
+  private func projectEditorFocusTargetResponder(for session: ProjectEditorPaneSession) -> NSResponder {
+    if let chromiumView = session.chromiumView {
+      return chromiumView
+    }
+    if let webView = session.webView {
+      return webView
+    }
+    return session.hostView
+  }
+
+  private func normalizedProjectEditorFocusOwnerEvent(_ event: String) -> String {
+    switch event {
+    case "firstResponder", "focusin", "keydown", "pointerdown":
+      return event
+    default:
+      return "unknown"
+    }
   }
 
   private var isActiveCodeProjectEditorCEFPaneVisibleForDragDiagnostics: Bool {

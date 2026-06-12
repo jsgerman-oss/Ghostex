@@ -304,6 +304,53 @@ type ProjectBoardImageBridgeResponse = {
   requestId: string;
 };
 
+type ProjectBoardFocusOwnerEvent = "focusin" | "keydown" | "pointerdown";
+
+const PROJECT_BOARD_FOCUS_OWNER_MIN_INTERVAL_MS = 250;
+
+function isProjectBoardEditableFocusTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof Element)) {
+    return false;
+  }
+  return (
+    target.closest(
+      [
+        "input",
+        "textarea",
+        "select",
+        '[contenteditable="true"]',
+        "[role='textbox']",
+      ].join(","),
+    ) !== null
+  );
+}
+
+function postProjectBoardFocusOwnerChanged({
+  event,
+  projectEditorId,
+  projectId,
+  remoteMachineId,
+}: {
+  event: ProjectBoardFocusOwnerEvent;
+  projectEditorId: string;
+  projectId: string;
+  remoteMachineId: string;
+}): void {
+  const projectBoardBridge = (window as ProjectBeadsWebKitWindow).webkit?.messageHandlers
+    ?.ghostexProjectBoard;
+  if (!projectBoardBridge) {
+    return;
+  }
+  projectBoardBridge.postMessage({
+    action: "projectEditorFocusOwnerChanged",
+    event,
+    projectEditorId,
+    projectId,
+    ...(remoteMachineId ? { remoteMachineId } : {}),
+    requestId: crypto.randomUUID(),
+  });
+}
+
 function createEmptyDetailDraft(): DetailDraft {
   return {
     blockedByIds: [],
@@ -497,6 +544,51 @@ function ProjectBoardApp() {
   const [automationTargetProjectId, setAutomationTargetProjectId] = useState(projectId);
   const [selectedAutomationId, setSelectedAutomationId] = useState("");
   const [selectedAutomationRunId, setSelectedAutomationRunId] = useState("");
+
+  useEffect(() => {
+    let lastPostedAt = 0;
+    const postFocusOwnerChanged = (
+      event: ProjectBoardFocusOwnerEvent,
+      target: EventTarget | null,
+    ) => {
+      if (event !== "pointerdown" && !isProjectBoardEditableFocusTarget(target)) {
+        return;
+      }
+      const now = performance.now();
+      if (now - lastPostedAt < PROJECT_BOARD_FOCUS_OWNER_MIN_INTERVAL_MS) {
+        return;
+      }
+      lastPostedAt = now;
+      postProjectBoardFocusOwnerChanged({
+        event,
+        projectEditorId,
+        projectId,
+        remoteMachineId,
+      });
+    };
+    /*
+     * CDXC:ProjectBoardFocus 2026-06-12-08:44:
+     * Typing in Kanban must own keyboard focus over sidebar hydration and delayed companion-session focus repairs.
+     * Report only sanitized focus-owner events from the Project WKWebView so native can protect active board input without logging field text, ticket titles, paths, URLs, or command content.
+     */
+    const handlePointerDown = (event: globalThis.PointerEvent) => {
+      postFocusOwnerChanged("pointerdown", event.target);
+    };
+    const handleFocusIn = (event: globalThis.FocusEvent) => {
+      postFocusOwnerChanged("focusin", event.target);
+    };
+    const handleKeyDown = (event: globalThis.KeyboardEvent) => {
+      postFocusOwnerChanged("keydown", event.target);
+    };
+    window.addEventListener("pointerdown", handlePointerDown, true);
+    window.addEventListener("focusin", handleFocusIn, true);
+    window.addEventListener("keydown", handleKeyDown, true);
+    return () => {
+      window.removeEventListener("pointerdown", handlePointerDown, true);
+      window.removeEventListener("focusin", handleFocusIn, true);
+      window.removeEventListener("keydown", handleKeyDown, true);
+    };
+  }, [projectEditorId, projectId, remoteMachineId]);
 
   const openNewTicket = useCallback((status: BoardStatusKey = "todo") => {
     setNewTicket((current) => ({ ...current, status }));
