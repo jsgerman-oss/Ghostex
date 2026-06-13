@@ -511,8 +511,13 @@ async function ensureBeadsGitHooks(context: GxserverTypedOperationContext): Prom
   Worktrees created from the Project board must commit with the same Beads database as the parent checkout.
   Install local common-git-dir hooks that call Ghostex's bundled `bd hooks run` by absolute path and pin BEADS_DIR to the resolved Beads storage, so linked worktrees do not depend on stale PATH bd binaries or create split board state.
   */
-  const beadsCwd = resolveBeadsCwd(context);
-  if (!(await beadsStorageDirectoryExists(beadsCwd))) {
+  /*
+  CDXC:ProjectBoard 2026-06-13:
+  Worktree Beads hook setup stays on the project root (context.cwd) and never follows the
+  configurable board launch directory — hook installation is a Git-commit path and must not be
+  affected by the board setting. Only Project Board `bd` reads/writes use beadsCwd.
+  */
+  if (!(await beadsStorageDirectoryExists(context.cwd))) {
     return {
       action: "ensureBeadsHooks",
       exitCode: 0,
@@ -521,7 +526,7 @@ async function ensureBeadsGitHooks(context: GxserverTypedOperationContext): Prom
     };
   }
   const bd = await requireBd(context);
-  const where = await runTypedCommand({ args: ["where", "--json"], cwd: beadsCwd, executable: bd }, commandOptions(context));
+  const where = await runTypedCommand({ args: ["where", "--json"], cwd: context.cwd, executable: bd }, commandOptions(context));
   if (where.exitCode !== 0) {
     return {
       action: "ensureBeadsHooks",

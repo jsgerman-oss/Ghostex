@@ -572,6 +572,14 @@ export interface GxserverRunBeadsActionParams extends GxserverProjectOperationSc
   label?: string;
   labels?: readonly string[];
   priority?: string;
+  /**
+   * CDXC:ProjectBoard 2026-06-13:
+   * True only for Project Board originated Beads calls (set by the macOS board bridge). Gates the
+   * per-project configurable Beads launch directory (projectBoardConfig.beadsDirectory): board
+   * calls opt in, while native Git commit gating probes (storageExists/status on the same endpoint)
+   * omit it and stay scoped to the project root.
+   */
+  projectBoardScope?: boolean;
   query?: string;
   status?: GxserverBeadsStatus;
   title?: string;
