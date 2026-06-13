@@ -17,17 +17,16 @@
       "context": "Chat",
       "bindings": {
         "escape": "chat:cancel",
-        "ctrl+c": "chat:clearInput",
         "ctrl+l": "chat:clearScreen",
         "ctrl+x ctrl+k": "chat:killAgents",
         "shift+tab": "chat:cycleMode",
         "meta+p": "chat:modelPicker",
+        "alt+.": "chat:modelPicker",
         "meta+o": "chat:fastMode",
         "meta+t": "chat:thinkingToggle",
         "meta+w": "chat:workflowKeywordToggle",
         "enter": "chat:submit",
         "ctrl+j": "chat:newline",
-        "ctrl+m": "chat:newline",
         "shift+enter": "chat:newline",
         "alt+enter": "chat:newline",
         "up": "history:previous",
@@ -39,8 +38,7 @@
         "ctrl+g": "chat:externalEditor",
         "ctrl+s": "chat:stash",
         "ctrl+v": "chat:imagePaste",
-        "ctrl+alt+v": "chat:imagePaste",
-        "space": "voice:pushToTalk"
+        "ctrl+alt+v": "chat:imagePaste"
       }
     },
     {
@@ -120,10 +118,8 @@
       "bindings": {
         "ctrl+e": "transcript:toggleShowAll",
         "ctrl+t": "transcript:exit",
-        "ctrl+c": "transcript:exit",
         "q": "transcript:exit",
         "ctrl+u": "scroll:halfPageUp",
-        "ctrl+d": "scroll:halfPageDown",
         "ctrl+b": "scroll:fullPageUp",
         "shift+space": "scroll:fullPageUp",
         "pageup": "scroll:fullPageUp",
@@ -194,8 +190,7 @@
       "context": "Help",
       "bindings": {
         "escape": "help:dismiss",
-        "q": "help:dismiss",
-        "ctrl+c": "help:dismiss"
+        "q": "help:dismiss"
       }
     },
     {
@@ -273,8 +268,8 @@
     {
       "context": "ModelPicker",
       "bindings": {
-        "alt+,": "modelPicker:decreaseEffort",
-        "alt+.": "modelPicker:increaseEffort",
+        "left": "modelPicker:decreaseEffort",
+        "right": "modelPicker:increaseEffort",
         "s": "modelPicker:thisSessionOnly"
       }
     },
