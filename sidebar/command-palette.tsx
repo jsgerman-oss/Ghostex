@@ -62,11 +62,20 @@ import { openAppModal } from "./app-modal-host-bridge";
 import type { CommandConfigDraft } from "./command-config-modal";
 import { SidebarCommandIconGlyph } from "./sidebar-command-icon";
 import { formatSidebarHotkeyLabel } from "./hotkey-label";
+import { filterPreviousSessions, filterPreviousSessionsModalItems } from "./previous-session-search";
 import {
-  filterPreviousSessions,
-  filterPreviousSessionsModalItems,
-  filterSidebarSessionItems,
-} from "./previous-session-search";
+  createCommandPaletteCurrentSessionItems,
+  createCommandPaletteSessionSections,
+  createPreviousSessionSearchText,
+  filterCommandPaletteCurrentSessionItems,
+  filterCommandPaletteItems,
+  getCommandPaletteCommandQuery,
+  getCommandPaletteCurrentGroupId,
+  getPreviousSessionProjectLabel,
+  isCommandPaletteCommandMode,
+  sortCommandPalettePreviousSessionsByLastActive,
+  type CommandPaletteCurrentSessionItem,
+} from "./command-palette-session-search";
 import {
   getSessionCardTitleTooltip,
   OverflowTooltipText,
@@ -74,9 +83,8 @@ import {
   SessionFloatingAgentIcon,
   shouldShowTerminalSessionIcon,
 } from "./session-card-content";
-import { getSessionHistoryCardTitle } from "./session-history-card-title";
 import { getEffectiveSessionTag } from "./session-tag-ui";
-import { useSidebarStore, type SidebarGroupRecord } from "./sidebar-store";
+import { useSidebarStore } from "./sidebar-store";
 import type { WebviewApi } from "./webview-api";
 
 type CommandPaletteProps = {
@@ -90,20 +98,6 @@ type CommandPaletteProps = {
   onOpenChange: (isOpen: boolean) => void;
   petOverlayEnabled?: boolean;
   vscode: WebviewApi;
-};
-
-export type CommandPaletteCurrentSessionItem = {
-  groupId: string;
-  groupIsActive: boolean;
-  projectLabel?: string;
-  searchText: string;
-  session: SidebarSessionItem;
-};
-
-export type CommandPaletteSessionSection = {
-  heading: "Current Project" | "Active Projects" | "Collapsed Projects";
-  items: CommandPaletteCurrentSessionItem[];
-  key: "currentProject" | "activeProjects" | "collapsedProjects";
 };
 
 type HotkeyPaletteCommand = {
@@ -148,7 +142,6 @@ const PANE_ACTION_COMMAND_IDS = [
   "popOutPane",
 ] as const satisfies readonly ghostexHotkeyDefinition["id"][];
 
-const COMMAND_MODE_PREFIX = ">";
 const COMMAND_PALETTE_PREVIOUS_SESSIONS_LIMIT = 20;
 const COMMAND_PALETTE_PREVIOUS_SESSIONS_QUERY_DEBOUNCE_MS = 200;
 
@@ -730,236 +723,6 @@ function CommandPaletteSessionRow({
   );
 }
 
-export function isCommandPaletteCommandMode(value: string): boolean {
-  return value.trimStart().startsWith(COMMAND_MODE_PREFIX);
-}
-
-export function getCommandPaletteCommandQuery(value: string): string {
-  const trimmedStart = value.trimStart();
-  return trimmedStart.startsWith(COMMAND_MODE_PREFIX)
-    ? trimmedStart.slice(COMMAND_MODE_PREFIX.length).trim()
-    : "";
-}
-
-export function createCommandPaletteCurrentSessionItems({
-  groupsById,
-  sessionIdsByGroup,
-  sessionsById,
-  workspaceGroupIds,
-}: {
-  groupsById: Record<string, SidebarGroupRecord>;
-  sessionIdsByGroup: Record<string, readonly string[]>;
-  sessionsById: Record<string, SidebarSessionItem>;
-  workspaceGroupIds: readonly string[];
-}): CommandPaletteCurrentSessionItem[] {
-  const items: CommandPaletteCurrentSessionItem[] = [];
-  for (const groupId of workspaceGroupIds) {
-    const group = groupsById[groupId];
-    const projectLabel = getCurrentSessionProjectLabel(group);
-    for (const sessionId of sessionIdsByGroup[groupId] ?? []) {
-      const session = sessionsById[sessionId];
-      if (!session) {
-        continue;
-      }
-      items.push({
-        groupId,
-        groupIsActive: group?.isActive === true,
-        projectLabel,
-        searchText: createCurrentSessionSearchText(session, group),
-        session,
-      });
-    }
-  }
-  return items;
-}
-
-export function createCommandPaletteSessionSections(
-  items: readonly CommandPaletteCurrentSessionItem[],
-  {
-    collapsedGroupsById,
-    currentGroupId = getCommandPaletteCurrentGroupId(items),
-  }: {
-    collapsedGroupsById: Record<string, true>;
-    currentGroupId?: string;
-  },
-): CommandPaletteSessionSection[] {
-  /*
-   * CDXC:CommandPalette 2026-06-13-22:48:
-   * Session search is project-oriented: the focused project is first, expanded
-   * projects follow, collapsed project rows follow after that, and previous
-   * sessions stay last. Do not use the old flat current-session heading because
-   * it hides whether a result belongs to the current, active, or collapsed
-   * project area.
-   */
-  const currentProjectItems: CommandPaletteCurrentSessionItem[] = [];
-  const activeProjectItems: CommandPaletteCurrentSessionItem[] = [];
-  const collapsedProjectItems: CommandPaletteCurrentSessionItem[] = [];
-
-  for (const item of items) {
-    if (item.groupId === currentGroupId) {
-      currentProjectItems.push(item);
-      continue;
-    }
-    if (collapsedGroupsById[item.groupId] === true) {
-      collapsedProjectItems.push(item);
-      continue;
-    }
-    activeProjectItems.push(item);
-  }
-
-  const sections: CommandPaletteSessionSection[] = [
-    {
-      heading: "Current Project",
-      items: sortCommandPaletteCurrentSessionItemsByLastActive(currentProjectItems),
-      key: "currentProject",
-    },
-    {
-      heading: "Active Projects",
-      items: sortCommandPaletteCurrentSessionItemsByLastActive(activeProjectItems),
-      key: "activeProjects",
-    },
-    {
-      heading: "Collapsed Projects",
-      items: sortCommandPaletteCurrentSessionItemsByLastActive(collapsedProjectItems),
-      key: "collapsedProjects",
-    },
-  ];
-  return sections.filter((section) => section.items.length > 0);
-}
-
-export function sortCommandPaletteCurrentSessionItemsByLastActive(
-  items: readonly CommandPaletteCurrentSessionItem[],
-): CommandPaletteCurrentSessionItem[] {
-  /*
-   * CDXC:CommandPalette 2026-06-13-23:06:
-   * Session search rows must sort by the visible Last Active value from most
-   * recently active to least recently active inside each project-status area.
-   * Keep equal timestamps stable so missing or identical activity times do not
-   * reshuffle rows on every render.
-   */
-  return sortCommandPaletteRowsByLastActive(items, (item) => item.session);
-}
-
-export function sortCommandPalettePreviousSessionsByLastActive(
-  sessions: readonly SidebarPreviousSessionItem[],
-): SidebarPreviousSessionItem[] {
-  return sortCommandPaletteRowsByLastActive(sessions, (session) => session, (session) =>
-    getCommandPaletteSessionTimestamp(session.closedAt),
-  );
-}
-
-function sortCommandPaletteRowsByLastActive<T>(
-  items: readonly T[],
-  getSession: (item: T) => Pick<SidebarSessionItem, "lastInteractionAt">,
-  getFallbackTimestamp: (item: T) => number = () => 0,
-): T[] {
-  return items
-    .map((item, itemIndex) => ({
-      item,
-      itemIndex,
-      timestamp:
-        getCommandPaletteSessionTimestamp(getSession(item).lastInteractionAt) ||
-        getFallbackTimestamp(item),
-    }))
-    .sort((left, right) => {
-      const timestampDelta = right.timestamp - left.timestamp;
-      if (timestampDelta !== 0) {
-        return timestampDelta;
-      }
-      return left.itemIndex - right.itemIndex;
-    })
-    .map(({ item }) => item);
-}
-
-function getCommandPaletteSessionTimestamp(value: string | undefined): number {
-  if (!value) {
-    return 0;
-  }
-
-  const timestamp = Date.parse(value);
-  return Number.isFinite(timestamp) ? timestamp : 0;
-}
-
-function getCommandPaletteCurrentGroupId(
-  items: readonly CommandPaletteCurrentSessionItem[],
-): string | undefined {
-  return (
-    items.find((item) => item.session.isFocused)?.groupId ??
-    items.find((item) => item.groupIsActive)?.groupId ??
-    items[0]?.groupId
-  );
-}
-
-function filterCommandPaletteItems<T>(
-  items: readonly T[],
-  query: string,
-  getSearchText: (item: T) => string,
-): T[] {
-  const normalizedQuery = normalizeCommandPaletteSearchValue(query);
-  if (!normalizedQuery) {
-    return [...items];
-  }
-  return items.filter((item) =>
-    matchesCommandPaletteSearchQuery(getSearchText(item), normalizedQuery),
-  );
-}
-
-export function filterCommandPaletteCurrentSessionItems(
-  items: readonly CommandPaletteCurrentSessionItem[],
-  query: string,
-): CommandPaletteCurrentSessionItem[] {
-  const normalizedQuery = query.trim();
-  if (!normalizedQuery) {
-    return [...items];
-  }
-  const matchedSessionIds = new Set(
-    filterSidebarSessionItems(
-      items.map((item) => item.session),
-      normalizedQuery,
-    ).map((session) => session.sessionId),
-  );
-  return items.filter(
-    (item) =>
-      matchedSessionIds.has(item.session.sessionId) ||
-      matchesCommandPaletteSearchQuery(item.searchText, normalizedQuery),
-  );
-}
-
-function matchesCommandPaletteSearchQuery(searchText: string, query: string): boolean {
-  const normalizedSearchText = normalizeCommandPaletteSearchValue(searchText);
-  const queryTokens = normalizeCommandPaletteSearchValue(query).split(/\s+/).filter(Boolean);
-  return queryTokens.every((token) => fuzzyIncludes(normalizedSearchText, token));
-}
-
-function normalizeCommandPaletteSearchValue(value: string | undefined): string {
-  if (!value) {
-    return "";
-  }
-  return value
-    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
-    .replace(/[-_/\\.]+/g, " ")
-    .replace(/[^\p{L}\p{N}]+/gu, " ")
-    .replace(/\s+/g, " ")
-    .trim()
-    .toLowerCase();
-}
-
-function fuzzyIncludes(text: string, query: string): boolean {
-  let queryIndex = 0;
-
-  for (const character of text) {
-    if (character !== query[queryIndex]) {
-      continue;
-    }
-    queryIndex += 1;
-    if (queryIndex >= query.length) {
-      return true;
-    }
-  }
-
-  return query.length === 0;
-}
-
 function getCommandPaletteDisplaySession(session: SidebarSessionItem): SidebarSessionItem {
   return session.displayTitle?.trim() || session.primaryTitle?.trim() || !session.terminalTitle?.trim()
     ? session
@@ -968,64 +731,6 @@ function getCommandPaletteDisplaySession(session: SidebarSessionItem): SidebarSe
         primaryTitle: session.terminalTitle,
         terminalTitle: undefined,
       };
-}
-
-function createCurrentSessionSearchText(
-  session: SidebarSessionItem,
-  group: SidebarGroupRecord | undefined,
-): string {
-  return [
-    session.alias,
-    session.displayTitle,
-    session.primaryTitle,
-    session.terminalTitle,
-    session.detail,
-    session.sessionNumber,
-    group?.title,
-    group?.projectContext?.path,
-    group?.remoteMachineContext?.machineName,
-  ]
-    .filter(Boolean)
-    .join(" ");
-}
-
-function createPreviousSessionSearchText(session: SidebarPreviousSessionItem): string {
-  return [
-    getSessionHistoryCardTitle(session),
-    session.alias,
-    session.displayTitle,
-    session.primaryTitle,
-    session.terminalTitle,
-    session.detail,
-    session.sessionNumber,
-    session.projectName,
-    session.projectPath,
-  ]
-    .filter(Boolean)
-    .join(" ");
-}
-
-function getCurrentSessionProjectLabel(group: SidebarGroupRecord | undefined): string | undefined {
-  const title = group?.title?.trim();
-  if (title) {
-    return title;
-  }
-  return group?.remoteMachineContext?.machineName?.trim() || undefined;
-}
-
-function getPreviousSessionProjectLabel(session: SidebarPreviousSessionItem): string | undefined {
-  const projectName = session.projectName?.trim();
-  if (projectName) {
-    return projectName;
-  }
-
-  const projectPath = session.projectPath?.trim();
-  if (!projectPath) {
-    return undefined;
-  }
-
-  const pathParts = projectPath.split(/[\\/]/u).filter(Boolean);
-  return pathParts[pathParts.length - 1] ?? projectPath;
 }
 
 function BuiltInCommandIcon({ command }: { command: BuiltInPaletteCommand }) {

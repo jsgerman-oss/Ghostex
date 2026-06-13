@@ -11,10 +11,14 @@ import {
   isCommandPaletteCommandMode,
   sortCommandPalettePreviousSessionsByLastActive,
   type CommandPaletteCurrentSessionItem,
-} from "./command-palette";
+} from "./command-palette-session-search";
 
 const commandPaletteSource = readFileSync(
   new URL("./command-palette.tsx", import.meta.url),
+  "utf8",
+);
+const commandPaletteSearchSource = readFileSync(
+  new URL("./command-palette-session-search.ts", import.meta.url),
   "utf8",
 );
 const sidebarStylesSource = readFileSync(new URL("./styles.css", import.meta.url), "utf8");
@@ -218,12 +222,12 @@ describe("command palette source contracts", () => {
      * Session search mode must invite typing `>` for commands, and live
      * focused/visible session state must not make multiple rows look hovered
      * inside the command palette.
-     */
+    */
     expect(commandPaletteSource).toContain("Search sessions or write > for commands...");
-    expect(commandPaletteSource).toContain('heading: "Current Project"');
-    expect(commandPaletteSource).toContain('heading: "Active Projects"');
-    expect(commandPaletteSource).toContain('heading: "Collapsed Projects"');
-    expect(commandPaletteSource).not.toContain("Current Sessions");
+    expect(commandPaletteSearchSource).toContain('heading: "Current Project"');
+    expect(commandPaletteSearchSource).toContain('heading: "Active Projects"');
+    expect(commandPaletteSearchSource).toContain('heading: "Collapsed Projects"');
+    expect(commandPaletteSearchSource).not.toContain("Current Sessions");
     expect(commandPaletteSource.match(/data-focused="false"/g)?.length ?? 0).toBeGreaterThanOrEqual(
       2,
     );
