@@ -55,11 +55,23 @@ export class GxserverTypedOperationError extends Error {
 export interface GxserverTypedOperationContext {
   abortSignal?: AbortSignal;
   beadsBoardLimits?: Partial<GxserverBeadsBoardLimits>;
+  /**
+   * Optional working directory for `bd` (Beads) invocations. When a project configures a
+   * dedicated Beads launch directory (projectBoardConfig.beadsDirectory), the server resolves
+   * it to an absolute, existing path and sets it here. `bd` walks up from its cwd to find the
+   * `.beads` database, so pointing it at this directory is enough. Git operations keep using
+   * `cwd` (the project root). Falls back to `cwd` when unset — see resolveBeadsCwd.
+   */
+  beadsCwd?: string;
   commandLimits?: Partial<GxserverTypedCommandLimits>;
   cwd: string;
   envPath?: string;
   projects: readonly GxserverProjectDomainState[];
   toolchain?: GxserverToolchainLayoutOptions;
+}
+
+function resolveBeadsCwd(context: GxserverTypedOperationContext): string {
+  return context.beadsCwd ?? context.cwd;
 }
 
 export interface GxserverBeadsBoardLimits {
@@ -270,48 +282,52 @@ export async function buildBeadsCommand(
   /*
   CDXC:ProjectBoard 2026-06-02-13:31:
   Project board Beads reads and mutations are gxserver-owned backend operations after the native/gxserver split. Keep the full board command surface as typed allowlisted `bd` actions here so the macOS WKWebView bridge only forwards requests and no longer constructs or runs Beads subprocesses.
+
+  CDXC:ProjectBoard 2026-06-13:
+  `bd` runs in the configured Beads launch directory (projectBoardConfig.beadsDirectory) when set, otherwise the project root. `bd` resolves its `.beads` database by walking up from this cwd, so pointing it here is sufficient. Git hook setup keeps using context.cwd (the repo).
   */
+  const cwd = resolveBeadsCwd(context);
   switch (action) {
     case "board":
-      return { args: ["list", "--all", "--json"], cwd: context.cwd, executable: bd };
+      return { args: ["list", "--all", "--json"], cwd, executable: bd };
     case "addLabel":
       return {
         args: ["label", "add", normalizeIssueId(params.issueId), normalizeRequiredText(params.label, "label"), "--json"],
-        cwd: context.cwd,
+        cwd,
         executable: bd,
       };
     case "close":
-      return { args: ["close", normalizeIssueId(params.issueId), "--json"], cwd: context.cwd, executable: bd };
+      return { args: ["close", normalizeIssueId(params.issueId), "--json"], cwd, executable: bd };
     case "comment":
       return {
         args: ["comments", "add", normalizeIssueId(params.issueId), normalizeRequiredText(params.comment, "comment"), "--json"],
-        cwd: context.cwd,
+        cwd,
         executable: bd,
       };
     case "configGet":
-      return { args: ["config", "get", "status.custom", "--json"], cwd: context.cwd, executable: bd };
+      return { args: ["config", "get", "status.custom", "--json"], cwd, executable: bd };
     case "configGetIssuePrefix":
-      return { args: ["config", "get", "issue_prefix", "--json"], cwd: context.cwd, executable: bd };
+      return { args: ["config", "get", "issue_prefix", "--json"], cwd, executable: bd };
     case "configSet":
       return {
         args: ["config", "set", "status.custom", normalizeRequiredText(params.value, "value"), "--json"],
-        cwd: context.cwd,
+        cwd,
         executable: bd,
       };
     case "renamePrefix":
       return {
         args: ["rename-prefix", normalizeBeadsRenamePrefix(params.value), "--repair", "--json"],
-        cwd: context.cwd,
+        cwd,
         executable: bd,
       };
     case "create":
       return {
         args: buildBeadsCreateArgs(params),
-        cwd: context.cwd,
+        cwd,
         executable: bd,
       };
     case "delete":
-      return { args: ["delete", normalizeIssueId(params.issueId), "--force", "--json"], cwd: context.cwd, executable: bd };
+      return { args: ["delete", normalizeIssueId(params.issueId), "--force", "--json"], cwd, executable: bd };
     case "depAdd":
       return {
         args: [
@@ -323,67 +339,67 @@ export async function buildBeadsCommand(
           normalizeBeadsDependencyType(params.depType),
           "--json",
         ],
-        cwd: context.cwd,
+        cwd,
         executable: bd,
       };
     case "depRemove":
       return {
         args: ["dep", "remove", normalizeIssueId(params.issueId), normalizeIssueId(params.dependsOnId), "--json"],
-        cwd: context.cwd,
+        cwd,
         executable: bd,
       };
     case "list":
-      return { args: ["list", "--all", "--json"], cwd: context.cwd, executable: bd };
+      return { args: ["list", "--all", "--json"], cwd, executable: bd };
     case "listAllLabels":
-      return { args: ["label", "list-all", "--json"], cwd: context.cwd, executable: bd };
+      return { args: ["label", "list-all", "--json"], cwd, executable: bd };
     case "removeLabel":
       return {
         args: ["label", "remove", normalizeIssueId(params.issueId), normalizeRequiredText(params.label, "label"), "--json"],
-        cwd: context.cwd,
+        cwd,
         executable: bd,
       };
     case "search":
-      return { args: ["search", normalizeRequiredText(params.query, "query"), "--json"], cwd: context.cwd, executable: bd };
+      return { args: ["search", normalizeRequiredText(params.query, "query"), "--json"], cwd, executable: bd };
     case "setLabels":
       return {
         args: ["update", normalizeIssueId(params.issueId), ...buildBeadsSetLabelArgs(params.labels), "--json"],
-        cwd: context.cwd,
+        cwd,
         executable: bd,
       };
     case "show":
-      return { args: ["show", normalizeIssueId(params.issueId), "--json"], cwd: context.cwd, executable: bd };
+      return { args: ["show", normalizeIssueId(params.issueId), "--json"], cwd, executable: bd };
     case "status":
-      return { args: ["status"], cwd: context.cwd, executable: bd };
+      return { args: ["status"], cwd, executable: bd };
     case "update":
-      return { args: ["update", normalizeIssueId(params.issueId), ...buildBeadsUpdateArgs(params), "--json"], cwd: context.cwd, executable: bd };
+      return { args: ["update", normalizeIssueId(params.issueId), ...buildBeadsUpdateArgs(params), "--json"], cwd, executable: bd };
     case "updateDescription":
       return {
         args: ["update", normalizeIssueId(params.issueId), "--description", String(params.description ?? ""), "--json"],
-        cwd: context.cwd,
+        cwd,
         executable: bd,
       };
     case "updateEstimate":
       return {
         args: ["update", normalizeIssueId(params.issueId), "--estimate", normalizeBeadsEstimate(params.estimate), "--json"],
-        cwd: context.cwd,
+        cwd,
         executable: bd,
       };
     case "updatePriority":
       return {
         args: ["update", normalizeIssueId(params.issueId), "--priority", normalizeRequiredText(params.priority, "priority"), "--json"],
-        cwd: context.cwd,
+        cwd,
         executable: bd,
       };
     case "updateStatus":
       return {
         args: ["update", normalizeIssueId(params.issueId), "--status", normalizeBeadsStatus(params.status), "--json"],
-        cwd: context.cwd,
+        cwd,
         executable: bd,
       };
     case "updateTitle":
       return {
         args: ["update", normalizeIssueId(params.issueId), "--title", normalizeRequiredText(params.title, "title"), "--json"],
-        cwd: context.cwd,
+        cwd,
         executable: bd,
       };
   }
@@ -495,7 +511,8 @@ async function ensureBeadsGitHooks(context: GxserverTypedOperationContext): Prom
   Worktrees created from the Project board must commit with the same Beads database as the parent checkout.
   Install local common-git-dir hooks that call Ghostex's bundled `bd hooks run` by absolute path and pin BEADS_DIR to the resolved Beads storage, so linked worktrees do not depend on stale PATH bd binaries or create split board state.
   */
-  if (!(await beadsStorageDirectoryExists(context.cwd))) {
+  const beadsCwd = resolveBeadsCwd(context);
+  if (!(await beadsStorageDirectoryExists(beadsCwd))) {
     return {
       action: "ensureBeadsHooks",
       exitCode: 0,
@@ -504,7 +521,7 @@ async function ensureBeadsGitHooks(context: GxserverTypedOperationContext): Prom
     };
   }
   const bd = await requireBd(context);
-  const where = await runTypedCommand({ args: ["where", "--json"], cwd: context.cwd, executable: bd }, commandOptions(context));
+  const where = await runTypedCommand({ args: ["where", "--json"], cwd: beadsCwd, executable: bd }, commandOptions(context));
   if (where.exitCode !== 0) {
     return {
       action: "ensureBeadsHooks",
@@ -701,7 +718,7 @@ export async function runBeadsAction(
     CDXC:GxserverTypedOperations 2026-06-02-12:14:
     The macOS commit UI may need to know whether a registered project has tracked Beads storage before deciding to request `git commit --no-verify` for the precise missing-db hook failure. Keep that project filesystem probe in gxserver so native does not inspect shared project repository state directly.
     */
-    const exists = await beadsStorageDirectoryExists(context.cwd);
+    const exists = await beadsStorageDirectoryExists(resolveBeadsCwd(context));
     return {
       action,
       exitCode: exists ? 0 : 1,

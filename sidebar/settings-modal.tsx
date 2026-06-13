@@ -3673,6 +3673,7 @@ function ProjectsSettingsPanel({
     projects.find((project) => project.projectId === selectedProjectId) ?? projects[0];
   const [command, setCommand] = useState(selectedProject?.worktreeCommand ?? "");
   const [beadsDisplayKey, setBeadsDisplayKey] = useState(selectedProject?.beadsDisplayKey ?? "");
+  const [beadsDirectory, setBeadsDirectory] = useState(selectedProject?.beadsDirectory ?? "");
 
   useEffect(() => {
     if (!projects.some((project) => project.projectId === selectedProjectId)) {
@@ -3683,7 +3684,13 @@ function ProjectsSettingsPanel({
   useEffect(() => {
     setCommand(selectedProject?.worktreeCommand ?? "");
     setBeadsDisplayKey(selectedProject?.beadsDisplayKey ?? "");
-  }, [selectedProject?.beadsDisplayKey, selectedProject?.projectId, selectedProject?.worktreeCommand]);
+    setBeadsDirectory(selectedProject?.beadsDirectory ?? "");
+  }, [
+    selectedProject?.beadsDirectory,
+    selectedProject?.beadsDisplayKey,
+    selectedProject?.projectId,
+    selectedProject?.worktreeCommand,
+  ]);
 
   const saveCommand = () => {
     if (!selectedProject) {
@@ -3704,6 +3711,17 @@ function ProjectsSettingsPanel({
       displayKey: beadsDisplayKey,
       projectId: selectedProject.projectId,
       type: "setProjectBeadsDisplayKey",
+    });
+  };
+
+  const saveBeadsDirectory = () => {
+    if (!selectedProject) {
+      return;
+    }
+    vscode?.postMessage({
+      directory: beadsDirectory,
+      projectId: selectedProject.projectId,
+      type: "setProjectBeadsDirectory",
     });
   };
 
@@ -3776,6 +3794,32 @@ function ProjectsSettingsPanel({
               </Button>
               <Button onClick={saveBeadsDisplayKey} type="button">
                 Save Ticket Key
+              </Button>
+            </div>
+            {/*
+              CDXC:ProjectBoard 2026-06-13:
+              Projects settings owns the directory the Project board launches its Beads workspace from. Leave blank to use the project root; otherwise the board reads `.beads` from this absolute path.
+            */}
+            <FieldGroup>
+              <Field>
+                <FieldLabel>Beads directory</FieldLabel>
+                <Input
+                  aria-label="Beads directory"
+                  onChange={(event) => setBeadsDirectory(event.currentTarget.value)}
+                  placeholder="/Users/you/code/my-repo"
+                  value={beadsDirectory}
+                />
+                <FieldDescription>
+                  Absolute path the Project board reads its Beads workspace (.beads) from. Leave blank to use the project root.
+                </FieldDescription>
+              </Field>
+            </FieldGroup>
+            <div className="settings-management-actions">
+              <Button onClick={() => setBeadsDirectory("")} type="button" variant="outline">
+                Clear
+              </Button>
+              <Button onClick={saveBeadsDirectory} type="button">
+                Save Beads Directory
               </Button>
             </div>
             <FieldGroup>

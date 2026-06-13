@@ -407,6 +407,7 @@ export type SidebarProjectWorktree = {
 };
 
 export type SidebarProjectSettingsItem = {
+  beadsDirectory?: string;
   beadsDisplayKey?: string;
   name: string;
   path: string;
@@ -1746,6 +1747,11 @@ export type SidebarToExtensionMessage =
   | {
       type: "setProjectBeadsDisplayKey";
       displayKey: string;
+      projectId: string;
+    }
+  | {
+      type: "setProjectBeadsDirectory";
+      directory: string;
       projectId: string;
     }
   | {
