@@ -61,6 +61,45 @@ export function resolveProjectOperationDirectory(
   };
 }
 
+/*
+CDXC:ProjectBoard 2026-06-13:
+A project can pin the directory its Project board's Beads workspace launches from
+(projectBoardConfig.beadsDirectory). Unset/blank keeps the project root. When set, it must resolve
+to an absolute, existing directory so `bd` runs there; an invalid path raises a
+GxserverProjectPathError that surfaces as a board error rather than silently reading the root.
+*/
+export function resolveProjectBeadsDirectory(
+  project: GxserverProjectDomainState,
+  homeDir = os.homedir(),
+): string | undefined {
+  const configured = project.projectBoardConfig?.beadsDirectory;
+  if (typeof configured !== "string" || !configured.trim()) {
+    return undefined;
+  }
+  return normalizeExistingDirectoryPath(configured, "beadsDirectory", homeDir);
+}
+
+/*
+CDXC:ProjectBoard 2026-06-13:
+The configurable Beads launch directory must only steer Project Board `bd` operations. The native
+Git commit gate calls Beads `storageExists`/`status` on the SAME /api/runBeadsAction endpoint with
+the project's own id; those must stay on the project root so a board directory (or a typo in it)
+cannot break or alter `git commit`. Board calls opt in via params.projectBoardScope (set by the
+macOS Project Board bridge); every other Beads call falls back to the project root (returns
+undefined here, so the operation context uses cwd).
+*/
+export function resolveBeadsCwdForTypedOperation(
+  endpointPath: string,
+  params: { projectBoardScope?: unknown },
+  project: GxserverProjectDomainState,
+  homeDir = os.homedir(),
+): string | undefined {
+  if (endpointPath !== "/api/runBeadsAction" || params.projectBoardScope !== true) {
+    return undefined;
+  }
+  return resolveProjectBeadsDirectory(project, homeDir);
+}
+
 export function normalizePathInsideRegisteredRoots(
   input: unknown,
   field: string,

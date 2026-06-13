@@ -81,7 +81,7 @@ import {
 import { classifyTerminalTitleStatus, normalizeAgentActivityState } from "./session-status/index.js";
 import { type GxserverPaths, getGxserverPaths } from "./paths.js";
 import { browseProjectDirectories } from "./project-directory-browser.js";
-import { GxserverProjectPathError, normalizeExistingDirectoryPath, resolveProjectOperationDirectory } from "./project-paths.js";
+import { GxserverProjectPathError, normalizeExistingDirectoryPath, resolveBeadsCwdForTypedOperation, resolveProjectOperationDirectory } from "./project-paths.js";
 import { GxserverRepositoryCloneError, GxserverRepositoryCloneJobManager } from "./repository-clone/index.js";
 import { removeRuntimeMetadata, writeRuntimeMetadata } from "./runtime.js";
 import { deleteGxserverWorktreeProject } from "./worktree-delete.js";
@@ -3270,21 +3270,6 @@ function isPollingAgentTitleMetadataReason(reason: string): boolean {
   return reason === "list-sessions" || reason === "read-project-status";
 }
 
-/*
- * CDXC:ProjectBoard 2026-06-13:
- * Projects settings lets each project pin the directory its Beads workspace launches from
- * (projectBoardConfig.beadsDirectory). Unset/blank keeps the project root. When set, validate it
- * to an absolute, existing directory so `bd` runs there; an invalid path raises a
- * GxserverProjectPathError that surfaces as a board error instead of silently reading the root.
- */
-function resolveProjectBeadsDirectory(project: GxserverProjectDomainState): string | undefined {
-  const configured = project.projectBoardConfig?.beadsDirectory;
-  if (typeof configured !== "string" || !configured.trim()) {
-    return undefined;
-  }
-  return normalizeExistingDirectoryPath(configured, "beadsDirectory");
-}
-
 async function handleTypedOperationEndpoint(
   runtime: GxserverApiRuntime,
   endpointPath: GxserverEndpointPath,
@@ -3327,14 +3312,12 @@ async function handleTypedOperationEndpoint(
     const { cwd, project } = scope;
     /*
      * CDXC:ProjectBoard 2026-06-13:
-     * Beads operations honor an optional per-project launch directory (projectBoardConfig.beadsDirectory). Resolve and validate it to an absolute, existing directory here so `bd` runs there; a bad path surfaces a GxserverProjectPathError to the board rather than silently falling back. This applies to direct Beads actions and to the ensureBeadsHooks worktree action (so worktree git hooks pin BEADS_DIR to the configured database). Git commands still run in cwd (the project root); only `bd` uses beadsCwd.
+     * Only Project Board originated Beads calls (params.projectBoardScope) use the per-project
+     * configurable launch directory; native Git commit gating probes on the same endpoint stay on
+     * the project root. See resolveBeadsCwdForTypedOperation. An invalid configured directory raises
+     * a GxserverProjectPathError that surfaces as a board error rather than silently falling back.
      */
-    const wantsBeadsCwd =
-      endpointPath === "/api/runBeadsAction" ||
-      (endpointPath === "/api/runWorktreeAction" &&
-        typeof params.action === "string" &&
-        params.action === "ensureBeadsHooks");
-    const beadsCwd = wantsBeadsCwd ? resolveProjectBeadsDirectory(project) : undefined;
+    const beadsCwd = resolveBeadsCwdForTypedOperation(endpointPath, params, project);
     const context = { abortSignal, beadsCwd, cwd, envPath: process.env.PATH, projects };
     const result =
       endpointPath === "/api/runGitAction"

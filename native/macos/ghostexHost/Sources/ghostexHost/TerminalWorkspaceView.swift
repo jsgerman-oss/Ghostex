@@ -8902,6 +8902,14 @@ final class TerminalWorkspaceView: NSView {
   ) throws -> String {
     var params: [String: Any] = [
       "action": try projectBeadsGxserverAction(for: request.action),
+      /*
+      CDXC:ProjectBoard 2026-06-13:
+      Every Beads call built here originates from the Project board webview, so mark it board-scoped.
+      gxserver uses this flag to apply the project's configurable Beads launch directory
+      (projectBoardConfig.beadsDirectory) to board reads/writes only; native Git commit gating probes
+      call the same endpoint directly without this flag and stay on the project root.
+      */
+      "projectBoardScope": true,
     ]
     /*
     CDXC:ProjectBoardRouting 2026-06-10-20:27:

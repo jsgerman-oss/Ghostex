@@ -15,7 +15,11 @@ import {
   runProjectSetupCommand,
   runWorktreeAction,
 } from "../src/typed-operations.js";
-import { normalizeExistingDirectoryPath, resolveProjectOperationDirectory } from "../src/project-paths.js";
+import {
+  normalizeExistingDirectoryPath,
+  resolveBeadsCwdForTypedOperation,
+  resolveProjectOperationDirectory,
+} from "../src/project-paths.js";
 import type { GxserverProjectDomainState, GxserverProjectId } from "../protocol/index.js";
 
 test("Git command construction is allowlisted and keeps file paths project-relative", () => {
@@ -364,6 +368,72 @@ test("typed worktree ensureBeadsHooks skips non-Beads repositories before resolv
     );
     assert.equal(result.exitCode, 0);
     assert.equal(result.stdout, "skipped: no Beads workspace");
+  } finally {
+    await rm(root, { force: true, recursive: true });
+  }
+});
+
+test("Project Board Beads launch directory only applies to board-scoped runBeadsAction calls", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "gxserver-beads-dir-scope-"));
+  try {
+    const repo = path.join(root, "repo");
+    const boardDir = path.join(root, "board-elsewhere");
+    await mkdir(repo, { recursive: true });
+    await mkdir(boardDir, { recursive: true });
+
+    const withBeadsDir = (beadsDirectory: unknown): GxserverProjectDomainState => ({
+      ...project("P3a91", repo),
+      projectBoardConfig: { beadsDirectory },
+    });
+    const configured = withBeadsDir(boardDir);
+    const normalizedBoardDir = normalizeExistingDirectoryPath(boardDir, "beadsDirectory");
+
+    // Board-scoped board call -> `bd` runs in the configured external directory.
+    assert.equal(
+      resolveBeadsCwdForTypedOperation("/api/runBeadsAction", { projectBoardScope: true }, configured),
+      normalizedBoardDir,
+    );
+
+    // Native Git commit gating probe (same endpoint, no board scope) -> stays on the project root.
+    assert.equal(resolveBeadsCwdForTypedOperation("/api/runBeadsAction", {}, configured), undefined);
+    assert.equal(
+      resolveBeadsCwdForTypedOperation("/api/runBeadsAction", { projectBoardScope: false }, configured),
+      undefined,
+    );
+
+    // Worktree/Git endpoints never use the board directory, even if the scope flag leaks in.
+    assert.equal(
+      resolveBeadsCwdForTypedOperation("/api/runWorktreeAction", { projectBoardScope: true }, configured),
+      undefined,
+    );
+
+    // No configured directory (or blank) -> project-root fallback for board calls too.
+    assert.equal(
+      resolveBeadsCwdForTypedOperation("/api/runBeadsAction", { projectBoardScope: true }, project("P3a91", repo)),
+      undefined,
+    );
+    assert.equal(
+      resolveBeadsCwdForTypedOperation("/api/runBeadsAction", { projectBoardScope: true }, withBeadsDir("   ")),
+      undefined,
+    );
+
+    // Invalid configured directory: a board call surfaces an error...
+    const missing = withBeadsDir(path.join(root, "does-not-exist"));
+    assert.throws(
+      () => resolveBeadsCwdForTypedOperation("/api/runBeadsAction", { projectBoardScope: true }, missing),
+      /beadsDirectory does not exist/,
+    );
+    // ...but a commit probe with the same bad config must NOT throw (it cannot break `git commit`).
+    assert.equal(resolveBeadsCwdForTypedOperation("/api/runBeadsAction", {}, missing), undefined);
+
+    // A file (not a directory) is rejected for board calls.
+    const filePath = path.join(root, "not-a-dir");
+    await writeFile(filePath, "x");
+    assert.throws(
+      () =>
+        resolveBeadsCwdForTypedOperation("/api/runBeadsAction", { projectBoardScope: true }, withBeadsDir(filePath)),
+      /beadsDirectory is not a directory/,
+    );
   } finally {
     await rm(root, { force: true, recursive: true });
   }
