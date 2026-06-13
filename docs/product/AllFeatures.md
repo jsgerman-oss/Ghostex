@@ -1,6 +1,13 @@
 
 ## All features:
 
+- 4.12.0 adds session-first command palette search, command mode through `>`, stricter native pane focus, first-class sleeping pane placeholders, configurable Sidebar Tag filters, Electron split-layout focus, update/App Shots polish, long-list sidebar controls, richer session tooltips, and TUI switcher repeat throttling.
+- Cmd+P opens session search across current sessions, active projects, collapsed projects, and previous sessions, while Cmd+Shift+P opens command mode directly.
+- Native pane focus tracks the AppKit first responder and rendered pane geometry so focused borders, directional navigation, command panels, and project-editor companion panes line up with the surface receiving keyboard input.
+- Sleeping pane placeholders keep selected pane and tab chrome visible, show "Press Any Key to Wake", and wake the terminal in place from normal key presses.
+- Sidebar Tag filters can be reordered, hidden, disabled, and reset from Settings without hidden or disabled tags continuing to filter sessions.
+- Electron pane focus follows split-layout geometry and retries terminal focus for more reliable keyboard navigation.
+- Sparkle update download animation, App Shots beta defaults, long project list expansion, session tooltip state text, native modal/window polish, and TUI switcher arrow-repeat handling are refreshed for 4.12.0.
 - 4.11.0 improves native layout ownership, pane/tab lifecycle recovery, terminal focus after creation and restore, Previous Sessions identity, sidebar/search polish, denser Project Board workflows, current Claude Code and Codex keybindings, Electron previous-session restore, and Android empty-service startup recovery.
 - Native titlebar, sidebar, divider, pane, webview, and terminal regions use stricter non-overlapping ownership so clicks, hovers, and focus land on the intended surface.
 - New terminals, forks, and restored panes wait for terminal-ready state before focus moves, keeping keyboard focus on the session the user just opened or restored.

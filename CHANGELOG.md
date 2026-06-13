@@ -19,6 +19,23 @@
 <!-- CDXC:Distribution 2026-06-12-20:17: The last five GitHub release bodies need shorter top-level bullets so every changelog detail remains present while the public release notes are easier to scan. -->
 <!-- CDXC:Distribution 2026-06-13-16:52: Release notes for 4.11.0 must describe the next minor release as user-facing native layout, pane lifecycle, previous-session identity, sidebar, project-board, keybinding, Electron, and Android startup improvements before Sparkle, GitHub, Homebrew, and Android publication. -->
 <!-- CDXC:Distribution 2026-06-13-17:13: The 4.11.0 changelog must use Major and Minor top-level bullets with sub-bullets so public release notes stay easier to scan without dropping any user-facing shipped change. -->
+<!-- CDXC:Distribution 2026-06-14-02:03: Release notes for 4.12.0 must use Major and Minor top-level bullets with sub-bullets so public changelogs separate larger workflow changes from smaller polish while covering session search, pane focus, sleeping panes, sidebar tags, Electron focus, update UI, App Shots, and TUI changes. -->
+
+## 4.12.0 - 2026-06-14
+
+- Major
+  - Command palette search is now centered on sessions by default. Cmd+P opens session search, Cmd+Shift+P opens command mode with `>`, and results include current sessions, active projects, collapsed projects, and previous sessions ranked by recent activity.
+  - Native pane focus follows the surface that actually owns keyboard input. Focused borders track the AppKit first responder, directional focus uses rendered pane geometry, and command panels plus project-editor companion panes avoid stale retargeting.
+  - Sleeping panes behave like selected panes instead of empty gaps. Their tab chrome remains visible, placeholders show "Press Any Key to Wake", and normal key presses wake the sleeping terminal in place.
+  - Sidebar tag filters can be reordered, hidden, disabled, and reset from Settings. Hidden or disabled tags are removed from active filtering so old filter state does not keep sessions invisible.
+  - Cross-platform Electron pane focus now follows split-layout geometry and retries terminal focus so keyboard navigation lands in the intended terminal.
+- Minor
+  - Sparkle's titlebar update button now fades only while an accepted update is actively downloading.
+  - App Shots is opt-in by default and marked as Beta in Settings.
+  - The TUI session switcher throttles held Up and Down arrow repeats while still responding immediately to the first key press.
+  - Long project session lists use a regular "Show N more" session row and restore scroll position more predictably when collapsed.
+  - Session card tooltips include clearer active, sleeping, and not-loaded state text plus colored metadata rows.
+  - Native modal and window polish tightens Add Worktree padding and close behavior, startup overlay layering, Exit Focus styling, command-panel resize hover feedback, toast entry animation, and browser profile routing.
 
 ## 4.11.0 - 2026-06-13
 
