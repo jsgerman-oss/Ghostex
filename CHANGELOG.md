@@ -18,21 +18,24 @@
 <!-- CDXC:Distribution 2026-06-12-12:13: The final 4.10.0 release notes also need the late native chrome and App Shots work: titlebar sidebar collapse, Resources daemon/recovery controls, tighter native modal sizing, App Shots targeting any focused/recent agent, and live-process identity repair for path-based agent executables. -->
 <!-- CDXC:Distribution 2026-06-12-20:17: The last five GitHub release bodies need shorter top-level bullets so every changelog detail remains present while the public release notes are easier to scan. -->
 <!-- CDXC:Distribution 2026-06-13-16:52: Release notes for 4.11.0 must describe the next minor release as user-facing native layout, pane lifecycle, previous-session identity, sidebar, project-board, keybinding, Electron, and Android startup improvements before Sparkle, GitHub, Homebrew, and Android publication. -->
+<!-- CDXC:Distribution 2026-06-13-17:13: The 4.11.0 changelog must use Major and Minor top-level bullets with sub-bullets so public release notes stay easier to scan without dropping any user-facing shipped change. -->
 
 ## 4.11.0 - 2026-06-13
 
-- Native workspace layout now keeps titlebar, sidebar, divider, pane, webview, and terminal regions in stricter non-overlapping frames, reducing click and focus misses.
-- Sidebar dividers, native pane tabs, and titlebar chrome have more predictable hit targets because each surface owns its own input region.
-- New terminals, forks, and restored panes wait for terminal-ready state before focus moves, so keyboard focus lands in the intended session.
-- Pane tabs recover more reliably while gxserver presentation reconnects, including sleeping, waking, closing, and remote-backed rows.
-- Previous Sessions and session search preserve provider, agent, and restore identity more accurately when ranking, restoring, or reattaching to older sessions.
-- Stale local gxserver rows are pruned from the native sidebar so dead sessions do not compete with live provider state.
-- Sidebar session cards, overflow menus, command palette input, and search surfaces received tighter interaction polish for dense daily use.
-- Project Board and Tickets cards are denser, placeholders are clearer, and bulk actions and group labels are easier to scan.
-- First-launch preferences and skill-install status rows are simpler, with status presented in the action area.
-- Claude Code and Codex terminal keybindings line up with the current prompt-editor and terminal shortcut model.
-- Electron Previous Sessions now preserves previous-session identity to match the macOS sidebar behavior.
-- Android startup recovery handles empty-service startup more reliably.
+- Major
+  - Native workspace layout now keeps titlebar, sidebar, divider, pane, webview, and terminal regions in stricter non-overlapping frames, reducing click and focus misses.
+  - Sidebar dividers, native pane tabs, and titlebar chrome have more predictable hit targets because each surface owns its own input region.
+  - New terminals, forks, and restored panes wait for terminal-ready state before focus moves, so keyboard focus lands in the intended session.
+  - Pane tabs recover more reliably while gxserver presentation reconnects, including sleeping, waking, closing, and remote-backed rows.
+  - Previous Sessions and session search preserve provider, agent, and restore identity more accurately when ranking, restoring, or reattaching to older sessions.
+  - Stale local gxserver rows are pruned from the native sidebar so dead sessions do not compete with live provider state.
+- Minor
+  - Sidebar session cards, overflow menus, command palette input, and search surfaces received tighter interaction polish for dense daily use.
+  - Project Board and Tickets cards are denser, placeholders are clearer, and bulk actions and group labels are easier to scan.
+  - First-launch preferences and skill-install status rows are simpler, with status presented in the action area.
+  - Claude Code and Codex terminal keybindings line up with the current prompt-editor and terminal shortcut model.
+  - Electron Previous Sessions now preserves previous-session identity to match the macOS sidebar behavior.
+  - Android startup recovery handles empty-service startup more reliably.
 
 ## 4.10.0 - 2026-06-12
 
