@@ -1,6 +1,16 @@
 
 ## All features:
 
+- 4.11.0 improves native layout ownership, pane/tab lifecycle recovery, terminal focus after creation and restore, Previous Sessions identity, sidebar/search polish, denser Project Board workflows, current Claude Code and Codex keybindings, Electron previous-session restore, and Android empty-service startup recovery.
+- Native titlebar, sidebar, divider, pane, webview, and terminal regions use stricter non-overlapping ownership so clicks, hovers, and focus land on the intended surface.
+- New terminals, forks, and restored panes wait for terminal-ready state before focus moves, keeping keyboard focus on the session the user just opened or restored.
+- Pane tabs stay better synchronized through gxserver reconnects, sleep, wake, close, and remote-backed presentation updates.
+- Previous Sessions and session search preserve provider, agent, restore identity, and ranking metadata more accurately when reopening older sessions.
+- Stale local gxserver rows are pruned from the native sidebar so old rows do not compete with live provider state.
+- Sidebar cards, overflow menus, command palette input, active search, and first-launch or skill-install status rows are tighter and easier to scan.
+- Project Board and Tickets workflows use denser cards, clearer placeholders, and easier-to-read bulk actions and group labels.
+- Claude Code and Codex terminal keybindings match the current prompt-editor and terminal shortcut model.
+- Electron Previous Sessions mirrors macOS previous-session identity preservation, and Android handles empty-service startup recovery more reliably.
 - 4.10.0 improves native workspace and titlebar integration, preserves split panes during passive restore, adds safer `ghostex`/`gx` command wrappers, expands agent/mobile/App Shots support, refreshes sidebar/settings/titlebar workflows, and strengthens packaged runtime validation for Apple Silicon releases.
 - Native workspace panes, directly mounted project-tab titlebars, app modal windows, and toast routing are integrated with the macOS host for more reliable click routing and focus behavior.
 - Passive sidebar terminal restore preserves workspace split layouts instead of merging panes while session rows and pane tabs resync.
