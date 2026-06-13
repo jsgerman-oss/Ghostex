@@ -14,6 +14,10 @@ const sidebarStylesSource = readFileSync(
   "utf8",
 );
 const modalHostSource = readFileSync(new URL("./modal-host.tsx", import.meta.url), "utf8");
+const worktreeCreateModalSource = readFileSync(
+  new URL("../../sidebar/worktree-create-modal.tsx", import.meta.url),
+  "utf8",
+);
 
 function sourceBetween(source: string, start: string, end: string): string {
   const startIndex = source.indexOf(start);
@@ -37,6 +41,37 @@ describe("native app modal window source", () => {
     expect(appDelegateSource).not.toContain("native.hitRegion");
   });
 
+  test("animates native app toasts from the bottom center of the app window", () => {
+    /*
+    CDXC:AppToasts 2026-06-13-19:57:
+    Native macOS toasts should center on the app window, start from a lower bottom-center frame, and fade upward into the stack so sidebar placement and the initial NSPanel origin never leak into the visible animation.
+    */
+    const rootLayoutToastAnchor = sourceBetween(
+      appDelegateSource,
+      "workspaceView.frame = frames.workspace",
+      "layoutRootChromeLayers(frames: frames)",
+    );
+    expect(rootLayoutToastAnchor).toContain("anchorFrame: bounds");
+    expect(rootLayoutToastAnchor).not.toContain("anchorFrame: frames.workspace");
+
+    const nativeToastController = sourceBetween(
+      appDelegateSource,
+      "private final class NativeAppToastController",
+      "private final class NativeAppToastView",
+    );
+    expect(nativeToastController).toContain("private static let enterYOffset: CGFloat = 24");
+    expect(nativeToastController).toContain(
+      "layoutPanels(animated: true, enteringToastId: enteringToastId)",
+    );
+    expect(nativeToastController).toContain("frame.offsetBy(dx: 0, dy: -Self.enterYOffset)");
+    expect(nativeToastController).toContain(
+      "item.panel.setFrame(Self.enterStartFrame(for: frame), display: true)",
+    );
+    expect(nativeToastController).toContain("context.timingFunction = Self.toastAnimationTimingFunction()");
+    expect(nativeToastController).toContain("item.panel.animator().alphaValue = 1");
+    expect(nativeToastController).toContain("x: floor(screenAnchorFrame.midX - size.width / 2)");
+  });
+
   test("opens first-launch setup 90px taller than the generic management modals", () => {
     /*
     CDXC:FirstLaunchSetup 2026-06-12-07:13:
@@ -54,13 +89,17 @@ describe("native app modal window source", () => {
     expect(defaultSize).toContain("return CGSize(width: 1120, height: 850)");
   });
 
-  test("keeps Add Worktree fixed at 570x630 with exact native-window padding", () => {
+  test("keeps Add Worktree fixed at 570x574 with exact native-window padding", () => {
     /*
     CDXC:WorktreeModal 2026-06-12-10:51:
     Add Worktree must open as an exact 570x550 native child window in the macOS app, separate from the larger Git Commit review modal size.
 
     CDXC:WorktreeModal 2026-06-12-11:10:
-    Add Worktree must keep the 570px width, gain 80px of height to 630px, and use exactly 18px total edge padding in the native child-window WebView.
+    Add Worktree must keep the 570px fixed width and own its native child-window WebView padding directly.
+
+    CDXC:WorktreeModal 2026-06-13-18:39:
+    Add Worktree must use the same top-right shadcn close X pattern as Rename Session, remove the footer Cancel button, use 17px native-window edge padding, and fit the shorter footer stack into a 570x574 child window.
+
     */
     const defaultSize = sourceBetween(
       appDelegateSource,
@@ -70,7 +109,7 @@ describe("native app modal window source", () => {
     expect(defaultSize).toContain('case "gitCommit":');
     expect(defaultSize).toContain("return CGSize(width: 1020, height: 760)");
     expect(defaultSize).toContain('case "worktree":');
-    expect(defaultSize).toContain("return CGSize(width: 570, height: 630)");
+    expect(defaultSize).toContain("return CGSize(width: 570, height: 574)");
 
     const shouldLockContentSize = sourceBetween(
       appDelegateSource,
@@ -90,8 +129,27 @@ describe("native app modal window source", () => {
     expect(worktreeStyles).toContain("height: 100vh;");
     expect(worktreeStyles).toContain("max-height: 100vh;");
     expect(worktreeStyles).toContain("max-width: 100vw;");
-    expect(worktreeStyles).toContain("padding: 18px;");
+    expect(worktreeStyles).toContain("padding: 17px;");
     expect(worktreeStyles).toContain("width: 100vw;");
+    expect(worktreeStyles).toContain(
+      '.app-modal-host-native-window-body .worktree-create-modal-shadcn [data-slot="dialog-close"]',
+    );
+    expect(worktreeStyles).toContain("right: 17px;");
+    expect(worktreeStyles).toContain("top: 17px;");
+
+    const worktreeDialogContent = sourceBetween(
+      worktreeCreateModalSource,
+      "<DialogContent",
+      "<form",
+    );
+    expect(worktreeDialogContent).toContain("showCloseButton");
+
+    const worktreeFooter = sourceBetween(
+      worktreeCreateModalSource,
+      "<DialogFooter>",
+      "</DialogFooter>",
+    );
+    expect(worktreeFooter).not.toContain("Cancel");
   });
 
   test("widens Git Commit 20px from the right side in the macOS app", () => {
@@ -256,6 +314,9 @@ describe("native app modal window source", () => {
     /*
     CDXC:CommandPalette 2026-06-12-05:45:
     The native Command Palette is now a child window. AppKit must close it when the user clicks back into the parent Ghostex window, and the openCommandPalette hotkey must toggle the already-open native palette instead of reopening it.
+
+    CDXC:CommandPalette 2026-06-13-22:18:
+    Command-mode and session-search-mode openers share the same native command-palette child window, so both action ids use the same visible-window toggle guard.
     */
     const dispatchNativeHotkey = sourceBetween(
       appDelegateSource,
@@ -263,10 +324,13 @@ describe("native app modal window source", () => {
       "private func shouldHandleHotkeyWhileWebChromeOwnsFocus",
     );
     expect(dispatchNativeHotkey).toContain(
-      'if actionId == "openCommandPalette", isCommandPaletteNativeModalOpenOrPending()',
+      "if Self.isCommandPaletteHotkeyActionId(actionId), isCommandPaletteNativeModalOpenOrPending()",
     );
     expect(dispatchNativeHotkey).toContain(
       'closeNativeAppModalWindow(reason: "commandPaletteHotkeyToggle", sendReactClose: true)',
+    );
+    expect(appDelegateSource).toContain(
+      'actionId == "openCommandPalette" || actionId == "openSessionSearchPalette"',
     );
     expect(dispatchNativeHotkey).toContain('activeNativeAppModalKind == "commandPalette"');
     expect(dispatchNativeHotkey).toContain(
@@ -279,7 +343,7 @@ describe("native app modal window source", () => {
       "private func logNativeHotkeyDebug",
     );
     expect(webChromeHotkeyGuard).toContain(
-      'if actionId == "openCommandPalette", isCommandPaletteNativeModalOpenOrPending()',
+      "if Self.isCommandPaletteHotkeyActionId(actionId), isCommandPaletteNativeModalOpenOrPending()",
     );
     expect(webChromeHotkeyGuard).toContain("return true");
 

@@ -137,6 +137,13 @@ enum NativeBrowserProfileUI {
       menu.addItem(item)
     }
     menu.addItem(.separator())
+    /**
+     CDXC:BrowserProfiles 2026-06-13-22:09:
+     The browser profile dropdown should label the beta-only actions before New Profile and Import Browser Data, and the label must be disabled so it reads as a section header instead of a command.
+     */
+    let betaItem = NSMenuItem(title: "Beta Features:", action: nil, keyEquivalent: "")
+    betaItem.isEnabled = false
+    menu.addItem(betaItem)
     let newItem = NSMenuItem(title: "New Profile...", action: #selector(ProfileMenuTarget.create(_:)), keyEquivalent: "")
     newItem.target = ProfileMenuTarget.shared
     menu.addItem(newItem)

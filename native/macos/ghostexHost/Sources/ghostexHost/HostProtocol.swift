@@ -8,6 +8,7 @@ enum HostCommand: Decodable {
   case closeWebPane(SessionCommand)
   case focusTerminal(SessionCommand)
   case focusProjectEditorCompanionSession(SessionCommand)
+  case retargetProjectEditorCompanionSession(SessionCommand)
   case focusWebPane(SessionCommand)
   case reloadWebPane(SessionCommand)
   case startT3CodeRuntime(StartT3CodeRuntime)
@@ -73,6 +74,7 @@ enum HostCommand: Decodable {
   case setSidebarSide(SetSidebarSide)
   case toggleSidebarCollapsed
   case setReactTitlebarStripState(SetReactTitlebarStripState)
+  case titlebarBlankMouseDown
   case showTitlebarDropdownPanel(ShowTitlebarDropdownPanel)
   case closeTitlebarDropdownPanel
   case resizeTitlebarDropdownPanel(ResizeTitlebarDropdownPanel)
@@ -113,6 +115,7 @@ enum HostCommand: Decodable {
     case closeWebPane
     case focusTerminal
     case focusProjectEditorCompanionSession
+    case retargetProjectEditorCompanionSession
     case focusWebPane
     case reloadWebPane
     case startT3CodeRuntime
@@ -178,6 +181,7 @@ enum HostCommand: Decodable {
     case setSidebarSide
     case toggleSidebarCollapsed
     case setReactTitlebarStripState
+    case titlebarBlankMouseDown
     case showTitlebarDropdownPanel
     case closeTitlebarDropdownPanel
     case resizeTitlebarDropdownPanel
@@ -224,6 +228,8 @@ enum HostCommand: Decodable {
       self = .focusTerminal(try SessionCommand(from: decoder))
     case .focusProjectEditorCompanionSession:
       self = .focusProjectEditorCompanionSession(try SessionCommand(from: decoder))
+    case .retargetProjectEditorCompanionSession:
+      self = .retargetProjectEditorCompanionSession(try SessionCommand(from: decoder))
     case .focusWebPane:
       self = .focusWebPane(try SessionCommand(from: decoder))
     case .reloadWebPane:
@@ -356,6 +362,8 @@ enum HostCommand: Decodable {
       self = .toggleSidebarCollapsed
     case .setReactTitlebarStripState:
       self = .setReactTitlebarStripState(try SetReactTitlebarStripState(from: decoder))
+    case .titlebarBlankMouseDown:
+      self = .titlebarBlankMouseDown
     case .showTitlebarDropdownPanel:
       self = .showTitlebarDropdownPanel(try ShowTitlebarDropdownPanel(from: decoder))
     case .closeTitlebarDropdownPanel:
@@ -601,6 +609,11 @@ struct SetActiveTerminalSet: Decodable {
   let clickToWakeSleepingSessions: Bool?
   let debuggingMode: Bool?
   let focusRequestId: Int?
+  /**
+   CDXC:PaneFocus 2026-06-13-23:13:
+   Explicit layout focus requests carry the exact native pane target. Cmd+Opt+Down can target a visible Commands panel while the workspace focusedSessionId remains the terminal above it, so AppKit must not infer the target only from selected workspace state.
+   */
+  let focusRequestSessionId: String?
   let focusedSessionId: String?
   let isFocusModeActive: Bool?
   /**
@@ -1164,6 +1177,16 @@ struct TitlebarDropdownPreferredSize: Decodable {
   let height: Double
 }
 
+struct TitlebarBlankMouseDown: Decodable {
+  /**
+   CDXC:ReactTitlebar 2026-06-13-14:08:
+   Blank titlebar drag uses the DOM event target from the exact titlebar WKWebView
+   strip, not AppKit hit-test overrides or native coordinate region routing. React
+   posts this only when the background receives mouse-down; native uses the current
+   WKWebView mouse event to perform the normal AppKit window drag.
+   */
+}
+
 struct ShowTitlebarDropdownPanel: Decodable {
   /*
    CDXC:ReactTitlebar 2026-06-11-13:22:
@@ -1291,7 +1314,7 @@ enum HostEvent: Encodable {
     appName: String?, bundleIdentifier: String?, imagePath: String, text: String?, title: String?,
     trigger: String)
   case appShotCaptureFailed(message: String)
-  case nativeHotkey(actionId: String)
+  case nativeHotkey(actionId: String, sourceSessionId: String?)
   case terminalReady(
     sessionId: String, ttyName: String?, foregroundPid: Int?, sessionPersistenceName: String?,
     persistenceSessionCreated: Bool?)
@@ -1429,16 +1452,23 @@ enum HostEvent: Encodable {
     case .appShotCaptureFailed(let message):
       try container.encode("appShotCaptureFailed", forKey: .type)
       try container.encode(message, forKey: .message)
-    case .nativeHotkey(let actionId):
+    case .nativeHotkey(let actionId, let sourceSessionId):
       /**
        CDXC:Hotkeys 2026-04-28-06:15
        AppKit-matched hotkeys must travel over the typed native host event bus
        instead of an optional JavaScript global. This makes the native-to-sidebar
        boundary observable and avoids silently dropping shortcuts before the
        sidebar action executor can run.
+
+       CDXC:PaneFocus 2026-06-13-21:47:
+       Cmd+Opt+Arrow must start directional pane navigation from the live native
+       first-responder session when AppKit knows it. Command-pane participation
+       can leave sidebar focus stores behind the real typing surface, so include
+       the source session id with the host event instead of making React infer it.
       */
       try container.encode("nativeHotkey", forKey: .type)
       try container.encode(actionId, forKey: .actionId)
+      try container.encodeIfPresent(sourceSessionId, forKey: .sourceSessionId)
     case .terminalReady(
       let sessionId, let ttyName, let foregroundPid, let sessionPersistenceName,
       let persistenceSessionCreated):

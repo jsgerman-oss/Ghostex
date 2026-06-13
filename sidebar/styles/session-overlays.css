@@ -297,6 +297,37 @@
   font-weight: inherit;
 }
 
+/*
+ * CDXC:SessionTooltips 2026-06-13-23:24:
+ * Metadata rows in session hover tooltips should scan as separate facts while
+ * leaving the title as the only strong white line. Rotate restrained pastel
+ * text colors by logical metadata line so state, path, ids, and provider rows
+ * are distinguishable without adding badges or changing tooltip layout.
+ */
+.session-local-tooltip-meta[data-tooltip-meta-color="1"] {
+  color: #b9f3d0;
+}
+
+.session-local-tooltip-meta[data-tooltip-meta-color="2"] {
+  color: #b7dcff;
+}
+
+.session-local-tooltip-meta[data-tooltip-meta-color="3"] {
+  color: #dec8ff;
+}
+
+.session-local-tooltip-meta[data-tooltip-meta-color="4"] {
+  color: #ffd2a8;
+}
+
+.session-local-tooltip-meta[data-tooltip-meta-color="5"] {
+  color: #ffc1d6;
+}
+
+.session-local-tooltip-meta[data-tooltip-meta-color="6"] {
+  color: #f2eaa0;
+}
+
 .tooltip-popup {
   display: inline-flex;
   align-items: center;

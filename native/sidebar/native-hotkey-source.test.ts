@@ -3,9 +3,21 @@ import { describe, expect, test } from "vitest";
 
 const nativeSidebarSource = readFileSync(new URL("./native-sidebar.tsx", import.meta.url), "utf8");
 const sidebarAppSource = readFileSync(new URL("../../sidebar/sidebar-app.tsx", import.meta.url), "utf8");
+const nativeAppDelegateSource = readFileSync(
+  new URL("../macos/ghostexHost/Sources/ghostexHost/AppDelegate.swift", import.meta.url),
+  "utf8",
+);
+const nativeHostProtocolSource = readFileSync(
+  new URL("../macos/ghostexHost/Sources/ghostexHost/HostProtocol.swift", import.meta.url),
+  "utf8",
+);
+const nativeTerminalWorkspaceSource = readFileSync(
+  new URL("../macos/ghostexHost/Sources/ghostexHost/TerminalWorkspaceView.swift", import.meta.url),
+  "utf8",
+);
 
 describe("native sidebar hotkey source", () => {
-  test("keeps nativeHotkey session creation owned by the native wrapper only", () => {
+  test("routes nativeHotkey host events through the native wrapper with source focus", () => {
     /*
      * CDXC:Hotkeys 2026-06-12-12:33:
      * Cmd+T in the macOS app should create one terminal tab. The native wrapper
@@ -14,7 +26,23 @@ describe("native sidebar hotkey source", () => {
      * second createSession bridge request.
      */
     expect(nativeSidebarSource).toContain('if (hostEvent.type === "nativeHotkey") {');
-    expect(nativeSidebarSource).toContain('runNativeHotkeyAction(hostEvent.actionId, "native");');
+    expect(nativeSidebarSource).toContain('sourceSessionId?: string; type: "nativeHotkey"');
+    expect(nativeSidebarSource).toContain(
+      "sidebarSessionIdForNativeSession(hostEvent.sourceSessionId)",
+    );
+    expect(nativeAppDelegateSource).toContain("workspaceView.nativeHotkeySourceSessionId()");
+    expect(nativeAppDelegateSource).toContain(
+      "sendHostEvent(.nativeHotkey(actionId: actionId, sourceSessionId: sourceSessionId))",
+    );
+    expect(nativeHostProtocolSource).toContain(
+      "case nativeHotkey(actionId: String, sourceSessionId: String?)",
+    );
+    expect(nativeHostProtocolSource).toContain(
+      "try container.encodeIfPresent(sourceSessionId, forKey: .sourceSessionId)",
+    );
+    expect(nativeTerminalWorkspaceSource).toContain(
+      "func nativeHotkeySourceSessionId() -> String?",
+    );
     expect(nativeSidebarSource).toContain("nativeHostEventSource={null}");
     expect(sidebarAppSource).toContain("nativeHostEventSource?: SidebarEventSource | null;");
     expect(sidebarAppSource).toContain("if (!nativeHostEventSource) {");
@@ -39,6 +67,144 @@ describe("native sidebar hotkey source", () => {
     );
     expect(nativeSidebarSource).not.toContain(
       'document.querySelector(".native-sidebar-main") ?? document',
+    );
+  });
+
+  test("resolves directional pane hotkeys from the rendered native layout first", () => {
+    /*
+     * CDXC:PaneFocus 2026-06-13-21:19:
+     * Cmd+Opt+Arrow must move through visible native panes in rendered order.
+     * Keep the rendered-layout resolver ahead of the shared visible-session
+     * reducer so a1 b1 c1 cannot skip b1, and so expanded command-pane splits
+     * participate in the same arrow-key focus map.
+     *
+     * CDXC:SleepingPanePlaceholders 2026-06-13-21:35:
+     * Rendered pane hotkeys must reuse native pane-tab selection instead of
+     * sidebar focus. The tab path preserves selected sleeping placeholders and
+     * avoids waking or relocating the target pane while click-to-wake is enabled.
+     */
+    const directionSourceStart = nativeSidebarSource.indexOf(
+      "function focusNativeHotkeyDirection(",
+    );
+    expect(directionSourceStart).toBeGreaterThanOrEqual(0);
+    const directionSourceEnd = nativeSidebarSource.indexOf(
+      "function focusProjectEditorCompanionHotkeyDirection",
+      directionSourceStart,
+    );
+    expect(directionSourceEnd).toBeGreaterThan(directionSourceStart);
+    const directionSource = nativeSidebarSource.slice(directionSourceStart, directionSourceEnd);
+    const renderedResolverIndex = directionSource.indexOf(
+      "getRenderedNativeHotkeyDirectionTarget",
+    );
+    const sharedReducerIndex = directionSource.indexOf("focusVisibleDirectionInSimpleWorkspace");
+    const companionResolverAfterRenderedIndex = directionSource.indexOf(
+      "focusProjectEditorCompanionHotkeyDirection",
+      renderedResolverIndex,
+    );
+
+    expect(nativeSidebarSource).toContain("lastRenderedNativeHotkeyLayout");
+    expect(nativeSidebarSource).toContain("function buildCurrentRenderedNativeHotkeyLayout");
+    expect(nativeSidebarSource).toContain("function getDirectionalNativePaneFocusTarget");
+    expect(nativeSidebarSource).toContain(
+      "getNativeHotkeyFocusedSidebarSessionId(snapshot, sourceSessionId)",
+    );
+    expect(nativeSidebarSource).toContain("function collectRenderedNativeHotkeyPaneFocusRects");
+    expect(nativeSidebarSource).toContain("commandsPanelLayout");
+    expect(nativeSidebarSource).toContain("commandsPanelIsVisible");
+    expect(nativeSidebarSource).toContain(
+      'const shouldResolveRenderedLayoutBeforeCompanion = direction === "up" || direction === "down";',
+    );
+    expect(directionSource).toContain("!shouldResolveRenderedLayoutBeforeCompanion &&");
+    expect(directionSource).toContain("shouldResolveRenderedLayoutBeforeCompanion &&");
+    expect(nativeSidebarSource).toContain('"nativeHotkeys.focusDirectionStart"');
+    expect(nativeSidebarSource).toContain(
+      'normalizedEvent.startsWith("nativehotkeys.renderedfocusdirection")',
+    );
+    expect(nativeAppDelegateSource).toContain(
+      "fileprivate static func terminalFocusDebugPayload(event: String, details: String?)",
+    );
+    expect(nativeAppDelegateSource).toContain('event.hasPrefix("nativeHotkeys.")');
+    expect(nativeAppDelegateSource).toContain("JSONSerialization.jsonObject(with: data)");
+    expect(renderedResolverIndex).toBeGreaterThanOrEqual(0);
+    expect(companionResolverAfterRenderedIndex).toBeGreaterThan(renderedResolverIndex);
+    expect(sharedReducerIndex).toBeGreaterThan(renderedResolverIndex);
+    expect(directionSource).toContain("handleNativePaneTabSelected(renderedPaneTarget.sessionId);");
+    expect(directionSource).not.toContain("focusSidebarSession(renderedPaneTarget.sessionId);");
+  });
+
+  test("passes explicit layout focus targets for command-pane arrow navigation", () => {
+    /*
+     * CDXC:PaneFocus 2026-06-13-23:13:
+     * Cmd+Opt+Down can resolve from a workspace terminal to an expanded
+     * Commands panel pane. The layout focus request must include that exact
+     * native session id, and Swift must honor it before the workspace
+     * focusedSessionId so first responder moves to the command terminal.
+     */
+    expect(nativeSidebarSource).toContain("focusRequestSessionId?: string;");
+    expect(nativeSidebarSource).toContain(
+      "const focusRequestSessionId =\n    shouldConsumeFocusRequest && pendingNativeLayoutFocusRequest",
+    );
+    expect(nativeSidebarSource).toContain(
+      "nativeSessionIdForSidebarSession(pendingNativeLayoutFocusRequest.sessionId)",
+    );
+    expect(nativeSidebarSource).toContain(
+      "...(focusRequestSessionId !== undefined ? { focusRequestSessionId } : {})",
+    );
+    expect(nativeSidebarSource).toContain(
+      'queueNativeLayoutFocusRequest(sessionId, "paneTabSelectedAlreadyActive");',
+    );
+    expect(nativeSidebarSource).toContain(
+      "focusRequestSessionId: _focusRequestSessionId,",
+    );
+    expect(nativeHostProtocolSource).toContain("let focusRequestSessionId: String?");
+
+    const nativeFocusRequestStart = nativeTerminalWorkspaceSource.indexOf(
+      "let requestedFocusSessionId =",
+    );
+    expect(nativeFocusRequestStart).toBeGreaterThanOrEqual(0);
+    const nativeFocusRequestSource = nativeTerminalWorkspaceSource.slice(
+      nativeFocusRequestStart,
+      nativeFocusRequestStart + 500,
+    );
+    const requestTargetIndex = nativeFocusRequestSource.indexOf("command.focusRequestSessionId");
+    const workspaceFallbackIndex = nativeFocusRequestSource.indexOf("command.focusedSessionId");
+    const commandFallbackIndex = nativeFocusRequestSource.indexOf(
+      "command.commandsPanelFocusedSessionId",
+    );
+    expect(requestTargetIndex).toBeGreaterThanOrEqual(0);
+    expect(workspaceFallbackIndex).toBeGreaterThan(requestTargetIndex);
+    expect(commandFallbackIndex).toBeGreaterThan(workspaceFallbackIndex);
+  });
+
+  test("routes native create and split hotkeys to live command-pane focus", () => {
+    /*
+     * CDXC:CommandPaneHotkeys 2026-06-13-23:31:
+     * Cmd+T and Cmd+D should apply to the Commands panel when the terminal
+     * owning live AppKit typing focus is a command terminal. The native
+     * sourceSessionId must override the remembered workspace focusedSessionId
+     * for these create and split hotkeys.
+     */
+    expect(nativeSidebarSource).toContain(
+      "function getNativeHotkeyCommandPanelSourceSessionId(sourceSessionId?: string)",
+    );
+    expect(nativeSidebarSource).toContain('sourceSession.surface !== "commands"');
+    expect(nativeSidebarSource).toContain(
+      "createNativeSessionInCurrentContext(sourceSessionId);",
+    );
+    expect(nativeSidebarSource).toContain(
+      "splitFocusedNativePane(action.direction, sourceSessionId);",
+    );
+    expect(nativeSidebarSource).toContain(
+      "targetTabGroupSessionId: commandSourceSessionId",
+    );
+    expect(nativeSidebarSource).toContain("function splitFocusedCommandPanelPane(");
+    expect(nativeSidebarSource).toContain("targetSplitDirection: direction");
+    expect(nativeSidebarSource).toContain("targetSplitSessionId: targetSessionId");
+    expect(nativeSidebarSource).toContain(
+      "direction: SessionPaneSplitDirection",
+    );
+    expect(nativeSidebarSource).toContain(
+      'throw new Error("Command panel split placement target was validated but not found.")',
     );
   });
 });

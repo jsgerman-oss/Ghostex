@@ -149,6 +149,10 @@ export type SortableSessionCardProps = {
   isProjectSessionListOverflowRow?: boolean;
   isSearchSelected?: boolean;
   onFocusRequested?: (groupId: string, sessionId: string) => void;
+  projectSessionListMoreRow?: {
+    count: number;
+    onReveal: () => void;
+  };
   sessionIdsBelow?: readonly string[];
   sessionId: string;
   showGroupDropTargetChrome?: boolean;
@@ -342,6 +346,7 @@ export function SortableSessionCard({
   isProjectSessionListOverflowRow = false,
   isSearchSelected = false,
   onFocusRequested,
+  projectSessionListMoreRow,
   sessionIdsBelow = [],
   sessionId,
   showGroupDropTargetChrome = true,
@@ -356,7 +361,32 @@ export function SortableSessionCard({
     isContextMenuOpen: Boolean(contextMenuPosition),
     sessionIdsBelow,
   });
-  const session = useSidebarStore((state) => state.sessionsById[sessionId]);
+  const storedSession = useSidebarStore((state) => state.sessionsById[sessionId]);
+  const isProjectSessionListMoreRow = projectSessionListMoreRow !== undefined;
+  const projectSessionListMoreLabel = isProjectSessionListMoreRow
+    ? `Show ${projectSessionListMoreRow.count} more`
+    : undefined;
+  const session: SidebarSessionItem | undefined =
+    storedSession ??
+    (isProjectSessionListMoreRow
+      ? {
+          activity: "idle",
+          alias: projectSessionListMoreLabel ?? "Show more",
+          column: 0,
+          displayTitle: projectSessionListMoreLabel ?? "Show more",
+          isFocused: false,
+          isLive: false,
+          isRunning: false,
+          isVisible: false,
+          lifecycleState: "done",
+          nativePaneState: "unmounted",
+          providerSessionState: "missing",
+          row: 0,
+          sessionId,
+          sessionKind: "terminal",
+          shortcutLabel: "",
+        }
+      : undefined);
   const sleepableSessionIdsBelow = useSidebarStore(
     useShallow((state) =>
       effectiveSessionIdsBelow.filter((candidateSessionId) =>
@@ -367,6 +397,9 @@ export function SortableSessionCard({
   const canFocusMode = useSidebarStore((state) => state.groupsById[groupId]?.canFocusMode === true);
   const shouldKeepLastProjectSessionVisibleOnClose = useSidebarStore(
     useShallow((state) => {
+      if (isProjectSessionListMoreRow) {
+        return false;
+      }
       const group = state.groupsById[groupId];
       const groupSessionIds = state.sessionIdsByGroup[groupId] ?? [];
       return (
@@ -451,28 +484,41 @@ export function SortableSessionCard({
   const lastAgentIconRenderDebugKeyRef = useRef<string | undefined>(undefined);
   const isBrowserSession = session?.sessionKind === "browser" || session?.kind === "browser";
   const isT3Session = session?.sessionKind === "t3";
-  const canTagSession = !isBrowserSession;
-  const canForkSession = session ? !isBrowserSession && supportsFork(session) : false;
-  const canDelayedSend = session ? !isBrowserSession && !isT3Session : false;
+  const canTagSession = !isProjectSessionListMoreRow && !isBrowserSession;
+  const canForkSession = session
+    ? !isProjectSessionListMoreRow && !isBrowserSession && supportsFork(session)
+    : false;
+  const canDelayedSend = session
+    ? !isProjectSessionListMoreRow && !isBrowserSession && !isT3Session
+    : false;
   const canCopyResumeCommand = session
-    ? showSessionCommandCopyActions && !isBrowserSession && supportsResumeCommandCopy(session)
+    ? showSessionCommandCopyActions &&
+      !isProjectSessionListMoreRow &&
+      !isBrowserSession &&
+      supportsResumeCommandCopy(session)
     : false;
   const canCopyAttachCommand =
     showSessionCommandCopyActions &&
+    !isProjectSessionListMoreRow &&
     !isBrowserSession &&
     Boolean(session?.sessionPersistenceProvider && session.sessionPersistenceName);
-  const canCopySessionDetails = showSessionDetailsCopyAction;
-  const canFullReloadSession = session ? !isBrowserSession && supportsFullReload(session) : false;
-  const canPopOutPane = session ? supportsPopOutPane(session, isBrowserSession, isT3Session) : false;
+  const canCopySessionDetails = !isProjectSessionListMoreRow && showSessionDetailsCopyAction;
+  const canFullReloadSession = session
+    ? !isProjectSessionListMoreRow && !isBrowserSession && supportsFullReload(session)
+    : false;
+  const canPopOutPane = session
+    ? !isProjectSessionListMoreRow && supportsPopOutPane(session, isBrowserSession, isT3Session)
+    : false;
   const canGenerateSessionTitle = session
-    ? !isBrowserSession &&
+    ? !isProjectSessionListMoreRow &&
+      !isBrowserSession &&
       supportsGeneratedName(session) &&
       Boolean(session.firstUserMessage?.trim())
     : false;
-  const canSleepSession = session ? !isBrowserSession : false;
+  const canSleepSession = session ? !isProjectSessionListMoreRow && !isBrowserSession : false;
   const postSessionDragDebugLog = useEffectEvent(
     (event: string, details: Record<string, unknown>) => {
-      if (!showDebugSessionNumbers) {
+      if (!showDebugSessionNumbers || isProjectSessionListMoreRow) {
         return;
       }
 
@@ -491,8 +537,9 @@ export function SortableSessionCard({
   );
   const sortable = useSortable({
     accept: "session",
-    data: createSessionDragData(groupId, session.sessionId),
+    data: createSessionDragData(groupId, session?.sessionId ?? sessionId),
     disabled:
+      isProjectSessionListMoreRow ||
       isProjectSessionListOverflowRow ||
       dragDisabled ||
       isBrowserSession ||
@@ -506,7 +553,11 @@ export function SortableSessionCard({
     type: "session",
   });
   const isSessionReorderDisabled =
-    isProjectSessionListOverflowRow || !session || dropDisabled || contextMenuPosition !== undefined;
+    isProjectSessionListMoreRow ||
+    isProjectSessionListOverflowRow ||
+    !session ||
+    dropDisabled ||
+    contextMenuPosition !== undefined;
   const beforeDropTarget = useDroppable({
     accept: "session",
     data: createSessionDropTargetData({
@@ -567,15 +618,18 @@ export function SortableSessionCard({
   const lifecycleState = getSidebarSessionLifecycleState(session);
   const showTerminalSessionIcon = shouldShowTerminalSessionIcon(session);
   const hasSessionCardIcon =
-    session.isPinned === true ||
-    Boolean(currentSessionTag) ||
-    Boolean(session.delayedSendRemainingLabel) ||
-    Boolean(session.agentIcon) ||
-    showTerminalSessionIcon ||
-    session.isReloading === true;
-  const sessionAnchorStyle = {
-    anchorName: getSessionStatusAnchorName(sessionId),
-  } as CSSProperties;
+    !isProjectSessionListMoreRow &&
+    (session.isPinned === true ||
+      Boolean(currentSessionTag) ||
+      Boolean(session.delayedSendRemainingLabel) ||
+      Boolean(session.agentIcon) ||
+      showTerminalSessionIcon ||
+      session.isReloading === true);
+  const sessionAnchorStyle = isProjectSessionListMoreRow
+    ? undefined
+    : ({
+        anchorName: getSessionStatusAnchorName(sessionId),
+      } as CSSProperties);
   const setSessionFrameElement = useCallback(
     (element: HTMLDivElement | null) => {
       sessionFrameRef.current = element;
@@ -1666,6 +1720,16 @@ export function SortableSessionCard({
       return;
     }
 
+    if (isProjectSessionListMoreRow) {
+      if (event.key !== "Enter" && event.key !== " ") {
+        return;
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      projectSessionListMoreRow.onReveal();
+      return;
+    }
+
     if (event.key === "ContextMenu" || (event.shiftKey && event.key === "F10")) {
       event.preventDefault();
       event.stopPropagation();
@@ -1705,6 +1769,8 @@ export function SortableSessionCard({
             isBrowserSession && Boolean(session.faviconDataUrl) && hideBrowserFaviconUntilHover,
           )}
           data-lifecycle-state={lifecycleState}
+          data-project-session-list-more-row={String(isProjectSessionListMoreRow)}
+          data-project-session-list-more-toggle={isProjectSessionListMoreRow ? "true" : undefined}
           data-project-session-list-overflow={String(isProjectSessionListOverflowRow)}
           data-pinned={String(session.isPinned === true)}
           data-tagged={String(Boolean(currentSessionTag))}
@@ -1743,6 +1809,10 @@ export function SortableSessionCard({
             data-focused={String(session.isFocused)}
             data-group-connector={String(showGroupConnector)}
             data-lifecycle-state={lifecycleState}
+            data-project-session-list-more-row={String(isProjectSessionListMoreRow)}
+            data-project-session-list-more-toggle={
+              isProjectSessionListMoreRow ? "true" : undefined
+            }
             data-project-session-list-overflow={String(isProjectSessionListOverflowRow)}
             data-agent-icon-hover-only={String(hideSessionAgentIconUntilHover)}
             data-browser-favicon-hover-only={String(
@@ -1788,7 +1858,7 @@ export function SortableSessionCard({
               });
             }}
             onAuxClick={(event) => {
-              if (isProjectSessionListOverflowRow) {
+              if (isProjectSessionListOverflowRow || isProjectSessionListMoreRow) {
                 event.preventDefault();
                 event.stopPropagation();
                 return;
@@ -1809,6 +1879,12 @@ export function SortableSessionCard({
                 return;
               }
 
+              if (isProjectSessionListMoreRow) {
+                event.preventDefault();
+                projectSessionListMoreRow.onReveal();
+                return;
+              }
+
               if (event.metaKey) {
                 event.preventDefault();
                 requestClose("meta-click");
@@ -1820,7 +1896,7 @@ export function SortableSessionCard({
             onDoubleClick={(event) => {
               event.preventDefault();
               event.stopPropagation();
-              if (isProjectSessionListOverflowRow) {
+              if (isProjectSessionListOverflowRow || isProjectSessionListMoreRow) {
                 return;
               }
               requestFocusMode();
@@ -1828,7 +1904,7 @@ export function SortableSessionCard({
             onContextMenu={(event: ReactMouseEvent<HTMLElement>) => {
               event.preventDefault();
               event.stopPropagation();
-              if (isProjectSessionListOverflowRow) {
+              if (isProjectSessionListOverflowRow || isProjectSessionListMoreRow) {
                 return;
               }
               openContextMenu(event.clientY);
@@ -1839,20 +1915,22 @@ export function SortableSessionCard({
             style={sessionAnchorStyle}
             tabIndex={isProjectSessionListOverflowRow ? -1 : 0}
           >
-            <SessionFloatingAgentIcon
-              agentIcon={session.agentIcon}
-              delayedSendDeadlineAt={session.delayedSendDeadlineAt}
-              delayedSendRemainingLabel={session.delayedSendRemainingLabel}
-              faviconDataUrl={session.faviconDataUrl}
-              isFavorite={session.isFavorite}
-              isPinned={session.isPinned}
-              isReloading={session.isReloading}
-              onDelayedSendClick={requestDelayedSend}
-              sessionTag={session.sessionTag}
-              sessionPersistenceName={session.sessionPersistenceName}
-              sessionPersistenceProvider={session.sessionPersistenceProvider}
-              showTerminalIcon={showTerminalSessionIcon}
-            />
+            {isProjectSessionListMoreRow ? null : (
+              <SessionFloatingAgentIcon
+                agentIcon={session.agentIcon}
+                delayedSendDeadlineAt={session.delayedSendDeadlineAt}
+                delayedSendRemainingLabel={session.delayedSendRemainingLabel}
+                faviconDataUrl={session.faviconDataUrl}
+                isFavorite={session.isFavorite}
+                isPinned={session.isPinned}
+                isReloading={session.isReloading}
+                onDelayedSendClick={requestDelayedSend}
+                sessionTag={session.sessionTag}
+                sessionPersistenceName={session.sessionPersistenceName}
+                sessionPersistenceProvider={session.sessionPersistenceProvider}
+                showTerminalIcon={showTerminalSessionIcon}
+              />
+            )}
             {/**
              * CDXC:SidebarSessions 2026-05-09-16:55
              * Project and chat session cards route the close-on-hover setting
@@ -1865,14 +1943,17 @@ export function SortableSessionCard({
               onClose={() => requestClose("programmatic")}
               session={session}
               showDebugSessionNumbers={showDebugSessionNumbers}
-              showCloseButton={showCloseButton}
-              showLastActiveTime={showLastActiveTime}
+              showCloseButton={!isProjectSessionListMoreRow && showCloseButton}
+              showLastActiveTime={!isProjectSessionListMoreRow && showLastActiveTime}
+              hideHeaderAgentIcon={isProjectSessionListMoreRow}
             />
           </article>
-          <div aria-hidden className="session-status-dot session-status-dot-inline" />
+          {isProjectSessionListMoreRow ? null : (
+            <div aria-hidden className="session-status-dot session-status-dot-inline" />
+          )}
         </div>
       </OverflowTooltipText>
-      {contextMenuPosition ? (
+      {contextMenuPosition && !isProjectSessionListMoreRow ? (
         <SidebarContextMenuPortal
           menuClassName="session-context-menu sidebar-session-context-menu"
           menuRef={menuRef}
@@ -1923,7 +2004,7 @@ export function SortableSessionCard({
           ))}
         </SidebarContextMenuPortal>
       ) : null}
-      {contextMenuPosition && tagSubmenuPosition
+      {contextMenuPosition && tagSubmenuPosition && !isProjectSessionListMoreRow
         ? createPortal(
             <div
               aria-label="Tag as"

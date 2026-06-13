@@ -44,6 +44,7 @@ import {
   useRef,
   useState,
   type CSSProperties,
+  type MouseEvent as ReactMouseEvent,
   type ReactElement,
   type ReactNode,
 } from "react";
@@ -255,6 +256,7 @@ type TitlebarProjectState = {
   workspaceOpenTargets: TitlebarOpenTargetsSettings;
   isFocusModeActive?: boolean;
   updateAvailable: boolean;
+  updateDownloading: boolean;
 };
 
 type ResourceProcess = {
@@ -326,6 +328,7 @@ type NativeTitlebarCommand =
       type: "showTitlebarDropdownPanel";
     }
   | { type: "closeTitlebarDropdownPanel" }
+  | { type: "titlebarBlankMouseDown" }
   | { kind: TitlebarDropdownPanelKind; type: "titlebarDropdownPanelReady" }
   | {
       height: number;
@@ -365,6 +368,7 @@ type ResolvedOpenTarget =
 declare global {
   interface Window {
     __ghostex_PENDING_TITLEBAR_UPDATE_AVAILABLE__?: boolean;
+    __ghostex_PENDING_TITLEBAR_UPDATE_DOWNLOADING__?: boolean;
     __ghostex_PENDING_TITLEBAR_WINDOW_FOCUSED__?: boolean;
     __ghostex_TITLEBAR_PANEL_KIND__?: string;
     __ghostex_PENDING_TITLEBAR_PROJECT_STATE__?: Partial<TitlebarProjectState>;
@@ -1799,6 +1803,35 @@ function App() {
     }
   }, [requestRuntimeStatusForTips, showTitlebarDropdownPanel]);
 
+  const requestTitlebarBlankMouseDown = useCallback(
+    (event: ReactMouseEvent<HTMLDivElement>) => {
+      if (isDropdownPanel || event.button !== 0 || event.defaultPrevented) {
+        return;
+      }
+      const target = event.target;
+      if (!(target instanceof Element)) {
+        return;
+      }
+      /*
+       * CDXC:ReactTitlebar 2026-06-13-14:08:
+       * Blank titlebar drag should use normal DOM event ownership instead of
+       * native coordinate hit regions. Interactive controls stop here by their
+       * element semantics; passive titlebar text and empty background ask the
+       * native WKWebView to drag the current mouseDown event.
+       */
+      if (
+        target.closest(
+          'button,a,input,textarea,select,[role="button"],[contenteditable="true"],[data-titlebar-dropdown-anchor]',
+        )
+      ) {
+        return;
+      }
+      event.preventDefault();
+      postNative({ type: "titlebarBlankMouseDown" });
+    },
+    [isDropdownPanel],
+  );
+
   useEffect(() => {
     const suppressTitlebarWebviewContextMenu = (event: MouseEvent) => {
       /**
@@ -1960,6 +1993,7 @@ function App() {
     projectState.projectName,
     projectState.sidebarCollapsed,
     projectState.updateAvailable,
+    projectState.updateDownloading,
     publishSettledTitlebarStripState,
     isDropdownPanel,
   ]);
@@ -2079,6 +2113,17 @@ function App() {
        */
       window.__ghostex_TITLEBAR__.setActiveProjectState({
         updateAvailable: window.__ghostex_PENDING_TITLEBAR_UPDATE_AVAILABLE__,
+      });
+    }
+    if (typeof window.__ghostex_PENDING_TITLEBAR_UPDATE_DOWNLOADING__ === "boolean") {
+      /**
+       * CDXC:AutoUpdate 2026-06-13-17:52:
+       * Native may start the Sparkle download before this React bridge exists.
+       * Apply the pending boolean immediately so the titlebar button begins
+       * fading as soon as the document can render the current updater state.
+       */
+      window.__ghostex_TITLEBAR__.setActiveProjectState({
+        updateDownloading: window.__ghostex_PENDING_TITLEBAR_UPDATE_DOWNLOADING__,
       });
     }
     if (typeof window.__ghostex_PENDING_TITLEBAR_WINDOW_FOCUSED__ === "boolean") {
@@ -2926,14 +2971,18 @@ function App() {
   return (
     <TooltipProvider delayDuration={300}>
       <div className="dark" ref={rootRef} style={styles.shell}>
-        <div style={styles.titlebar}>
+        <div onMouseDown={requestTitlebarBlankMouseDown} style={styles.titlebar}>
           <div style={styles.projectSlot}>
             {titlebarSidebarCollapseButton}
-            {projectState.updateAvailable ? (
-              <TitlebarAppTooltip content="Download update" side="right">
+            {projectState.updateAvailable || projectState.updateDownloading ? (
+              <TitlebarAppTooltip
+                content={projectState.updateDownloading ? "Downloading update" : "Download update"}
+                side="right"
+              >
                 <Button
-                  aria-label="Download update"
+                  aria-label={projectState.updateDownloading ? "Downloading update" : "Download update"}
                   className="titlebar-session-button titlebar-update-button"
+                  data-downloading={projectState.updateDownloading ? "true" : undefined}
                   onClick={showUpdateDialog}
                   type="button"
                   variant="ghost"
@@ -2944,6 +2993,12 @@ function App() {
                    * not a launch-time modal. Keep this button dim beside the
                    * project identity; clicking it is the user's explicit
                    * handoff into Sparkle's standard update dialog.
+                   *
+                   * CDXC:AutoUpdate 2026-06-13-17:52:
+                   * Once Sparkle is actually downloading the accepted update,
+                   * keep this same consent affordance visible and fade it in
+                   * and out so download activity is indicated without showing
+                   * Sparkle's separate progress window.
                    */}
                   <IconDownload aria-hidden="true" size={15} stroke={1.8} />
                 </Button>
@@ -2986,16 +3041,25 @@ function App() {
           </div>
           <div style={styles.rightSlot}>
             {projectState.isFocusModeActive ? (
-              <Button
+              <button
                 aria-label="Exit focus mode"
-                className="titlebar-exit-focus-button"
+                className="titlebar-mode-tab titlebar-exit-focus-button"
+                data-active="true"
                 onClick={() => postNative({ type: "exitFocusModeFromTitlebar" })}
-                size="sm"
+                style={{ transformStyle: "preserve-3d" }}
                 type="button"
-                variant="outline"
               >
-                Exit focus
-              </Button>
+                {/*
+                 * CDXC:SessionFocusMode 2026-06-13-18:39:
+                 * The focus-mode exit affordance should match the active Agents
+                 * tab exactly, including the active segment background,
+                 * typography, separators, and square titlebar geometry.
+                 */}
+                <span aria-hidden="true" className="titlebar-mode-tab-active" />
+                <span className="titlebar-mode-tab-content">
+                  <span className="titlebar-mode-label">Exit focus</span>
+                </span>
+              </button>
             ) : null}
             {/*
              * CDXC:ReactTitlebar 2026-05-30-03:11:
@@ -3593,6 +3657,7 @@ function mergeTitlebarProjectState(
     workspaceOpenTargets: state.workspaceOpenTargets ?? current.workspaceOpenTargets,
     isFocusModeActive: state.isFocusModeActive ?? current.isFocusModeActive,
     updateAvailable: state.updateAvailable ?? current.updateAvailable,
+    updateDownloading: state.updateDownloading ?? current.updateDownloading,
   };
 }
 
@@ -3644,6 +3709,7 @@ function createInitialProjectState(bootstrap: Record<string, unknown>): Titlebar
       hiddenTargetIds: settings.workspaceOpenTargetHiddenIds,
     },
     updateAvailable: readInitialTitlebarUpdateAvailable(bootstrap),
+    updateDownloading: readInitialTitlebarUpdateDownloading(bootstrap),
   };
   /*
    * CDXC:ReactTitlebar 2026-06-11-18:06:
@@ -3663,6 +3729,16 @@ function readInitialTitlebarUpdateAvailable(bootstrap: Record<string, unknown>):
    * boolean so detected updates show the titlebar button on first render.
    */
   return bootstrap.updateAvailable === true || window.__ghostex_PENDING_TITLEBAR_UPDATE_AVAILABLE__ === true;
+}
+
+function readInitialTitlebarUpdateDownloading(bootstrap: Record<string, unknown>): boolean {
+  /**
+   * CDXC:AutoUpdate 2026-06-13-17:52:
+   * Download animation is native-owned Sparkle state. Accept both the injected
+   * bootstrap boolean and the pending bridge boolean so titlebar reloads do not
+   * lose the fade while an update is already downloading.
+   */
+  return bootstrap.updateDownloading === true || window.__ghostex_PENDING_TITLEBAR_UPDATE_DOWNLOADING__ === true;
 }
 
 function createTitlebarKeepAwakeSettings(
@@ -5437,6 +5513,25 @@ styleElement.textContent = `
   .titlebar-update-button:focus-visible {
     color: rgba(255,255,255,0.84);
   }
+  .titlebar-update-button[data-downloading="true"] {
+    /*
+     * CDXC:AutoUpdate 2026-06-13-17:52:
+     * Downloading updates should make the existing titlebar download button
+     * fade in and out. Animate opacity only so the compact titlebar layout and
+     * hit target stay stable while Sparkle performs the actual download.
+     */
+    animation: titlebar-update-download-fade 1.15s ease-in-out infinite;
+    color: rgba(255,255,255,0.92);
+  }
+  @keyframes titlebar-update-download-fade {
+    0%,
+    100% {
+      opacity: 0.38;
+    }
+    50% {
+      opacity: 1;
+    }
+  }
   .titlebar-project-title {
     /**
      * CDXC:ReactTitlebar 2026-06-04-18:55:
@@ -5684,36 +5779,13 @@ styleElement.textContent = `
     margin-left: 1px;
   }
   .titlebar-exit-focus-button {
-    /**
-     * CDXC:SessionFocusMode 2026-05-26-22:22:
-     * The titlebar focus exit control should visually belong with Agents/Code/Git/Project.
-     * Match the mode-tab height, font size, weight, and radius so focus mode does not introduce a separate button scale in the native titlebar.
+    /*
+     * CDXC:SessionFocusMode 2026-06-13-18:39:
+     * Exit focus reuses the active mode-tab DOM and styling so it matches the
+     * Agents button from the titlebar screenshot instead of carrying a separate
+     * outlined button skin.
      */
-    appearance: none;
-    -webkit-appearance: none;
-    background: rgba(255,255,255,0.2) !important;
-    border: 0 !important;
-    border-left: 1px solid var(--titlebar-button-border-color) !important;
-    border-radius: 0 !important;
-    box-shadow: none !important;
-    color: rgba(255,255,255,0.98) !important;
-    cursor: default;
-    display: inline-flex;
-    font: 720 12px/${TITLEBAR_CONTROL_HEIGHT}px var(--titlebar-font-family) !important;
-    height: ${TITLEBAR_CONTROL_HEIGHT}px !important;
-    max-height: ${TITLEBAR_CONTROL_HEIGHT}px;
-    min-height: ${TITLEBAR_CONTROL_HEIGHT}px;
-    letter-spacing: 0;
-    margin-top: 0;
-    min-width: 0;
-    padding: 0 14px !important;
-    white-space: nowrap;
-  }
-  .titlebar-exit-focus-button:hover,
-  .titlebar-exit-focus-button:focus-visible {
-    background: rgba(255,255,255,0.24) !important;
-    color: rgba(255,255,255,1) !important;
-    outline: none;
+    --titlebar-mode-tab-radius: 0;
   }
   .titlebar-resource-button {
     padding: 0 12px;

@@ -17,6 +17,10 @@ const hostProtocolSource = readFileSync(
   new URL("../macos/ghostexHost/Sources/ghostexHost/HostProtocol.swift", import.meta.url),
   "utf8",
 );
+const nativeBrowserProfilesSource = readFileSync(
+  new URL("../macos/ghostexHost/Sources/ghostexHost/NativeBrowserProfiles.swift", import.meta.url),
+  "utf8",
+);
 const terminalWorkspaceSource = readFileSync(
   new URL("../macos/ghostexHost/Sources/ghostexHost/TerminalWorkspaceView.swift", import.meta.url),
   "utf8",
@@ -160,5 +164,25 @@ describe("chromium browser source", () => {
     );
     expect(hostEventHandlerSource).toContain('if (hostEvent.type === "browserOpenInNewTabRequested")');
     expect(hostEventHandlerSource).toContain("handleBrowserOpenInNewTabRequested(hostEvent);");
+  });
+
+  test("labels CEF browser profile beta actions without adding an action", () => {
+    /*
+     * CDXC:BrowserProfiles 2026-06-13-22:09:
+     * The CEF browser address-bar profile dropdown should show a disabled Beta
+     * Features section label immediately above the beta profile commands.
+     */
+    const profilePickerSource = sourceBetween(
+      nativeBrowserProfilesSource,
+      'let menu = NSMenu(title: "Profiles")',
+      "let location = NSEvent.mouseLocation",
+    );
+    const betaIndex = profilePickerSource.indexOf('NSMenuItem(title: "Beta Features:", action: nil, keyEquivalent: "")');
+    const newProfileIndex = profilePickerSource.indexOf('title: "New Profile..."');
+    const importIndex = profilePickerSource.indexOf('title: "Import Browser Data..."');
+    expect(betaIndex).toBeGreaterThanOrEqual(0);
+    expect(newProfileIndex).toBeGreaterThan(betaIndex);
+    expect(importIndex).toBeGreaterThan(newProfileIndex);
+    expect(profilePickerSource).toContain("betaItem.isEnabled = false");
   });
 });

@@ -128,6 +128,11 @@ export function WorktreeCreateModal({
    * Open Existing is a project-open flow, not an agent-start flow. In that mode
    * the modal only shows the worktree picker and primary Open Worktree action;
    * hide agent, prompt, image attachment, and prompt-helper controls.
+   *
+   * CDXC:WorktreeModal 2026-06-13-18:39:
+   * Add Worktree should close from the same top-right shadcn X used by Rename
+   * Session. Do not keep a footer Cancel row; the bottom of the modal should
+   * be reserved for the primary worktree action and create-mode image picker.
    */
   const hasInitializedOpenDraftRef = useRef(false);
   useEffect(() => {
@@ -337,7 +342,7 @@ export function WorktreeCreateModal({
     >
       <DialogContent
         className="command-config-modal-shadcn worktree-create-modal-shadcn font-sans"
-        showCloseButton={false}
+        showCloseButton
       >
         <form className="session-rename-form worktree-create-form" onSubmit={submit}>
           <DialogHeader>
@@ -450,9 +455,6 @@ export function WorktreeCreateModal({
             ) : null}
           </FieldGroup>
           <DialogFooter>
-            <Button onClick={onCancel} type="button" variant="outline">
-              Cancel
-            </Button>
             {mode === "create" ? (
               <Button
                 onClick={() =>

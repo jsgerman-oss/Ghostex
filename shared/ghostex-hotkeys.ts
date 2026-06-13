@@ -6,6 +6,7 @@ export type ghostexHotkeyActionId =
   | "forkSession"
   | "mergeAllTabs"
   | "openCommandPalette"
+  | "openSessionSearchPalette"
   | "openBrowserPane"
   | "openSettings"
   | "moveSidebar"
@@ -53,6 +54,7 @@ export type ghostexHotkeyAction =
   | { id: ghostexHotkeyActionId; kind: "focusedPaneAction"; focusedPaneAction: ghostexFocusedPaneAction }
   | { id: ghostexHotkeyActionId; kind: "moveSidebar" }
   | { id: ghostexHotkeyActionId; kind: "openCommandPalette" }
+  | { id: ghostexHotkeyActionId; kind: "openSessionSearchPalette" }
   | { id: ghostexHotkeyActionId; kind: "openCommandsPanel" }
   | { id: ghostexHotkeyActionId; kind: "openSettings" }
   | { id: ghostexHotkeyActionId; kind: "renameActiveSession" }
@@ -103,12 +105,30 @@ export const GHOSTEX_HOTKEY_DEFINITIONS: readonly ghostexHotkeyDefinition[] = [
      * Cmd+Shift+P is the default command-palette shortcut for the macOS app. It
      * must live in the shared hotkey model so terminal-focused AppKit dispatch
      * and sidebar DOM dispatch both open the same shadcn command surface.
+     *
+     * CDXC:CommandPalette 2026-06-13-22:18:
+     * Cmd+Shift+P opens command-finding mode by pre-filling the shared palette
+     * input with `>` and placing the caret immediately after it. Commands are
+     * only searched while that leading prefix remains present.
      */
     defaultKey: "cmd+shift+p",
-    description: "Open the Ghostex command palette.",
+    description: "Open the Ghostex command palette in command mode.",
     id: "openCommandPalette",
     retiredDefaultKeys: ["cmd+k"],
-    title: "Open Command Palette",
+    title: "Open Command Palette: Commands",
+  },
+  {
+    action: { id: "openSessionSearchPalette", kind: "openSessionSearchPalette" },
+    /**
+     * CDXC:CommandPalette 2026-06-13-22:18:
+     * Cmd+P opens the same command-palette window in session-search mode with
+     * no leading `>` prefix. Users can rebind this separately from command mode
+     * because session switching and command fuzzy-finding are distinct habits.
+     */
+    defaultKey: "cmd+p",
+    description: "Open the Ghostex command palette in session search mode.",
+    id: "openSessionSearchPalette",
+    title: "Open Command Palette: Sessions",
   },
   {
     action: { id: "openCommandsPanel", kind: "openCommandsPanel" },
@@ -262,11 +282,14 @@ export const GHOSTEX_HOTKEY_DEFINITIONS: readonly ghostexHotkeyDefinition[] = [
     action: { id: "focusPreviousSession", kind: "focusSessionSlot", slotNumber: -1 },
     alternateDefaultKeys: ["cmd+shift+["],
     /**
-     * CDXC:Hotkeys 2026-06-07-14:05:
-     * Cmd+Shift+[ and Cmd+Shift+] must remain supported alongside Cmd+Shift+Tab and Cmd+Tab. Both shortcut families traverse rendered sidebar order across expanded groups and skip sleeping sessions.
+     * CDXC:Hotkeys 2026-06-13-19:36:
+     * Cmd+Shift+[ and Cmd+Shift+] remain supported alongside Cmd+Shift+Tab and Cmd+Tab, but both shortcut families are focused split-pane tab switchers.
+     *
+     * CDXC:Hotkeys 2026-06-13-20:08:
+     * Previous/next tab traversal must stay inside the active pane's tab group and include sleeping placeholder tabs, then native dispatch applies the same select/wake/attach logic as clicking that tab.
      */
     defaultKey: "cmd+shift+tab",
-    description: "Focus the previous awake visible sidebar tab.",
+    description: "Select the previous tab in the focused split pane.",
     id: "focusPreviousSession",
     retiredDefaultKeys: ["cmd+["],
     title: "Previous Tab",
@@ -275,7 +298,7 @@ export const GHOSTEX_HOTKEY_DEFINITIONS: readonly ghostexHotkeyDefinition[] = [
     action: { id: "focusNextSession", kind: "focusSessionSlot", slotNumber: 0 },
     alternateDefaultKeys: ["cmd+shift+]"],
     defaultKey: "cmd+tab",
-    description: "Focus the next awake visible sidebar tab.",
+    description: "Select the next tab in the focused split pane.",
     id: "focusNextSession",
     retiredDefaultKeys: ["cmd+]"],
     title: "Next Tab",

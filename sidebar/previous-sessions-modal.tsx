@@ -348,12 +348,18 @@ export function PreviousSessionsModal({
           {/*
            * CDXC:PreviousSessions 2026-06-13-15:59:
            * The modal X button should use the same shadcn Button chrome as Rename Session. Keep the shared ghost/icon-sm/bg-secondary styling here instead of the legacy confirm-modal close-button treatment.
+           *
+           * CDXC:PreviousSessions 2026-06-13-22:57:
+           * Fine-tune the Previous Sessions close X 6px left and 5px up from
+           * the original 16px corner placement without changing its shadcn
+           * button size or interaction model.
            */}
           <Button
             aria-label="Close previous sessions"
-            className="previous-sessions-close-button absolute top-4 right-4 bg-secondary"
+            className="previous-sessions-close-button absolute bg-secondary"
             onClick={onClose}
             size="icon-sm"
+            style={{ right: 22, top: 11 }}
             type="button"
             variant="ghost"
           >

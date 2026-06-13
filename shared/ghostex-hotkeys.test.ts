@@ -19,8 +19,13 @@ describe("normalizeghostexHotkeySettings", () => {
      * Cmd+Shift+P should remain the shared default for the command palette so
      * users see the same binding in Settings, the palette, and terminal-focused
      * native dispatch.
+     *
+     * CDXC:CommandPalette 2026-06-13-22:18:
+     * Cmd+P is the separate default for opening the same palette in session
+     * search mode, while Cmd+Shift+P opens with the command-mode `>` prefix.
      */
     expect(DEFAULT_ghostex_HOTKEYS.openCommandPalette).toBe("cmd+shift+p");
+    expect(DEFAULT_ghostex_HOTKEYS.openSessionSearchPalette).toBe("cmd+p");
     /**
      * CDXC:Hotkeys 2026-05-14-08:09:
      * The Commands panel must remain bound to bare F12 so terminal-focused AppKit dispatch and sidebar-focused DOM dispatch agree on the same user shortcut.
@@ -185,6 +190,7 @@ describe("normalizeghostexHotkeySettings", () => {
       moveSidebar: "",
       openBrowserPane: "cmd+n",
       openCommandPalette: "cmd+shift+p",
+      openSessionSearchPalette: "cmd+p",
       toggleSidebarCollapsed: "cmd+b",
     });
   });

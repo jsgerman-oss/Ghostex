@@ -108,6 +108,7 @@ import {
   type SessionGridDirection,
   type SessionGroupRecord,
   type SessionPaneLayoutNode,
+  type SessionPaneSplitDirection,
   type BrowserSessionRecord,
   type CommandsPanelMode,
   type CommandsPanelState,
@@ -151,6 +152,7 @@ import {
   type SidebarProjectDiffStats,
 } from "../../shared/project-diff-stats";
 import {
+  getAdjacentPaneTabSessionIdInSimpleWorkspace,
   createGroupFromSessionInSimpleWorkspace,
   createGroupInSimpleWorkspace,
   createSessionInSimpleWorkspace,
@@ -161,6 +163,8 @@ import {
   focusSessionExclusivelyInSimpleWorkspace,
   focusSessionInSimpleWorkspace,
   focusVisibleDirectionInSimpleWorkspace,
+  getGroupById,
+  getGroupForSession,
   hasMultiplePaneOwners,
   mergeAllTabsInPaneLayoutInSimpleWorkspace,
   moveSessionInPaneLayoutInSimpleWorkspace,
@@ -455,6 +459,14 @@ type NativeHostCommand =
   | { preservePersistenceSession?: boolean; sessionId: string; type: "closeTerminal" }
   | { sessionId: string; type: "closeWebPane" }
   | { sessionId: string; type: "focusTerminal" }
+  | {
+      /**
+       * CDXC:ProjectEditorCompanion 2026-06-13-22:39:
+       * Sidebar clicks in Source, Browser, and Kanban retarget the companion pane through one native command. Native owns hiding the previous rendered companion surface, focusing the requested session, and rejecting delayed synthetic clicks that would hit a stale session.
+       */
+      sessionId: string;
+      type: "retargetProjectEditorCompanionSession";
+    }
   | { sessionId: string; type: "focusProjectEditorCompanionSession" }
   | { sessionId: string; type: "focusWebPane" }
   | { sessionId: string; type: "reloadWebPane" }
@@ -533,6 +545,11 @@ type NativeHostCommand =
       debuggingMode?: boolean;
       activeProjectEditorId?: string;
       focusRequestId?: number;
+      /**
+       * CDXC:PaneFocus 2026-06-13-23:13:
+       * Explicit layout focus requests must carry the exact native session target, because Cmd+Opt+Down can focus the expanded Commands panel while the workspace focusedSessionId still points at the terminal above it.
+       */
+      focusRequestSessionId?: string;
       focusedSessionId?: string;
       /**
        * CDXC:SessionFocusMode 2026-05-23-14:35:
@@ -966,7 +983,7 @@ type NativeHostEvent =
       type: "remoteGxserverResponse";
     }
   | NativeGxserverResponseEvent
-  | { actionId: ghostexHotkeyActionId; type: "nativeHotkey" }
+  | { actionId: ghostexHotkeyActionId; sourceSessionId?: string; type: "nativeHotkey" }
   | { protocolVersion: 1; type: "hostReady" };
 
 type NativeProcessResult = Extract<NativeHostEvent, { type: "processResult" }>;
@@ -1487,6 +1504,7 @@ let lastNativePaneOwnerSelectionKey: string | undefined;
 let lastNativeSetActiveTerminalSetCommandKey: string | undefined;
 let lastNativeFocusTraceLayoutFocusedSessionId: string | undefined;
 let lastNativeFocusedSidebarSessionId: string | undefined;
+let lastRenderedNativeHotkeyLayout: RenderedNativeHotkeyLayout | undefined;
 let lastAppShotTargetSessionId: string | undefined;
 let lastAppShotTargetAt = 0;
 let didLogStartupPaneLayoutFirstSync = false;
@@ -4889,7 +4907,12 @@ function shouldPersistNativeSidebarDiagnostic(event: string): boolean {
   return (
     normalizedEvent.startsWith("nativefocustrace.") ||
     normalizedEvent.startsWith("nativehotkeys.commandarrow") ||
+    normalizedEvent.startsWith("nativehotkeys.actionstart") ||
+    normalizedEvent.startsWith("nativehotkeys.focusdirection") ||
+    normalizedEvent.startsWith("nativehotkeys.hosteventreceived") ||
     normalizedEvent.startsWith("nativehotkeys.navigationrepro") ||
+    normalizedEvent.startsWith("nativehotkeys.projecteditorcompanion") ||
+    normalizedEvent.startsWith("nativehotkeys.renderedfocusdirection") ||
     normalizedEvent.startsWith("nativepanelayouttrace.") ||
     normalizedEvent.includes("fail") ||
     normalizedEvent.includes("error") ||
@@ -4956,6 +4979,7 @@ function isTerminalFocusDebugCommand(command: NativeHostCommand): boolean {
     command.type === "createWebPane" ||
     command.type === "focusTerminal" ||
     command.type === "focusProjectEditorCompanionSession" ||
+    command.type === "retargetProjectEditorCompanionSession" ||
     command.type === "focusWebPane" ||
     command.type === "sendTerminalEnter" ||
     command.type === "setActiveTerminalSet" ||
@@ -4971,6 +4995,8 @@ function summarizeNativeFocusCommand(command: NativeHostCommand): Record<string,
     backgroundColor: "backgroundColor" in command ? command.backgroundColor : undefined,
     diagnosticSource: "diagnosticSource" in command ? command.diagnosticSource : undefined,
     focusRequestId: "focusRequestId" in command ? command.focusRequestId : undefined,
+    focusRequestSessionId:
+      "focusRequestSessionId" in command ? command.focusRequestSessionId : undefined,
     focusedSessionId: "focusedSessionId" in command ? command.focusedSessionId : undefined,
     hasInitialInput: "initialInput" in command ? Boolean(command.initialInput) : undefined,
     layoutLeafSessionIds:
@@ -5112,7 +5138,7 @@ function postNativeFocusProjectEditorCompanionForCurrentIntent(
   }
   postNative({
     sessionId: nativeSessionId,
-    type: "focusProjectEditorCompanionSession",
+    type: "retargetProjectEditorCompanionSession",
   });
 }
 
@@ -5231,6 +5257,27 @@ type PaneLayoutShapeSummary = {
   splitCount: number;
   tabGroupCount: number;
   tabbedSessionCount: number;
+};
+
+type NativeHotkeyPaneFocusRect = {
+  bottom: number;
+  centerX: number;
+  centerY: number;
+  left: number;
+  right: number;
+  sessionId: string;
+  sessionIds: string[];
+  top: number;
+};
+
+type RenderedNativeHotkeyLayout = {
+  commandsPanelHeightRatio: number;
+  commandsPanelIsVisible: boolean;
+  commandsPanelLayout?: NativeTerminalLayout;
+  commandsPanelMode: CommandsPanelMode;
+  groupId: string;
+  projectId: string;
+  workspaceLayout?: NativeTerminalLayout;
 };
 
 function summarizePaneLayoutShape(
@@ -14942,18 +14989,27 @@ function createCommandTerminal(
     commandTitle?: string;
     focusAfterCreate?: boolean;
     shellCommand?: string;
+    targetSplitDirection?: SessionPaneSplitDirection;
+    targetSplitSessionId?: string;
     targetTabGroupSessionId?: string;
   } = {},
 ): TerminalSessionRecord | undefined {
   let project = activeProject();
+  const targetPlacementSessionId = options.targetSplitSessionId ?? options.targetTabGroupSessionId;
   if (
-    options.targetTabGroupSessionId &&
+    (options.targetSplitDirection && !options.targetSplitSessionId) ||
+    (options.targetSplitSessionId && !options.targetSplitDirection)
+  ) {
+    return undefined;
+  }
+  if (
+    targetPlacementSessionId &&
     (!project.commandsPanel.sessions.some(
-      (session) => session.sessionId === options.targetTabGroupSessionId,
+      (session) => session.sessionId === targetPlacementSessionId,
     ) ||
       !commandPaneLayoutContainsSession(
         project.commandsPanel.paneLayout,
-        options.targetTabGroupSessionId,
+        targetPlacementSessionId,
       ))
   ) {
     return undefined;
@@ -14967,6 +15023,13 @@ function createCommandTerminal(
     return undefined;
   }
   project = canonicalProject;
+  if (
+    targetPlacementSessionId &&
+    (!project.commandsPanel.sessions.some((session) => session.sessionId === targetPlacementSessionId) ||
+      !commandPaneLayoutContainsSession(project.commandsPanel.paneLayout, targetPlacementSessionId))
+  ) {
+    return undefined;
+  }
   const gxserverSession = createGxserverTerminalRecordForNativeCreate(
     project,
     title,
@@ -15017,7 +15080,11 @@ function createCommandTerminal(
     surface: "commands" as const,
   };
   updateActiveProjectCommandsPanel((panel) =>
-    addSessionToCommandsPanel(panel, commandSession, options.targetTabGroupSessionId),
+    addSessionToCommandsPanel(panel, commandSession, {
+      targetSplitDirection: options.targetSplitDirection,
+      targetSplitSessionId: options.targetSplitSessionId,
+      targetTabGroupSessionId: options.targetTabGroupSessionId,
+    }),
   );
   terminalStateById.set(commandSession.sessionId, {
     activity: hasStartupCommand ? "working" : "idle",
@@ -15043,6 +15110,10 @@ function createCommandTerminal(
     nativeSessionId,
     "command-terminal",
   );
+  /*
+   * CDXC:CommandPaneHotkeys 2026-06-13-23:31:
+   * Cmd+T and Cmd+D must target the pane that owns live AppKit typing focus. When focus is inside an expanded Commands panel, creation and split shortcuts add command-surface terminals to that panel instead of using the remembered workspace focusedSessionId.
+   */
   /*
    * CDXC:CommandPanes 2026-05-31-02:20:
    * Action command panes use the same gxserver-owned zmx lifecycle as workspace terminals. The macOS client still owns Commands panel grouping and focus, but zmx panes must be created in gxserver first so Swift receives the attach command instead of hard-failing with gxserverAttachMissing.
@@ -15077,7 +15148,11 @@ function createCommandTerminal(
 function addSessionToCommandsPanel(
   panel: CommandsPanelState,
   session: TerminalSessionRecord,
-  targetTabGroupSessionId?: string,
+  options: {
+    targetSplitDirection?: SessionPaneSplitDirection;
+    targetSplitSessionId?: string;
+    targetTabGroupSessionId?: string;
+  } = {},
 ): CommandsPanelState {
   const sessions = [...panel.sessions, session].map((candidate, index) => {
     const position = getSlotPosition(index);
@@ -15096,14 +15171,36 @@ function addSessionToCommandsPanel(
    * existing tab group instead of appending a leaf to the split root, which
    * would turn a two-pane Commands panel into a three-pane split layout.
    */
-  const paneLayout =
-    targetTabGroupSessionId && panel.paneLayout
-      ? addCommandSessionToPaneTabGroup(
-          panel.paneLayout,
-          targetTabGroupSessionId,
-          session.sessionId,
-        )
-      : appendCommandSessionToPaneLayout(panel.paneLayout, session.sessionId);
+  let paneLayout: SessionPaneLayoutNode;
+  if (options.targetSplitSessionId && options.targetSplitDirection) {
+    const splitPlacementLayout =
+      panel.paneLayout &&
+      insertCommandSessionBesidePane(
+        panel.paneLayout,
+        options.targetSplitSessionId,
+        session.sessionId,
+        options.targetSplitDirection,
+        true,
+      );
+    if (!splitPlacementLayout) {
+      throw new Error("Command panel split placement target was validated but not found.");
+    }
+    paneLayout = splitPlacementLayout;
+  } else if (options.targetTabGroupSessionId) {
+    const tabPlacementLayout =
+      panel.paneLayout &&
+      addCommandSessionToPaneTabGroup(
+        panel.paneLayout,
+        options.targetTabGroupSessionId,
+        session.sessionId,
+      );
+    if (!tabPlacementLayout) {
+      throw new Error("Command panel tab placement target was validated but not found.");
+    }
+    paneLayout = tabPlacementLayout;
+  } else {
+    paneLayout = appendCommandSessionToPaneLayout(panel.paneLayout, session.sessionId);
+  }
   return normalizeStoredCommandsPanelState({
     ...panel,
     ...createCommandsPanelOpenStatePatch(panel, {
@@ -15304,6 +15401,7 @@ function insertCommandSessionBesidePane(
   layout: SessionPaneLayoutNode,
   targetSessionId: string,
   sourceSessionId: string,
+  direction: SessionPaneSplitDirection,
   placeAfterTarget: boolean,
 ): SessionPaneLayoutNode | undefined {
   const sourceLeaf: SessionPaneLayoutNode = { kind: "leaf", sessionId: sourceSessionId };
@@ -15313,7 +15411,7 @@ function insertCommandSessionBesidePane(
     }
     return {
       children: placeAfterTarget ? [layout, sourceLeaf] : [sourceLeaf, layout],
-      direction: "horizontal",
+      direction,
       kind: "split",
     };
   }
@@ -15321,7 +15419,7 @@ function insertCommandSessionBesidePane(
   let didInsert = false;
   for (const child of layout.children) {
     if (!didInsert && commandPaneLayoutContainsSession(child, targetSessionId)) {
-      if (layout.direction === "horizontal") {
+      if (layout.direction === direction) {
         children.push(...(placeAfterTarget ? [child, sourceLeaf] : [sourceLeaf, child]));
         didInsert = true;
       } else {
@@ -15329,6 +15427,7 @@ function insertCommandSessionBesidePane(
           child,
           targetSessionId,
           sourceSessionId,
+          direction,
           placeAfterTarget,
         );
         children.push(nextChild ?? child);
@@ -19862,7 +19961,36 @@ function createFocusedTabGroupPlacement(groupId?: string): VisibleSessionPlaceme
   return { kind: "appendToTabGroup", position: "after", targetSessionId };
 }
 
-function createNativeSessionInCurrentContext(): void {
+function getNativeHotkeyCommandPanelSourceSessionId(sourceSessionId?: string): string | undefined {
+  if (!sourceSessionId) {
+    return undefined;
+  }
+  const project = activeProject();
+  const sourceSession = findSessionRecordInProject(project, sourceSessionId);
+  /*
+   * CDXC:CommandPaneHotkeys 2026-06-13-23:31:
+   * Native create and split hotkeys must follow the terminal that owns live typing focus. Validate the AppKit source against the expanded Commands panel layout before redirecting, because the workspace focusedSessionId can remain selected while the user is typing in a command terminal.
+   */
+  if (
+    !project.commandsPanel.isVisible ||
+    sourceSession?.kind !== "terminal" ||
+    sourceSession.surface !== "commands" ||
+    !commandPaneLayoutContainsSession(project.commandsPanel.paneLayout, sourceSessionId)
+  ) {
+    return undefined;
+  }
+  return sourceSessionId;
+}
+
+function createNativeSessionInCurrentContext(sourceSessionId?: string): void {
+  const commandSourceSessionId = getNativeHotkeyCommandPanelSourceSessionId(sourceSessionId);
+  if (commandSourceSessionId) {
+    createCommandTerminal("Command Terminal", "", {
+      focusAfterCreate: true,
+      targetTabGroupSessionId: commandSourceSessionId,
+    });
+    return;
+  }
   /**
    * CDXC:SessionCreation 2026-05-11-11:51
    * The top "New Session" action and matching hotkey create in the currently
@@ -19963,7 +20091,30 @@ function createFullWidthTerminalPaneInCurrentProject(): void {
   toggleCommandsPanelForActiveProject();
 }
 
-function splitFocusedNativePane(direction: "horizontal" | "vertical"): void {
+function splitFocusedCommandPanelPane(
+  targetSessionId: string,
+  direction: SessionPaneSplitDirection,
+): void {
+  logNativeHotkeyDebug("nativeHotkeys.commandPanelSplitFocusedPane", {
+    direction,
+    targetSessionId,
+  });
+  createCommandTerminal("Command Terminal", "", {
+    focusAfterCreate: true,
+    targetSplitDirection: direction,
+    targetSplitSessionId: targetSessionId,
+  });
+}
+
+function splitFocusedNativePane(
+  direction: "horizontal" | "vertical",
+  sourceSessionId?: string,
+): void {
+  const commandSourceSessionId = getNativeHotkeyCommandPanelSourceSessionId(sourceSessionId);
+  if (commandSourceSessionId) {
+    splitFocusedCommandPanelPane(commandSourceSessionId, direction);
+    return;
+  }
   const targetSessionId = activeSnapshot().focusedSessionId;
   /**
    * CDXC:NativeSplits 2026-05-10-18:30
@@ -22201,6 +22352,25 @@ function createCommandPaneTransitionOrigin(
   };
 }
 
+function createWorkspacePaneTabTransitionOrigin(
+  sessionId: string,
+): NativeGxserverSessionTransitionOrigin {
+  const group = activeProject().workspace.groups.find((candidateGroup) =>
+    candidateGroup.snapshot.sessions.some((session) => session.sessionId === sessionId),
+  );
+  const paneSessionIds =
+    findPaneTabGroupSessionIds(group?.snapshot.paneLayout, sessionId) ?? [sessionId];
+  /*
+   * CDXC:PaneFocus 2026-06-13-17:57:
+   * Workspace pane-title close is a pane/tab action, not a sidebar-list close.
+   * Pass the clicked pane's tab-group order into closeTerminal so same-pane closes use right-then-left tab focus and split-destroy closes can fall through to the workspace reducer's spatial replacement.
+   */
+  return {
+    kind: "paneTabGroup",
+    orderedSessions: paneSessionIds.map(createSessionTransitionOriginEntry),
+  };
+}
+
 function createSessionTransitionOriginEntry(sessionId: string): NativeSessionTransitionOriginSession {
   const session = findSessionRecord(sessionId);
   return session?.isSleeping === true
@@ -22582,10 +22752,24 @@ function closeTerminal(
     rememberPreviousSession(reference.sessionId, reference.project);
   }
   let shouldRemoveProjectAfterClose = false;
+  let postCloseFocusSessionId: string | undefined;
   updateProjectWorkspace(
     reference.project.projectId,
     (workspace) => {
+      const owningGroup = getGroupForSession(workspace, reference.sessionId);
+      const shouldApplyPaneCloseFocus =
+        transitionOrigin.kind === "paneTabGroup" &&
+        owningGroup?.snapshot.focusedSessionId === reference.sessionId;
       const nextWorkspace = removeSessionInSimpleWorkspace(workspace, reference.sessionId).snapshot;
+      const nextOwningGroup = owningGroup
+        ? getGroupById(nextWorkspace, owningGroup.groupId)
+        : undefined;
+      postCloseFocusSessionId =
+        shouldApplyPaneCloseFocus &&
+        nextOwningGroup?.snapshot.focusedSessionId &&
+        nextOwningGroup.snapshot.focusedSessionId !== reference.sessionId
+          ? nextOwningGroup.snapshot.focusedSessionId
+          : undefined;
       shouldRemoveProjectAfterClose =
         shouldRemoveQuickTerminalContainer && !workspaceHasOpenSessions(nextWorkspace);
       return nextWorkspace;
@@ -22626,7 +22810,18 @@ function closeTerminal(
     return;
   }
   publish();
-  focusGxserverSessionTransitionTarget(transitionResult.focusTarget, transitionOrigin.kind);
+  /*
+   * CDXC:PaneFocus 2026-06-13-17:57:
+   * After a focused pane close destroys its split branch, the shared reducer has already selected the CMAX-style surviving pane.
+   * Reuse the normal sidebar focus pipeline after publish so native layout, terminal first responder, and browser pane focus converge on that selected session instead of leaving keyboard focus in a closed surface.
+   */
+  if (transitionResult.focusTarget) {
+    focusGxserverSessionTransitionTarget(transitionResult.focusTarget, transitionOrigin.kind);
+  } else if (postCloseFocusSessionId) {
+    focusSidebarSession(
+      createCombinedProjectSessionId(reference.project.projectId, postCloseFocusSessionId),
+    );
+  }
   appendSidebarRefreshDebugLog("nativeSidebar.closeSession.afterPublish", {
     nativeSessionId,
     project: summarizeSidebarRefreshProject(),
@@ -23089,7 +23284,11 @@ function focusSidebarSessionMode(sessionId: string): void {
   focusTerminal(sessionId);
 }
 
-function runNativeHotkeyAction(actionId: ghostexHotkeyActionId, source: "dom" | "native"): void {
+function runNativeHotkeyAction(
+  actionId: ghostexHotkeyActionId,
+  source: "dom" | "native",
+  sourceSessionId?: string,
+): void {
   const action = getghostexHotkeyActionById(actionId);
   if (!action) {
     logNativeHotkeyDebug("nativeHotkeys.actionMissing", { actionId });
@@ -23108,13 +23307,13 @@ function runNativeHotkeyAction(actionId: ghostexHotkeyActionId, source: "dom" | 
    */
   switch (action.kind) {
     case "createSession":
-      createNativeSessionInCurrentContext();
+      createNativeSessionInCurrentContext(sourceSessionId);
       return;
     case "focusAdjacentGroup":
       focusAdjacentNativeHotkeyGroup(action.direction);
       return;
     case "focusDirection":
-      focusNativeHotkeyDirection(action.direction);
+      focusNativeHotkeyDirection(action.direction, sourceSessionId);
       return;
     case "focusGroup":
       focusNativeHotkeyGroupByIndex(action.groupIndex);
@@ -23152,8 +23351,21 @@ function runNativeHotkeyAction(actionId: ghostexHotkeyActionId, source: "dom" | 
        * Native Cmd+Shift+P should reveal the full-window app-modal command palette
        * from terminal focus without opening the Commands panel or depending on
        * a sidebar-local DOM render path.
+       *
+       * CDXC:CommandPalette 2026-06-13-22:18:
+       * Command-finding mode is the same palette opened with a leading `>`
+       * prefix already inserted, so users can fuzzy-find commands immediately.
        */
-      openAppModal({ modal: "commandPalette", type: "open" });
+      openAppModal({ initialQuery: ">", modal: "commandPalette", type: "open" });
+      return;
+    case "openSessionSearchPalette":
+      /**
+       * CDXC:CommandPalette 2026-06-13-22:18:
+       * Native Cmd+P opens the shared palette in session-search mode. Leave the
+       * input empty so the absence of a trimmed `>` prefix means current and
+       * previous sessions are searched instead of commands.
+       */
+      openAppModal({ initialQuery: "", modal: "commandPalette", type: "open" });
       return;
     case "openCommandsPanel":
       if (source === "native") {
@@ -23187,7 +23399,7 @@ function runNativeHotkeyAction(actionId: ghostexHotkeyActionId, source: "dom" | 
       switchNativeWorkareaView(action.view);
       return;
     case "splitFocusedPane":
-      splitFocusedNativePane(action.direction);
+      splitFocusedNativePane(action.direction, sourceSessionId);
       return;
   }
 }
@@ -23413,21 +23625,439 @@ function describeNativeHotkeyTarget(target: EventTarget | null): string {
     .join(" ");
 }
 
-function focusNativeHotkeyDirection(direction: SessionGridDirection): void {
+function getRenderedNativeHotkeyDirectionTarget(
+  direction: SessionGridDirection,
+  groupId: string,
+  snapshot: SessionGridSnapshot,
+  sourceSessionId?: string,
+): { currentInRenderedLayout: boolean; layout?: RenderedNativeHotkeyLayout; sessionId?: string } {
+  const focusedSidebarSessionId = getNativeHotkeyFocusedSidebarSessionId(snapshot, sourceSessionId);
+  const focusedNativeSessionId = focusedSidebarSessionId
+    ? nativeSessionIdForSidebarSession(focusedSidebarSessionId)
+    : undefined;
+  if (!focusedNativeSessionId) {
+    return { currentInRenderedLayout: false };
+  }
+  const renderedLayout = buildCurrentRenderedNativeHotkeyLayout(groupId, snapshot);
+  if (!renderedLayout) {
+    return { currentInRenderedLayout: false };
+  }
+
+  const nativeTarget = getDirectionalNativePaneFocusTarget(
+    renderedLayout,
+    focusedNativeSessionId,
+    direction,
+  );
+  if (!nativeTarget.currentInRenderedLayout) {
+    return { currentInRenderedLayout: false };
+  }
+  const sessionId = nativeTarget.sessionId
+    ? sidebarSessionIdForNativeSession(nativeTarget.sessionId)
+    : undefined;
+  return {
+    currentInRenderedLayout: true,
+    layout: renderedLayout,
+    sessionId:
+      sessionId && sessionId !== focusedSidebarSessionId
+        ? sessionId
+        : undefined,
+  };
+}
+
+function buildCurrentRenderedNativeHotkeyLayout(
+  groupId: string,
+  snapshot: SessionGridSnapshot,
+): RenderedNativeHotkeyLayout | undefined {
+  const currentProject = activeProject();
+  const visibleSessionRecordsById = new Map(
+    snapshot.sessions.map((session) => [session.sessionId, session]),
+  );
+  const allVisibleSessions = getNativePaneSessionsForSnapshot(
+    snapshot,
+    visibleSessionRecordsById,
+  ).filter((session) => shouldIncludeSessionInNativePaneTabs(currentProject.projectId, session));
+  const focusModeTabSessionIds = getFocusedWorkspaceTabSessionIds(snapshot);
+  const visibleSessions =
+    focusModeTabSessionIds.length > 0
+      ? allVisibleSessions.filter((session) => focusModeTabSessionIds.includes(session.sessionId))
+      : allVisibleSessions;
+  const visibleSidebarSessionIds = new Set(visibleSessions.map((session) => session.sessionId));
+  const awakeVisibleSessions = visibleSessions.filter((session) => session.isSleeping !== true);
+  const visibleSessionIds = awakeVisibleSessions.map((session) =>
+    nativeSessionIdForSidebarSession(session.sessionId),
+  );
+  const focusedNativeSessionId =
+    snapshot.focusedSessionId && visibleSidebarSessionIds.has(snapshot.focusedSessionId)
+      ? nativeSessionIdForSidebarSession(snapshot.focusedSessionId)
+      : undefined;
+  /*
+   * CDXC:PaneFocus 2026-06-13-22:33:
+   * Cmd+Opt+Arrow must use the same workspace plus expanded Commands-pane native layout that Swift receives, but the shortcut cannot depend on a previously posted layout cache.
+   * Rebuild the focus map from current React state at key time so Cmd+Opt+Down reaches the command pane even when the last native-layout sync is stale or project-editor companion focus is active.
+   */
+  const workspaceLayout = buildLayout(
+    snapshot.paneLayout,
+    visibleSessions.map((session) => session.sessionId),
+    visibleSessions.map((session) => nativeSessionIdForSidebarSession(session.sessionId)),
+    new Set(awakeVisibleSessions.map((session) => session.sessionId)),
+    new Set(visibleSessionIds),
+    clampVisibleSessionCount(visibleSessions.length),
+    getActiveNativeSplitLayoutHint(snapshot),
+    focusedNativeSessionId,
+    { preserveParkedActiveTabOwners: settings.clickToWakeSleepingSessions },
+  );
+
+  const commandsPanel = currentProject.commandsPanel;
+  const commandPanelVisibleSessions = commandsPanel.sessions.filter((session) =>
+    shouldIncludeSessionInNativePaneTabs(currentProject.projectId, session),
+  );
+  const commandPanelActiveSessions = commandPanelVisibleSessions.filter(
+    (session) => session.isSleeping !== true,
+  );
+  const commandPanelActiveSessionIds = commandPanelActiveSessions.map((session) =>
+    nativeSessionIdForSidebarSession(session.sessionId),
+  );
+  const commandPanelVisibleSessionIds = new Set(
+    commandPanelVisibleSessions.map((session) => session.sessionId),
+  );
+  const commandsPanelFocusedNativeSessionId =
+    commandsPanel.activeSessionId && commandPanelVisibleSessionIds.has(commandsPanel.activeSessionId)
+      ? nativeSessionIdForSidebarSession(commandsPanel.activeSessionId)
+      : undefined;
+  const commandsPanelLayout = buildLayout(
+    commandsPanel.paneLayout,
+    commandPanelVisibleSessions.map((session) => session.sessionId),
+    commandPanelVisibleSessions.map((session) =>
+      nativeSessionIdForSidebarSession(session.sessionId),
+    ),
+    new Set(commandPanelActiveSessions.map((session) => session.sessionId)),
+    new Set(commandPanelActiveSessionIds),
+    clampVisibleSessionCount(Math.max(1, commandPanelVisibleSessions.length)),
+    undefined,
+    commandsPanelFocusedNativeSessionId,
+    { preserveParkedActiveTabOwners: settings.clickToWakeSleepingSessions },
+  );
+
+  if (!workspaceLayout && !commandsPanelLayout) {
+    if (
+      lastRenderedNativeHotkeyLayout?.projectId === activeProjectId &&
+      lastRenderedNativeHotkeyLayout.groupId === groupId
+    ) {
+      return lastRenderedNativeHotkeyLayout;
+    }
+    return undefined;
+  }
+
+  return {
+    commandsPanelHeightRatio: commandsPanel.heightRatio,
+    commandsPanelIsVisible: commandsPanel.isVisible,
+    ...(commandsPanelLayout ? { commandsPanelLayout } : {}),
+    commandsPanelMode: commandsPanel.mode,
+    groupId,
+    projectId: currentProject.projectId,
+    ...(workspaceLayout ? { workspaceLayout } : {}),
+  };
+}
+
+function getNativeHotkeyFocusedSidebarSessionId(
+  snapshot: SessionGridSnapshot,
+  sourceSessionId?: string,
+): string | undefined {
+  /*
+   * CDXC:PaneFocus 2026-06-13-21:47:
+   * Cmd+Opt+Arrow should start from AppKit's live source pane when native
+   * provides it. The expanded Commands pane can hold remembered focus while the
+   * user is typing in a workspace pane, so sourceSessionId wins after it is
+   * validated against the visible command or workspace layout.
+   */
+  if (sourceSessionId) {
+    if (
+      activeProject().commandsPanel.isVisible &&
+      activeCommandPanelContainsSession(sourceSessionId)
+    ) {
+      return sourceSessionId;
+    }
+    if (isCurrentWorkspaceNativeFocusTarget(snapshot, sourceSessionId)) {
+      return sourceSessionId;
+    }
+  }
+  if (lastNativeFocusedSidebarSessionId) {
+    if (
+      activeProject().commandsPanel.isVisible &&
+      activeCommandPanelContainsSession(lastNativeFocusedSidebarSessionId)
+    ) {
+      return lastNativeFocusedSidebarSessionId;
+    }
+    if (isCurrentWorkspaceNativeFocusTarget(snapshot, lastNativeFocusedSidebarSessionId)) {
+      return lastNativeFocusedSidebarSessionId;
+    }
+  }
+  return snapshot.focusedSessionId;
+}
+
+function getDirectionalNativePaneFocusTarget(
+  layout: RenderedNativeHotkeyLayout,
+  focusedSessionId: string,
+  direction: SessionGridDirection,
+): { currentInRenderedLayout: boolean; sessionId?: string } {
+  const panes = collectRenderedNativeHotkeyPaneFocusRects(layout);
+  const currentPane = panes.find((pane) => pane.sessionIds.includes(focusedSessionId));
+  if (!currentPane) {
+    return { currentInRenderedLayout: false };
+  }
+  const nextPane = findDirectionalNativePaneFocusRect(panes, currentPane, direction);
+  return { currentInRenderedLayout: true, sessionId: nextPane?.sessionId };
+}
+
+function collectRenderedNativeHotkeyPaneFocusRects(
+  layout: RenderedNativeHotkeyLayout,
+): NativeHotkeyPaneFocusRect[] {
+  const expandedCommandLayout =
+    layout.commandsPanelIsVisible && layout.commandsPanelLayout
+      ? layout.commandsPanelLayout
+      : undefined;
+  const commandHeightRatio = expandedCommandLayout
+    ? normalizeCommandsPanelHeightRatio(layout.commandsPanelHeightRatio)
+    : 0;
+  const commandTop = 1 - commandHeightRatio;
+  /*
+   * CDXC:PaneFocus 2026-06-13-21:28:
+   * Cmd+Opt+Arrow treats an expanded Commands pane as part of the main workspace focus map.
+   * The command pane can have its own split tree, so resolve it as a bottom band with its rendered native layout instead of reducing it to one tab or ignoring it while focus is in Agents.
+   */
+  const workspaceRect = expandedCommandLayout
+    ? { bottom: commandTop, left: 0, right: 1, top: 0 }
+    : { bottom: 1, left: 0, right: 1, top: 0 };
+  const commandRect = { bottom: 1, left: 0, right: 1, top: commandTop };
+
+  return [
+    ...(layout.workspaceLayout
+      ? collectNativePaneFocusRects(layout.workspaceLayout, workspaceRect)
+      : []),
+    ...(expandedCommandLayout
+      ? collectNativePaneFocusRects(expandedCommandLayout, commandRect)
+      : []),
+  ];
+}
+
+function collectNativePaneFocusRects(
+  layout: NativeTerminalLayout,
+  rect: Pick<NativeHotkeyPaneFocusRect, "bottom" | "left" | "right" | "top">,
+): NativeHotkeyPaneFocusRect[] {
+  if (layout.kind === "leaf") {
+    return [createNativeHotkeyPaneFocusRect(layout.sessionId, [layout.sessionId], rect)];
+  }
+  if (layout.kind === "tabs") {
+    const activeSessionId =
+      layout.activeSessionId && layout.sessionIds.includes(layout.activeSessionId)
+        ? layout.activeSessionId
+        : layout.sessionIds[0];
+    return activeSessionId
+      ? [createNativeHotkeyPaneFocusRect(activeSessionId, layout.sessionIds, rect)]
+      : [];
+  }
+
+  const childRects = getNativeSplitChildRects(
+    layout.children.length,
+    layout.direction,
+    layout.ratio,
+    rect,
+  );
+  return layout.children.flatMap((child, index) =>
+    collectNativePaneFocusRects(child, childRects[index] ?? rect),
+  );
+}
+
+function createNativeHotkeyPaneFocusRect(
+  sessionId: string,
+  sessionIds: string[],
+  rect: Pick<NativeHotkeyPaneFocusRect, "bottom" | "left" | "right" | "top">,
+): NativeHotkeyPaneFocusRect {
+  return {
+    ...rect,
+    centerX: (rect.left + rect.right) / 2,
+    centerY: (rect.top + rect.bottom) / 2,
+    sessionId,
+    sessionIds,
+  };
+}
+
+function getNativeSplitChildRects(
+  childCount: number,
+  direction: Extract<NativeTerminalLayout, { kind: "split" }>["direction"],
+  ratio: number | undefined,
+  rect: Pick<NativeHotkeyPaneFocusRect, "bottom" | "left" | "right" | "top">,
+): Pick<NativeHotkeyPaneFocusRect, "bottom" | "left" | "right" | "top">[] {
+  const ratios = getNativeSplitChildRatios(childCount, ratio);
+  let cursor = direction === "horizontal" ? rect.left : rect.top;
+  return ratios.map((ratio) => {
+    if (direction === "horizontal") {
+      const width = (rect.right - rect.left) * ratio;
+      const childRect = { ...rect, left: cursor, right: cursor + width };
+      cursor += width;
+      return childRect;
+    }
+
+    const height = (rect.bottom - rect.top) * ratio;
+    const childRect = { ...rect, bottom: cursor + height, top: cursor };
+    cursor += height;
+    return childRect;
+  });
+}
+
+function getNativeSplitChildRatios(childCount: number, ratio: number | undefined): number[] {
+  if (childCount === 0) {
+    return [];
+  }
+  if (childCount === 2 && typeof ratio === "number" && ratio > 0 && ratio < 1) {
+    return [ratio, 1 - ratio];
+  }
+  return Array.from({ length: childCount }, () => 1 / childCount);
+}
+
+function findDirectionalNativePaneFocusRect(
+  panes: NativeHotkeyPaneFocusRect[],
+  currentPane: NativeHotkeyPaneFocusRect,
+  direction: SessionGridDirection,
+): NativeHotkeyPaneFocusRect | undefined {
+  const epsilon = 0.000001;
+  const candidates = panes
+    .filter((pane) => pane !== currentPane)
+    .map((pane) => {
+      const primaryGap = getNativePanePrimaryGap(currentPane, pane, direction);
+      if (primaryGap < -epsilon) {
+        return undefined;
+      }
+      const crossDistance =
+        direction === "left" || direction === "right"
+          ? Math.abs(pane.centerY - currentPane.centerY)
+          : Math.abs(pane.centerX - currentPane.centerX);
+      const rangesOverlap =
+        direction === "left" || direction === "right"
+          ? nativeRangesIntersect(currentPane.top, currentPane.bottom, pane.top, pane.bottom)
+          : nativeRangesIntersect(currentPane.left, currentPane.right, pane.left, pane.right);
+      return {
+        pane,
+        score: (rangesOverlap ? 0 : 1000) + Math.max(primaryGap, 0) * 100 + crossDistance,
+      };
+    })
+    .filter((candidate): candidate is { pane: NativeHotkeyPaneFocusRect; score: number } =>
+      Boolean(candidate),
+    )
+    .sort((a, b) => a.score - b.score);
+
+  return candidates[0]?.pane;
+}
+
+function getNativePanePrimaryGap(
+  currentPane: NativeHotkeyPaneFocusRect,
+  pane: NativeHotkeyPaneFocusRect,
+  direction: SessionGridDirection,
+): number {
+  if (direction === "left") {
+    return currentPane.left - pane.right;
+  }
+  if (direction === "right") {
+    return pane.left - currentPane.right;
+  }
+  if (direction === "up") {
+    return currentPane.top - pane.bottom;
+  }
+  return pane.top - currentPane.bottom;
+}
+
+function nativeRangesIntersect(startA: number, endA: number, startB: number, endB: number): boolean {
+  return Math.max(startA, startB) < Math.min(endA, endB);
+}
+
+function focusNativeHotkeyDirection(
+  direction: SessionGridDirection,
+  sourceSessionId?: string,
+): void {
   const snapshotBefore = activeSnapshot();
   const groupBefore = activeWorkspaceGroup();
   const shouldTraceCommandArrow = direction === "left" || direction === "right";
-  if (shouldTraceCommandArrow) {
-    logNativeHotkeyDebug("nativeHotkeys.commandArrowFocusDirectionStart", {
+  const shouldResolveRenderedLayoutBeforeCompanion = direction === "up" || direction === "down";
+  logNativeHotkeyDebug(
+    shouldTraceCommandArrow
+      ? "nativeHotkeys.commandArrowFocusDirectionStart"
+      : "nativeHotkeys.focusDirectionStart",
+    {
       activeGroupId: groupBefore.groupId,
       direction,
       focusedSessionId: snapshotBefore.focusedSessionId,
+      sourceSessionId,
       paneLayout: summarizeSessionPaneLayout(snapshotBefore.paneLayout),
       sessionIds: snapshotBefore.sessions.map((session) => session.sessionId),
       visibleSessionIds: snapshotBefore.visibleSessionIds,
-    });
+    },
+  );
+  if (
+    !shouldResolveRenderedLayoutBeforeCompanion &&
+    focusProjectEditorCompanionHotkeyDirection(direction, snapshotBefore)
+  ) {
+    return;
   }
-  if (focusProjectEditorCompanionHotkeyDirection(direction, snapshotBefore)) {
+  const renderedPaneTarget = getRenderedNativeHotkeyDirectionTarget(
+    direction,
+    groupBefore.groupId,
+    snapshotBefore,
+    sourceSessionId,
+  );
+  if (
+    !renderedPaneTarget.currentInRenderedLayout &&
+    shouldResolveRenderedLayoutBeforeCompanion &&
+    focusProjectEditorCompanionHotkeyDirection(direction, snapshotBefore)
+  ) {
+    return;
+  }
+  if (renderedPaneTarget.currentInRenderedLayout) {
+    /*
+     * CDXC:PaneFocus 2026-06-13-21:19:
+     * Cmd+Opt+Arrow must navigate the panes the user can see, not legacy row/column slots or visibleSessionIds that also contain parked tab siblings.
+     * Resolve a1 b1 c1, a1 b1 c1/c2, and expanded command-pane moves from the native layout shape rebuilt from current React state before falling back to the shared visible-session reducer.
+     *
+     * CDXC:SleepingPanePlaceholders 2026-06-13-21:35:
+     * Rendered pane hotkeys are pane-tab selection, not sidebar-card focus. Route the target through the native tab-selection handler so sleeping click-to-wake placeholders stay cold and keep their split slot, while awake targets still queue the normal native focus request.
+     */
+    if (!renderedPaneTarget.sessionId) {
+      logNativeHotkeyDebug(
+        shouldTraceCommandArrow
+          ? "nativeHotkeys.commandArrowRenderedFocusDirectionUnchanged"
+          : "nativeHotkeys.renderedFocusDirectionUnchanged",
+        {
+          direction,
+          focusedSessionId: snapshotBefore.focusedSessionId,
+          sourceSessionId,
+          renderedNativeLayout: summarizeNativePaneLayout(
+            renderedPaneTarget.layout?.workspaceLayout,
+          ),
+          renderedCommandPanelLayout: summarizeNativePaneLayout(
+            renderedPaneTarget.layout?.commandsPanelLayout,
+          ),
+        },
+      );
+      return;
+    }
+    logNativeHotkeyDebug(
+      shouldTraceCommandArrow
+        ? "nativeHotkeys.commandArrowRenderedFocusDirectionResolved"
+        : "nativeHotkeys.renderedFocusDirectionResolved",
+      {
+        direction,
+        focusedSessionIdAfter: renderedPaneTarget.sessionId,
+        focusedSessionIdBefore: snapshotBefore.focusedSessionId,
+        sourceSessionId,
+        renderedNativeLayout: summarizeNativePaneLayout(
+          renderedPaneTarget.layout?.workspaceLayout,
+        ),
+        renderedCommandPanelLayout: summarizeNativePaneLayout(
+          renderedPaneTarget.layout?.commandsPanelLayout,
+        ),
+      },
+    );
+    lastNativeFocusedSidebarSessionId = renderedPaneTarget.sessionId;
+    handleNativePaneTabSelected(renderedPaneTarget.sessionId);
     return;
   }
   const result = focusVisibleDirectionInSimpleWorkspace(activeProject().workspace, direction);
@@ -23609,97 +24239,28 @@ function focusNativeHotkeySessionSlot(slotNumber: number): void {
 }
 
 function focusAdjacentNativeHotkeySession(direction: -1 | 1): void {
-  const slots = getRenderedNativeHotkeySidebarSessionSlots();
-  if (slots.length === 0) {
-    logNativeHotkeyDebug("nativeHotkeys.adjacentSessionMissing", { direction });
-    return;
-  }
-  const focusedIndex = slots.findIndex((slot) =>
-    isNativeHotkeyFocusedSessionId(slot.sessionId),
+  const nextSessionId = getAdjacentPaneTabSessionIdInSimpleWorkspace(
+    activeProject().workspace,
+    direction,
   );
-  /**
-   * CDXC:Hotkeys 2026-05-11-09:26
-   * Cmd+[ and Cmd+] navigate the visible sidebar session list, not only the
-   * active workspace group. In Combined mode this crosses into the next
-   * expanded project group and skips collapsed project sections because users
-   * expect hidden sessions to stay out of keyboard traversal.
-   *
-   * CDXC:Hotkeys 2026-06-07-14:05:
-   * Cmd+Shift+[ and Cmd+Shift+] are supported in addition to Cmd+Shift+Tab and Cmd+Tab. Previous/next session traversal must follow rendered sidebar row order across expanded groups and skip sleeping rows instead of waking hidden or parked sessions.
-   */
-  const fallbackSlots = slots.filter((slot) => !slot.isSleeping);
-  const nextSessionId =
-    focusedIndex === -1
-      ? direction > 0
-        ? fallbackSlots[0]?.sessionId
-        : fallbackSlots.at(-1)?.sessionId
-      : getAdjacentAwakeRenderedNativeHotkeySessionId(slots, focusedIndex, direction);
   if (!nextSessionId) {
-    logNativeHotkeyDebug("nativeHotkeys.adjacentSessionMissing", { direction });
+    logNativeHotkeyDebug("nativeHotkeys.adjacentPaneTabUnchanged", {
+      direction,
+      focusedSessionId: activeSnapshot().focusedSessionId,
+      paneLayout: summarizeSessionPaneLayout(activeSnapshot().paneLayout),
+    });
     return;
   }
-  focusSidebarSession(nextSessionId);
-}
-
-function getAdjacentAwakeRenderedNativeHotkeySessionId(
-  slots: readonly NativeRenderedHotkeySidebarSessionSlot[],
-  focusedIndex: number,
-  direction: -1 | 1,
-): string | undefined {
-  for (let step = 1; step <= slots.length; step += 1) {
-    const candidate = slots[(focusedIndex + direction * step + slots.length) % slots.length];
-    if (candidate && !candidate.isSleeping) {
-      return candidate.sessionId;
-    }
-  }
-  return undefined;
-}
-
-function getVisibleNativeHotkeySidebarSessionsForNavigation(): SidebarSessionItem[] {
-  /*
-  CDXC:GxserverPresentation 2026-06-01-15:42:
-  Keyboard traversal must use the same gxserver presentation groups rendered in the sidebar. Do not rebuild hotkey order from the retired native combined project tree, because hidden command/local sessions would reintroduce a second presentation source.
-  */
-  const groups = (createPresentationSidebarGroups(gxserverStartupSnapshot?.presentation) ?? [])
-    .filter((group) => isNativeHotkeySidebarGroupExpanded(group.groupId));
-  const sessionIdsByGroup = Object.fromEntries(
-    groups.map((group) => [group.groupId, group.sessions.map((session) => session.sessionId)]),
-  );
-  const sessionsById = Object.fromEntries(
-    groups.flatMap((group) => group.sessions.map((session) => [session.sessionId, session])),
-  );
-  const displayLayout = createDisplaySessionLayout({
-    sessionIdsByGroup,
-    sessionsById,
-    sortMode: activeSessionsSortMode,
-    workspaceGroupIds: groups.map((group) => group.groupId),
-  });
 
   /**
-   * CDXC:Hotkeys 2026-05-15-10:15:
-   * Next Tab and Previous Tab must follow the same visible sidebar order the
-   * user sees, including the active sessions sort mode and collapsed Combined
-   * sections. Build the traversal list from the display layout instead of the
-   * underlying workspace session arrays so keyboard navigation does not jump
-   * by an invisible storage order.
+   * CDXC:Hotkeys 2026-06-13-19:36:
+   * Cmd+Tab and Cmd+Shift+Tab must switch tabs only inside the focused split-pane tab group.
+   *
+   * CDXC:Hotkeys 2026-06-13-20:08:
+   * Keyboard tab cycling must use the same native pane-tab selected path as clicking the tab bar.
+   * That path owns sleeping placeholders, gxserver running/sleeping reconciliation, missing native surface restore, publish ordering, and terminal/web first-responder focus.
    */
-  return displayLayout.groupIds.flatMap((groupId) =>
-    (displayLayout.sessionIdsByGroup[groupId] ?? [])
-      .map((sessionId) => sessionsById[sessionId])
-      .filter((session): session is SidebarSessionItem => session !== undefined),
-  );
-}
-
-function isNativeHotkeyFocusedSession(session: SidebarSessionItem): boolean {
-  return isNativeHotkeyFocusedSessionId(session.sessionId);
-}
-
-function isNativeHotkeyFocusedSessionId(sessionId: string): boolean {
-  const reference = resolveSidebarSessionReference(sessionId);
-  return (
-    reference.project.projectId === activeProjectId &&
-    reference.sessionId === activeSnapshot().focusedSessionId
-  );
+  handleNativePaneTabSelected(nextSessionId);
 }
 
 function isNativeHotkeySidebarGroupExpanded(groupId: string): boolean {
@@ -38682,7 +39243,11 @@ function postNativeLayoutSync(
 }
 
 function createNativeCommandSyncKey(command: NativeSetActiveTerminalSetCommand): string {
-  const { focusRequestId: _focusRequestId, ...layoutCommand } = command;
+  const {
+    focusRequestId: _focusRequestId,
+    focusRequestSessionId: _focusRequestSessionId,
+    ...layoutCommand
+  } = command;
   return JSON.stringify(normalizeNativeLayoutSyncValue(layoutCommand));
 }
 
@@ -38690,6 +39255,7 @@ function createNativeNonPaneChromeCommandSyncKey(command: NativeSetActiveTermina
   const {
     attentionSessionIds: _attentionSessionIds,
     focusRequestId: _focusRequestId,
+    focusRequestSessionId: _focusRequestSessionId,
     sessionAgentIconColors: _sessionAgentIconColors,
     sessionAgentIconDataUrls: _sessionAgentIconDataUrls,
     sessionActivities: _sessionActivities,
@@ -39094,6 +39660,18 @@ function syncNativeLayout(
     commandsPanelFocusedNativeSessionId,
     { preserveParkedActiveTabOwners: settings.clickToWakeSleepingSessions },
   );
+  lastRenderedNativeHotkeyLayout =
+    layout || commandPanelLayout
+      ? {
+          commandsPanelHeightRatio: commandsPanel.heightRatio,
+          commandsPanelIsVisible: commandsPanel.isVisible,
+          ...(commandPanelLayout ? { commandsPanelLayout: commandPanelLayout } : {}),
+          commandsPanelMode: commandsPanel.mode,
+          groupId: currentProject.workspace.activeGroupId,
+          projectId: currentProject.projectId,
+          ...(layout ? { workspaceLayout: layout } : {}),
+        }
+      : undefined;
   const shouldConsumeFocusRequest =
     pendingNativeLayoutFocusRequest !== undefined &&
     ((pendingNativeLayoutFocusRequest.sessionId === snapshot.focusedSessionId &&
@@ -39105,6 +39683,10 @@ function syncNativeLayout(
   const focusRequestId = shouldConsumeFocusRequest
     ? pendingNativeLayoutFocusRequest?.requestId
     : undefined;
+  const focusRequestSessionId =
+    shouldConsumeFocusRequest && pendingNativeLayoutFocusRequest
+      ? nativeSessionIdForSidebarSession(pendingNativeLayoutFocusRequest.sessionId)
+      : undefined;
   const sidebarCardFocusTrace = getRecentSidebarCardFocusTrace(snapshot.focusedSessionId);
   const titlebarResourceGroups = createTitlebarResourceGroups();
   const nativeWorkspaceBackgroundColor = resolveNativeWorkspaceBackgroundColor(settings);
@@ -39202,6 +39784,7 @@ function syncNativeLayout(
       ? { backgroundColor: nativeWorkspaceBackgroundColor }
       : {}),
     ...(focusRequestId !== undefined ? { focusRequestId } : {}),
+    ...(focusRequestSessionId !== undefined ? { focusRequestSessionId } : {}),
     focusedSessionId: focusedNativeSessionId,
     layout,
     /**
@@ -40284,8 +40867,15 @@ window.addEventListener("ghostex-native-host-event", (event) => {
      */
     logNativeHotkeyDebug("nativeHotkeys.hostEventReceived", {
       actionId: hostEvent.actionId,
+      sourceSessionId: hostEvent.sourceSessionId ?? "",
     });
-    runNativeHotkeyAction(hostEvent.actionId, "native");
+    runNativeHotkeyAction(
+      hostEvent.actionId,
+      "native",
+      hostEvent.sourceSessionId
+        ? sidebarSessionIdForNativeSession(hostEvent.sourceSessionId)
+        : undefined,
+    );
     return;
   }
   if (hostEvent.type === "sessionStatusIndicatorClicked") {
@@ -41178,6 +41768,14 @@ function handleNativePaneTabSelected(sessionId: string): void {
       : activeProject().workspace;
   const result = selectPaneTabInSimpleWorkspace(workspaceWithWake, group.groupId, sessionId);
   if (!result.changed && !shouldRestoreSelectedSurface) {
+    /*
+     * CDXC:PaneFocus 2026-06-13-23:18:
+     * Cmd+Opt+Up from an expanded Commands panel can target the workspace pane that React already has selected.
+     * Even when paneLayout is unchanged, this is an explicit native tab/hotkey focus request and must move AppKit first responder back to the awake workspace terminal.
+     */
+    if (!shouldKeepSleepingPlaceholder) {
+      queueNativeLayoutFocusRequest(sessionId, "paneTabSelectedAlreadyActive");
+    }
     appendPaneLayoutTraceDebugLog("paneTabSelected.unchanged", {
       acknowledgedAttention,
       activeProjectId,
@@ -41185,7 +41783,7 @@ function handleNativePaneTabSelected(sessionId: string): void {
       sessionId,
       targetGroup: summarizeWorkspaceGroupForPaneLayoutTrace(workspaceWithWake, group.groupId),
     });
-    if (acknowledgedAttention) {
+    if (acknowledgedAttention || !shouldKeepSleepingPlaceholder) {
       publish();
     }
     return;
@@ -41396,10 +41994,7 @@ function handleNativePaneTabCloseRequested(
    */
   const transitionOrigin: NativeGxserverSessionTransitionOrigin | undefined =
     scope === "close"
-      ? {
-          kind: "paneTabGroup",
-          orderedSessions: (findPaneTabGroupSessionIds(activeWorkspaceGroup().snapshot.paneLayout, sessionId) ?? sessionIds).map(createSessionTransitionOriginEntry),
-        }
+      ? createWorkspacePaneTabTransitionOrigin(sessionId)
       : undefined;
   runNativeSidebarBulkActionInBackground(
     sessionIds.map((tabSessionId) => () =>
@@ -41534,6 +42129,7 @@ function handleCommandPanelPaneReorderRequested(
             layoutWithoutSource,
             resolvedTargetSessionId,
             sourceSessionId,
+            "horizontal",
             placement === "right",
           );
     if (!nextLayout) {
@@ -41882,7 +42478,9 @@ function handleNativeTerminalTitleBarAction(
     case "expandCommandsPanel":
       return;
     case "close":
-      closeTerminal(sessionId);
+      closeTerminal(sessionId, {
+        transitionOrigin: createWorkspacePaneTabTransitionOrigin(sessionId),
+      });
       return;
   }
 }

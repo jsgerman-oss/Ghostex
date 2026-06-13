@@ -75,6 +75,54 @@ export const SIDEBAR_SESSION_TAG_OPTIONS: readonly SidebarSessionTagOption[] =
 
 const SIDEBAR_SESSION_TAG_SET = new Set<string>(SIDEBAR_SESSION_TAGS);
 
+export const SIDEBAR_SESSION_TAG_LIST_SEPARATOR_IDS = [
+  "separator-priority-progress",
+  "separator-progress-type",
+] as const;
+
+export type SidebarSessionTagListSeparatorId =
+  (typeof SIDEBAR_SESSION_TAG_LIST_SEPARATOR_IDS)[number];
+
+export type SidebarSessionTagListItem =
+  | {
+      enabled: boolean;
+      id: SidebarSessionTag;
+      tag: SidebarSessionTag;
+      type: "tag";
+      visible: boolean;
+    }
+  | {
+      enabled: boolean;
+      id: SidebarSessionTagListSeparatorId;
+      type: "separator";
+      visible: boolean;
+    };
+
+const SIDEBAR_SESSION_TAG_LIST_SEPARATOR_SET = new Set<string>(
+  SIDEBAR_SESSION_TAG_LIST_SEPARATOR_IDS,
+);
+
+/**
+ * CDXC:SessionTagFilters 2026-06-13-17:50:
+ * Sidebar tag filters need a user-reorderable presentation list with movable
+ * separators between the default Priority, Progress, and Type groups. Keep this
+ * separate from the durable sessionTag union so changing filter chrome cannot
+ * rewrite existing session metadata.
+ */
+export const DEFAULT_SIDEBAR_SESSION_TAG_LIST_ITEMS: readonly SidebarSessionTagListItem[] = [
+  ...SIDEBAR_SESSION_TAG_SECTIONS[0]!.options.map((option) =>
+    createDefaultSidebarSessionTagListTagItem(option.value),
+  ),
+  createDefaultSidebarSessionTagListSeparatorItem("separator-priority-progress"),
+  ...SIDEBAR_SESSION_TAG_SECTIONS[1]!.options.map((option) =>
+    createDefaultSidebarSessionTagListTagItem(option.value),
+  ),
+  createDefaultSidebarSessionTagListSeparatorItem("separator-progress-type"),
+  ...SIDEBAR_SESSION_TAG_SECTIONS[2]!.options.map((option) =>
+    createDefaultSidebarSessionTagListTagItem(option.value),
+  ),
+];
+
 export function isSidebarSessionTag(value: unknown): value is SidebarSessionTag {
   return typeof value === "string" && SIDEBAR_SESSION_TAG_SET.has(value);
 }
@@ -92,6 +140,142 @@ export function getEffectiveSidebarSessionTag(input: {
   sessionTag?: SidebarSessionTag;
 }): SidebarSessionTag | undefined {
   return input.sessionTag ?? (input.isFavorite === true ? "favorite" : undefined);
+}
+
+export function normalizeSidebarSessionTagListItems(
+  candidate: unknown,
+): SidebarSessionTagListItem[] {
+  if (!Array.isArray(candidate)) {
+    return cloneSidebarSessionTagListItems(DEFAULT_SIDEBAR_SESSION_TAG_LIST_ITEMS);
+  }
+
+  const seenIds = new Set<string>();
+  const normalized: SidebarSessionTagListItem[] = [];
+
+  for (const item of candidate) {
+    const normalizedItem = normalizeSidebarSessionTagListItem(item);
+    if (!normalizedItem || seenIds.has(normalizedItem.id)) {
+      continue;
+    }
+    seenIds.add(normalizedItem.id);
+    normalized.push(normalizedItem);
+  }
+
+  for (const item of DEFAULT_SIDEBAR_SESSION_TAG_LIST_ITEMS) {
+    if (!seenIds.has(item.id)) {
+      normalized.push(cloneSidebarSessionTagListItem(item));
+    }
+  }
+
+  return normalized;
+}
+
+export function areSidebarSessionTagListItemsEqual(
+  left: readonly SidebarSessionTagListItem[],
+  right: readonly SidebarSessionTagListItem[],
+): boolean {
+  return (
+    left.length === right.length &&
+    left.every((leftItem, index) => {
+      const rightItem = right[index];
+      return (
+        rightItem !== undefined &&
+        leftItem.id === rightItem.id &&
+        leftItem.type === rightItem.type &&
+        leftItem.enabled === rightItem.enabled &&
+        leftItem.visible === rightItem.visible &&
+        (leftItem.type !== "tag" || rightItem.type !== "tag" || leftItem.tag === rightItem.tag)
+      );
+    })
+  );
+}
+
+export function getEnabledVisibleSidebarSessionTags(
+  items: readonly SidebarSessionTagListItem[],
+): SidebarSessionTag[] {
+  return normalizeSidebarSessionTagListItems(items).flatMap((item) =>
+    item.type === "tag" && item.enabled && item.visible ? [item.tag] : [],
+  );
+}
+
+function createDefaultSidebarSessionTagListTagItem(
+  tag: SidebarSessionTag,
+): SidebarSessionTagListItem {
+  return {
+    enabled: true,
+    id: tag,
+    tag,
+    type: "tag",
+    visible: true,
+  };
+}
+
+function createDefaultSidebarSessionTagListSeparatorItem(
+  id: SidebarSessionTagListSeparatorId,
+): SidebarSessionTagListItem {
+  return {
+    enabled: true,
+    id,
+    type: "separator",
+    visible: true,
+  };
+}
+
+function normalizeSidebarSessionTagListItem(
+  candidate: unknown,
+): SidebarSessionTagListItem | undefined {
+  if (!isRecord(candidate)) {
+    return undefined;
+  }
+
+  const id = readLooseString(candidate.id);
+  const tag = normalizeSidebarSessionTag(candidate.tag) ?? normalizeSidebarSessionTag(id);
+  if (tag) {
+    return {
+      enabled: readBoolean(candidate.enabled, true),
+      id: tag,
+      tag,
+      type: "tag",
+      visible: readBoolean(candidate.visible, true),
+    };
+  }
+
+  if (SIDEBAR_SESSION_TAG_LIST_SEPARATOR_SET.has(id)) {
+    return {
+      enabled: readBoolean(candidate.enabled, true),
+      id: id as SidebarSessionTagListSeparatorId,
+      type: "separator",
+      visible: readBoolean(candidate.visible, true),
+    };
+  }
+
+  return undefined;
+}
+
+function cloneSidebarSessionTagListItems(
+  items: readonly SidebarSessionTagListItem[],
+): SidebarSessionTagListItem[] {
+  return items.map(cloneSidebarSessionTagListItem);
+}
+
+function cloneSidebarSessionTagListItem(
+  item: SidebarSessionTagListItem,
+): SidebarSessionTagListItem {
+  return item.type === "tag"
+    ? { enabled: item.enabled, id: item.id, tag: item.tag, type: "tag", visible: item.visible }
+    : { enabled: item.enabled, id: item.id, type: "separator", visible: item.visible };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+function readBoolean(value: unknown, fallback: boolean): boolean {
+  return typeof value === "boolean" ? value : fallback;
+}
+
+function readLooseString(value: unknown): string {
+  return typeof value === "string" ? value : "";
 }
 
 export function getRestoredPreviousSessionTag(input: {

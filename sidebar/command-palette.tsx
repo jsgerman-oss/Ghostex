@@ -25,7 +25,7 @@ import {
   IconTerminal2,
   IconWindowMaximize,
 } from "@tabler/icons-react";
-import { useMemo } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import {
   Command,
   CommandDialog,
@@ -53,20 +53,57 @@ import {
   type ghostexHotkeyDefinition,
   type ghostexHotkeySettings,
 } from "../shared/ghostex-hotkeys";
+import type {
+  ExtensionToSidebarMessage,
+  SidebarPreviousSessionItem,
+  SidebarSessionItem,
+} from "../shared/session-grid-contract";
 import { openAppModal } from "./app-modal-host-bridge";
 import type { CommandConfigDraft } from "./command-config-modal";
 import { SidebarCommandIconGlyph } from "./sidebar-command-icon";
 import { formatSidebarHotkeyLabel } from "./hotkey-label";
+import {
+  filterPreviousSessions,
+  filterPreviousSessionsModalItems,
+  filterSidebarSessionItems,
+} from "./previous-session-search";
+import {
+  getSessionCardTitleTooltip,
+  OverflowTooltipText,
+  SessionCardContent,
+  SessionFloatingAgentIcon,
+  shouldShowTerminalSessionIcon,
+} from "./session-card-content";
+import { getSessionHistoryCardTitle } from "./session-history-card-title";
+import { getEffectiveSessionTag } from "./session-tag-ui";
+import { useSidebarStore, type SidebarGroupRecord } from "./sidebar-store";
 import type { WebviewApi } from "./webview-api";
 
 type CommandPaletteProps = {
+  collapsedGroupsById?: Record<string, true>;
   commands: readonly SidebarCommandButton[];
   hotkeys?: ghostexHotkeySettings;
+  initialQuery?: string;
   isOpen: boolean;
+  isPrewarm?: boolean;
   onBrowserCommandRun?: () => void;
   onOpenChange: (isOpen: boolean) => void;
   petOverlayEnabled?: boolean;
   vscode: WebviewApi;
+};
+
+export type CommandPaletteCurrentSessionItem = {
+  groupId: string;
+  groupIsActive: boolean;
+  projectLabel?: string;
+  searchText: string;
+  session: SidebarSessionItem;
+};
+
+export type CommandPaletteSessionSection = {
+  heading: "Current Project" | "Active Projects" | "Collapsed Projects";
+  items: CommandPaletteCurrentSessionItem[];
+  key: "currentProject" | "activeProjects" | "collapsedProjects";
 };
 
 type HotkeyPaletteCommand = {
@@ -111,16 +148,39 @@ const PANE_ACTION_COMMAND_IDS = [
   "popOutPane",
 ] as const satisfies readonly ghostexHotkeyDefinition["id"][];
 
+const COMMAND_MODE_PREFIX = ">";
+const COMMAND_PALETTE_PREVIOUS_SESSIONS_LIMIT = 20;
+const COMMAND_PALETTE_PREVIOUS_SESSIONS_QUERY_DEBOUNCE_MS = 200;
+
 export function CommandPalette({
+  collapsedGroupsById = {},
   commands,
   hotkeys,
+  initialQuery = "",
   isOpen,
+  isPrewarm = false,
   onBrowserCommandRun,
   onOpenChange,
   petOverlayEnabled = false,
   vscode,
 }: CommandPaletteProps) {
+  const [inputValue, setInputValue] = useState(initialQuery);
+  const [remotePreviousSessions, setRemotePreviousSessions] = useState<
+    SidebarPreviousSessionItem[] | undefined
+  >();
+  const latestPreviousSessionsRequestIdRef = useRef<string | undefined>(undefined);
+  const hasRequestedPreviousSessionsRef = useRef(false);
+  const groupsById = useSidebarStore((state) => state.groupsById);
+  const previousSessions = useSidebarStore((state) => state.previousSessions);
+  const sessionIdsByGroup = useSidebarStore((state) => state.sessionIdsByGroup);
+  const sessionsById = useSidebarStore((state) => state.sessionsById);
+  const workspaceGroupIds = useSidebarStore((state) => state.workspaceGroupIds);
+  const showDebugSessionNumbers = useSidebarStore((state) => state.hud.debuggingMode);
+  const applyLocalFocus = useSidebarStore((state) => state.applyLocalFocus);
   const normalizedHotkeys = useMemo(() => normalizeghostexHotkeySettings(hotkeys), [hotkeys]);
+  const isCommandMode = isCommandPaletteCommandMode(inputValue);
+  const commandQuery = isCommandMode ? getCommandPaletteCommandQuery(inputValue) : "";
+  const sessionQuery = isCommandMode ? "" : inputValue.trim();
   const createBuiltInCommand = (definition: ghostexHotkeyDefinition): HotkeyPaletteCommand => {
     const hotkey = normalizeHotkeyText(normalizedHotkeys[definition.id] ?? definition.defaultKey);
     return {
@@ -137,6 +197,7 @@ export function CommandPalette({
       const hotkeyCommands: BuiltInPaletteCommand[] = GHOSTEX_HOTKEY_DEFINITIONS.filter(
         (definition) =>
           definition.id !== "openCommandPalette" &&
+          definition.id !== "openSessionSearchPalette" &&
           definition.action.kind !== "runActionSlot" &&
           !paneActionIds.has(definition.id),
       ).map(createBuiltInCommand);
@@ -182,6 +243,136 @@ export function CommandPalette({
         .filter(({ command }) => isRunnableOrConfigurableCommand(command)),
     [commands, normalizedHotkeys],
   );
+  const currentSessionItems = useMemo(
+    () =>
+      createCommandPaletteCurrentSessionItems({
+        groupsById,
+        sessionIdsByGroup,
+        sessionsById,
+        workspaceGroupIds,
+      }),
+    [groupsById, sessionIdsByGroup, sessionsById, workspaceGroupIds],
+  );
+  const filteredBuiltInCommands = useMemo(
+    () => filterCommandPaletteItems(builtInCommands, commandQuery, (command) => command.searchText),
+    [builtInCommands, commandQuery],
+  );
+  const filteredPaneActionCommands = useMemo(
+    () =>
+      filterCommandPaletteItems(paneActionCommands, commandQuery, (command) => command.searchText),
+    [commandQuery, paneActionCommands],
+  );
+  const filteredProjectCommands = useMemo(
+    () =>
+      filterCommandPaletteItems(projectCommands, commandQuery, ({ command, hotkey, slotNumber }) =>
+        `${getCommandTitle(command)} ${getCommandDescription(command)} ${hotkey} action ${slotNumber}`,
+      ),
+    [commandQuery, projectCommands],
+  );
+  const filteredCurrentSessionItems = useMemo(
+    () => filterCommandPaletteCurrentSessionItems(currentSessionItems, sessionQuery),
+    [currentSessionItems, sessionQuery],
+  );
+  const commandPaletteCurrentGroupId = useMemo(
+    () => getCommandPaletteCurrentGroupId(currentSessionItems),
+    [currentSessionItems],
+  );
+  const sessionSections = useMemo(
+    () =>
+      createCommandPaletteSessionSections(filteredCurrentSessionItems, {
+        collapsedGroupsById,
+        currentGroupId: commandPaletteCurrentGroupId,
+      }),
+    [collapsedGroupsById, commandPaletteCurrentGroupId, filteredCurrentSessionItems],
+  );
+  const modalPreviousSessions = useMemo(
+    () => filterPreviousSessionsModalItems(remotePreviousSessions ?? previousSessions),
+    [previousSessions, remotePreviousSessions],
+  );
+  const filteredPreviousSessions = useMemo(
+    () =>
+      sortCommandPalettePreviousSessionsByLastActive(
+        filterPreviousSessions(modalPreviousSessions, sessionQuery),
+      ).slice(0, COMMAND_PALETTE_PREVIOUS_SESSIONS_LIMIT),
+    [modalPreviousSessions, sessionQuery],
+  );
+  const hasCommandResults =
+    filteredBuiltInCommands.length > 0 ||
+    filteredPaneActionCommands.length > 0 ||
+    filteredProjectCommands.length > 0;
+  const hasSessionResults =
+    sessionSections.some((section) => section.items.length > 0) ||
+    filteredPreviousSessions.length > 0;
+
+  useEffect(() => {
+    if (!isOpen) {
+      setInputValue(initialQuery);
+      setRemotePreviousSessions(undefined);
+      latestPreviousSessionsRequestIdRef.current = undefined;
+      hasRequestedPreviousSessionsRef.current = false;
+      return;
+    }
+
+    setInputValue(initialQuery);
+  }, [initialQuery, isOpen]);
+
+  useEffect(() => {
+    if (!isOpen) {
+      return;
+    }
+    const handleMessage = (event: MessageEvent<ExtensionToSidebarMessage>) => {
+      if (event.data.type !== "previousSessionsResult") {
+        return;
+      }
+      if (event.data.requestId !== latestPreviousSessionsRequestIdRef.current) {
+        return;
+      }
+      setRemotePreviousSessions(event.data.previousSessions);
+    };
+    window.addEventListener("message", handleMessage);
+    return () => {
+      window.removeEventListener("message", handleMessage);
+    };
+  }, [isOpen]);
+
+  useEffect(() => {
+    if (!isOpen || isPrewarm || isCommandMode) {
+      latestPreviousSessionsRequestIdRef.current = undefined;
+      if (!isOpen || isCommandMode) {
+        setRemotePreviousSessions(undefined);
+        hasRequestedPreviousSessionsRef.current = false;
+      }
+      return;
+    }
+
+    const requestDelay = hasRequestedPreviousSessionsRef.current
+      ? COMMAND_PALETTE_PREVIOUS_SESSIONS_QUERY_DEBOUNCE_MS
+      : 0;
+    const timeoutId = window.setTimeout(() => {
+      const requestId = `command-palette-previous-${Date.now()}-${Math.random()
+        .toString(36)
+        .slice(2)}`;
+      hasRequestedPreviousSessionsRef.current = true;
+      latestPreviousSessionsRequestIdRef.current = requestId;
+      /*
+       * CDXC:CommandPalette 2026-06-13-22:18:
+       * Session-search mode must include current sessions immediately and
+       * gxserver previous sessions in a separate section. Query history on
+       * demand like the Previous Sessions modal instead of reviving a startup
+       * hydrated cache or adding a command-palette-only fallback source.
+       */
+      vscode.postMessage({
+        limit: COMMAND_PALETTE_PREVIOUS_SESSIONS_LIMIT,
+        query: sessionQuery || undefined,
+        requestId,
+        type: "requestPreviousSessions",
+      });
+    }, requestDelay);
+
+    return () => {
+      window.clearTimeout(timeoutId);
+    };
+  }, [isCommandMode, isOpen, isPrewarm, sessionQuery, vscode]);
 
   const runBuiltInCommand = (command: BuiltInPaletteCommand) => {
     if (command.kind === "pet") {
@@ -224,6 +415,26 @@ export function CommandPalette({
     });
   };
 
+  const focusCurrentSession = (item: CommandPaletteCurrentSessionItem) => {
+    applyLocalFocus(item.groupId, item.session.sessionId);
+    onOpenChange(false);
+    vscode.postMessage({
+      sessionId: item.session.sessionId,
+      type: "focusSession",
+    });
+  };
+
+  const restorePreviousSession = (session: SidebarPreviousSessionItem) => {
+    if (!session.isRestorable) {
+      return;
+    }
+    onOpenChange(false);
+    vscode.postMessage({
+      historyId: session.historyId,
+      type: "restorePreviousSession",
+    });
+  };
+
   return (
     <CommandDialog
       className="ghostex-settings-shadcn ghostex-command-palette-dialog top-1/2 -translate-y-1/2"
@@ -263,89 +474,558 @@ export function CommandPalette({
 
           CDXC:AddRepository 2026-05-29-11:45:
           Clone Repository should be available from the command palette as a Ghostex built-in command and open the same full-window clone modal as the Projects header button, without going through configurable project actions. */}
-      <Command>
+      <Command shouldFilter={false}>
         {/*
          * CDXC:CommandPalette 2026-06-11-09:14:
          * CommandInput sits inside InputGroup without an inline-start addon, so
          * add pl-3 so the query text aligns with command-row icons below.
+         *
+         * CDXC:CommandPalette 2026-06-13-22:18:
+         * The input value is the mode switch. A trimmed leading `>` means
+         * command fuzzy finding; no prefix means current-session and previous-
+         * session search. Keep the prefix as actual input text so Cmd+Shift+P
+         * opens with the caret immediately after `>`.
          */}
-        <CommandInput className="pl-3" placeholder="Search Ghostex commands..." />
+        <CommandInput
+          className="pl-3"
+          clearLabel="Clear command palette search"
+          placeholder={
+            isCommandMode
+              ? "Search Ghostex commands..."
+              : "Search sessions or write > for commands..."
+          }
+          value={inputValue}
+          onValueChange={setInputValue}
+        />
         <CommandList className="ghostex-command-palette-list">
-          <CommandEmpty>No commands found.</CommandEmpty>
-          <CommandGroup heading="Ghostex">
-            {builtInCommands.map((command) => (
-              <CommandItem
-                key={command.kind === "hotkey" ? command.definition.id : "togglePetOverlay"}
-                value={command.searchText}
-                onSelect={() => runBuiltInCommand(command)}
-              >
-                <BuiltInCommandIcon command={command} />
-                <span className="ghostex-command-palette-copy">
-                  <span className="ghostex-command-palette-title">{command.title}</span>
-                </span>
-                {command.hotkey ? (
-                  <CommandShortcut>{formatSidebarHotkeyLabel(command.hotkey)}</CommandShortcut>
-                ) : null}
-              </CommandItem>
-            ))}
-          </CommandGroup>
-          {paneActionCommands.length > 0 ? (
+          {isCommandMode ? (
             <>
-              <CommandSeparator />
-              <CommandGroup heading="Pane Actions">
-                {paneActionCommands.map((command) => (
-                  <CommandItem
-                    key={command.definition.id}
-                    value={command.searchText}
-                    onSelect={() => runBuiltInCommand(command)}
-                  >
-                    <BuiltInCommandIcon command={command} />
-                    <span className="ghostex-command-palette-copy">
-                      <span className="ghostex-command-palette-title">{command.title}</span>
-                    </span>
-                    {command.hotkey ? (
-                      <CommandShortcut>{formatSidebarHotkeyLabel(command.hotkey)}</CommandShortcut>
-                    ) : null}
-                  </CommandItem>
-                ))}
-              </CommandGroup>
+              {!hasCommandResults ? <CommandEmpty>No commands found.</CommandEmpty> : null}
+              {filteredBuiltInCommands.length > 0 ? (
+                <CommandGroup heading="Ghostex">
+                  {filteredBuiltInCommands.map((command) => (
+                    <CommandItem
+                      key={command.kind === "hotkey" ? command.definition.id : command.kind}
+                      value={command.searchText}
+                      onSelect={() => runBuiltInCommand(command)}
+                    >
+                      <BuiltInCommandIcon command={command} />
+                      <span className="ghostex-command-palette-copy">
+                        <span className="ghostex-command-palette-title">{command.title}</span>
+                      </span>
+                      {command.hotkey ? (
+                        <CommandShortcut>{formatSidebarHotkeyLabel(command.hotkey)}</CommandShortcut>
+                      ) : null}
+                    </CommandItem>
+                  ))}
+                </CommandGroup>
+              ) : null}
+              {filteredPaneActionCommands.length > 0 ? (
+                <>
+                  {filteredBuiltInCommands.length > 0 ? <CommandSeparator /> : null}
+                  <CommandGroup heading="Pane Actions">
+                    {filteredPaneActionCommands.map((command) => (
+                      <CommandItem
+                        key={command.definition.id}
+                        value={command.searchText}
+                        onSelect={() => runBuiltInCommand(command)}
+                      >
+                        <BuiltInCommandIcon command={command} />
+                        <span className="ghostex-command-palette-copy">
+                          <span className="ghostex-command-palette-title">{command.title}</span>
+                        </span>
+                        {command.hotkey ? (
+                          <CommandShortcut>
+                            {formatSidebarHotkeyLabel(command.hotkey)}
+                          </CommandShortcut>
+                        ) : null}
+                      </CommandItem>
+                    ))}
+                  </CommandGroup>
+                </>
+              ) : null}
+              {filteredProjectCommands.length > 0 ? (
+                <>
+                  {filteredBuiltInCommands.length > 0 || filteredPaneActionCommands.length > 0 ? (
+                    <CommandSeparator />
+                  ) : null}
+                  <CommandGroup heading="Project Actions">
+                    {filteredProjectCommands.map(({ command, hotkey, slotNumber }) => (
+                      <CommandItem
+                        key={command.commandId}
+                        value={`${getCommandTitle(command)} ${getCommandDescription(command)} ${hotkey} action ${slotNumber}`}
+                        onSelect={() => runProjectCommand(command)}
+                      >
+                        <SidebarCommandIconGlyph
+                          color={command.iconColor ?? DEFAULT_SIDEBAR_COMMAND_ICON_COLOR}
+                          icon={command.icon ?? DEFAULT_SIDEBAR_COMMAND_ICON}
+                          stroke={1.8}
+                        />
+                        <span className="ghostex-command-palette-copy">
+                          <span className="ghostex-command-palette-title">
+                            {getCommandTitle(command)}
+                          </span>
+                          <span className="ghostex-command-palette-description">
+                            {getCommandDescription(command)}
+                          </span>
+                        </span>
+                        {hotkey ? (
+                          <CommandShortcut>{formatSidebarHotkeyLabel(hotkey)}</CommandShortcut>
+                        ) : null}
+                      </CommandItem>
+                    ))}
+                  </CommandGroup>
+                </>
+              ) : null}
             </>
-          ) : null}
-          {projectCommands.length > 0 ? (
+          ) : (
             <>
-              <CommandSeparator />
-              <CommandGroup heading="Project Actions">
-                {projectCommands.map(({ command, hotkey, slotNumber }) => (
-                  <CommandItem
-                    key={command.commandId}
-                    value={`${getCommandTitle(command)} ${getCommandDescription(command)} ${hotkey} action ${slotNumber}`}
-                    onSelect={() => runProjectCommand(command)}
-                  >
-                    <SidebarCommandIconGlyph
-                      color={command.iconColor ?? DEFAULT_SIDEBAR_COMMAND_ICON_COLOR}
-                      icon={command.icon ?? DEFAULT_SIDEBAR_COMMAND_ICON}
-                      stroke={1.8}
-                    />
-                    <span className="ghostex-command-palette-copy">
-                      <span className="ghostex-command-palette-title">
-                        {getCommandTitle(command)}
-                      </span>
-                      <span className="ghostex-command-palette-description">
-                        {getCommandDescription(command)}
-                      </span>
-                    </span>
-                    {hotkey ? (
-                      <CommandShortcut>{formatSidebarHotkeyLabel(hotkey)}</CommandShortcut>
-                    ) : null}
-                  </CommandItem>
-                ))}
-              </CommandGroup>
+              {!hasSessionResults ? <CommandEmpty>No sessions found.</CommandEmpty> : null}
+              {sessionSections.map((section, sectionIndex) => (
+                <Fragment key={section.key}>
+                  {sectionIndex > 0 ? <CommandSeparator /> : null}
+                  <CommandGroup heading={section.heading}>
+                    {section.items.map((item) => (
+                      <CommandItem
+                        className="ghostex-command-palette-session-item"
+                        key={item.session.sessionId}
+                        value={item.searchText}
+                        onSelect={() => focusCurrentSession(item)}
+                      >
+                        <CommandPaletteSessionRow
+                          projectLabel={item.projectLabel}
+                          session={item.session}
+                          showDebugSessionNumbers={showDebugSessionNumbers}
+                          state="current"
+                        />
+                      </CommandItem>
+                    ))}
+                  </CommandGroup>
+                </Fragment>
+              ))}
+              {filteredPreviousSessions.length > 0 ? (
+                <>
+                  {sessionSections.length > 0 ? <CommandSeparator /> : null}
+                  <CommandGroup heading="Previous sessions">
+                    {filteredPreviousSessions.map((session) => (
+                      <CommandItem
+                        className="ghostex-command-palette-session-item"
+                        disabled={!session.isRestorable}
+                        key={session.historyId}
+                        value={createPreviousSessionSearchText(session)}
+                        onSelect={() => restorePreviousSession(session)}
+                      >
+                        <CommandPaletteSessionRow
+                          projectLabel={getPreviousSessionProjectLabel(session)}
+                          session={session}
+                          showDebugSessionNumbers={showDebugSessionNumbers}
+                          state="previous"
+                        />
+                      </CommandItem>
+                    ))}
+                  </CommandGroup>
+                </>
+              ) : null}
             </>
-          ) : null}
+          )}
         </CommandList>
       </Command>
     </CommandDialog>
   );
+}
+
+function CommandPaletteSessionRow({
+  projectLabel,
+  session,
+  showDebugSessionNumbers,
+  state,
+}: {
+  projectLabel?: string;
+  session: SidebarSessionItem;
+  showDebugSessionNumbers: boolean;
+  state: "current" | "previous";
+}) {
+  const aliasHeadingRef = useRef<HTMLDivElement>(null);
+  const displaySession = getCommandPaletteDisplaySession(session);
+  const sessionTitleTooltip = getSessionCardTitleTooltip({
+    alwaysShowTitleTooltip: true,
+    session: displaySession,
+    showDebugSessionNumbers,
+    showSessionDetails: true,
+  });
+  const effectiveSessionTag = getEffectiveSessionTag(session);
+  const showTerminalSessionIcon = shouldShowTerminalSessionIcon(session);
+  const hasSessionCardIcon =
+    session.isPinned === true ||
+    Boolean(effectiveSessionTag) ||
+    Boolean(session.agentIcon) ||
+    showTerminalSessionIcon ||
+    session.isReloading === true;
+  /*
+   * CDXC:CommandPalette 2026-06-13-22:22:
+   * Session-search rows can represent multiple currently visible panes, but
+   * only the single cmdk-selected item should look highlighted. Keep live
+   * focused/visible state out of the reused session-card chrome so mouse hover
+   * and Arrow-key selection remain mutually exclusive through data-selected on
+   * the outer CommandItem.
+   */
+
+  return (
+    <OverflowTooltipText
+      text={sessionTitleTooltip.headingText}
+      textRef={aliasHeadingRef}
+      tooltip={sessionTitleTooltip.tooltip}
+      tooltipWhen={sessionTitleTooltip.tooltipWhen}
+    >
+      <div
+        className="session-frame session-history-frame ghostex-command-palette-session-frame"
+        data-focused="false"
+        data-has-agent-icon={String(hasSessionCardIcon)}
+        data-has-project-label={String(Boolean(projectLabel))}
+        data-pinned={String(session.isPinned === true)}
+        data-running={String(state === "current" && session.isRunning)}
+        data-restorable="true"
+        data-tagged={String(Boolean(effectiveSessionTag))}
+        data-visible="false"
+      >
+        <div
+          className="session session-history-card ghostex-command-palette-session-row"
+          data-has-agent-icon={String(hasSessionCardIcon)}
+          data-dragging="false"
+          data-focused="false"
+          data-pinned={String(session.isPinned === true)}
+          data-running={String(state === "current" && session.isRunning)}
+          data-search-selected="false"
+          data-restorable="true"
+          data-tagged={String(Boolean(effectiveSessionTag))}
+          data-visible="false"
+        >
+          <SessionFloatingAgentIcon
+            agentIcon={session.agentIcon}
+            faviconDataUrl={session.faviconDataUrl}
+            isFavorite={session.isFavorite}
+            sessionTag={session.sessionTag}
+            sessionPersistenceName={session.sessionPersistenceName}
+            sessionPersistenceProvider={session.sessionPersistenceProvider}
+            showTerminalIcon={showTerminalSessionIcon}
+          />
+          <SessionCardContent
+            aliasHeadingRef={aliasHeadingRef}
+            hideHeaderAgentIcon={true}
+            session={displaySession}
+            showDebugSessionNumbers={showDebugSessionNumbers}
+            showCloseButton={false}
+            showLastInteractionTime={true}
+            trailingPrefix={
+              projectLabel ? (
+                <div className="session-history-project-label" aria-hidden="true">
+                  {projectLabel}
+                </div>
+              ) : null
+            }
+          />
+        </div>
+      </div>
+    </OverflowTooltipText>
+  );
+}
+
+export function isCommandPaletteCommandMode(value: string): boolean {
+  return value.trimStart().startsWith(COMMAND_MODE_PREFIX);
+}
+
+export function getCommandPaletteCommandQuery(value: string): string {
+  const trimmedStart = value.trimStart();
+  return trimmedStart.startsWith(COMMAND_MODE_PREFIX)
+    ? trimmedStart.slice(COMMAND_MODE_PREFIX.length).trim()
+    : "";
+}
+
+export function createCommandPaletteCurrentSessionItems({
+  groupsById,
+  sessionIdsByGroup,
+  sessionsById,
+  workspaceGroupIds,
+}: {
+  groupsById: Record<string, SidebarGroupRecord>;
+  sessionIdsByGroup: Record<string, readonly string[]>;
+  sessionsById: Record<string, SidebarSessionItem>;
+  workspaceGroupIds: readonly string[];
+}): CommandPaletteCurrentSessionItem[] {
+  const items: CommandPaletteCurrentSessionItem[] = [];
+  for (const groupId of workspaceGroupIds) {
+    const group = groupsById[groupId];
+    const projectLabel = getCurrentSessionProjectLabel(group);
+    for (const sessionId of sessionIdsByGroup[groupId] ?? []) {
+      const session = sessionsById[sessionId];
+      if (!session) {
+        continue;
+      }
+      items.push({
+        groupId,
+        groupIsActive: group?.isActive === true,
+        projectLabel,
+        searchText: createCurrentSessionSearchText(session, group),
+        session,
+      });
+    }
+  }
+  return items;
+}
+
+export function createCommandPaletteSessionSections(
+  items: readonly CommandPaletteCurrentSessionItem[],
+  {
+    collapsedGroupsById,
+    currentGroupId = getCommandPaletteCurrentGroupId(items),
+  }: {
+    collapsedGroupsById: Record<string, true>;
+    currentGroupId?: string;
+  },
+): CommandPaletteSessionSection[] {
+  /*
+   * CDXC:CommandPalette 2026-06-13-22:48:
+   * Session search is project-oriented: the focused project is first, expanded
+   * projects follow, collapsed project rows follow after that, and previous
+   * sessions stay last. Do not use the old flat current-session heading because
+   * it hides whether a result belongs to the current, active, or collapsed
+   * project area.
+   */
+  const currentProjectItems: CommandPaletteCurrentSessionItem[] = [];
+  const activeProjectItems: CommandPaletteCurrentSessionItem[] = [];
+  const collapsedProjectItems: CommandPaletteCurrentSessionItem[] = [];
+
+  for (const item of items) {
+    if (item.groupId === currentGroupId) {
+      currentProjectItems.push(item);
+      continue;
+    }
+    if (collapsedGroupsById[item.groupId] === true) {
+      collapsedProjectItems.push(item);
+      continue;
+    }
+    activeProjectItems.push(item);
+  }
+
+  const sections: CommandPaletteSessionSection[] = [
+    {
+      heading: "Current Project",
+      items: sortCommandPaletteCurrentSessionItemsByLastActive(currentProjectItems),
+      key: "currentProject",
+    },
+    {
+      heading: "Active Projects",
+      items: sortCommandPaletteCurrentSessionItemsByLastActive(activeProjectItems),
+      key: "activeProjects",
+    },
+    {
+      heading: "Collapsed Projects",
+      items: sortCommandPaletteCurrentSessionItemsByLastActive(collapsedProjectItems),
+      key: "collapsedProjects",
+    },
+  ];
+  return sections.filter((section) => section.items.length > 0);
+}
+
+export function sortCommandPaletteCurrentSessionItemsByLastActive(
+  items: readonly CommandPaletteCurrentSessionItem[],
+): CommandPaletteCurrentSessionItem[] {
+  /*
+   * CDXC:CommandPalette 2026-06-13-23:06:
+   * Session search rows must sort by the visible Last Active value from most
+   * recently active to least recently active inside each project-status area.
+   * Keep equal timestamps stable so missing or identical activity times do not
+   * reshuffle rows on every render.
+   */
+  return sortCommandPaletteRowsByLastActive(items, (item) => item.session);
+}
+
+export function sortCommandPalettePreviousSessionsByLastActive(
+  sessions: readonly SidebarPreviousSessionItem[],
+): SidebarPreviousSessionItem[] {
+  return sortCommandPaletteRowsByLastActive(sessions, (session) => session, (session) =>
+    getCommandPaletteSessionTimestamp(session.closedAt),
+  );
+}
+
+function sortCommandPaletteRowsByLastActive<T>(
+  items: readonly T[],
+  getSession: (item: T) => Pick<SidebarSessionItem, "lastInteractionAt">,
+  getFallbackTimestamp: (item: T) => number = () => 0,
+): T[] {
+  return items
+    .map((item, itemIndex) => ({
+      item,
+      itemIndex,
+      timestamp:
+        getCommandPaletteSessionTimestamp(getSession(item).lastInteractionAt) ||
+        getFallbackTimestamp(item),
+    }))
+    .sort((left, right) => {
+      const timestampDelta = right.timestamp - left.timestamp;
+      if (timestampDelta !== 0) {
+        return timestampDelta;
+      }
+      return left.itemIndex - right.itemIndex;
+    })
+    .map(({ item }) => item);
+}
+
+function getCommandPaletteSessionTimestamp(value: string | undefined): number {
+  if (!value) {
+    return 0;
+  }
+
+  const timestamp = Date.parse(value);
+  return Number.isFinite(timestamp) ? timestamp : 0;
+}
+
+function getCommandPaletteCurrentGroupId(
+  items: readonly CommandPaletteCurrentSessionItem[],
+): string | undefined {
+  return (
+    items.find((item) => item.session.isFocused)?.groupId ??
+    items.find((item) => item.groupIsActive)?.groupId ??
+    items[0]?.groupId
+  );
+}
+
+function filterCommandPaletteItems<T>(
+  items: readonly T[],
+  query: string,
+  getSearchText: (item: T) => string,
+): T[] {
+  const normalizedQuery = normalizeCommandPaletteSearchValue(query);
+  if (!normalizedQuery) {
+    return [...items];
+  }
+  return items.filter((item) =>
+    matchesCommandPaletteSearchQuery(getSearchText(item), normalizedQuery),
+  );
+}
+
+export function filterCommandPaletteCurrentSessionItems(
+  items: readonly CommandPaletteCurrentSessionItem[],
+  query: string,
+): CommandPaletteCurrentSessionItem[] {
+  const normalizedQuery = query.trim();
+  if (!normalizedQuery) {
+    return [...items];
+  }
+  const matchedSessionIds = new Set(
+    filterSidebarSessionItems(
+      items.map((item) => item.session),
+      normalizedQuery,
+    ).map((session) => session.sessionId),
+  );
+  return items.filter(
+    (item) =>
+      matchedSessionIds.has(item.session.sessionId) ||
+      matchesCommandPaletteSearchQuery(item.searchText, normalizedQuery),
+  );
+}
+
+function matchesCommandPaletteSearchQuery(searchText: string, query: string): boolean {
+  const normalizedSearchText = normalizeCommandPaletteSearchValue(searchText);
+  const queryTokens = normalizeCommandPaletteSearchValue(query).split(/\s+/).filter(Boolean);
+  return queryTokens.every((token) => fuzzyIncludes(normalizedSearchText, token));
+}
+
+function normalizeCommandPaletteSearchValue(value: string | undefined): string {
+  if (!value) {
+    return "";
+  }
+  return value
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .replace(/[-_/\\.]+/g, " ")
+    .replace(/[^\p{L}\p{N}]+/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
+}
+
+function fuzzyIncludes(text: string, query: string): boolean {
+  let queryIndex = 0;
+
+  for (const character of text) {
+    if (character !== query[queryIndex]) {
+      continue;
+    }
+    queryIndex += 1;
+    if (queryIndex >= query.length) {
+      return true;
+    }
+  }
+
+  return query.length === 0;
+}
+
+function getCommandPaletteDisplaySession(session: SidebarSessionItem): SidebarSessionItem {
+  return session.displayTitle?.trim() || session.primaryTitle?.trim() || !session.terminalTitle?.trim()
+    ? session
+    : {
+        ...session,
+        primaryTitle: session.terminalTitle,
+        terminalTitle: undefined,
+      };
+}
+
+function createCurrentSessionSearchText(
+  session: SidebarSessionItem,
+  group: SidebarGroupRecord | undefined,
+): string {
+  return [
+    session.alias,
+    session.displayTitle,
+    session.primaryTitle,
+    session.terminalTitle,
+    session.detail,
+    session.sessionNumber,
+    group?.title,
+    group?.projectContext?.path,
+    group?.remoteMachineContext?.machineName,
+  ]
+    .filter(Boolean)
+    .join(" ");
+}
+
+function createPreviousSessionSearchText(session: SidebarPreviousSessionItem): string {
+  return [
+    getSessionHistoryCardTitle(session),
+    session.alias,
+    session.displayTitle,
+    session.primaryTitle,
+    session.terminalTitle,
+    session.detail,
+    session.sessionNumber,
+    session.projectName,
+    session.projectPath,
+  ]
+    .filter(Boolean)
+    .join(" ");
+}
+
+function getCurrentSessionProjectLabel(group: SidebarGroupRecord | undefined): string | undefined {
+  const title = group?.title?.trim();
+  if (title) {
+    return title;
+  }
+  return group?.remoteMachineContext?.machineName?.trim() || undefined;
+}
+
+function getPreviousSessionProjectLabel(session: SidebarPreviousSessionItem): string | undefined {
+  const projectName = session.projectName?.trim();
+  if (projectName) {
+    return projectName;
+  }
+
+  const projectPath = session.projectPath?.trim();
+  if (!projectPath) {
+    return undefined;
+  }
+
+  const pathParts = projectPath.split(/[\\/]/u).filter(Boolean);
+  return pathParts[pathParts.length - 1] ?? projectPath;
 }
 
 function BuiltInCommandIcon({ command }: { command: BuiltInPaletteCommand }) {

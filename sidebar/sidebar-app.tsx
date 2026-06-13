@@ -16,7 +16,6 @@ import {
   IconCopy,
   IconDownload,
   IconEdit,
-  IconEye,
   IconFilter2,
   IconFileSearch,
   IconFolder,
@@ -132,10 +131,15 @@ import { createDisplaySessionLayout } from "../shared/active-sessions-sort";
 import { filterPreviousSessions, filterSidebarSessionItems } from "./previous-session-search";
 import {
   getEffectiveSessionTag,
+  getSidebarSessionTagLabel,
   SessionTagIcon,
-  SIDEBAR_SESSION_TAG_SECTIONS,
   type SidebarSessionTag,
 } from "./session-tag-ui";
+import {
+  getEnabledVisibleSidebarSessionTags,
+  normalizeSidebarSessionTagListItems,
+  type SidebarSessionTagListItem,
+} from "../shared/session-tags";
 import { filterRecentProjects } from "./recent-project-search";
 import { isEmptySidebarDoubleClick } from "./empty-sidebar-double-click";
 import { closeAppModal, openAppModal } from "./app-modal-host-bridge";
@@ -143,11 +147,12 @@ import { formatSidebarHotkeyLabel } from "./hotkey-label";
 import {
   GHOSTEX_HOTKEY_DEFINITIONS,
   getghostexHotkeyActionById,
+  getghostexHotkeyActionIdForKey,
   normalizeHotkeyText,
   normalizeghostexHotkeySettings,
   type ghostexHotkeySettings,
 } from "../shared/ghostex-hotkeys";
-import type { RemoteMachineSettings } from "../shared/ghostex-settings";
+import { DEFAULT_ghostex_SETTINGS, type RemoteMachineSettings } from "../shared/ghostex-settings";
 import type { SidebarAgentButton } from "../shared/sidebar-agents";
 import {
   readRenderedSidebarSessionSlotIds,
@@ -750,6 +755,33 @@ export function SidebarApp({
   const buildStamp = useSidebarStore((state) =>
     state.hud.debuggingMode ? state.hud.buildStamp : undefined,
   );
+  const effectiveSettings = settings ?? DEFAULT_ghostex_SETTINGS;
+  const sidebarSessionTagListItems = useMemo(
+    () => normalizeSidebarSessionTagListItems(effectiveSettings.sidebarSessionTagListItems),
+    [effectiveSettings.sidebarSessionTagListItems],
+  );
+  const enabledVisibleSidebarSessionTagSet = useMemo(
+    () => new Set(getEnabledVisibleSidebarSessionTags(sidebarSessionTagListItems)),
+    [sidebarSessionTagListItems],
+  );
+  const activeSelectedSessionTagFilters = useMemo(
+    () =>
+      selectedSessionTagFilters.filter((tag) => enabledVisibleSidebarSessionTagSet.has(tag)),
+    [enabledVisibleSidebarSessionTagSet, selectedSessionTagFilters],
+  );
+
+  useEffect(() => {
+    /*
+     * CDXC:SessionTagFilters 2026-06-13-17:50:
+     * If a selected sidebar tag filter becomes hidden or disabled from
+     * Settings, drop it from the active filter state so sessions are not
+     * invisibly filtered by a tag the sidebar menu no longer lets users choose.
+     */
+    setSelectedSessionTagFilters((current) => {
+      const next = current.filter((tag) => enabledVisibleSidebarSessionTagSet.has(tag));
+      return next.length === current.length ? current : next;
+    });
+  }, [enabledVisibleSidebarSessionTagSet]);
 
   useEffect(() => {
     const refreshPrimaryAgentLauncher = (event: Event) => {
@@ -1788,7 +1820,7 @@ export function SidebarApp({
       createDisplayedSessionIdsByGroup({
         groupIds: effectiveGroupIds,
         query: normalizedSessionSearchQuery,
-        selectedSessionTags: selectedSessionTagFilters,
+        selectedSessionTags: activeSelectedSessionTagFilters,
         sessionIdsByGroup: effectiveSessionIdsByGroup,
         sessionsById,
         shouldFilter: isSessionSearchFiltering,
@@ -1796,9 +1828,9 @@ export function SidebarApp({
     [
       effectiveGroupIds,
       effectiveSessionIdsByGroup,
+      activeSelectedSessionTagFilters,
       isSessionSearchFiltering,
       normalizedSessionSearchQuery,
-      selectedSessionTagFilters,
       sessionsById,
     ],
   );
@@ -1807,13 +1839,13 @@ export function SidebarApp({
       createDisplayedGroupIds(
         effectiveGroupIds,
         displayedWorkspaceSessionIdsByGroup,
-        isSessionSearchFiltering || selectedSessionTagFilters.length > 0,
+        isSessionSearchFiltering || activeSelectedSessionTagFilters.length > 0,
       ),
     [
+      activeSelectedSessionTagFilters.length,
       displayedWorkspaceSessionIdsByGroup,
       effectiveGroupIds,
       isSessionSearchFiltering,
-      selectedSessionTagFilters.length,
     ],
   );
   const displayedReferenceChatGroupIds = useMemo(
@@ -1968,7 +2000,12 @@ export function SidebarApp({
     }
 
     if (action.kind === "openCommandPalette") {
-      openCommandPalette();
+      openCommandPalette(">");
+      return;
+    }
+
+    if (action.kind === "openSessionSearchPalette") {
+      openCommandPalette("");
       return;
     }
 
@@ -2817,13 +2854,24 @@ export function SidebarApp({
     openAppModal({ modal: "hotkeys", type: "open" });
   };
 
-  const openCommandPalette = () => {
+  const openCommandPalette = (initialQuery = ">") => {
     /**
      * CDXC:CommandPalette 2026-06-13-10:26:
      * Cmd+Shift+P should open the full-window app-modal command palette,
      * matching Settings instead of rendering a dialog inside the narrow
      * sidebar. Close transient sidebar drawers first so the centered palette is
      * the only active command surface.
+     *
+     * CDXC:CommandPalette 2026-06-13-22:18:
+     * The shared palette searches sessions unless the input starts with `>`.
+     * Launchers pass the initial query so Cmd+Shift+P and the Commands menu
+     * open command-finding mode while Cmd+P opens session-search mode.
+     *
+     * CDXC:CommandPalette 2026-06-13-22:48:
+     * Session-search mode mirrors project visibility: current project, active
+     * projects, collapsed projects, then previous sessions. Include the
+     * sidebar collapse map with each open request so the native modal host does
+     * not have to infer UI-only state from rendered DOM.
      */
     setIsOverflowMenuOpen(false);
     setIsPinnedPromptsOpen(false);
@@ -2833,7 +2881,12 @@ export function SidebarApp({
     setIsSessionSearchSelectionVisible(false);
     setIsSessionSearchOpen(false);
     setSessionSearchQuery("");
-    openAppModal({ modal: "commandPalette", type: "open" });
+    openAppModal({
+      collapsedGroupsById: { ...collapsedGroupsById },
+      initialQuery,
+      modal: "commandPalette",
+      type: "open",
+    });
   };
 
   const closeSessionSearch = () => {
@@ -2978,10 +3031,14 @@ export function SidebarApp({
         return;
       }
 
-      if (isCommandPaletteHotkey(event) && !hasActiveSidebarHotkeyRecorder()) {
+      const commandPaletteHotkeyActionId = getCommandPaletteHotkeyActionId(
+        event,
+        settings?.hotkeys,
+      );
+      if (commandPaletteHotkeyActionId && !hasActiveSidebarHotkeyRecorder()) {
         event.preventDefault();
         event.stopPropagation();
-        openCommandPalette();
+        openCommandPalette(commandPaletteHotkeyActionId === "openCommandPalette" ? ">" : "");
         return;
       }
 
@@ -3125,6 +3182,9 @@ export function SidebarApp({
   };
 
   const toggleSessionTagFilter = (sessionTag: SidebarSessionTag) => {
+    if (!enabledVisibleSidebarSessionTagSet.has(sessionTag)) {
+      return;
+    }
     setSelectedSessionTagFilters((current) =>
       current.includes(sessionTag)
         ? current.filter((tag) => tag !== sessionTag)
@@ -3411,7 +3471,8 @@ export function SidebarApp({
                       }}
                       primaryAgentId={primaryAgentLauncherId}
                       sectionKey="quick"
-                      selectedSessionTagFilters={selectedSessionTagFilters}
+                      selectedSessionTagFilters={activeSelectedSessionTagFilters}
+                      sessionTagListItems={sidebarSessionTagListItems}
                       title="Quick"
                     />
                     <div
@@ -3527,7 +3588,8 @@ export function SidebarApp({
                       setIsReferenceProjectsCollapsed((previous) => !previous);
                     }}
                     sectionKey="projects"
-                    selectedSessionTagFilters={selectedSessionTagFilters}
+                    selectedSessionTagFilters={activeSelectedSessionTagFilters}
+                    sessionTagListItems={sidebarSessionTagListItems}
                     title="Projects"
                   />
                 ) : null}
@@ -4209,6 +4271,7 @@ function SidebarReferenceSectionHeader({
   primaryAgentId,
   sectionKey,
   selectedSessionTagFilters = [],
+  sessionTagListItems,
   title,
 }: {
   activeSessionsSortMode?: SidebarActiveSessionsSortMode;
@@ -4232,6 +4295,7 @@ function SidebarReferenceSectionHeader({
   primaryAgentId?: string;
   sectionKey: ReferenceSidebarSectionId;
   selectedSessionTagFilters?: readonly SidebarSessionTag[];
+  sessionTagListItems?: readonly SidebarSessionTagListItem[];
   title: string;
 }) {
   /**
@@ -4292,6 +4356,10 @@ function SidebarReferenceSectionHeader({
     bulkActionLabel === "Collapse All" ? IconArrowsDiagonalMinimize : IconArrowsDiagonal2;
   const primaryAgent = agents.find((agent) => agent.agentId === primaryAgentId) ?? agents[0];
   const primaryAgentLabel = primaryAgent?.name ?? "Agent";
+  const normalizedSessionTagListItems = useMemo(
+    () => normalizeSidebarSessionTagListItems(sessionTagListItems),
+    [sessionTagListItems],
+  );
   const hasTagFilters = selectedSessionTagFilters.length > 0;
   const hasActions =
     onAddProject ||
@@ -4537,41 +4605,46 @@ function SidebarReferenceSectionHeader({
             <div className="session-context-menu-divider" role="separator" />
           ) : null}
           {onToggleSessionTagFilter
-            ? SIDEBAR_SESSION_TAG_SECTIONS.map((section) => (
-                <div className="session-tag-menu-section" key={section.label}>
-                  <div className="session-tag-menu-section-label">{section.label}</div>
-                  {section.options.map((option) => {
-                    const isSelected = selectedSessionTagFilters.includes(option.value);
-                    return (
-                      <button
-                        aria-checked={isSelected}
-                        className="session-context-menu-item reference-sidebar-tag-filter-item"
-                        data-selected={String(isSelected)}
-                        key={option.value}
-                        onClick={() => onToggleSessionTagFilter(option.value)}
-                        role="menuitemcheckbox"
-                        type="button"
-                      >
-                        <SessionTagIcon
-                          className="session-context-menu-icon session-tag-colored-icon"
-                          fillFavorite
-                          size={14}
-                          stroke={1.8}
-                          tag={option.value}
-                        />
-                        {option.label}
-                        <IconCheck
-                          aria-hidden="true"
-                          className="session-context-menu-trailing-icon reference-sidebar-tag-filter-check"
-                          data-visible={String(isSelected)}
-                          size={14}
-                          stroke={2}
-                        />
-                      </button>
-                    );
-                  })}
-                </div>
-              ))
+            ? normalizedSessionTagListItems.map((item) => {
+                if (!item.visible) {
+                  return null;
+                }
+                if (item.type === "separator") {
+                  return item.enabled ? (
+                    <div className="session-context-menu-divider" key={item.id} role="separator" />
+                  ) : null;
+                }
+
+                const isSelected = selectedSessionTagFilters.includes(item.tag);
+                return (
+                  <button
+                    aria-checked={isSelected}
+                    className="session-context-menu-item reference-sidebar-tag-filter-item"
+                    data-selected={String(isSelected)}
+                    disabled={!item.enabled}
+                    key={item.id}
+                    onClick={() => onToggleSessionTagFilter(item.tag)}
+                    role="menuitemcheckbox"
+                    type="button"
+                  >
+                    <SessionTagIcon
+                      className="session-context-menu-icon session-tag-colored-icon"
+                      fillFavorite
+                      size={14}
+                      stroke={1.8}
+                      tag={item.tag}
+                    />
+                    {getSidebarSessionTagLabel(item.tag)}
+                    <IconCheck
+                      aria-hidden="true"
+                      className="session-context-menu-trailing-icon reference-sidebar-tag-filter-check"
+                      data-visible={String(isSelected)}
+                      size={14}
+                      stroke={2}
+                    />
+                  </button>
+                );
+              })
             : null}
         </SidebarContextMenuPortal>
       ) : null}
@@ -5934,14 +6007,59 @@ function createDisplayedGroupIds(
   return groupIds.filter((groupId) => (sessionIdsByGroup[groupId] ?? []).length > 0);
 }
 
-function isCommandPaletteHotkey(event: KeyboardEvent): boolean {
-  return (
-    event.metaKey &&
-    !event.altKey &&
-    !event.ctrlKey &&
-    !event.shiftKey &&
-    event.key.toLowerCase() === "k"
+function getCommandPaletteHotkeyActionId(
+  event: KeyboardEvent,
+  hotkeys: ghostexHotkeySettings | undefined,
+): "openCommandPalette" | "openSessionSearchPalette" | undefined {
+  const hotkeyText = keyboardEventToSidebarHotkeyText(event);
+  if (!hotkeyText) {
+    return undefined;
+  }
+  const actionId = getghostexHotkeyActionIdForKey(
+    normalizeghostexHotkeySettings(hotkeys),
+    hotkeyText,
   );
+  return actionId === "openCommandPalette" || actionId === "openSessionSearchPalette"
+    ? actionId
+    : undefined;
+}
+
+function keyboardEventToSidebarHotkeyText(event: KeyboardEvent): string | undefined {
+  const key = normalizeSidebarHotkeyKey(event.key);
+  if (!key) {
+    return undefined;
+  }
+  const parts = [
+    event.metaKey ? "cmd" : "",
+    event.ctrlKey ? "ctrl" : "",
+    event.altKey ? "alt" : "",
+    event.shiftKey ? "shift" : "",
+    key,
+  ].filter(Boolean);
+  return normalizeHotkeyText(parts.length > 1 ? parts.join("+") : key);
+}
+
+function normalizeSidebarHotkeyKey(key: string): string | undefined {
+  if (key.length === 1) {
+    return key.toLowerCase();
+  }
+  switch (key) {
+    case "ArrowUp":
+      return "up";
+    case "ArrowRight":
+      return "right";
+    case "ArrowDown":
+      return "down";
+    case "ArrowLeft":
+      return "left";
+    case "Alt":
+    case "Control":
+    case "Meta":
+    case "Shift":
+      return undefined;
+    default:
+      return key.toLowerCase();
+  }
 }
 
 function hasActiveSidebarHotkeyRecorder(): boolean {

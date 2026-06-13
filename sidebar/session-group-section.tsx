@@ -914,7 +914,10 @@ export function SessionGroupSection({
     !isCollapsed &&
     enableProjectSessionListToggle &&
     orderedSessionIds.length > projectSessionListCollapsedCount;
-  const renderedSessionIds = shouldShowProjectSessionListToggle ? orderedSessionIds : visibleSessionIds;
+  const renderedSessionIds =
+    shouldShowProjectSessionListToggle && !isProjectSessionListCollapsed
+      ? orderedSessionIds
+      : visibleSessionIds;
   const projectSessionListLastVisibleSessionId =
     visibleSessionIds.length > 0 ? visibleSessionIds[visibleSessionIds.length - 1] : undefined;
   const projectSessionListRenderedSessionIdsKey = renderedSessionIds.join("\u0000");
@@ -1046,6 +1049,9 @@ export function SessionGroupSection({
     .map((sessionId) => sessionsById[sessionId])
     .filter((session): session is NonNullable<typeof session> => session !== undefined);
   const visibleSessionIdSet = new Set(visibleSessionIds);
+  const projectSessionListHiddenCount = shouldClipProjectSessionList
+    ? Math.max(0, orderedSessionIds.length - visibleSessionIds.length)
+    : 0;
   const projectSessionListToggleLabel = isProjectSessionListCollapsed ? "Show more" : "Show less";
   const shouldScrubDisabledGroupDndAccessibility = isChatCollection || draggingDisabled;
   const sessionSummary = getGroupSessionSummary(groupSessions);
@@ -1383,10 +1389,24 @@ export function SessionGroupSection({
     setProjectSessionListCollapsedState(() => {
       const latestState = readProjectSessionListCollapsedState();
       const nextState = { ...latestState };
-      if (latestState[projectSessionListStorageId]) {
+      const wasCollapsed = latestState[projectSessionListStorageId] === true;
+      if (wasCollapsed) {
         delete nextState[projectSessionListStorageId];
       } else {
         nextState[projectSessionListStorageId] = true;
+      }
+      if (!wasCollapsed) {
+        /*
+         * CDXC:ProjectSessionLists 2026-06-13-20:03:
+         * Collapsing a long project list while its header is sticky can leave
+         * the new first visible session partially under the header. Re-align
+         * the existing project section after the height change so the header
+         * remains the top row and the session list starts below it.
+         */
+        const sectionElement = groupSectionRef.current;
+        window.requestAnimationFrame(() => {
+          sectionElement?.scrollIntoView({ block: "start", inline: "nearest" });
+        });
       }
       writeProjectSessionListCollapsedState(nextState);
       return nextState;
@@ -2284,6 +2304,27 @@ export function SessionGroupSection({
                     </Fragment>
                   );
                 })}
+                {projectSessionListHiddenCount > 0 ? (
+                  /*
+                   * CDXC:ProjectSessionLists 2026-06-13-22:23:
+                   * The hidden-session count belongs below the last rendered project row. Render it through the regular session-card component so it has identical row geometry, but disable session-only chrome and actions; clicking the row restores the normal expanded project list, removes this row, and brings the header Show less action back.
+                   */
+                  <SortableSessionCard
+                    dragDisabled
+                    dropDisabled
+                    groupId={group.groupId}
+                    index={renderedSessionIds.length}
+                    projectSessionListMoreRow={{
+                      count: projectSessionListHiddenCount,
+                      onReveal: toggleProjectSessionListCollapsed,
+                    }}
+                    sessionId={`${group.groupId}-project-session-list-more`}
+                    showDropPositionIndicator={false}
+                    showGroupConnector={false}
+                    showGroupDropTargetChrome={false}
+                    vscode={vscode}
+                  />
+                ) : null}
                 {shouldRenderPinnedSessionDropGaps ? (
                   <div
                     aria-hidden

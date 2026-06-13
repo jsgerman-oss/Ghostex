@@ -630,11 +630,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
   private let lidSleepHelperClient = LidSleepPrivilegedHelperClient.shared
   private let gxserverClient = GxserverClient()
   private var isSparkleUpdateAvailable = false
+  private var isSparkleUpdateDownloading = false
   private var sparkleAvailabilityProbeTimer: Timer?
   private var didStartSparkleUpdater = false
-  private lazy var sparkleUserDriver = GhostexSparkleUserDriver(
-    hostBundle: Bundle.main,
-    delegate: self)
+  private lazy var sparkleUserDriver: GhostexSparkleUserDriver = {
+    let userDriver = GhostexSparkleUserDriver(
+      hostBundle: Bundle.main,
+      delegate: self)
+    /**
+     CDXC:AutoUpdate 2026-06-13-17:52:
+     The titlebar download button's fade animation must follow Sparkle's actual
+     download lifecycle, not the user's initial click. Bridge the compact user
+     driver's download-active callbacks back to AppDelegate so native remains
+     the updater state owner.
+     */
+    userDriver.onDownloadActiveChanged = { [weak self] downloading in
+      Task { @MainActor in
+        self?.setSparkleUpdateDownloading(downloading)
+      }
+    }
+    return userDriver
+  }()
   private lazy var sparkleUpdater = SPUUpdater(
     hostBundle: Bundle.main,
     applicationBundle: Bundle.main,
@@ -1261,11 +1277,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
   ) {
     TerminalFocusDebugLog.append(
       event: event,
-      details: [
+      details: terminalFocusDebugPayload(event: event, details: details),
+      force: force)
+  }
+
+  fileprivate static func terminalFocusDebugPayload(event: String, details: String?) -> [String: Any] {
+    /**
+     CDXC:Hotkeys 2026-06-13-22:33:
+     Cmd+Opt+Arrow command-pane repros need the safe action/direction/result
+     fields in the support log. Parse nativeHotkeys JSON details at the native
+     writer boundary so TerminalFocusDebugLog can sanitize structured metadata
+     instead of redacting the whole free-form `details` string.
+     */
+    guard event.hasPrefix("nativeHotkeys."),
+      let details,
+      let data = details.data(using: .utf8),
+      let payload = try? JSONSerialization.jsonObject(with: data),
+      var dictionary = payload as? [String: Any]
+    else {
+      return [
         "details": nullableLogString(details),
         "source": "native-sidebar",
-      ],
-      force: force)
+      ]
+    }
+    dictionary["source"] = "native-sidebar"
+    return dictionary
   }
 
   fileprivate static func appendLayoutLayeringDebugLog(
@@ -1820,7 +1856,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
      native hotkey event so menu selection, configured shortcuts, and sidebar
      actions share one implementation path.
      */
-    root.postHostEvent(.nativeHotkey(actionId: "openSettings"))
+    root.postHostEvent(.nativeHotkey(actionId: "openSettings", sourceSessionId: nil))
   }
 
   @objc @MainActor private func closeFocusedSessionFromMainMenu(_ sender: Any?) {
@@ -1927,6 +1963,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
     (window?.contentView as? ghostexRootView)?.setTitlebarUpdateAvailable(available)
   }
 
+  @MainActor private func setSparkleUpdateDownloading(_ downloading: Bool) {
+    isSparkleUpdateDownloading = downloading
+    (window?.contentView as? ghostexRootView)?.setTitlebarUpdateDownloading(downloading)
+  }
+
   @IBAction nonisolated func closeAllWindows(_ sender: Any?) {}
 
   @IBAction nonisolated func toggleQuickTerminal(_ sender: Any?) {}
@@ -1977,6 +2018,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
      Ghostex is on the latest build. Preserve the titlebar button so users can
      reopen the update flow until Sparkle later reports no valid update.
      */
+    setSparkleUpdateDownloading(false)
     setSparkleUpdateAvailable(isSparkleUpdateAvailable)
   }
 
@@ -1985,10 +2027,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
   }
 
   func updaterDidNotFindUpdate(_ updater: SPUUpdater) {
+    setSparkleUpdateDownloading(false)
     setSparkleUpdateAvailable(false)
   }
 
   func updater(_ updater: SPUUpdater, didAbortWithError error: Error) {
+    setSparkleUpdateDownloading(false)
     setSparkleUpdateAvailable(isSparkleUpdateAvailable)
   }
 
@@ -2047,6 +2091,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
       defaultWorkspaceBackgroundColor: ghosttyConfigColor("background") ?? .black,
       gxserverBootstrap: gxserverClient.webBootstrap(status: gxserverStatus),
       initialUpdateAvailable: isSparkleUpdateAvailable,
+      initialUpdateDownloading: isSparkleUpdateDownloading,
       sendEvent: { [weak self] event in
         self?.bridge?.send(event)
         (self?.window?.contentView as? ghostexRootView)?.postHostEvent(event)
@@ -2903,6 +2948,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
       workspaceView?.focusTerminal(sessionId: command.sessionId)
     case .focusProjectEditorCompanionSession(let command):
       workspaceView?.focusProjectEditorCompanionSession(sessionId: command.sessionId)
+    case .retargetProjectEditorCompanionSession(let command):
+      workspaceView?.focusProjectEditorCompanionSession(sessionId: command.sessionId)
     case .focusWebPane(let command):
       workspaceView?.focusWebPane(sessionId: command.sessionId)
     case .reloadWebPane(let command):
@@ -3119,6 +3166,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
     case .setReactTitlebarStripState(let command):
       (window?.contentView as? ghostexRootView)?.setReactTitlebarStripState(
         overlayOpen: command.overlayOpen)
+    case .titlebarBlankMouseDown:
+      (window?.contentView as? ghostexRootView)?.handleTitlebarBlankMouseDownFromWebContent()
     case .showTitlebarDropdownPanel(let command):
       (window?.contentView as? ghostexRootView)?.showTitlebarDropdownPanel(command)
     case .closeTitlebarDropdownPanel:
@@ -4604,8 +4653,13 @@ private final class NativeSettingsStore {
      Cmd+Shift+P opens the shadcn command palette even while terminal panes own
      first responder, so AppKit must match the same shared hotkey id as the
      sidebar.
+     CDXC:CommandPalette 2026-06-13-22:18:
+     Cmd+Shift+P opens command mode by asking React to prefill `>`, while Cmd+P
+     opens the same palette in session-search mode. Keep both shortcuts in the
+     native defaults so terminal focus and Settings agree.
      */
     "openCommandPalette": "cmd+shift+p",
+    "openSessionSearchPalette": "cmd+p",
     /**
      CDXC:Hotkeys 2026-05-14-08:09:
      F12 is the default Commands panel shortcut in shared sidebar settings, and terminal focus reaches AppKit before the sidebar DOM can observe that bare function key.
@@ -4740,10 +4794,16 @@ private final class NativeSettingsStore {
   }
 
   func readAppShotsSettings() -> NativeAppShotsSettings {
+    /**
+     CDXC:AppShots 2026-06-13-19:51:
+     App Shots are beta and must remain off until the user explicitly enables
+     them in Settings. Native startup mirrors the shared Settings default when
+     settings.json is absent or from before the App Shots key existed.
+     */
     guard let settings = readSharedSidebarSettingsDictionary() else {
-      return NativeAppShotsSettings(enabled: true, hotkey: "both-command")
+      return NativeAppShotsSettings(enabled: false, hotkey: "both-command")
     }
-    let enabled = settings["appShotsEnabled"] as? Bool ?? true
+    let enabled = settings["appShotsEnabled"] as? Bool ?? false
     let rawHotkey = settings["appShotsHotkey"] as? String
     let hotkey =
       rawHotkey == "double-left-shift" || rawHotkey == "double-left-option"
@@ -5015,6 +5075,9 @@ private final class NativeSettingsStore {
 }
 
 final class TitlebarChromeWebView: WKWebView {
+  var onBlankTitlebarMouseDown: ((NSEvent) -> Void)?
+  private var activeMouseDownEvent: NSEvent?
+
   override var mouseDownCanMoveWindow: Bool {
     /*
      CDXC:ReactTitlebar 2026-06-11-22:10:
@@ -5024,6 +5087,32 @@ final class TitlebarChromeWebView: WKWebView {
      into window dragging; blank strip dragging is handled by ReactTitlebarChromeView.
      */
     false
+  }
+
+  override func mouseDown(with event: NSEvent) {
+    /*
+     CDXC:ReactTitlebar 2026-06-13-14:08:
+     The titlebar WKWebView owns the exact native strip, so blank titlebar drag
+     cannot reach the wrapper behind it. Keep the current WebKit mouseDown event
+     available for the synchronous React background callback; buttons keep normal
+     WebKit event handling and never call this native drag hook.
+     */
+    activeMouseDownEvent = event
+    super.mouseDown(with: event)
+    DispatchQueue.main.async { [weak self, weak event] in
+      guard let self, self.activeMouseDownEvent === event else {
+        return
+      }
+      self.activeMouseDownEvent = nil
+    }
+  }
+
+  func performBlankTitlebarMouseDownFromWebContent() {
+    guard let event = activeMouseDownEvent else {
+      return
+    }
+    activeMouseDownEvent = nil
+    onBlankTitlebarMouseDown?(event)
   }
 
   override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
@@ -5163,6 +5252,8 @@ final class ghostexRootView: NSView {
   private static let startupOverlayFadeDuration: TimeInterval = 1.0
   private static let startupOverlayIconOpacity: CGFloat = 0.14
   private static let startupOverlayIconSize: CGFloat = 132
+  private static let rootChromeLayerZPosition: CGFloat = 10_500
+  private static let startupOverlayZPosition: CGFloat = 11_000
   private static let floatingPromptEditorFrameDefaultsKey = "ghostex.floatingPromptEditor.frame.v1"
   private static let commandPalettePrewarmRequestId = "ghostex-command-palette-prewarm"
   private static let commandPalettePrewarmDelay: TimeInterval = 1.4
@@ -5185,7 +5276,7 @@ final class ghostexRootView: NSView {
   var sidebarWebView: WKWebView { sidebarView }
   private let sidebarView: SidebarWebView
   private let titlebarChromeView: ReactTitlebarChromeView
-  private let titlebarChromeWebView: WKWebView
+  private let titlebarChromeWebView: TitlebarChromeWebView
   private let startupOverlayView = NSView(frame: .zero)
   private let startupOverlayIconView = NSImageView(frame: .zero)
   private let scriptBridge: SidebarScriptBridge
@@ -5284,6 +5375,7 @@ final class ghostexRootView: NSView {
     defaultWorkspaceBackgroundColor: NSColor,
     gxserverBootstrap: [String: Any],
     initialUpdateAvailable: Bool,
+    initialUpdateDownloading: Bool,
     sendEvent: @escaping (HostEvent) -> Void,
     syncGhosttyTerminalSettings: @escaping (SyncGhosttyTerminalSettings) -> Void,
     applyGhosttyConfigSettings: @escaping (ApplyGhosttyConfigSettings) -> Void,
@@ -5352,6 +5444,7 @@ final class ghostexRootView: NSView {
       "sidebarCollapsed": isSidebarCollapsed,
       "sidebarSide": sidebarSide.rawValue,
       "updateAvailable": initialUpdateAvailable,
+      "updateDownloading": initialUpdateDownloading,
       "workspaceName": workspaceName.isEmpty ? "Ghostex" : workspaceName,
     ]
     if let data = try? JSONSerialization.data(withJSONObject: bootstrap),
@@ -5381,6 +5474,11 @@ final class ghostexRootView: NSView {
        Seed the native availability boolean into bootstrap so the initial React
        render shows the download button without waiting for the next 15-minute
        appcast probe.
+
+       CDXC:AutoUpdate 2026-06-13-17:52:
+       Sparkle download state can change while the titlebar document is loading
+       or reloading. Seed updateDownloading alongside availability so the
+       button fade reflects an in-progress download from the first React render.
        */
       configuration.userContentController.addUserScript(bootstrapScript)
       titlebarConfiguration.userContentController.addUserScript(bootstrapScript)
@@ -5433,6 +5531,9 @@ final class ghostexRootView: NSView {
     }
     divider.onDragEnded = { [weak self] in
       self?.persistSidebarWidth()
+    }
+    titlebarChromeWebView.onBlankTitlebarMouseDown = { [weak self] event in
+      self?.titlebarChromeView.handleBlankTitlebarMouseDown(event)
     }
     divider.onDoubleClick = { [weak self] in
       self?.resetSidebarWidth()
@@ -5729,9 +5830,16 @@ final class ghostexRootView: NSView {
      the center as a low-opacity grayscale watermark. Keep the icon inside the
      overlay view so removing the overlay also removes every startup mask hit
      target after the fade completes.
+
+     CDXC:StartupOverlay 2026-06-13-18:05:
+     The titlebar/workarea separator is a high-priority root CALayer, but it
+     must never draw in front of the startup loading overlay. Give the overlay
+     view a higher visual layer priority so the loading mask fully covers native
+     chrome until it fades out.
      */
     startupOverlayView.wantsLayer = true
     startupOverlayView.layer?.backgroundColor = ghostexReferenceSidebarChromeBackgroundColor.cgColor
+    startupOverlayView.layer?.zPosition = Self.startupOverlayZPosition
     startupOverlayView.alphaValue = 1
     startupOverlayIconView.image = grayscaleStartupOverlayIconImage()
     startupOverlayIconView.imageScaling = .scaleProportionallyUpOrDown
@@ -7279,6 +7387,10 @@ final class ghostexRootView: NSView {
     needsLayout = true
   }
 
+  func handleTitlebarBlankMouseDownFromWebContent() {
+    titlebarChromeWebView.performBlankTitlebarMouseDownFromWebContent()
+  }
+
   func showTitlebarDropdownPanel(_ command: ShowTitlebarDropdownPanel) {
     guard let window,
       let anchorScreenRect = titlebarDropdownAnchorScreenRect(command.anchorRect)
@@ -7378,6 +7490,30 @@ final class ghostexRootView: NSView {
     titlebarChromeWebView.evaluateJavaScript(
       """
       window.__ghostex_PENDING_TITLEBAR_UPDATE_AVAILABLE__ = \(available ? "true" : "false");
+      window.__ghostex_TITLEBAR__?.setActiveProjectState(\(json));
+      undefined;
+      """)
+    titlebarDropdownPanelController?.setActiveProjectState(json)
+  }
+
+  func setTitlebarUpdateDownloading(_ downloading: Bool) {
+    let payload: [String: Any] = ["updateDownloading": downloading]
+    guard
+      let data = try? JSONSerialization.data(withJSONObject: payload),
+      let json = String(data: data, encoding: .utf8)
+    else {
+      return
+    }
+    /**
+     CDXC:AutoUpdate 2026-06-13-17:52:
+     The fade animation is a titlebar rendering detail, but Sparkle owns
+     whether an update is downloading. Push only the sanitized boolean state to
+     React so the UI can animate without inferring progress from clicks or
+     exposing download metadata.
+     */
+    titlebarChromeWebView.evaluateJavaScript(
+      """
+      window.__ghostex_PENDING_TITLEBAR_UPDATE_DOWNLOADING__ = \(downloading ? "true" : "false");
       window.__ghostex_TITLEBAR__?.setActiveProjectState(\(json));
       undefined;
       """)
@@ -7653,6 +7789,10 @@ final class ghostexRootView: NSView {
       focusWorkspaceSessionAfterSidebarActivation(
         sessionId: command.sessionId,
         kind: .projectEditorCompanion)
+    case .retargetProjectEditorCompanionSession(let command):
+      focusWorkspaceSessionAfterSidebarActivation(
+        sessionId: command.sessionId,
+        kind: .projectEditorCompanion)
     case .focusWebPane(let command):
       focusWorkspaceSessionAfterSidebarActivation(sessionId: command.sessionId, kind: .webPane)
     case .reloadWebPane(let command):
@@ -7899,6 +8039,8 @@ final class ghostexRootView: NSView {
        synchronize overlay lifecycle state only.
        */
       setReactTitlebarStripState(overlayOpen: command.overlayOpen)
+    case .titlebarBlankMouseDown:
+      titlebarChromeWebView.performBlankTitlebarMouseDownFromWebContent()
     case .showTitlebarDropdownPanel(let command):
       showTitlebarDropdownPanel(command)
     case .closeTitlebarDropdownPanel:
@@ -9352,13 +9494,18 @@ final class ghostexRootView: NSView {
       (window?.contentView as? ghostexRootView)?.toggleSidebarCollapsed()
       return
     }
-    if actionId == "openCommandPalette", isCommandPaletteNativeModalOpenOrPending() {
+    if Self.isCommandPaletteHotkeyActionId(actionId), isCommandPaletteNativeModalOpenOrPending() {
       /*
        CDXC:CommandPalette 2026-06-13-10:26:
        The configured command-palette hotkey should toggle the native palette.
        Once the palette has created its child-window host, repeat
        openCommandPalette hotkeys close that host instead of dispatching another
        open event into React.
+
+       CDXC:CommandPalette 2026-06-13-22:18:
+       Command-mode and session-search-mode palette hotkeys share one native
+       child window, so either configured opener closes the visible palette
+       instead of stacking a second reusable host.
        */
       logNativeHotkeyDebug(
         "nativeHotkeys.commandPaletteToggleClose",
@@ -9369,8 +9516,14 @@ final class ghostexRootView: NSView {
       closeNativeAppModalWindow(reason: "commandPaletteHotkeyToggle", sendReactClose: true)
       return
     }
-    logNativeHotkeyDebug("nativeHotkeys.dispatchHostEvent", ["actionId": actionId])
-    sendHostEvent(.nativeHotkey(actionId: actionId))
+    let sourceSessionId = workspaceView.nativeHotkeySourceSessionId()
+    logNativeHotkeyDebug(
+      "nativeHotkeys.dispatchHostEvent",
+      [
+        "actionId": actionId,
+        "sourceSessionId": sourceSessionId ?? "",
+      ])
+    sendHostEvent(.nativeHotkey(actionId: actionId, sourceSessionId: sourceSessionId))
   }
 
   private func isCommandPaletteNativeModalOpenOrPending() -> Bool {
@@ -9397,7 +9550,7 @@ final class ghostexRootView: NSView {
   }
 
   private func shouldHandleHotkeyWhileWebChromeOwnsFocus(actionId: String) -> Bool {
-    if actionId == "openCommandPalette", isCommandPaletteNativeModalOpenOrPending() {
+    if Self.isCommandPaletteHotkeyActionId(actionId), isCommandPaletteNativeModalOpenOrPending() {
       return true
     }
     guard activeAppModalKind == nil && activeNativeAppModalKind == nil else {
@@ -9478,6 +9631,16 @@ final class ghostexRootView: NSView {
 
   private static func isSessionNavigationHotkeyActionId(_ actionId: String) -> Bool {
     actionId == "focusNextSession" || actionId == "focusPreviousSession"
+  }
+
+  private static func isCommandPaletteHotkeyActionId(_ actionId: String) -> Bool {
+    /*
+     CDXC:CommandPalette 2026-06-13-22:18:
+     The native command-palette child window is shared by command and session
+     search modes. Treat both open actions as palette toggles once that shared
+     window is visible.
+     */
+    actionId == "openCommandPalette" || actionId == "openSessionSearchPalette"
   }
 
   private static func isSessionNavigationHotkeyText(_ hotkeyText: String?) -> Bool {
@@ -9910,7 +10073,13 @@ final class ghostexRootView: NSView {
       divider.refreshCursorAfterVisibilityChange()
     }
     workspaceView.frame = frames.workspace
-    nativeToastController?.setLayout(parentWindow: window, rootView: self, anchorFrame: frames.workspace)
+    /*
+     CDXC:AppToasts 2026-06-13-19:57:
+     Native macOS toasts should appear from the bottom center of the app window,
+     not the workspace-only region, so sidebar placement does not shift status
+     feedback away from the window center.
+     */
+    nativeToastController?.setLayout(parentWindow: window, rootView: self, anchorFrame: bounds)
     layoutRootChromeLayers(frames: frames)
     titlebarChromeView.frame = frames.titlebarChrome
     promoteSidebarChrome()
@@ -9973,7 +10142,7 @@ final class ghostexRootView: NSView {
 
   private func configureRootChromeLayers() {
     workareaTitlebarBorderLayer.backgroundColor = Self.workareaSeparatorColor.cgColor
-    workareaTitlebarBorderLayer.zPosition = 10_500
+    workareaTitlebarBorderLayer.zPosition = Self.rootChromeLayerZPosition
     workareaTitlebarBorderLayer.actions = [
       "bounds": NSNull(),
       "hidden": NSNull(),
@@ -10462,7 +10631,7 @@ final class ghostexRootView: NSView {
        CDXC:AppToasts 2026-06-11-21:04:
        Toast bridge messages now terminate in the native toast controller. Do
        not dispatch them into the modal-host WKWebView or reveal that overlay;
-       only the exact-sized NSPanel toast should sit above the workspace.
+       only the exact-sized NSPanel toast should sit above the app content.
        */
       if let request = NativeAppToastRequest(message: message) {
         nativeToastController?.show(request)
@@ -12259,7 +12428,10 @@ private struct NativeAppToastRequest {
 
 private final class NativeAppToastController {
   private static let bottomMargin: CGFloat = 47
+  private static let enterAnimationDuration: TimeInterval = 0.28
+  private static let enterYOffset: CGFloat = 24
   private static let gap: CGFloat = 10
+  private static let layoutAnimationDuration: TimeInterval = 0.22
   private static let maxVisibleToasts = 4
   private static let preferredWidth: CGFloat = 356
   private static let minimumWidth: CGFloat = 280
@@ -12300,28 +12472,27 @@ private final class NativeAppToastController {
       return
     }
     let item: Item
+    let enteringToastId: String?
     if let existing = itemsById[request.id] {
       item = existing
+      enteringToastId = nil
       item.dismissTimer?.invalidate()
       item.view.update(request)
       item.panel.ignoresMouseEvents = request.action == nil
     } else {
       item = makeItem(request)
+      enteringToastId = item.id
       itemsById[request.id] = item
       orderedIds.append(request.id)
       parentWindow.addChildWindow(item.panel, ordered: .above)
       item.panel.alphaValue = 0
       item.panel.orderFront(nil)
-      NSAnimationContext.runAnimationGroup { context in
-        context.duration = 0.16
-        item.panel.animator().alphaValue = 1
-      }
     }
     while orderedIds.count > Self.maxVisibleToasts, let oldestId = orderedIds.first {
       dismiss(id: oldestId, animated: true)
     }
     scheduleDismissalIfNeeded(item: item, request: request)
-    layoutPanels(animated: true)
+    layoutPanels(animated: true, enteringToastId: enteringToastId)
   }
 
   func closeAll() {
@@ -12401,7 +12572,15 @@ private final class NativeAppToastController {
     }
   }
 
-  private func layoutPanels(animated: Bool) {
+  private static func toastAnimationTimingFunction() -> CAMediaTimingFunction {
+    CAMediaTimingFunction(controlPoints: 0.16, 1.0, 0.3, 1.0)
+  }
+
+  private static func enterStartFrame(for frame: CGRect) -> CGRect {
+    frame.offsetBy(dx: 0, dy: -Self.enterYOffset)
+  }
+
+  private func layoutPanels(animated: Bool, enteringToastId: String? = nil) {
     guard let parentWindow,
       let rootView,
       !orderedIds.isEmpty
@@ -12427,11 +12606,28 @@ private final class NativeAppToastController {
       )
       item.view.frame = CGRect(origin: .zero, size: size)
       if animated {
+        let isEnteringToast = item.id == enteringToastId
+        if isEnteringToast {
+          /*
+           CDXC:AppToasts 2026-06-13-19:57:
+           New native toasts must start at the bottom-center app anchor and move
+           upward into the stack while fading in. Place the NSPanel at the
+           lower start frame before ordering animation so it never flashes from
+           screen origin or from a workspace-shifted position.
+           */
+          item.panel.setFrame(Self.enterStartFrame(for: frame), display: true)
+        }
         NSAnimationContext.runAnimationGroup { context in
-          context.duration = 0.16
+          context.duration =
+            isEnteringToast ? Self.enterAnimationDuration : Self.layoutAnimationDuration
+          context.timingFunction = Self.toastAnimationTimingFunction()
           item.panel.animator().setFrame(frame, display: true)
+          if isEnteringToast {
+            item.panel.animator().alphaValue = 1
+          }
         }
       } else {
+        item.panel.alphaValue = 1
         item.panel.setFrame(frame, display: true)
       }
       y += size.height + Self.gap
@@ -13482,9 +13678,12 @@ private final class AppModalWindowController: NSObject, NSWindowDelegate, WKNavi
        Add Worktree should be a compact macOS child-window modal sized exactly 570x550, not the larger Git Commit review frame. Keep this modal-specific so commit review still has room for file selection and diff-related controls.
 
        CDXC:WorktreeModal 2026-06-12-11:10:
-       Add Worktree needs 80px more vertical room after the 570x550 compact pass. Keep the 570px width and lock the native child window at 570x630 so the React/WebView surface can fill the frame with exact 18px edge padding.
+       Add Worktree keeps the 570px fixed width from the compact native-window pass so the React/WebView surface fills a dedicated child window instead of inheriting the larger Git Commit review frame.
+
+       CDXC:WorktreeModal 2026-06-13-18:39:
+       Add Worktree no longer has a footer Cancel button. Keep the 570px width but fit the shorter footer stack to 570x574 so the remaining Add Images/New Worktree controls sit above the same 17px bottom inset as the top edge.
        */
-      return CGSize(width: 570, height: 630)
+      return CGSize(width: 570, height: 574)
     case "previousSessions":
       /*
        CDXC:PreviousSessions 2026-06-11-20:39:
@@ -14314,7 +14513,7 @@ final class ReactTitlebarChromeView: NSView, WKNavigationDelegate {
       """)
   }
 
-  override func mouseDown(with event: NSEvent) {
+  func handleBlankTitlebarMouseDown(_ event: NSEvent) {
     let point = convert(event.locationInWindow, from: nil)
     guard isPointInFixedTitlebarStrip(point) else {
       return
@@ -14330,6 +14529,10 @@ final class ReactTitlebarChromeView: NSView, WKNavigationDelegate {
       return
     }
     window?.performDrag(with: event)
+  }
+
+  override func mouseDown(with event: NSEvent) {
+    handleBlankTitlebarMouseDown(event)
   }
 
   override var mouseDownCanMoveWindow: Bool {

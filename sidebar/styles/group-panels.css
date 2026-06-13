@@ -348,8 +348,15 @@
 .group-sessions-shell[data-project-session-list-clipped="true"] {
   /*
    * CDXC:ProjectSessionLists 2026-06-12-23:53:
-   * Show less keeps overflow session rows mounted so the project expand/collapse max-height transition can hide them smoothly. Clip only this header-toggle state because normal expanded project bodies allow visible overflow for anchored status affordances.
+   * Show less uses the project expand/collapse max-height path. Clip only this header-toggle state because normal expanded project bodies allow visible overflow for anchored status affordances.
+   *
+   * CDXC:ProjectSessionLists 2026-06-13-19:49:
+   * The bottom hidden-session reveal row is the exact clipped edge for a collapsed project list. Do not use the expanded shell's 4px cushion here, because that can reveal a sliver of the first hidden session below the "Show N more" row.
+   *
+   * CDXC:ProjectSessionLists 2026-06-13-20:03:
+   * Collapsed project lists now render only the visible rows plus the count button. Keep the exact max-height so sticky project headers and the separator define clear row boundaries without clipped overflow rows.
    */
+  max-height: var(--sidebar-collapse-content-height);
   overflow: hidden;
 }
 
