@@ -239,6 +239,10 @@ describe("normalizeghostexSettings", () => {
      * Recommended is the default sidebar preset for normalized settings and the
      * leftmost Settings preset button. It keeps agent icons hover-only while
      * showing detailed sidebar status chrome.
+     *
+     * CDXC:SidebarSettingsPresets 2026-06-13-15:42:
+     * Recommended also hides session-card Last Active timestamps so the default
+     * sidebar stays compact without switching to the Minimal preset.
      */
     expect(DEFAULT_ghostex_SETTINGS).toMatchObject(SIDEBAR_SETTINGS_PRESET_SETTINGS.recommended);
     expect(normalizeghostexSettings({})).toMatchObject(
@@ -254,6 +258,9 @@ describe("normalizeghostexSettings", () => {
     expect(SIDEBAR_SETTINGS_PRESET_SETTINGS.codex.hideBrowserFaviconUntilHover).toBe(false);
     expect(SIDEBAR_SETTINGS_PRESET_SETTINGS.minimal.hideBrowserFaviconUntilHover).toBe(true);
     expect(SIDEBAR_SETTINGS_PRESET_SETTINGS.detailed.hideBrowserFaviconUntilHover).toBe(false);
+    expect(SIDEBAR_SETTINGS_PRESET_SETTINGS.recommended.hideLastActiveTimeOnSessionCards).toBe(
+      true,
+    );
     expect(
       normalizeghostexSettings({
         hideProjectHeaderDiffStats: false,
@@ -300,19 +307,19 @@ describe("normalizeghostexSettings", () => {
     ).toBeUndefined();
   });
 
-  test("keeps session-card last active timestamps visible unless explicitly hidden", () => {
+  test("hides session-card last active timestamps by default unless explicitly shown", () => {
     /**
-     * CDXC:SidebarSessions 2026-05-15-08:57
-     * Last Active timestamps on session cards stay visible by default. Users
-     * can hide that timestamp without affecting the project header's
+     * CDXC:SidebarSessions 2026-06-13-15:42
+     * Recommended hides Last Active timestamps on session cards by default.
+     * Users can show that timestamp without affecting the project header's
      * independent git additions/deletions stats.
      */
-    expect(DEFAULT_ghostex_SETTINGS.hideLastActiveTimeOnSessionCards).toBe(false);
+    expect(DEFAULT_ghostex_SETTINGS.hideLastActiveTimeOnSessionCards).toBe(true);
     expect(normalizeghostexSettings({})).toMatchObject({
-      hideLastActiveTimeOnSessionCards: false,
-    });
-    expect(normalizeghostexSettings({ hideLastActiveTimeOnSessionCards: true })).toMatchObject({
       hideLastActiveTimeOnSessionCards: true,
+    });
+    expect(normalizeghostexSettings({ hideLastActiveTimeOnSessionCards: false })).toMatchObject({
+      hideLastActiveTimeOnSessionCards: false,
     });
   });
 

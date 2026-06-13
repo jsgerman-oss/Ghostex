@@ -19,42 +19,26 @@ function sourceSection(source: string, startNeedle: string, endNeedle: string, f
 }
 
 describe("native pane tab titlebar hit testing", () => {
-  test("routes workspace pane titlebars from the root before embedded siblings", () => {
+  test("keeps root hit testing on normal AppKit traversal", () => {
     /**
-     * CDXC:NativePaneTabClicks 2026-06-12-06:33:
-     * Split-pane tab bars can be visible while an embedded sibling wins root
-     * hit testing first. The app root must ask the mounted workspace titlebar
-     * resolver before ordinary AppKit traversal so each visible native tab,
-     * Close button, and tab-bar action owns its click.
+     * CDXC:RootHitBoundaries 2026-06-13-09:52:
+     * The root view must not route sidebar, divider, resize-rail, or pane
+     * titlebar hits by prepass. Those regions are laid out as normal
+     * non-overlapping AppKit child views.
      */
-    const rootHitTestIndex = appDelegateSource.indexOf(
-      "override func hitTest(_ point: NSPoint) -> NSView?",
-      appDelegateSource.indexOf("final class ghostexRootView"),
-    );
-    const resizePrepassIndex = appDelegateSource.indexOf(
-      "if let resizeHandleHitView = workspaceResizeHandleHitView(at: point)",
-      rootHitTestIndex,
-    );
-    const titlebarPrepassIndex = appDelegateSource.indexOf(
-      "if let paneTitleBarHitView = workspacePaneTitleBarHitView(at: point)",
-      rootHitTestIndex,
-    );
-    const superHitIndex = appDelegateSource.indexOf("return super.hitTest(point)", rootHitTestIndex);
-    const titlebarHelperIndex = appDelegateSource.indexOf(
-      "private func workspacePaneTitleBarHitView(at point: NSPoint)",
-      rootHitTestIndex,
-    );
-    const titlebarHelperSource = appDelegateSource.slice(
-      titlebarHelperIndex,
-      appDelegateSource.indexOf("private func rootLayoutFrames", titlebarHelperIndex),
+    const rootSource = sourceSection(
+      appDelegateSource,
+      "final class ghostexRootView",
+      "extension ghostexRootView: WKNavigationDelegate",
     );
 
-    expect(rootHitTestIndex).toBeGreaterThan(-1);
-    expect(resizePrepassIndex).toBeGreaterThan(rootHitTestIndex);
-    expect(titlebarPrepassIndex).toBeGreaterThan(resizePrepassIndex);
-    expect(titlebarPrepassIndex).toBeLessThan(superHitIndex);
-    expect(titlebarHelperSource).toContain("workspaceView.paneTitleBarHitView(at: workspacePoint)");
-    expect(titlebarHelperSource).toContain('NativePaneTabDragReproLog.append(event: "nativePaneTabs.root.hitTest.titleBarPrepass"');
+    expect(rootSource).not.toContain("override func hitTest(_ point: NSPoint) -> NSView?");
+    expect(rootSource).not.toContain("workspacePaneTitleBarHitView");
+    expect(appDelegateSource).not.toContain("workspaceResizeHandleHitView(at point: NSPoint)");
+    expect(appDelegateSource).not.toContain("nativePaneTabs.root.hitTest.titleBarPrepass");
+    expect(rootSource).toContain("sidebarView.frame = frames.sidebar");
+    expect(rootSource).toContain("divider.frame = frames.divider");
+    expect(rootSource).toContain("workspaceView.frame = frames.workspace");
   });
 
   test("keeps sidebar and divider as non-overlapping native regions", () => {
@@ -65,18 +49,15 @@ describe("native pane tab titlebar hit testing", () => {
      * adjacent frames so the divider owns only its visible grab region and the
      * webview owns only sidebar content.
      */
-    const rootHitTestIndex = appDelegateSource.indexOf(
-      "override func hitTest(_ point: NSPoint) -> NSView?",
-      appDelegateSource.indexOf("final class ghostexRootView"),
-    );
-    const sidebarPrepassIndex = appDelegateSource.indexOf(
-      "if let sidebarHitView = sidebarContentHitView(at: point)",
-      rootHitTestIndex,
+    const rootSource = sourceSection(
+      appDelegateSource,
+      "final class ghostexRootView",
+      "extension ghostexRootView: WKNavigationDelegate",
     );
     const sidebarWebViewSource = sourceSection(
       appDelegateSource,
       "final class SidebarWebView: WKWebView",
-      "final class SidebarModalBackdropView",
+      "final class ghostexRootView",
     );
     const layoutSource = sourceSection(
       appDelegateSource,
@@ -85,224 +66,230 @@ describe("native pane tab titlebar hit testing", () => {
       appDelegateSource.indexOf("final class ghostexRootView"),
     );
 
-    expect(rootHitTestIndex).toBeGreaterThan(-1);
-    expect(sidebarPrepassIndex).toBe(-1);
+    expect(rootSource).not.toContain("if let sidebarHitView = sidebarContentHitView(at: point)");
     expect(appDelegateSource).not.toContain("private func sidebarContentHitView(at point: NSPoint)");
     expect(layoutSource).toContain("sidebarView.frame = frames.sidebar");
     expect(layoutSource).toContain("divider.frame = frames.divider");
     expect(layoutSource).not.toContain("visualSidebarFrame");
-    expect(layoutSource).not.toContain("resizeHitExclusion");
+    expect(layoutSource).not.toContain("resizeLayoutRecordExclusion");
     expect(appDelegateSource).not.toContain("sidebarResizeEdgeExtension");
+    expect(appDelegateSource).not.toContain("final class SidebarModalBackdropView");
+    expect(appDelegateSource).not.toContain("NonInteractiveChromeLineView");
+    expect(appDelegateSource).toContain("private let workareaTitlebarBorderLayer = CALayer()");
     expect(appDelegateSource).not.toContain("private func visualSidebarFrame");
     expect(terminalWorkspaceSource).not.toContain("sidebarResizeEdgeExtensionWidth");
     expect(sidebarWebViewSource).not.toContain("override func hitTest(_ point: NSPoint) -> NSView?");
     expect(sidebarWebViewSource).not.toContain("containsInteractiveHitPoint");
-    expect(sidebarWebViewSource).not.toContain("resizeHitExclusion");
+    expect(sidebarWebViewSource).not.toContain("resizeLayoutRecordExclusion");
   });
 
-  test("routes pane titlebar controls from the window before React titlebar dispatch", () => {
+  test("does not route titlebar controls from the window boundary", () => {
     /**
-     * CDXC:NativePaneTabClicks 2026-06-12-07:11:
-     * The GitHub project tab Add button can be in a top workspace band where
-     * AppKit sends the mouse stream through NSWindow chrome handling before root
-     * hit testing. Window-boundary routing must ask the workspace's mounted pane
-     * titlebars first, then fall through to React titlebar controls only on miss.
+     * CDXC:NativePaneTabClicks 2026-06-13-09:52:
+     * Pane titlebars and the fixed React/macOS titlebar are normal child
+     * regions. Window-boundary events must not pre-route either surface.
      */
-    const routeIndex = appDelegateSource.indexOf("func routeTitlebarMouseEventFromWindow(_ event: NSEvent) -> Bool");
-    const routeSource = appDelegateSource.slice(
-      routeIndex,
-      appDelegateSource.indexOf("func showTitlebarDropdownPanel", routeIndex),
-    );
-    const workspaceRouteIndex = routeSource.indexOf("routeWorkspacePaneTitleBarMouseEventFromWindow(event)");
-    const reactRouteIndex = routeSource.indexOf("titlebarChromeView.routeWindowMouseEvent(event)");
-    const workspaceHelperIndex = appDelegateSource.indexOf(
-      "private func routeWorkspacePaneTitleBarMouseEventFromWindow(_ event: NSEvent) -> Bool",
-      routeIndex,
-    );
-    const workspaceHelperSource = appDelegateSource.slice(
-      workspaceHelperIndex,
-      appDelegateSource.indexOf("private static func isWorkspacePaneTitleBarWindowMouseEvent", workspaceHelperIndex),
-    );
-    const eventGuardIndex = appDelegateSource.indexOf(
-      "private static func isWorkspacePaneTitleBarWindowMouseEvent",
-      workspaceHelperIndex,
-    );
-    const eventGuardSource = appDelegateSource.slice(
-      eventGuardIndex,
-      appDelegateSource.indexOf("private static func workspacePaneTitleBarWindowMouseEventTypeName", eventGuardIndex),
-    );
-
-    expect(routeIndex).toBeGreaterThan(-1);
-    expect(workspaceRouteIndex).toBeGreaterThan(-1);
-    expect(reactRouteIndex).toBeGreaterThan(workspaceRouteIndex);
-    expect(workspaceHelperSource).toContain(
-      'workspaceView.routePaneTitleBarMouseEvent(event, at: workspacePoint, source: source)',
-    );
-    expect(workspaceHelperSource).toContain('let source = "windowPaneTitleBarPrepass"');
-    expect(workspaceHelperSource).toContain(
-      'NativePaneTabDragReproLog.append(event: "nativePaneTabs.root.windowMouseEvent.titleBarPrepass"',
-    );
-    expect(eventGuardSource).toContain("case .leftMouseDown, .leftMouseDragged, .leftMouseUp:");
+    expect(appDelegateSource).not.toContain("func routeTitlebarMouseEventFromWindow(_ event: NSEvent) -> Bool");
+    expect(appDelegateSource).not.toContain("var onTitlebarMouseEvent: ((NSEvent) -> Bool)?");
+    expect(appDelegateSource).not.toContain("titlebarChromeView.routeWindowMouseEvent(event)");
+    expect(appDelegateSource).not.toContain("func routeWindowMouseEvent(_ event: NSEvent) -> Bool");
+    expect(appDelegateSource).not.toContain("dispatchWindowMouseEventToWebView");
+    expect(appDelegateSource).not.toContain("windowSendEvent.titlebarRerouted");
+    expect(appDelegateSource).not.toContain("routeWorkspacePaneTitleBarMouseEventFromWindow");
+    expect(appDelegateSource).not.toContain("private func routeWorkspacePaneTitleBarMouseEventFromWindow");
+    expect(appDelegateSource).not.toContain("isWorkspacePaneTitleBarWindowMouseEvent");
+    expect(appDelegateSource).not.toContain("windowPaneTitleBarPrepass");
   });
 
-  test("routes workspace pane titlebars before embedded child hit testing", () => {
+  test("keeps workspace hit testing on normal AppKit traversal", () => {
     /**
-     * CDXC:NativePaneTabClicks 2026-06-12-04:28:
-     * The 04:18 repro showed top-band mouseDown/mouseUp reaching the pane
-     * container instead of tab buttons. Workspace hit testing must check actual
-     * visible pane titlebars in z-order before Ghostty, CEF, or WKWebView.
+     * CDXC:NativeWorkspaceHitTesting 2026-06-13-09:52:
+     * Workspace pane titlebars, pane content, and resize rails are strict
+     * sibling/child regions, so TerminalWorkspaceView must not override hitTest
+     * or expose pane-titlebar hit resolver helpers.
      */
-    const workspaceHitTestIndex = terminalWorkspaceSource.indexOf(
-      "override func hitTest(_ point: NSPoint) -> NSView?",
-      terminalWorkspaceSource.indexOf("private func paneResizeHandleFrame"),
-    );
-    const titleBarRouteIndex = terminalWorkspaceSource.indexOf(
-      "if let titleBarHitView = paneTitleBarHitView(at: point)",
-      workspaceHitTestIndex,
-    );
-    const superHitIndex = terminalWorkspaceSource.indexOf("return super.hitTest(point)", workspaceHitTestIndex);
-    const titleBarHelperIndex = terminalWorkspaceSource.indexOf("func paneTitleBarHitView(at point: NSPoint)");
-    const helperSource = terminalWorkspaceSource.slice(
-      titleBarHelperIndex,
-      terminalWorkspaceSource.indexOf("func setNativeChromeInteractivitySuppressed", titleBarHelperIndex),
+    const workspaceSource = sourceSection(
+      terminalWorkspaceSource,
+      "@MainActor\nfinal class TerminalWorkspaceView: NSView",
+      "final class ProjectEditorInitialLoadingOverlayView",
     );
 
-    expect(workspaceHitTestIndex).toBeGreaterThan(-1);
-    expect(titleBarRouteIndex).toBeGreaterThan(workspaceHitTestIndex);
-    expect(titleBarRouteIndex).toBeLessThan(superHitIndex);
-    expect(helperSource).toContain("private func paneTitleBarEventTarget(at point: NSPoint)");
-    expect(helperSource).toContain("guard let target = paneTitleBarEventTarget(at: point)");
-    expect(helperSource).toContain("for view in subviews.reversed()");
-    expect(helperSource).toContain("if let titleBarView = view as? TerminalSessionTitleBarView");
-    expect(helperSource).toContain("directPaneTitleBarEventTarget(titleBarView, at: point)");
-    expect(helperSource).toContain("let containerPoint = convert(point, to: containerView)");
-    expect(helperSource).toContain("titleBarView.frame.contains(containerPoint)");
-    expect(helperSource).toContain("return target.titleBarView.hitTest(target.titleBarPoint) ?? target.titleBarView");
+    expect(workspaceSource).not.toContain("override func hitTest(_ point: NSPoint) -> NSView?");
+    expect(terminalWorkspaceSource).not.toContain("func paneTitleBarHitView(at point: NSPoint)");
+    expect(terminalWorkspaceSource).not.toContain("private func paneTitleBarEventTarget(at point: NSPoint)");
+    expect(terminalWorkspaceSource).not.toContain("directPaneTitleBarEventTarget");
+    expect(terminalWorkspaceSource).not.toContain("func resizeHandleHitView(at point: NSPoint)");
+    expect(terminalWorkspaceSource).not.toContain("if let resizeHandleHitView = resizeHandleHitView(at: point)");
+    expect(workspaceSource).toContain("Pane titlebars, pane content, and resize rails are strict sibling regions");
+    expect(workspaceSource).toContain("PaneContentLayoutRegion");
+    expect(workspaceSource).toContain("paneContentLayoutRegions");
+    expect(workspaceSource).not.toContain("PaneContentHitRegion");
+    expect(workspaceSource).not.toContain("paneContentHitRegions");
   });
 
-  test("includes directly mounted GitHub project titlebars in workspace prepass", () => {
+  test("mounts directly managed project titlebars as normal AppKit views", () => {
     /**
-     * CDXC:NativePaneTabClicks 2026-06-12-07:35:
-     * GitHub project tab strips are mounted directly under TerminalWorkspaceView,
-     * not inside TerminalPaneLeafContainerView. The workspace and NSWindow
-     * prepasses must resolve those direct titlebars by their current AppKit bounds
-     * so the visible Git tab Add button owns its click.
+     * CDXC:NativePaneTabClicks 2026-06-13-09:52:
+     * GitHub/project tab strips that are mounted directly under the workspace
+     * should rely on their real AppKit view frames, not a workspace prepass.
      */
-    const helperIndex = terminalWorkspaceSource.indexOf("private func paneTitleBarEventTarget(at point: NSPoint)");
-    const helperEndIndex = terminalWorkspaceSource.indexOf("func setNativeChromeInteractivitySuppressed", helperIndex);
-    const helperSource = terminalWorkspaceSource.slice(helperIndex, helperEndIndex);
     const projectEditorIndex = terminalWorkspaceSource.indexOf("func createProjectEditorPane");
     const projectEditorSource = terminalWorkspaceSource.slice(
       projectEditorIndex,
       terminalWorkspaceSource.indexOf("private func makeProjectEditorBrowserTab", projectEditorIndex),
     );
 
-    expect(helperIndex).toBeGreaterThan(-1);
     expect(projectEditorIndex).toBeGreaterThan(-1);
     expect(projectEditorSource).toContain("view.setDebugContext(ownerSessionId: command.projectId, paneKind: \"projectEditorGit\")");
     expect(projectEditorSource).toContain("addSubview(titleBarView)");
-    expect(helperSource).toContain("private func directPaneTitleBarEventTarget(");
-    expect(helperSource).toContain("let titleBarPoint = convert(point, to: titleBarView)");
-    expect(helperSource).toContain("titleBarView.bounds.contains(titleBarPoint)");
-    expect(helperSource).toContain("return PaneTitleBarEventTarget(");
-    expect(helperSource.indexOf("if let titleBarView = view as? TerminalSessionTitleBarView")).toBeLessThan(
-      helperSource.indexOf("guard let containerView = view as? TerminalPaneLeafContainerView"),
-    );
+    expect(terminalWorkspaceSource).not.toContain("PaneTitleBarEventTarget");
+    expect(terminalWorkspaceSource).not.toContain("private func directPaneTitleBarEventTarget(");
   });
 
-  test("keeps window-routed titlebar mouse streams on the same pane titlebar", () => {
+  test("does not keep window-routed pane titlebar mouse stream state", () => {
     /**
-     * CDXC:NativePaneTabClicks 2026-06-12-07:11:
-     * A window-boundary pane-titlebar mouseDown must keep later drag/up events on
-     * that same titlebar, even if tab addition, close hover, or pointer movement
-     * changes normal AppKit hit testing before mouseUp.
+     * CDXC:NativePaneTabClicks 2026-06-13-11:35:
+     * Pane titlebar mouse streams should stay on the concrete AppKit tab/action
+     * controls that receive mouseDown. There should be no workspace-level or
+     * titlebar-level reroute state.
      */
-    const workspaceRouteIndex = terminalWorkspaceSource.indexOf(
-      "func routePaneTitleBarMouseEvent(_ event: NSEvent, at point: NSPoint, source: String) -> Bool",
-    );
-    const workspaceRouteSource = terminalWorkspaceSource.slice(
-      workspaceRouteIndex,
-      terminalWorkspaceSource.indexOf("private func paneTitleBarEventTarget", workspaceRouteIndex),
-    );
     const titleBarIndex = terminalWorkspaceSource.indexOf("private final class TerminalSessionTitleBarView");
     const titleBarSource = terminalWorkspaceSource.slice(
       titleBarIndex,
-      terminalWorkspaceSource.indexOf("override func mouseDragged(with event: NSEvent)", titleBarIndex),
+      terminalWorkspaceSource.indexOf("final class ProjectEditorInitialLoadingOverlayView", titleBarIndex),
     );
 
-    expect(terminalWorkspaceSource).toContain("private weak var windowRoutedPaneTitleBar: TerminalSessionTitleBarView?");
-    expect(workspaceRouteIndex).toBeGreaterThan(-1);
-    expect(workspaceRouteSource).toContain("case .leftMouseDown:");
-    expect(workspaceRouteSource).toContain("windowRoutedPaneTitleBar = target.titleBarView");
-    expect(workspaceRouteSource).toContain("case .leftMouseDragged:");
-    expect(workspaceRouteSource).toContain("guard let titleBarView = windowRoutedPaneTitleBar");
-    expect(workspaceRouteSource).toContain("case .leftMouseUp:");
-    expect(workspaceRouteSource).toContain("windowRoutedPaneTitleBar = nil");
-    expect(workspaceRouteSource).toContain("routeWindowTitleBarMouseEvent(");
-    expect(titleBarSource).toContain("fileprivate func routeWindowTitleBarMouseEvent(");
-    expect(titleBarSource).toContain("handleReroutedTitleBarMouseDown(");
-    expect(titleBarSource).toContain("handleReroutedTitleBarMouseDragged(");
-    expect(titleBarSource).toContain("handleReroutedTitleBarMouseUp(");
-    expect(titleBarSource).toContain("pendingReroutedTitleBarTarget = nil");
+    expect(terminalWorkspaceSource).not.toContain("private weak var windowRoutedPaneTitleBar");
+    expect(terminalWorkspaceSource).not.toContain("func routePaneTitleBarMouseEvent(");
+    expect(titleBarSource).not.toContain("fileprivate func routeWindowTitleBarMouseEvent(");
+    expect(titleBarSource).not.toContain("handleReroutedTitleBarMouseDown(");
+    expect(titleBarSource).not.toContain("handleReroutedTitleBarMouseDragged(");
+    expect(titleBarSource).not.toContain("handleReroutedTitleBarMouseUp(");
+    expect(titleBarSource).not.toContain("ReroutedTitleBarTarget");
+    expect(titleBarSource).not.toContain("pendingReroutedTitleBarTarget");
+    expect(titleBarSource).not.toContain("override func mouseDragged(with event: NSEvent)");
+    expect(titleBarSource).not.toContain("override func mouseUp(with event: NSEvent)");
   });
 
-  test("routes normal pane titlebar bands before embedded content hit testing", () => {
+  test("keeps pane titlebar and content as normal sibling regions", () => {
     /**
-     * CDXC:NativePaneTabClicks 2026-06-12-04:08:
-     * Normal workspace panes must use the same simple ownership rule as popped
-     * out panes: points inside the titlebar band go to the titlebar first, before
-     * Ghostty, CEF, or WKWebView content can win mouseDown/mouseUp.
+     * CDXC:NativePaneTabClicks 2026-06-13-09:52:
+     * Normal workspace panes should not need a container-level hitTest override.
+     * Titlebar and content frames are strict siblings, while visual borders are
+     * layers, so AppKit can dispatch normal child hits without full-frame overlay
+     * views intercepting clicks.
      */
     const containerIndex = terminalWorkspaceSource.indexOf("private final class TerminalPaneLeafContainerView");
-    const hitTestIndex = terminalWorkspaceSource.indexOf("override func hitTest(_ point: NSPoint) -> NSView?", containerIndex);
-    const superHitIndex = terminalWorkspaceSource.indexOf("return super.hitTest(point)", hitTestIndex);
+    const containerSource = sourceSection(
+      terminalWorkspaceSource,
+      "private final class TerminalPaneLeafContainerView",
+      "private final class SleepingPanePlaceholderContentView",
+    );
+    const mountTerminalSource = sourceSection(
+      terminalWorkspaceSource,
+      "private func mountTerminalPaneContainer(for session: TerminalSession)",
+      "private func mountWebPaneContainer(for session: WebPaneSession)",
+    );
+    const setFrameSource = sourceSection(
+      terminalWorkspaceSource,
+      "private func setFrame(",
+      "private func commandPanelTitleBarActions()",
+    );
+    const setWebFrameSource = sourceSection(
+      terminalWorkspaceSource,
+      "private func setWebPaneFrame(",
+      "private func scheduleDeferredWebPaneLayout",
+    );
 
     expect(containerIndex).toBeGreaterThan(-1);
-    expect(hitTestIndex).toBeGreaterThan(containerIndex);
-    expect(superHitIndex).toBeGreaterThan(hitTestIndex);
-    expect(terminalWorkspaceSource).toContain("weak var titleBarHitTestView: NSView?");
-    expect(terminalWorkspaceSource).toContain("session.containerView.titleBarHitTestView = session.titleBarView");
-    expect(terminalWorkspaceSource).toContain("titleBarHitTestView ?? subviews.first { $0 is TerminalSessionTitleBarView }");
-    expect(terminalWorkspaceSource).toContain("titleBarView.frame.contains(point)");
-    expect(terminalWorkspaceSource).toContain("return titleBarView.hitTest(convert(point, to: titleBarView))");
-    expect(terminalWorkspaceSource.indexOf("titleBarView.frame.contains(point)", hitTestIndex)).toBeLessThan(superHitIndex);
-  });
-
-  test("returns concrete tab controls and blocks tab-strip child fallback", () => {
-    /**
-     * CDXC:NativeWorkspaceHitTesting 2026-06-12-02:36:
-     * Hover can still update through tracking areas when click hit testing
-     * falls through to pane content. Keep pane-tab buttons on explicit
-     * titlebar hit ownership so mouseDown, drag, and mouseUp reach the native
-     * tab gesture handlers.
-     *
-     * CDXC:NativePaneTabClicks 2026-06-12-05:41:
-     * Scrolled tab strips must not fall back to AppKit child hit testing after
-     * explicit tab resolution. The child hierarchy can pick a tab one or two
-     * slots to the right, so tab-strip misses return the titlebar itself.
-     */
-    const tabHitIndex = terminalWorkspaceSource.indexOf("if let tabHit = tabButtonHit(at: point)");
-    const tabViewportFallbackIndex = terminalWorkspaceSource.indexOf("if tabViewportFrame.contains(point)", tabHitIndex);
-    const superHitIndex = terminalWorkspaceSource.indexOf("if let hitView = super.hitTest(point)");
-
-    expect(tabHitIndex).toBeGreaterThan(-1);
-    expect(tabViewportFallbackIndex).toBeGreaterThan(tabHitIndex);
-    expect(superHitIndex).toBeGreaterThan(-1);
-    expect(tabHitIndex).toBeLessThan(superHitIndex);
-    expect(tabViewportFallbackIndex).toBeLessThan(superHitIndex);
-    expect(terminalWorkspaceSource).toContain(
-      'NativePaneTabDragReproLog.append(event: "nativePaneTabs.titleBar.hitTest.tabButton"',
+    expect(containerSource).not.toContain("override func hitTest(_ point: NSPoint) -> NSView?");
+    expect(containerSource).toContain("func resolvedTitleBarView() -> TerminalSessionTitleBarView?");
+    expect(terminalWorkspaceSource).not.toContain("titleBarHitTestView");
+    expect(mountTerminalSource.indexOf("mount(session.titleBarView, in: session.containerView)")).toBeLessThan(
+      mountTerminalSource.indexOf("mount(session.scrollView, in: session.containerView)"),
     );
-    expect(terminalWorkspaceSource).toContain("return tabHit.button");
-    expect(terminalWorkspaceSource.slice(tabViewportFallbackIndex, superHitIndex)).toContain("return self");
+    expect(mountTerminalSource).toContain("installPaneBorderLayer(session.borderView, in: session.containerView)");
+    expect(setFrameSource).toContain("session.titleBarView.frame = titleBarRect");
+    expect(setFrameSource).toContain("session.scrollView.frame = availableTerminalRect");
+    expect(setWebFrameSource).toContain("session.titleBarView.frame = titleBarRect");
+    expect(setWebFrameSource).toContain("session.hostView.frame = contentRect");
   });
 
-  test("uses explicit scroll-offset tab geometry instead of AppKit child lookup", () => {
+  test("uses normal titlebar child controls instead of a titlebar hit-test router", () => {
     /**
-     * CDXC:NativePaneTabClicks 2026-06-12-05:22:
-     * Each native tab button must own its own click. Titlebar hit testing should
-     * resolve the concrete button from its converted visible frame instead of
-     * asking the shifted clipped-strip view to rediscover a subview.
+     * CDXC:NativePaneTabClicks 2026-06-13-11:35:
+     * Pane tabs and tab-bar actions should be concrete AppKit child controls,
+     * not controls returned manually by TerminalSessionTitleBarView.hitTest.
+     * The tab strip remains an ordinary clipped view containing real tab
+     * buttons, so AppKit can dispatch clicks through the child hierarchy.
+     */
+    const titleBarIndex = terminalWorkspaceSource.indexOf("private final class TerminalSessionTitleBarView");
+    const titleBarSource = terminalWorkspaceSource.slice(
+      titleBarIndex,
+      terminalWorkspaceSource.indexOf("private func backgroundColor", titleBarIndex),
+    );
+    const layoutTabButtonsSource = sourceSection(
+      terminalWorkspaceSource,
+      "private func layoutTabButtons(",
+      "private func scrollActiveTabIntoView",
+    );
+
+    expect(titleBarIndex).toBeGreaterThan(-1);
+    expect(titleBarSource).not.toContain("override func hitTest(_ point: NSPoint) -> NSView?");
+    expect(titleBarSource).toContain("private let tabClipView = NSClipView(frame: .zero)");
+    expect(titleBarSource).toContain("tabClipView.documentView = tabContentView");
+    expect(titleBarSource).toContain("addSubview(tabClipView)");
+    expect(titleBarSource).toContain("addSubview(tabAddButton)");
+    expect(titleBarSource).toContain("addSubview(tabBrowserButton)");
+    expect(titleBarSource).toContain("addSubview(stickyActiveTabButton)");
+    expect(titleBarSource).toContain("onMouseDown?(event)");
+    expect(terminalWorkspaceSource).toContain("tabContentView.addSubview(button)");
+    expect(layoutTabButtonsSource).toContain("tabClipView.frame = tabViewportFrame");
+    expect(layoutTabButtonsSource).toContain("tabContentView.frame = CGRect(");
+    expect(layoutTabButtonsSource).toContain("x: -tabScrollOffsetX");
+    expect(layoutTabButtonsSource).toContain("button.frame = CGRect(x: nextX, y: 0, width: tabWidth, height: height)");
+    expect(terminalWorkspaceSource).not.toContain("nativePaneTabs.titleBar.hitTest.tabButton");
+    expect(terminalWorkspaceSource).not.toContain("nativePaneTabs.titleBar.hitTest.actionButton");
+    expect(terminalWorkspaceSource).not.toContain("nativePaneTabs.titleBar.hitTest.fixedActionButton");
+    expect(terminalWorkspaceSource).not.toContain("private func reroutedTitleBarTarget");
+  });
+
+  test("keeps passive pane titlebar chrome out of the AppKit view tree", () => {
+    /*
+     * CDXC:NativePaneTabClicks 2026-06-13-13:21:
+     * The activity dot, collapsed trailing fill, bottom border, and action
+     * separators are visual titlebar chrome. They must stay as CALayers so only
+     * real AppKit controls participate in click dispatch.
+     */
+    const titleBarIndex = terminalWorkspaceSource.indexOf("private final class TerminalSessionTitleBarView");
+    const titleBarSource = terminalWorkspaceSource.slice(
+      titleBarIndex,
+      terminalWorkspaceSource.indexOf("private func isEmptyTitleBarDoubleClickPoint", titleBarIndex),
+    );
+
+    expect(titleBarIndex).toBeGreaterThan(-1);
+    expect(titleBarSource).toContain("private let activityIndicatorLayer = CALayer()");
+    expect(titleBarSource).toContain("private let commandCollapsedTrailingBackgroundLayer = CALayer()");
+    expect(titleBarSource).toContain("private let bottomBorderLayer = CALayer()");
+    expect(titleBarSource).toContain("private var actionSeparatorLayers: [CALayer] = []");
+    expect(titleBarSource).toContain("private func configurePassiveTitlebarLayer(_ passiveLayer: CALayer)");
+    expect(titleBarSource).toContain("layer?.insertSublayer(commandCollapsedTrailingBackgroundLayer, at: 0)");
+    expect(titleBarSource).not.toContain("private let activityIndicatorView = NSView(frame: .zero)");
+    expect(titleBarSource).not.toContain("private let commandCollapsedTrailingBackgroundView = NSView(frame: .zero)");
+    expect(titleBarSource).not.toContain("private let bottomBorderView = NSView(frame: .zero)");
+    expect(titleBarSource).not.toContain("private var actionSeparators: [NSView]");
+    expect(titleBarSource).not.toContain("addSubview(commandCollapsedTrailingBackgroundView");
+    expect(titleBarSource).not.toContain("addSubview(bottomBorderView");
+    expect(titleBarSource).not.toContain("addSubview(separator)");
+  });
+
+  test("uses explicit scroll-offset tab geometry for local hover and close helpers", () => {
+    /**
+     * CDXC:NativePaneTabClicks 2026-06-13-11:35:
+     * Each native tab button must own its own click. Titlebar helper geometry
+     * remains only for local hover, inline Close, and drag metadata, and should
+     * resolve concrete buttons from visible frames instead of asking the shifted
+     * clipped-strip view to rediscover a subview.
      *
      * CDXC:NativePaneTabClicks 2026-06-12-05:41:
      * The 05:33 repro proved AppKit conversion can still hand mouseDown to a
@@ -357,31 +344,26 @@ describe("native pane tab titlebar hit testing", () => {
     expect(helperSource).toContain("guard hoveredHits.count == 1, let hoverHit = hoveredHits.first");
   });
 
-  test("uses local hover ownership for tab close and fixed tab-bar action buttons", () => {
+  test("keeps tab close and fixed tab-bar actions as local AppKit controls", () => {
     /**
-     * CDXC:NativePaneTabClicks 2026-06-12-04:57:
-     * Inline tab Close plus the sticky active-tab chevron, New Terminal, New
-     * Browser, and overflow buttons should click the same control that AppKit
-     * already reports as locally hovered.
-     *
-     * CDXC:NativePaneTabClicks 2026-06-12-05:31:
-     * Fixed action-button hover must only win while the click point is still
-     * inside that button. Stale New Terminal hover must not steal clicks from
-     * New Browser, overflow, or the sticky active-tab button to its right.
+     * CDXC:NativePaneTabClicks 2026-06-13-11:35:
+     * Inline tab Close plus sticky active-tab, New Terminal, New Browser, and
+     * overflow controls should stay in their own AppKit button mouse handlers.
+     * The titlebar must not rediscover those fixed controls through a reroute
+     * helper.
      */
     const actionButtonIndex = terminalWorkspaceSource.indexOf("private final class TerminalTitleBarActionButton");
     const tabButtonIndex = terminalWorkspaceSource.indexOf("private final class TerminalTitleBarTabButton");
     const titleBarIndex = terminalWorkspaceSource.indexOf("private final class TerminalSessionTitleBarView");
-    const hitTestIndex = terminalWorkspaceSource.indexOf("override func hitTest(_ point: NSPoint) -> NSView?", titleBarIndex);
-    const collapsedActionIndex = terminalWorkspaceSource.indexOf("if let collapsedActionMenuButton", hitTestIndex);
-    const hoverActionIndex = terminalWorkspaceSource.indexOf("if let hoveredTitleBarButton", hitTestIndex);
     const actionButtonSource = terminalWorkspaceSource.slice(actionButtonIndex, tabButtonIndex);
     const tabButtonSource = terminalWorkspaceSource.slice(tabButtonIndex, titleBarIndex);
     const titleBarSource = terminalWorkspaceSource.slice(titleBarIndex, terminalWorkspaceSource.indexOf("private func isEmptyTitleBarDoubleClickPoint", titleBarIndex));
 
     expect(actionButtonIndex).toBeGreaterThan(-1);
     expect(tabButtonIndex).toBeGreaterThan(-1);
-    expect(hitTestIndex).toBeGreaterThan(-1);
+    expect(titleBarSource).not.toContain("override func hitTest(_ point: NSPoint) -> NSView?");
+    expect(titleBarSource).not.toContain("private func locallyHoveredTitleBarActionButton");
+    expect(titleBarSource).not.toContain("logFixedTitleBarActionButtonHit(");
     expect(actionButtonSource).toContain("fileprivate var isPointerLocallyInside: Bool");
     expect(tabButtonSource).toContain("fileprivate var locallyHoveredInlineAction: InlineAction?");
     expect(tabButtonSource).toContain("locallyHoveredInlineAction ?? inlineActionAtPoint");
@@ -389,43 +371,28 @@ describe("native pane tab titlebar hit testing", () => {
     expect(tabButtonSource).toContain('NativePaneTabDragReproLog.append(event: "nativePaneTabs.button.mouseDown.outsideBounds"');
     expect(tabButtonSource).toContain("guard bounds.contains(point) else");
     expect(tabButtonSource).toContain("guard hasValidMouseDown || bounds.contains(point) else");
-    expect(tabButtonSource).toContain("if let titleBar = owningTitleBarView()");
-    expect(tabButtonSource).toContain("titleBar.rerouteMisdirectedOwnedTitleBarMouseDown(");
-    expect(tabButtonSource).toContain("titleBar.rerouteMisdirectedOwnedTitleBarMouseDragged(");
-    expect(tabButtonSource).toContain("titleBar.rerouteMisdirectedOwnedTitleBarMouseUp(");
-    expect(tabButtonSource).toContain("TerminalSessionTitleBarView.rerouteMisdirectedTitleBarMouseDown(");
-    expect(tabButtonSource).toContain("TerminalSessionTitleBarView.rerouteMisdirectedTitleBarMouseUp(");
-    expect(actionButtonSource).toContain('NativePaneTabDragReproLog.append(event: "nativePaneTabs.actionButton.mouseDown.outsideBounds"');
-    expect(actionButtonSource).toContain("if let titleBar = owningTitleBarView()");
-    expect(actionButtonSource).toContain("titleBar.rerouteMisdirectedOwnedTitleBarMouseDown(");
-    expect(actionButtonSource).toContain("titleBar.rerouteMisdirectedOwnedTitleBarMouseUp(");
-    expect(actionButtonSource).toContain("TerminalSessionTitleBarView.rerouteMisdirectedTitleBarMouseDown(");
-    expect(hoverActionIndex).toBeGreaterThan(hitTestIndex);
-    expect(hoverActionIndex).toBeLessThan(collapsedActionIndex);
-    expect(titleBarSource).toContain("private func locallyHoveredTitleBarActionButton(at point: NSPoint)");
-    expect(titleBarSource).toContain("stickyActiveTabButton");
-    expect(titleBarSource).toContain("tabAddButton");
-    expect(titleBarSource).toContain("tabBrowserButton");
-    expect(titleBarSource).toContain("actionMenuButton");
-    expect(titleBarSource).toContain("$0.isPointerLocallyInside");
-    expect(titleBarSource).toContain("convertedTitleBarActionButtonFrame($0).contains(point)");
-    expect(titleBarSource).toContain("$0.bounds.contains(convert(point, to: $0))");
-    expect(titleBarSource).toContain("guard hoveredButtons.count == 1, let button = hoveredButtons.first");
-    expect(titleBarSource).toContain("private func convertedTitleBarActionButtonFrame(_ button: TerminalTitleBarActionButton) -> CGRect");
-    expect(titleBarSource).toContain("convert(button.bounds, from: button)");
-    expect(titleBarSource).toContain("logFixedTitleBarActionButtonHit(");
-    expect(titleBarSource).toContain('buttonKind": fixedTitleBarActionButtonKind(button)');
+    expect(tabButtonSource).not.toContain("owningTitleBarView()");
+    expect(tabButtonSource).not.toContain("rerouteMisdirected");
+    expect(tabButtonSource).not.toContain("TerminalSessionTitleBarView.reroute");
+    expect(actionButtonSource).not.toContain("override func mouseDown");
+    expect(actionButtonSource).not.toContain("override func mouseUp");
+    expect(actionButtonSource).not.toContain("nativePaneTabs.actionButton.mouseDown.outsideBounds");
+    expect(actionButtonSource).not.toContain("owningTitleBarView()");
+    expect(actionButtonSource).not.toContain("rerouteMisdirected");
+    expect(titleBarSource).not.toContain("private func reroutedTitleBarTarget");
+    expect(titleBarSource).not.toContain("handleReroutedTitleBar");
+    expect(terminalWorkspaceSource).toContain("@objc private func performTitleBarAction(_ sender: NSButton)");
     expect(tabButtonSource).toContain('NativePaneTabDragReproLog.append(event: "nativePaneTabs.button.inlineMouseDown"');
     expect(tabButtonSource).toContain('NativePaneTabDragReproLog.append(event: "nativePaneTabs.button.inlineMouseUp"');
     expect(terminalWorkspaceSource).toContain('NativePaneTabDragReproLog.append(event: "nativePaneTabs.actionButton.perform"');
   });
 
-  test("reroutes misdelivered tab and fixed-button events through titlebar geometry", () => {
+  test("does not reroute misdelivered tab or fixed-button events through titlebar geometry", () => {
     /**
-     * CDXC:NativePaneTabClicks 2026-06-12-05:52:
-     * The stale receiver guard must not turn bad AppKit child hit testing into
-     * a dead click. Misdirected tab/close/action events need to be resolved
-     * once from the visible titlebar under the event's real window point.
+     * CDXC:NativePaneTabClicks 2026-06-13-11:35:
+     * Stale receivers should be fixed by strict AppKit clipping and exact
+     * child frames. Do not preserve titlebar geometry rerouting for
+     * misdelivered tab, Close, or fixed-action events.
      */
     const titleBarIndex = terminalWorkspaceSource.indexOf("private final class TerminalSessionTitleBarView");
     const titleBarSource = terminalWorkspaceSource.slice(
@@ -433,39 +400,28 @@ describe("native pane tab titlebar hit testing", () => {
       terminalWorkspaceSource.indexOf("final class ProjectEditorInitialLoadingOverlayView", titleBarIndex),
     );
 
-    expect(titleBarSource).toContain("fileprivate static func rerouteMisdirectedTitleBarMouseDown(");
-    expect(titleBarSource).toContain("fileprivate static func rerouteMisdirectedTitleBarMouseDragged(");
-    expect(titleBarSource).toContain("fileprivate static func rerouteMisdirectedTitleBarMouseUp(");
-    expect(titleBarSource).toContain("fileprivate func rerouteMisdirectedOwnedTitleBarMouseDown(");
-    expect(titleBarSource).toContain("fileprivate func rerouteMisdirectedOwnedTitleBarMouseDragged(");
-    expect(titleBarSource).toContain("fileprivate func rerouteMisdirectedOwnedTitleBarMouseUp(");
-    expect(titleBarSource).toContain("handleReroutedTitleBarMouseDown(");
-    expect(titleBarSource).toContain("handleReroutedTitleBarMouseDragged(");
-    expect(titleBarSource).toContain("handleReroutedTitleBarMouseUp(");
-    expect(titleBarSource).toContain('source: "titleBarDirect"');
-    expect(titleBarSource).toContain("override func mouseDragged(with event: NSEvent)");
-    expect(titleBarSource).toContain("override func mouseUp(with event: NSEvent)");
-    expect(titleBarSource).toContain("private static func titleBarRerouteCandidate(for event: NSEvent)");
-    expect(titleBarSource).toContain("collectTitleBarsForReroute(in: root, into: &titleBars)");
-    expect(titleBarSource).toContain("for subview in view.subviews.reversed()");
-    expect(titleBarSource).toContain("let point = titleBar.convert(event.locationInWindow, from: nil)");
-    expect(titleBarSource).toContain("let target = titleBar.reroutedTitleBarTarget(at: point)");
-    expect(titleBarSource).toContain("private var pendingReroutedTitleBarTarget: ReroutedTitleBarTarget?");
-    expect(titleBarSource).toContain("private func reroutedTitleBarTarget(at point: NSPoint) -> ReroutedTitleBarTarget?");
-    expect(titleBarSource).toContain("return .inlineClose(sessionId: tabHit.button.sessionId)");
-    expect(titleBarSource).toContain("return .tab(sessionId: tabHit.button.sessionId)");
-    expect(titleBarSource).toContain("return .fixedAction(.newTerminal)");
-    expect(titleBarSource).toContain("return .fixedAction(.newBrowser)");
-    expect(titleBarSource).toContain("return .fixedAction(.stickyActiveTab)");
-    expect(titleBarSource).toContain("return .fixedAction(.overflowMenu)");
-    expect(titleBarSource).toContain("onTabMouseDown?(event, sessionId)");
-    expect(titleBarSource).toContain("onTabMouseUp?(event, sessionId)");
-    expect(titleBarSource).toContain("onTabCloseRequested?(sessionId, .close)");
-    expect(titleBarSource).toContain("performReroutedFixedAction(kind, source: \"reroutedMouseDown\")");
-    expect(titleBarSource).toContain("performReroutedFixedAction(kind, source: \"reroutedMouseUp\")");
-    expect(titleBarSource).toContain('event: "nativePaneTabs.titleBar.reroute.mouseDown"');
-    expect(titleBarSource).toContain('event: "nativePaneTabs.titleBar.reroute.mouseUp"');
-    expect(titleBarSource).toContain('NativePaneTabDragReproLog.append(event: "nativePaneTabs.titleBar.reroute.miss"');
+    expect(titleBarSource).not.toContain("fileprivate static func rerouteMisdirectedTitleBarMouseDown(");
+    expect(titleBarSource).not.toContain("fileprivate static func rerouteMisdirectedTitleBarMouseDragged(");
+    expect(titleBarSource).not.toContain("fileprivate static func rerouteMisdirectedTitleBarMouseUp(");
+    expect(titleBarSource).not.toContain("fileprivate func rerouteMisdirectedOwnedTitleBarMouseDown(");
+    expect(titleBarSource).not.toContain("fileprivate func rerouteMisdirectedOwnedTitleBarMouseDragged(");
+    expect(titleBarSource).not.toContain("fileprivate func rerouteMisdirectedOwnedTitleBarMouseUp(");
+    expect(titleBarSource).not.toContain("handleReroutedTitleBarMouseDown(");
+    expect(titleBarSource).not.toContain("handleReroutedTitleBarMouseDragged(");
+    expect(titleBarSource).not.toContain("handleReroutedTitleBarMouseUp(");
+    expect(titleBarSource).not.toContain('source: "titleBarDirect"');
+    expect(titleBarSource).not.toContain("override func mouseDragged(with event: NSEvent)");
+    expect(titleBarSource).not.toContain("override func mouseUp(with event: NSEvent)");
+    expect(titleBarSource).not.toContain("private static func titleBarRerouteCandidate(for event: NSEvent)");
+    expect(titleBarSource).not.toContain("collectTitleBarsForReroute(in: root, into: &titleBars)");
+    expect(titleBarSource).not.toContain("private var pendingReroutedTitleBarTarget");
+    expect(titleBarSource).not.toContain("private func reroutedTitleBarTarget");
+    expect(titleBarSource).not.toContain("performReroutedFixedAction");
+    expect(titleBarSource).not.toContain("performReroutedTitleBarAction");
+    expect(titleBarSource).not.toContain('event: "nativePaneTabs.titleBar.reroute.mouseDown"');
+    expect(titleBarSource).not.toContain('event: "nativePaneTabs.titleBar.reroute.mouseUp"');
+    expect(titleBarSource).not.toContain('NativePaneTabDragReproLog.append(event: "nativePaneTabs.titleBar.reroute.miss"');
+    expect(terminalWorkspaceSource).not.toContain("ReroutedTitleBarTarget");
   });
 
   test("keeps commands-panel resize rail outside the command tab strip", () => {
@@ -484,6 +440,8 @@ describe("native pane tab titlebar hit testing", () => {
     expect(functionSource).toContain("let railY = min(");
     expect(functionSource).toContain("max(commandPanelBounds.maxY, bounds.minY)");
     expect(functionSource).toContain("y: railY");
+    expect(functionSource).toContain("addSubview(commandsPanelResizeHandleView, positioned: .above, relativeTo: nil)");
+    expect(functionSource).toContain("orderResizeHandlesToFront(reason: \"syncCommandsPanelResizeHandle\")");
     expect(functionSource).not.toContain("commandPanelBounds.maxY - railHeight / 2");
   });
 
@@ -493,7 +451,7 @@ describe("native pane tab titlebar hit testing", () => {
      * Native resize cursors must be owned by visible concrete rails only. End,
      * double-click reset, and hide/collapse paths should refresh from the rail
      * currently under the pointer instead of reasserting resize cursors after
-     * the resize gesture or visible hit target has ended.
+     * the resize gesture or visible rail frame has ended.
      */
     const beginProjectResizeSource = sourceSection(
       terminalWorkspaceSource,
@@ -511,7 +469,7 @@ describe("native pane tab titlebar hit testing", () => {
     );
     const beginPaneResizeSource = sourceSection(
       terminalWorkspaceSource,
-      "private func beginPaneResize(hit: PaneResizeHit, event: NSEvent) -> Bool",
+      "private func beginPaneResize(record: PaneResizeLayoutRecord, event: NSEvent) -> Bool",
       "@discardableResult\n  private func continuePaneResize",
     );
     const beginPaneResetSource = beginPaneResizeSource.slice(
@@ -548,8 +506,26 @@ describe("native pane tab titlebar hit testing", () => {
     const workspaceHandleSource = sourceSection(
       terminalWorkspaceSource,
       "final class TerminalWorkspacePaneResizeHandleView: NSView",
-      "final class TerminalPaneBorderView",
+      "final class TerminalPaneBorderLayer",
     );
+    const terminalPaneBorderLayerIndex = terminalWorkspaceSource.indexOf(
+      "final class TerminalPaneBorderLayer: CAShapeLayer",
+    );
+    const terminalPaneBorderLayerSource = terminalWorkspaceSource.slice(terminalPaneBorderLayerIndex);
+    expect(terminalWorkspaceSource).toContain("final class TerminalPaneBorderLayer: CAShapeLayer");
+    expect(terminalWorkspaceSource).not.toContain("final class TerminalPaneBorderView");
+    expect(terminalPaneBorderLayerIndex).toBeGreaterThan(-1);
+    expect(terminalPaneBorderLayerSource).toContain("strokeColor = nextColor");
+    expect(terminalPaneBorderLayerSource).toContain(
+      "lineWidth = nextColor == nil ? 0 : currentBorderWidth()",
+    );
+    expect(terminalPaneBorderLayerSource).toContain("shadowPath = nil");
+    expect(terminalPaneBorderLayerSource).not.toContain("shadowPath = nextPath");
+    expect(workspaceHandleSource).not.toContain("override func hitTest(_ point: NSPoint) -> NSView?");
+    expect(terminalWorkspaceSource).not.toContain("workspaceResizeHandleHitView");
+    expect(terminalWorkspaceSource).not.toContain("resizeHandleHitView(at point: NSPoint)");
+    expect(terminalWorkspaceSource).toContain("addSubview(handleView, positioned: .above, relativeTo: nil)");
+    expect(terminalWorkspaceSource).toContain("orderResizeHandlesToFront(reason: \"syncPaneResizeHandleViews\")");
     const workspaceHandleMouseExitedSource = sourceSection(
       workspaceHandleSource,
       "override func mouseExited(with event: NSEvent)",
@@ -558,7 +534,7 @@ describe("native pane tab titlebar hit testing", () => {
     const workspaceHandleMouseUpSource = sourceSection(
       terminalWorkspaceSource,
       "override func mouseUp(with event: NSEvent)",
-      "final class TerminalPaneBorderView",
+      "final class TerminalPaneBorderLayer",
       workspaceHandleIndex,
     );
     const rootLayoutSource = sourceSection(
@@ -609,8 +585,8 @@ describe("native pane tab titlebar hit testing", () => {
     expect(endProjectResizeSource).toContain("refreshResizeCursorForCurrentPointer()");
     expect(endProjectResizeSource).not.toContain("NSCursor.resizeLeftRight.set()");
     expect(beginPaneResetSource).toContain("refreshResizeCursorForCurrentPointer()");
-    expect(beginPaneResetSource).not.toContain("paneResizeCursor(for: hit.direction).set()");
-    expect(beginPaneResizeSource).toContain("paneResizeCursor(for: hit.direction).set()");
+    expect(beginPaneResetSource).not.toContain("paneResizeCursor(for: record.direction).set()");
+    expect(beginPaneResizeSource).toContain("paneResizeCursor(for: record.direction).set()");
     expect(continuePaneResizeSource).toContain("paneResizeCursor(for: drag.direction).set()");
     expect(endPaneResizeSource).toContain("refreshResizeCursorForCurrentPointer()");
     expect(endPaneResizeSource).not.toContain("paneResizeCursor(for: drag.direction).set()");

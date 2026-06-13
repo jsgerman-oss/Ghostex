@@ -2,6 +2,14 @@ import { readFileSync } from "node:fs";
 import { describe, expect, test } from "vitest";
 
 const nativeSidebarSource = readFileSync(new URL("./native-sidebar.tsx", import.meta.url), "utf8");
+const sortableSessionCardSource = readFileSync(
+  new URL("../../sidebar/sortable-session-card.tsx", import.meta.url),
+  "utf8",
+);
+const sidebarRefreshDebugLogSource = readFileSync(
+  new URL("../macos/ghostexHost/Sources/ghostexHost/SidebarRefreshDebugLog.swift", import.meta.url),
+  "utf8",
+);
 
 function sourceBetween(source: string, start: string, end: string): string {
   const startIndex = source.indexOf(start);
@@ -25,7 +33,7 @@ describe("native sidebar bulk sleep cascade source", () => {
      */
     const schedulerSource = sourceBetween(
       nativeSidebarSource,
-      "type NativeSidebarBulkActionOptions",
+      "type NativeSidebarBulkSleepSource",
       "type NativeBootstrap",
     );
 
@@ -36,6 +44,50 @@ describe("native sidebar bulk sleep cascade source", () => {
     expect(schedulerSource).toContain(
       "delayBetweenOperationsMs: NATIVE_SIDEBAR_BULK_SLEEP_INTERVAL_MS",
     );
+    expect(schedulerSource).toContain('appendNativeSidebarBulkSleepDebugLog("operation.started"');
+    expect(schedulerSource).toContain('"operation.completed"');
+    expect(schedulerSource).toContain('"operation.threw"');
+    expect(schedulerSource).toContain('appendNativeSidebarBulkSleepDebugLog("completed"');
+    expect(schedulerSource).toContain("operationDurationMs");
+    expect(schedulerSource).toContain("timerDriftMs");
+  });
+
+  test("keeps Sleep below request logs and native writer privacy-safe", () => {
+    const sleepBelowDetailsSource = sourceBetween(
+      sortableSessionCardSource,
+      "export function createSleepBelowDebugDetails",
+      "function roundSleepBelowDebugMs",
+    );
+    const sleepBelowPayloadSource = sourceBetween(sleepBelowDetailsSource, "  return {", "  };");
+    expect(sleepBelowDetailsSource).toContain('action: "sleepBelow"');
+    expect(sleepBelowDetailsSource).toContain("targetCount");
+    expect(sleepBelowDetailsSource).toContain("visibleBelowCount");
+    expect(sleepBelowDetailsSource).toContain("postMessageDurationMs");
+    expect(sleepBelowDetailsSource).toContain("frameDelayMs");
+    expect(sleepBelowPayloadSource).not.toContain("sessionId");
+    expect(sleepBelowPayloadSource).not.toContain("sessionIds");
+    expect(sleepBelowPayloadSource).not.toContain("title");
+    expect(sleepBelowPayloadSource).not.toContain("path");
+    expect(sleepBelowPayloadSource).not.toContain("url");
+    expect(sleepBelowPayloadSource).not.toContain("command");
+    expect(sleepBelowPayloadSource).not.toContain("text");
+    expect(sleepBelowPayloadSource).not.toContain("message");
+
+    const requestSleepBelowSource = sourceBetween(
+      sortableSessionCardSource,
+      "  const requestSleepBelow = () => {",
+      "  const requestCloseBelow = () => {",
+    );
+    expect(sortableSessionCardSource).toContain(
+      'const SLEEP_BELOW_DEBUG_EVENT_PREFIX = "sleepBelow"',
+    );
+    expect(requestSleepBelowSource).toContain('source: "sleepBelow"');
+    expect(requestSleepBelowSource).toContain('${SLEEP_BELOW_DEBUG_EVENT_PREFIX}.requested');
+    expect(requestSleepBelowSource).toContain('${SLEEP_BELOW_DEBUG_EVENT_PREFIX}.posted');
+    expect(requestSleepBelowSource).toContain('${SLEEP_BELOW_DEBUG_EVENT_PREFIX}.nextFrame');
+
+    expect(sidebarRefreshDebugLogSource).toContain("NativeLogPrivacy.sanitizePayload(payload)");
+    expect(sidebarRefreshDebugLogSource).toContain("parseDetailsPayload(details)");
   });
 
   test("routes multi-session sleep actions through the sleep cascade", () => {
@@ -44,30 +96,29 @@ describe("native sidebar bulk sleep cascade source", () => {
       "function setNativeSessionsSleepingInBackground",
       "function closeNativeSessionsInBackground",
     );
-    expect(setSessionsSleepingSource).toContain(
-      "sleeping\n    ? runNativeSidebarBulkSleepActionInBackground",
-    );
+    expect(setSessionsSleepingSource).toContain("source: options.source ?? \"setSessionsSleeping\"");
+    expect(setSessionsSleepingSource).toContain("skippedAlreadySleepingCount");
 
     const titlebarSleepSource = sourceBetween(
       nativeSidebarSource,
       "function sleepInactiveSessionsFromTitlebar",
       "function focusResourceSessionFromTitlebar",
     );
-    expect(titlebarSleepSource).toContain("runNativeSidebarBulkSleepActionInBackground");
+    expect(titlebarSleepSource).toContain('source: "titlebarSleepInactive"');
 
     const projectSleepSource = sourceBetween(
       nativeSidebarSource,
       "function sleepInactiveProjectSessions",
       "function hasProjectedDelayedSend",
     );
-    expect(countOccurrences(projectSleepSource, "runNativeSidebarBulkSleepActionInBackground")).toBe(2);
+    expect(countOccurrences(projectSleepSource, 'source: "projectSleepInactive"')).toBe(2);
 
     const autoSleepSource = sourceBetween(
       nativeSidebarSource,
       'function runNativeAutoSleepMonitor(source: "interval" | "settings-change" | "startup")',
       "function shouldAutoSleepAgentSession",
     );
-    expect(countOccurrences(autoSleepSource, "runNativeSidebarBulkSleepActionInBackground")).toBe(2);
+    expect(countOccurrences(autoSleepSource, 'source: "autoSleep"')).toBe(2);
 
     const titlebarQuitSource = sourceBetween(
       nativeSidebarSource,
@@ -75,23 +126,21 @@ describe("native sidebar bulk sleep cascade source", () => {
       "function setNativeSessionPoppedOut",
     );
     expect(titlebarQuitSource).toContain("let includesSleepOperation = false");
-    expect(titlebarQuitSource).toContain(
-      "includesSleepOperation\n    ? runNativeSidebarBulkSleepActionInBackground",
-    );
+    expect(titlebarQuitSource).toContain('source: "resourcesQuit"');
 
     const closeAllSource = sourceBetween(
       nativeSidebarSource,
       "function closeAllNativeSessions",
       "function workspaceHasOpenSessions",
     );
-    expect(closeAllSource).toContain("runNativeSidebarBulkSleepActionInBackground");
+    expect(closeAllSource).toContain('source: "closeAllAsSleep"');
 
     const remoteSleepSource = sourceBetween(
       nativeSidebarSource,
       "function sleepInactiveRemoteProjectSessions",
       "function closeInactiveRemoteProjectSessions",
     );
-    expect(remoteSleepSource).toContain("runNativeSidebarBulkSleepActionInBackground");
+    expect(remoteSleepSource).toContain('source: "remoteSleepInactive"');
 
     const sidebarMessageSource = sourceBetween(
       nativeSidebarSource,
@@ -99,7 +148,7 @@ describe("native sidebar bulk sleep cascade source", () => {
       '    case "setSessionFavorite":',
     );
     expect(sidebarMessageSource).toContain(
-      "message.sleeping\n        ? runNativeSidebarBulkSleepActionInBackground",
+      'message.source === "sleepBelow" ? "sleepBelow" : "setSessionsSleeping"',
     );
 
     const remoteGroupSleepSource = sourceBetween(
@@ -107,15 +156,13 @@ describe("native sidebar bulk sleep cascade source", () => {
       '    case "setGroupSleeping": {',
       '    case "sleepInactiveProjectSessions":',
     );
-    expect(remoteGroupSleepSource).toContain(
-      "message.sleeping\n          ? runNativeSidebarBulkSleepActionInBackground",
-    );
+    expect(remoteGroupSleepSource).toContain('source: "remoteGroupSleep"');
 
     const paneTabSleepSource = sourceBetween(
       nativeSidebarSource,
       "function handleNativePaneTabSleepRequested",
       "function handleNativePaneTabReorderRequested",
     );
-    expect(paneTabSleepSource).toContain("runNativeSidebarBulkSleepActionInBackground");
+    expect(paneTabSleepSource).toContain('source: "paneTabSleep"');
   });
 });

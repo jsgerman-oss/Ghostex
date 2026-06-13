@@ -349,6 +349,9 @@ export type SidebarSettingsPresetSettings = Pick<ghostexSettings, SidebarSetting
  *
  * CDXC:SidebarSettingsPresets 2026-06-13-01:06:
  * Recommended is the first-run sidebar preset and the leftmost Settings preset button. Defaults should expose detailed sidebar status chrome while keeping agent identity hover-only.
+ *
+ * CDXC:SidebarSettingsPresets 2026-06-13-15:42:
+ * Recommended should keep the sidebar quieter by hiding session-card Last Active timestamps while preserving the rest of the detailed status chrome.
  */
 export const SIDEBAR_SETTINGS_PRESET_SETTINGS = {
   codex: {
@@ -385,7 +388,7 @@ export const SIDEBAR_SETTINGS_PRESET_SETTINGS = {
     hideSessionAgentIconUntilHover: true,
     hideBrowserFaviconUntilHover: false,
     showCloseButtonOnSessionCards: false,
-    hideLastActiveTimeOnSessionCards: false,
+    hideLastActiveTimeOnSessionCards: true,
     hideProjectHeaderDiffStats: false,
     showProjectEditorDiffFileCount: false,
     hideFloatingSessionStatusIndicators: false,
@@ -531,11 +534,11 @@ export const DEFAULT_ghostex_SETTINGS: ghostexSettings = {
   showCloseButtonOnSessionCards:
     SIDEBAR_SETTINGS_PRESET_SETTINGS.recommended.showCloseButtonOnSessionCards,
   /**
-   * CDXC:SidebarSessions 2026-05-15-08:57
-   * Session-card Last Active timestamps stay visible by default for existing
-   * users, but Settings owns an explicit hide toggle for quieter title rows.
-   * This setting applies only to session-card timestamps and must not affect
-   * project-header git diff stats.
+   * CDXC:SidebarSessions 2026-06-13-15:42
+   * Recommended is the default sidebar style and hides session-card Last Active
+   * timestamps by default. Settings still owns an explicit toggle for users who
+   * want the timestamp back, and the setting must not affect project-header git
+   * diff stats.
    */
   hideLastActiveTimeOnSessionCards:
     SIDEBAR_SETTINGS_PRESET_SETTINGS.recommended.hideLastActiveTimeOnSessionCards,

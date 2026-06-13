@@ -43,6 +43,33 @@ function collectFunctionalUpdaterCalls(source: string, setterCallStart: string):
 }
 
 describe("Project Board form event handling", () => {
+  test("prevents accidental text selection inside Kanban bead cards", () => {
+    /*
+     * CDXC:ProjectBoardCards 2026-06-13-13:55:
+     * Kanban bead cards are draggable and right-clickable, so card text should not be user-selectable by accidental pointer movement.
+     */
+    const cardStyleSource = sourceBetween(".project-board-card {", ".project-board-card:hover");
+
+    expect(cardStyleSource).toContain("user-select: none;");
+  });
+
+  test("renders Kanban bead context-menu Start work and Delete actions", () => {
+    /*
+     * CDXC:ProjectBoard 2026-06-13-13:37:
+     * Right-clicking a Kanban bead card should expose Start work and Delete in the card context menu while reusing the existing ticket start/delete handlers.
+     */
+    const projectBoardSource = sourceBetween("function ProjectBoardApp()", "function TicketMetaFields(");
+    const ticketCardSource = sourceBetween("function TicketCard(", "function ProjectBoardTicketContextMenu(");
+    const contextMenuSource = sourceBetween("function ProjectBoardTicketContextMenu(", "function AutomationEmptyState(");
+
+    expect(ticketCardSource).toContain("onContextMenu={(event) =>");
+    expect(ticketCardSource).toContain("onOpenContextMenu(ticket");
+    expect(projectBoardSource).toContain("void startTicketWork(contextMenuTicket)");
+    expect(projectBoardSource).toContain("void deleteTicket(contextMenuTicket)");
+    expect(projectBoardSource).toContain('"Start work"');
+    expect(contextMenuSource).toContain('"Delete"');
+  });
+
   test("reports sanitized focus-owner events for native Kanban focus arbitration", () => {
     /*
      * CDXC:ProjectBoardFocus 2026-06-12-08:44:

@@ -20,9 +20,11 @@ import { DragDropProvider, useDraggable, useDroppable } from "@dnd-kit/react";
 import {
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
+  type CSSProperties,
   type ComponentProps,
   type KeyboardEvent,
 } from "react";
@@ -229,6 +231,15 @@ type BoardRefreshOptions = {
 
 type ProjectSurfaceTab = "triage" | "automations" | "runs" | "board";
 
+type TicketContextMenuState = {
+  confirmingDelete: boolean;
+  ticketId: string;
+  x: number;
+  y: number;
+};
+
+const PROJECT_BOARD_CONTEXT_MENU_VIEWPORT_MARGIN_PX = 12;
+
 /*
  * CDXC:ProjectBoard 2026-06-09-19:30:
  * Automations, Runs, and Triage stay visible in the Project header but remain disabled with a Coming soon tooltip until those surfaces are ready for general use.
@@ -415,6 +426,8 @@ function ProjectBoardApp() {
     useState<ProjectBoardStartLocation>("currentProject");
   const createInFlightRef = useRef(false);
   const [deleteConfirmingTicketId, setDeleteConfirmingTicketId] = useState("");
+  const [ticketContextMenu, setTicketContextMenu] = useState<TicketContextMenuState>();
+  const [contextMenuDeletingTicketId, setContextMenuDeletingTicketId] = useState("");
   const [imagePreviewDataUrls, setImagePreviewDataUrls] = useState<Record<string, string>>({});
   const pendingImagePreviewPathsRef = useRef(new Set<string>());
   const failedImagePreviewPathsRef = useRef(new Set<string>());
@@ -437,6 +450,10 @@ function ProjectBoardApp() {
    *
    * CDXC:ProjectBoard 2026-05-26-10:08:
    * Users need to delete tickets from the Project board UI. Keep deletion in the edit dialog, require a second destructive click for confirmation, and refresh from Beads after bd deletes the issue.
+   *
+   * CDXC:ProjectBoard 2026-06-13-13:37:
+   * Right-clicking a Kanban bead card must open a compact context menu with Start work and Delete actions.
+   * Start work uses the same Project Board bridge route as the edit dialog, and Delete keeps the existing confirmed Beads delete path so the card menu does not create a second mutation route.
    *
    * CDXC:ProjectBoard 2026-05-26-10:16:
    * A bead can be linked to the agent conversation that is working on it, and multiple beads may point at one conversation.
@@ -783,6 +800,15 @@ function ProjectBoardApp() {
     void loadConversationState();
     void loadAutomationState();
   }, [loadAutomationState, loadConversationState]);
+
+  useEffect(() => {
+    if (!ticketContextMenu) {
+      return;
+    }
+    if (!tickets.some((ticket) => ticket.id === ticketContextMenu.ticketId)) {
+      setTicketContextMenu(undefined);
+    }
+  }, [ticketContextMenu, tickets]);
 
   useEffect(() => {
     if (activeSurfaceTab !== "board") {
@@ -1280,24 +1306,41 @@ function ProjectBoardApp() {
     }
   };
 
-  const deleteTicket = async () => {
-    if (!detail.ticket || detail.isDeleting) {
+  const deleteTicket = async (targetTicket?: BoardTicket) => {
+    const ticket = targetTicket ?? detail.ticket;
+    if (!ticket) {
       return;
     }
-    const ticket = detail.ticket;
-    setDetail((current) => ({ ...current, isDeleting: true }));
+    const deletingFromDialog = detail.ticket?.id === ticket.id;
+    if ((deletingFromDialog && detail.isDeleting) || contextMenuDeletingTicketId === ticket.id) {
+      return;
+    }
+    if (deletingFromDialog) {
+      setDetail((current) => ({ ...current, isDeleting: true }));
+    } else {
+      setContextMenuDeletingTicketId(ticket.id);
+    }
     setTickets((current) => current.filter((candidate) => candidate.id !== ticket.id));
     try {
       await runBeads({ action: "delete", issueId: ticket.id });
       setDeleteConfirmingTicketId("");
-      setDetail(createEmptyDetailDraft());
+      setTicketContextMenu(undefined);
+      if (deletingFromDialog) {
+        setDetail(createEmptyDetailDraft());
+      }
       await loadTickets({ includeLabels: true, mode: "mutation" });
     } catch (error) {
       setTickets((current) =>
         current.some((candidate) => candidate.id === ticket.id) ? current : [...current, ticket],
       );
       setErrorMessage(error instanceof Error ? error.message : "Could not delete the ticket.");
-      setDetail((current) => ({ ...current, isDeleting: false }));
+      if (deletingFromDialog) {
+        setDetail((current) => ({ ...current, isDeleting: false }));
+      }
+    } finally {
+      if (!deletingFromDialog) {
+        setContextMenuDeletingTicketId((current) => (current === ticket.id ? "" : current));
+      }
     }
   };
 
@@ -1752,6 +1795,15 @@ function ProjectBoardApp() {
       })),
     [automationConversationState.sessions],
   );
+  const contextMenuTicket = ticketContextMenu
+    ? tickets.find((ticket) => ticket.id === ticketContextMenu.ticketId)
+    : undefined;
+  const contextMenuPrimaryLink = contextMenuTicket
+    ? getPrimaryUsableConversationLink(linksByBeadId.get(contextMenuTicket.id) ?? [])
+    : undefined;
+  const contextMenuPrimaryActionLabel = contextMenuPrimaryLink ? "Go to Session" : "Start work";
+  const contextMenuPrimaryActionDisabled =
+    Boolean(conversationAction) || (!contextMenuPrimaryLink && conversationState.agents.length === 0);
 
   useEffect(() => {
     if (!newTicketOpen) {
@@ -2019,12 +2071,49 @@ function ProjectBoardApp() {
                   linksByBeadId={linksByBeadId}
                   onAddTicket={openNewTicket}
                   onJumpToConversation={jumpToConversation}
+                  onOpenContextMenu={(ticket, point) =>
+                    setTicketContextMenu({
+                      confirmingDelete: false,
+                      ticketId: ticket.id,
+                      x: point.x,
+                      y: point.y,
+                    })
+                  }
                   onOpenTicket={openTicket}
                   tickets={ticketsByColumn[column.key]}
                 />
               ))}
             </section>
           </DragDropProvider>
+          {ticketContextMenu && contextMenuTicket ? (
+            <ProjectBoardTicketContextMenu
+              confirmingDelete={ticketContextMenu.confirmingDelete}
+              deleting={contextMenuDeletingTicketId === contextMenuTicket.id}
+              onDelete={() => {
+                if (!ticketContextMenu.confirmingDelete) {
+                  setTicketContextMenu((current) =>
+                    current?.ticketId === contextMenuTicket.id
+                      ? { ...current, confirmingDelete: true }
+                      : current,
+                  );
+                  return;
+                }
+                void deleteTicket(contextMenuTicket);
+              }}
+              onDismiss={() => setTicketContextMenu(undefined)}
+              onPrimaryAction={() => {
+                setTicketContextMenu(undefined);
+                if (contextMenuPrimaryLink) {
+                  void jumpToConversation(contextMenuPrimaryLink);
+                  return;
+                }
+                void startTicketWork(contextMenuTicket);
+              }}
+              position={ticketContextMenu}
+              primaryActionDisabled={contextMenuPrimaryActionDisabled}
+              primaryActionLabel={contextMenuPrimaryActionLabel}
+            />
+          ) : null}
         </>
       ) : errorMessage ? (
         <ProjectBoardNotice message={errorMessage} />
@@ -3286,6 +3375,7 @@ function BoardLane({
   linksByBeadId,
   onAddTicket,
   onJumpToConversation,
+  onOpenContextMenu,
   onOpenTicket,
   tickets,
 }: {
@@ -3294,6 +3384,7 @@ function BoardLane({
   linksByBeadId: Map<string, ProjectBoardConversationLinkView[]>;
   onAddTicket: (status: BoardStatusKey) => void;
   onJumpToConversation: (link: ProjectBoardConversationLinkView) => void;
+  onOpenContextMenu: (ticket: BoardTicket, point: { x: number; y: number }) => void;
   onOpenTicket: (ticket: BoardTicket) => void;
   tickets: BoardTicket[];
 }) {
@@ -3389,6 +3480,7 @@ function BoardLane({
               key={ticket.id}
               links={linksByBeadId.get(ticket.id) ?? []}
               onJumpToConversation={onJumpToConversation}
+              onOpenContextMenu={onOpenContextMenu}
               onOpenTicket={onOpenTicket}
               ticket={ticket}
             />
@@ -3421,12 +3513,14 @@ function TicketCard({
   conversationAction,
   links,
   onJumpToConversation,
+  onOpenContextMenu,
   onOpenTicket,
   ticket,
 }: {
   conversationAction: ConversationActionState;
   links: ProjectBoardConversationLinkView[];
   onJumpToConversation: (link: ProjectBoardConversationLinkView) => void;
+  onOpenContextMenu: (ticket: BoardTicket, point: { x: number; y: number }) => void;
   onOpenTicket: (ticket: BoardTicket) => void;
   ticket: BoardTicket;
 }) {
@@ -3449,6 +3543,22 @@ function TicketCard({
       className="project-board-card"
       data-dragging={String(isDragging)}
       onClick={() => onOpenTicket(ticket)}
+      onContextMenu={(event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        onOpenContextMenu(ticket, { x: event.clientX, y: event.clientY });
+      }}
+      onKeyDown={(event) => {
+        if (event.key !== "ContextMenu" && !(event.shiftKey && event.key === "F10")) {
+          return;
+        }
+        event.preventDefault();
+        const bounds = event.currentTarget.getBoundingClientRect();
+        onOpenContextMenu(ticket, {
+          x: bounds.left + Math.min(32, bounds.width - 12),
+          y: bounds.top + Math.min(28, bounds.height - 12),
+        });
+      }}
       ref={ref}
       role="button"
       size="sm"
@@ -3515,6 +3625,113 @@ function TicketCard({
         ) : null}
       </CardContent>
     </Card>
+  );
+}
+
+function ProjectBoardTicketContextMenu({
+  confirmingDelete,
+  deleting,
+  onDelete,
+  onDismiss,
+  onPrimaryAction,
+  position,
+  primaryActionDisabled,
+  primaryActionLabel,
+}: {
+  confirmingDelete: boolean;
+  deleting: boolean;
+  onDelete: () => void;
+  onDismiss: () => void;
+  onPrimaryAction: () => void;
+  position: Pick<TicketContextMenuState, "x" | "y">;
+  primaryActionDisabled: boolean;
+  primaryActionLabel: string;
+}) {
+  const menuRef = useRef<HTMLDivElement>(null);
+  const [menuStyle, setMenuStyle] = useState<CSSProperties>(() => ({
+    left: `${position.x}px`,
+    top: `${position.y}px`,
+  }));
+
+  useLayoutEffect(() => {
+    const menu = menuRef.current;
+    if (!menu) {
+      return;
+    }
+    const bounds = menu.getBoundingClientRect();
+    const left = Math.max(
+      PROJECT_BOARD_CONTEXT_MENU_VIEWPORT_MARGIN_PX,
+      Math.min(
+        position.x,
+        window.innerWidth - bounds.width - PROJECT_BOARD_CONTEXT_MENU_VIEWPORT_MARGIN_PX,
+      ),
+    );
+    const top = Math.max(
+      PROJECT_BOARD_CONTEXT_MENU_VIEWPORT_MARGIN_PX,
+      Math.min(
+        position.y,
+        window.innerHeight - bounds.height - PROJECT_BOARD_CONTEXT_MENU_VIEWPORT_MARGIN_PX,
+      ),
+    );
+    setMenuStyle({
+      left: `${Math.round(left)}px`,
+      top: `${Math.round(top)}px`,
+    });
+  }, [confirmingDelete, position.x, position.y, primaryActionLabel]);
+
+  useEffect(() => {
+    const onKeyDown = (event: globalThis.KeyboardEvent) => {
+      if (event.key === "Escape") {
+        onDismiss();
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [onDismiss]);
+
+  return createPortal(
+    <>
+      <button
+        aria-label="Dismiss ticket context menu"
+        className="project-board-context-menu-backdrop"
+        onClick={onDismiss}
+        onContextMenu={(event) => {
+          event.preventDefault();
+          onDismiss();
+        }}
+        type="button"
+      />
+      <div
+        className="project-board-ticket-context-menu"
+        onClick={(event) => event.stopPropagation()}
+        onContextMenu={(event) => event.preventDefault()}
+        ref={menuRef}
+        role="menu"
+        style={menuStyle}
+      >
+        <button
+          className="project-board-ticket-context-menu-item"
+          disabled={primaryActionDisabled}
+          onClick={onPrimaryAction}
+          role="menuitem"
+          type="button"
+        >
+          <IconPlayerPlay aria-hidden="true" />
+          {primaryActionLabel}
+        </button>
+        <button
+          className="project-board-ticket-context-menu-item project-board-ticket-context-menu-item-danger"
+          disabled={deleting}
+          onClick={onDelete}
+          role="menuitem"
+          type="button"
+        >
+          <IconTrash aria-hidden="true" />
+          {confirmingDelete ? (deleting ? "Deleting" : "Confirm delete") : "Delete"}
+        </button>
+      </div>
+    </>,
+    document.body,
   );
 }
 
@@ -4758,6 +4975,85 @@ styleElement.textContent = `
     overflow: hidden;
   }
 
+  /*
+   * CDXC:ProjectBoard 2026-06-13-13:37:
+   * Kanban bead context menus should feel like Ghostex sidebar menus while staying owned by the standalone Project board bundle.
+   * Use a transparent fixed backdrop to dismiss the menu and fixed menu coordinates so right-click placement is independent of lane scroll positions.
+   */
+  .project-board-context-menu-backdrop {
+    background: transparent;
+    border: 0;
+    cursor: default;
+    inset: 0;
+    margin: 0;
+    padding: 0;
+    position: fixed;
+    z-index: 1190;
+  }
+
+  .project-board-ticket-context-menu {
+    background: color-mix(in srgb, var(--project-board-panel) 92%, #000 8%);
+    border: 1px solid rgba(255, 255, 255, 0.13);
+    box-shadow:
+      0 14px 28px rgba(0, 0, 0, 0.32),
+      0 0 0 1px rgba(255, 255, 255, 0.04);
+    display: grid;
+    gap: 2px;
+    min-width: 164px;
+    padding: 6px;
+    position: fixed;
+    z-index: 1200;
+  }
+
+  .project-board-ticket-context-menu-item {
+    align-items: center;
+    background: transparent;
+    border: 0;
+    color: rgba(244, 244, 245, 0.88);
+    display: flex;
+    font: inherit;
+    font-size: 12px;
+    font-weight: 620;
+    gap: 8px;
+    min-height: 32px;
+    padding: 8px 10px;
+    text-align: left;
+    white-space: nowrap;
+    width: 100%;
+  }
+
+  .project-board-ticket-context-menu-item svg {
+    flex: 0 0 auto;
+    height: 14px;
+    width: 14px;
+  }
+
+  .project-board-ticket-context-menu-item:hover,
+  .project-board-ticket-context-menu-item:focus-visible {
+    background: rgba(255, 255, 255, 0.08);
+    color: rgba(250, 250, 250, 0.96);
+    outline: none;
+  }
+
+  .project-board-ticket-context-menu-item:disabled {
+    color: rgba(244, 244, 245, 0.34);
+    cursor: not-allowed;
+  }
+
+  .project-board-ticket-context-menu-item:disabled:hover {
+    background: transparent;
+  }
+
+  .project-board-ticket-context-menu-item-danger {
+    color: rgba(255, 158, 158, 0.92);
+  }
+
+  .project-board-ticket-context-menu-item-danger:hover,
+  .project-board-ticket-context-menu-item-danger:focus-visible {
+    background: rgba(235, 87, 87, 0.16);
+    color: #ffd2d2;
+  }
+
   .project-board-shell {
     background: var(--project-board-bg);
     display: flex;
@@ -5693,6 +5989,11 @@ styleElement.textContent = `
   }
 
   .project-board-card {
+    /*
+     * CDXC:ProjectBoardCards 2026-06-13-13:55:
+     * Kanban bead cards are click, drag, and context-menu targets, so their text should not become selected by accidental pointer movement.
+     * Disable selection at the card surface while keeping editable ticket dialog fields selectable.
+     */
     background: var(--project-board-card);
     border: 1px solid var(--project-board-border);
     box-shadow: 0 1px 0 rgba(0, 0, 0, 0.28);
@@ -5701,6 +6002,7 @@ styleElement.textContent = `
     max-width: 100%;
     min-width: 0;
     padding: 0;
+    user-select: none;
     width: 100%;
   }
 

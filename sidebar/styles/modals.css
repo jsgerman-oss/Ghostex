@@ -872,11 +872,13 @@ html:has(body.app-modal-host-native-window-body) {
    * with the tag filter button so the search and session list can occupy the
    * full content width. The close button should use the same 32px transparent
    * toolbar treatment as the tag filter control.
+   *
+   * CDXC:PreviousSessions 2026-06-13-15:59:
+   * The close button now follows Rename Session's shadcn Button treatment, while the tag filter moved inside the search field so the browse toolbar keeps equal left and right input edges.
    */
   --previous-sessions-modal-padding-bottom: 8px;
   --previous-sessions-modal-padding-top: 14px;
   --previous-sessions-modal-padding-x: 14px;
-  --previous-sessions-close-button-top: 10px;
   --reference-session-agent-icon-size: 13px;
   --reference-session-icon-size: 15px;
   --reference-session-leading-inset: 10px;
@@ -1411,12 +1413,22 @@ html:has(body.app-modal-host-native-window-body) {
 .previous-sessions-toolbar {
   display: grid;
   gap: 8px;
-  grid-template-columns: minmax(0, 1fr) auto;
+  /*
+   * CDXC:PreviousSessions 2026-06-13-15:59:
+   * The tag filter is now the search field's right-side action, replacing the decorative Search icon. Keep the toolbar as one full-width column so the input has equal modal-edge spacing on the left and right.
+   */
+  grid-template-columns: minmax(0, 1fr);
   min-width: 0;
 }
 
 .previous-sessions-search-control {
   min-width: 0;
+}
+
+.previous-sessions-search-shell .session-search-trailing-control {
+  height: 32px;
+  right: 0;
+  width: 32px;
 }
 
 .previous-sessions-search-input {
@@ -1437,7 +1449,14 @@ html:has(body.app-modal-host-native-window-body) {
   width: 100%;
 }
 
-.previous-sessions-close-button,
+.previous-sessions-search-shell[data-has-query="true"] .previous-sessions-search-input {
+  padding-right: 66px;
+}
+
+.previous-sessions-search-shell[data-has-query="true"] .session-search-clear-button {
+  right: 32px;
+}
+
 .previous-sessions-favorites-toggle {
   align-items: center;
   background: transparent;
@@ -1456,11 +1475,6 @@ html:has(body.app-modal-host-native-window-body) {
     color 120ms ease,
     opacity 120ms ease;
   width: 32px;
-}
-
-.previous-sessions-close-button {
-  right: var(--previous-sessions-modal-padding-x);
-  top: var(--previous-sessions-close-button-top);
 }
 
 .previous-sessions-modal .confirm-modal-header-with-close {
@@ -1515,8 +1529,6 @@ html:has(body.app-modal-host-native-window-body) {
   outline: none;
 }
 
-.previous-sessions-close-button:hover,
-.previous-sessions-close-button:focus-visible,
 .previous-sessions-favorites-toggle:hover,
 .previous-sessions-favorites-toggle:focus-visible {
   background: color-mix(in srgb, var(--app-foreground) 10%, transparent);
@@ -1527,10 +1539,6 @@ html:has(body.app-modal-host-native-window-body) {
 .previous-sessions-favorites-toggle[data-selected="true"] {
   background: color-mix(in srgb, var(--app-foreground) 10%, transparent);
   color: color-mix(in srgb, #ffdf75 78%, #c78b12 22%);
-}
-
-.previous-sessions-tag-filter {
-  position: relative;
 }
 
 .previous-sessions-tag-filter-toggle[data-selected="true"] {
@@ -2107,7 +2115,7 @@ html:has(body.app-modal-host-native-window-body) {
 
 .git-commit-modal-header {
   gap: 10px;
-  padding: 20px 20px 14px;
+  padding: 20px 32px 14px 20px;
 }
 
 .git-commit-modal-description {
@@ -2123,7 +2131,7 @@ html:has(body.app-modal-host-native-window-body) {
   flex: 1 1 auto;
   min-height: 0;
   overflow: hidden;
-  padding: 20px 20px 24px;
+  padding: 20px 32px 24px 20px;
 }
 
 .git-commit-modal-left {
@@ -2535,7 +2543,7 @@ html:has(body.app-modal-host-native-window-body) {
   flex-wrap: wrap;
   gap: 10px;
   justify-content: flex-end;
-  padding: 14px 20px 20px;
+  padding: 14px 32px 20px 20px;
 }
 
 .git-commit-modal-button {
@@ -3260,10 +3268,117 @@ html:has(body.app-modal-host-native-window-body) {
    * The macOS Rename Session dialog needs a 20px wider React surface and 15px
    * less horizontal content padding so the textarea and controls have more
    * usable width without increasing the fixed 400px native height.
+   *
+   * CDXC:SidebarRename 2026-06-13-12:00:
+   * The shared shadcn dialog padding left too much air above the title and below
+   * the action row. Keep the 24px-equivalent horizontal inset (9px padding atop
+   * the centered native-window gutter) but tighten the top/bottom inset so the
+   * compact rename dialog reads as a focused prompt instead of a roomy panel.
+   *
+   * CDXC:SidebarRename 2026-06-13-12:30:
+   * With the action buttons stacked in the sub-640px native window, 16px
+   * top/bottom padding still pushed the content past the fixed window height and
+   * forced an inner scrollbar. Drop the vertical inset to 8px so the title and
+   * the bottom action row sit inside the window without scrolling.
    */
   max-width: min(540px, calc(100vw - 2rem));
+  padding-bottom: 8px;
   padding-left: 9px;
   padding-right: 9px;
+  padding-top: 8px;
+}
+
+.session-rename-modal-shadcn .session-rename-form {
+  gap: 16px;
+}
+
+.session-rename-modal-shadcn [data-slot="dialog-close"] {
+  /*
+   * CDXC:SidebarRename 2026-06-13-12:45:
+   * Align the close button with the tightened modal insets so it lines up with
+   * the title row and the content's right edge instead of the default p-6
+   * offset.
+   */
+  right: 9px;
+  top: 8px;
+}
+
+.session-rename-modal-shadcn [data-slot="dialog-footer"] [data-slot="button"]:disabled {
+  /*
+   * CDXC:SidebarRename 2026-06-13-12:00:
+   * A disabled Generate Name/Rename action should not read as a half-faded
+   * solid primary block. Use a quiet flat surface with muted text and border so
+   * the unavailable state looks intentional and legible on the #0e0e0e modal.
+   */
+  background: color-mix(in srgb, var(--foreground) 7%, transparent);
+  border-color: color-mix(in srgb, var(--border) 72%, transparent);
+  color: color-mix(in srgb, var(--muted-foreground) 70%, transparent);
+  opacity: 1;
+}
+
+.session-rename-modal-shadcn [data-slot="dialog-footer"] [data-slot="button"]:not(:disabled) {
+  /*
+   * CDXC:SidebarRename 2026-06-13-13:30:
+   * Rename and (when text is long enough to enable it) Generate Name are the
+   * dialog's primary actions, so render them as solid white buttons with dark
+   * text instead of the muted secondary/primary tints.
+   */
+  background: #ffffff;
+  border-color: #ffffff;
+  color: #111111;
+}
+
+.session-rename-modal-shadcn [data-slot="dialog-footer"] [data-slot="button"]:not(:disabled):hover {
+  background: color-mix(in srgb, #ffffff 88%, #000000);
+  border-color: color-mix(in srgb, #ffffff 88%, #000000);
+  color: #111111;
+}
+
+.app-modal-host-native-window-body .session-rename-modal-shadcn {
+  /*
+   * CDXC:SidebarRename 2026-06-13-13:00:
+   * The native child window is a fixed height, so centering a shorter dialog
+   * left a large gutter above the title/close row and below the action row that
+   * read as much more than 24px. Fill the window and own a flat 24px edge inset
+   * instead. The name field grows to absorb the remaining height so the
+   * title/close row sits 24px from the top and the bottom button sits 24px from
+   * the bottom, with no inner scroll.
+   */
+  box-sizing: border-box;
+  grid-template-rows: minmax(0, 1fr);
+  height: 100vh;
+  max-height: 100vh;
+  max-width: 100vw;
+  overflow: hidden;
+  padding: 24px;
+  width: 100vw;
+}
+
+.app-modal-host-native-window-body .session-rename-modal-shadcn [data-slot="dialog-close"] {
+  right: 24px;
+  top: 24px;
+}
+
+.app-modal-host-native-window-body .session-rename-modal-shadcn .session-rename-form {
+  height: 100%;
+  min-height: 0;
+}
+
+.app-modal-host-native-window-body .session-rename-modal-shadcn .session-rename-field-group {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.app-modal-host-native-window-body
+  .session-rename-modal-shadcn
+  .session-rename-field-group
+  > [data-slot="field"]:first-child {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.app-modal-host-native-window-body .session-rename-modal-shadcn .session-rename-textarea {
+  flex: 1 1 auto;
 }
 
 .add-repository-modal-shadcn {

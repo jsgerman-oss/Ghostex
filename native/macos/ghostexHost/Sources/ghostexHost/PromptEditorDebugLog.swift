@@ -16,9 +16,10 @@ enum PromptEditorDebugLog {
   /**
    CDXC:PromptEditor 2026-05-19-11:20:
    Prompt-editor caret and click failures need a dedicated app-storage log file
-   gated by Settings debugging mode. Record Monaco init, native hit regions,
-   modal-host visibility, and prewarm timing so repros can be correlated by
-   timestamp without mixing into agent-detection or terminal-focus logs.
+   gated by Settings debugging mode. Record Monaco init, native child-window
+   frame state, modal-host visibility, and prewarm timing so repros can be
+   correlated by timestamp without mixing into agent-detection or terminal-focus
+   logs.
    */
   static func append(event: String, details: [String: Any] = [:]) {
     guard NativeDebugLogging.isEnabled else {

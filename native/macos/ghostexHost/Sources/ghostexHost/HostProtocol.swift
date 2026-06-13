@@ -72,7 +72,7 @@ enum HostCommand: Decodable {
   case showBrowserImportSettings(SessionCommand)
   case setSidebarSide(SetSidebarSide)
   case toggleSidebarCollapsed
-  case setReactTitlebarHitRegions(SetReactTitlebarHitRegions)
+  case setReactTitlebarStripState(SetReactTitlebarStripState)
   case showTitlebarDropdownPanel(ShowTitlebarDropdownPanel)
   case closeTitlebarDropdownPanel
   case resizeTitlebarDropdownPanel(ResizeTitlebarDropdownPanel)
@@ -177,7 +177,7 @@ enum HostCommand: Decodable {
     case showBrowserImportSettings
     case setSidebarSide
     case toggleSidebarCollapsed
-    case setReactTitlebarHitRegions
+    case setReactTitlebarStripState
     case showTitlebarDropdownPanel
     case closeTitlebarDropdownPanel
     case resizeTitlebarDropdownPanel
@@ -354,8 +354,8 @@ enum HostCommand: Decodable {
       self = .setSidebarSide(try SetSidebarSide(from: decoder))
     case .toggleSidebarCollapsed:
       self = .toggleSidebarCollapsed
-    case .setReactTitlebarHitRegions:
-      self = .setReactTitlebarHitRegions(try SetReactTitlebarHitRegions(from: decoder))
+    case .setReactTitlebarStripState:
+      self = .setReactTitlebarStripState(try SetReactTitlebarStripState(from: decoder))
     case .showTitlebarDropdownPanel:
       self = .showTitlebarDropdownPanel(try ShowTitlebarDropdownPanel(from: decoder))
     case .closeTitlebarDropdownPanel:
@@ -1123,38 +1123,27 @@ struct SetSidebarSide: Decodable {
   let side: SidebarSide
 }
 
-struct ReactTitlebarHitRegion: Decodable {
-  let x: Double
-  let y: Double
-  let width: Double
-  let height: Double
-}
-
-struct SetReactTitlebarHitRegions: Decodable {
+struct SetReactTitlebarStripState: Decodable {
   /**
-   CDXC:ReactTitlebar 2026-05-09-17:11
-   React titlebar chrome must expose only its real interactive bounds to
-   AppKit. Native hit-testing uses these regions to keep blank titlebar space
-   draggable and workspace content clickable while React buttons/dropdowns own
-   their own events.
+   CDXC:ReactTitlebar 2026-06-13-13:33:
+   The main titlebar WKWebView is an exact native strip sibling, and dropdowns
+   are native child windows. Do not publish DOM hit rectangles to AppKit; native
+   only needs the strip-level overlay state for lifecycle cleanup.
 
    CDXC:ReactTitlebar 2026-05-25-10:09:
    Workspace shielding follows React's explicit dropdown/menu open state, not
-   stale hit-region geometry. Regions still route visible titlebar overlay
-   clicks, but they are not the source of truth for blocking terminals.
+   stale geometry. Child windows own dropdown blocking, so the main workspace
+   remains clickable.
    */
   let overlayOpen: Bool
-  let regions: [ReactTitlebarHitRegion]
 
   private enum CodingKeys: String, CodingKey {
     case overlayOpen
-    case regions
   }
 
   init(from decoder: Decoder) throws {
     let container = try decoder.container(keyedBy: CodingKeys.self)
     overlayOpen = try container.decodeIfPresent(Bool.self, forKey: .overlayOpen) ?? false
-    regions = try container.decode([ReactTitlebarHitRegion].self, forKey: .regions)
   }
 }
 

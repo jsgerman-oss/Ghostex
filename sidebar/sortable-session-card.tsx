@@ -61,6 +61,7 @@ import {
 } from "./sidebar-dnd";
 import { openAppModal } from "./app-modal-host-bridge";
 import { SidebarContextMenuPortal } from "./sidebar-context-menu-portal";
+import { postSidebarRefreshDebugLog } from "./sidebar-refresh-debug-log";
 import { useSidebarStore } from "./sidebar-store";
 import {
   getEffectiveSessionTag,
@@ -83,6 +84,7 @@ const SESSION_CARD_DRAG_HOLD_TOLERANCE_PX = 12;
 const TOUCH_SESSION_CARD_DRAG_HOLD_DELAY_MS = 130;
 const TOUCH_SESSION_CARD_DRAG_HOLD_TOLERANCE_PX = 12;
 const COMPLETION_FLASH_DURATION_MS = 3_000;
+const SLEEP_BELOW_DEBUG_EVENT_PREFIX = "sleepBelow";
 const DND_SESSION_CARD_AX_ATTRIBUTES = [
   "aria-describedby",
   "aria-disabled",
@@ -185,6 +187,54 @@ export function getSessionCardAccessibleLabel({
 }
 
 export type SidebarBulkContextMenuScheduler = (operation: () => void) => void;
+
+type SleepBelowDebugDetailsInput = {
+  clickedSessionKind?: string;
+  debugInstanceId: number | string;
+  elapsedSinceRequestMs?: number;
+  event: "nextFrame" | "posted" | "requested" | "skipped";
+  flushDurationMs?: number;
+  frameDelayMs?: number;
+  postMessageDurationMs?: number;
+  resolveDurationMs?: number;
+  skippedCount: number;
+  sourceIndex: number;
+  targetCount: number;
+  visibleBelowCount: number;
+};
+
+export function createSleepBelowDebugDetails(
+  input: SleepBelowDebugDetailsInput,
+): Record<string, unknown> {
+  /*
+   * CDXC:NativeSidebarBulkActions 2026-06-13-12:59:
+   * Sleep below lag diagnostics must prove the click path timing without writing
+   * session ids, titles, paths, URLs, command text, prompts, or other user-owned
+   * content. Keep this payload to counts, enum-like labels, timing, and the
+   * component debug instance id.
+   */
+  return {
+    action: "sleepBelow",
+    clickedSessionKind: input.clickedSessionKind ?? "unknown",
+    debugInstanceId: input.debugInstanceId,
+    elapsedSinceRequestMs: roundSleepBelowDebugMs(input.elapsedSinceRequestMs),
+    event: input.event,
+    flushDurationMs: roundSleepBelowDebugMs(input.flushDurationMs),
+    frameDelayMs: roundSleepBelowDebugMs(input.frameDelayMs),
+    postMessageDurationMs: roundSleepBelowDebugMs(input.postMessageDurationMs),
+    resolveDurationMs: roundSleepBelowDebugMs(input.resolveDurationMs),
+    skippedCount: input.skippedCount,
+    sourceIndex: input.sourceIndex,
+    targetCount: input.targetCount,
+    visibleBelowCount: input.visibleBelowCount,
+  };
+}
+
+function roundSleepBelowDebugMs(value: number | undefined): number | undefined {
+  return typeof value === "number" && Number.isFinite(value)
+    ? Math.round(value * 10) / 10
+    : undefined;
+}
 
 /**
  * CDXC:SidebarContextMenu 2026-06-07-13:00:
@@ -1064,20 +1114,85 @@ export function SortableSessionCard({
   };
 
   const requestSleepBelow = () => {
-    const targetSessionIds = readLatestSessionIdsBelow().filter((candidateSessionId) =>
+    const requestStartedAtMs = performance.now();
+    const latestSessionIdsBelow = readLatestSessionIdsBelow();
+    const targetSessionIds = latestSessionIdsBelow.filter((candidateSessionId) =>
       canSleepSidebarSession(useSidebarStore.getState().sessionsById[candidateSessionId]),
     );
+    const resolveDurationMs = performance.now() - requestStartedAtMs;
+    const baseDebugDetails = {
+      clickedSessionKind: session.sessionKind ?? session.kind,
+      debugInstanceId: debugInstanceIdRef.current,
+      resolveDurationMs,
+      skippedCount: Math.max(0, latestSessionIdsBelow.length - targetSessionIds.length),
+      sourceIndex: index,
+      targetCount: targetSessionIds.length,
+      visibleBelowCount: latestSessionIdsBelow.length,
+    };
     if (targetSessionIds.length === 0) {
+      postSidebarRefreshDebugLog(
+        showDebugSessionNumbers,
+        vscode,
+        `${SLEEP_BELOW_DEBUG_EVENT_PREFIX}.skipped`,
+        createSleepBelowDebugDetails({
+          ...baseDebugDetails,
+          elapsedSinceRequestMs: performance.now() - requestStartedAtMs,
+          event: "skipped",
+        }),
+      );
       return;
     }
 
+    postSidebarRefreshDebugLog(
+      showDebugSessionNumbers,
+      vscode,
+      `${SLEEP_BELOW_DEBUG_EVENT_PREFIX}.requested`,
+      createSleepBelowDebugDetails({
+        ...baseDebugDetails,
+        elapsedSinceRequestMs: performance.now() - requestStartedAtMs,
+        event: "requested",
+      }),
+    );
+    const flushStartedAtMs = performance.now();
     flushSync(() => {
       setContextMenuPosition(undefined);
     });
+    const flushDurationMs = performance.now() - flushStartedAtMs;
+    const postMessageStartedAtMs = performance.now();
     vscode.postMessage({
       sessionIds: targetSessionIds,
       sleeping: true,
+      source: "sleepBelow",
       type: "setSessionsSleeping",
+    });
+    const postMessageDurationMs = performance.now() - postMessageStartedAtMs;
+    postSidebarRefreshDebugLog(
+      showDebugSessionNumbers,
+      vscode,
+      `${SLEEP_BELOW_DEBUG_EVENT_PREFIX}.posted`,
+      createSleepBelowDebugDetails({
+        ...baseDebugDetails,
+        elapsedSinceRequestMs: performance.now() - requestStartedAtMs,
+        event: "posted",
+        flushDurationMs,
+        postMessageDurationMs,
+      }),
+    );
+    const frameProbeStartedAtMs = performance.now();
+    window.requestAnimationFrame(() => {
+      postSidebarRefreshDebugLog(
+        showDebugSessionNumbers,
+        vscode,
+        `${SLEEP_BELOW_DEBUG_EVENT_PREFIX}.nextFrame`,
+        createSleepBelowDebugDetails({
+          ...baseDebugDetails,
+          elapsedSinceRequestMs: performance.now() - requestStartedAtMs,
+          event: "nextFrame",
+          flushDurationMs,
+          frameDelayMs: performance.now() - frameProbeStartedAtMs,
+          postMessageDurationMs,
+        }),
+      );
     });
   };
 

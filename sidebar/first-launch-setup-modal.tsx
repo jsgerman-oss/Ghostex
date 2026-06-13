@@ -17,10 +17,8 @@ import {
   IconDeviceFloppy,
   IconDownload,
   IconFolders,
-  IconGitPullRequest,
   IconHistory,
   IconInfoCircle,
-  IconKeyboard,
   IconLayoutDashboard,
   IconMoon,
   IconPencil,
@@ -71,11 +69,7 @@ export type FirstLaunchSetupPage =
   | "skills"
   | "browserControl"
   | "desktopCua"
-  | "workspace"
   | "agentsSessions"
-  | "actionsBrowsers"
-  | "codexEditor"
-  | "sessionResume"
   | "remoteAccess";
 
 export type FirstLaunchSetupModalProps = {
@@ -135,7 +129,7 @@ type FirstLaunchGuidePage = {
   imageAlt?: string;
   imageSrc?: string;
   items: FirstLaunchGuideItem[];
-  kicker: string;
+  kicker?: string;
   page: FirstLaunchSetupPage;
   title: string;
 };
@@ -145,18 +139,18 @@ type FirstLaunchContinueWarning = "hooks" | "browserControl" | "desktopCua";
 const FIRST_LAUNCH_INTRO_BENEFITS: readonly FirstLaunchBenefit[] = [
   {
     icon: IconSparkles,
-    text: "Keep parallel agent sessions, terminals, browsers, and project work in one native macOS workspace.",
+    text: "Keep parallel agent sessions, terminals, browsers, and project work together in one fast, native macOS workspace instead of scattered apps.",
     title: "Agent workspace",
   },
   {
     icon: IconBellRinging,
-    text: "Surface In Progress and Needs Attention states without hunting through every terminal.",
+    text: "See In Progress and Needs Attention states across all your sessions at a glance, so you always know which agents are working and which are waiting on you, without hunting through every terminal one by one.",
     title: "Status awareness",
   },
   {
     icon: IconCircleCheck,
-    text: "Name sessions automatically from the first message so the sidebar stays readable.",
-    title: "Cleaner sessions",
+    text: "Name and tag sessions automatically from your first message, turning cryptic shell titles into clear, scannable labels and tags so the sidebar stays organized and readable even with dozens of sessions open at once.",
+    title: "More Organized Sessions",
   },
 ];
 
@@ -191,21 +185,22 @@ const FIRST_LAUNCH_ANDROID_APK_URL =
   "https://github.com/maddada/Ghostex/releases/download/v4.0.2/ghostex-android.apk";
 const FIRST_LAUNCH_IOS_DISCORD_URL = "https://discord.gg/df7b3G92CS";
 const FIRST_LAUNCH_DISCORD_URL = "https://discord.gg/df7b3G92CS";
+const FIRST_LAUNCH_RELEASES_URL = "https://github.com/maddada/ghostex/releases";
 
 const FIRST_LAUNCH_CLI_MOBILE_BENEFITS: readonly FirstLaunchMobileBenefit[] = [
   {
     icon: IconDeviceMobile,
     text: "Open the same agent sessions from Android or iOS when you are away from the Mac.",
-    title: "Remote sessions",
+    title: "Live Remote Sessions",
   },
   {
     icon: IconTerminal2,
-    text: "The mobile apps call ghostex and gx over SSH when the alias is available, so taps on mobile attach to the right session.",
-    title: "CLI bridge",
+    text: "The mobile apps call ghostex over SSH when the alias is available, so taps on mobile attach to the right session.",
+    title: "CLI Bridge",
   },
   {
     icon: IconInfoCircle,
-    text: "Agents can add ghostex browser mcp to inspect CEF console logs, snapshots, screenshots, clicks, fills, and key presses.",
+    text: "Agents can add ghostex browser mcp to inspect Browser's console logs, snapshots, screenshots, clicks, fills, and key presses.",
     title: "Ghostex Browser Use",
   },
 ];
@@ -217,11 +212,7 @@ const FIRST_LAUNCH_SETUP_PAGES: readonly FirstLaunchSetupPage[] = [
   "skills",
   "browserControl",
   "desktopCua",
-  "workspace",
   "agentsSessions",
-  "actionsBrowsers",
-  "codexEditor",
-  "sessionResume",
   "remoteAccess",
 ];
 
@@ -302,9 +293,7 @@ const FIRST_LAUNCH_GUIDE_PAGES: readonly FirstLaunchGuidePage[] = [
     title: "Set up Ghostex Computer Use",
   },
   {
-    imageAlt: "Ghostex workspace preview with agent session cards, terminal panes, and status indicators",
-    imageSrc: ghostexIntroImage,
-    icon: IconLayoutDashboard,
+    icon: IconApps,
     items: [
       {
         icon: IconTerminal2,
@@ -331,14 +320,6 @@ const FIRST_LAUNCH_GUIDE_PAGES: readonly FirstLaunchGuidePage[] = [
         text: "Reopen this guide any time from the sidebar overflow menu.",
         title: "Replay this guide",
       },
-    ],
-    kicker: "Welcome",
-    page: "workspace",
-    title: "Meet Ghostex",
-  },
-  {
-    icon: IconApps,
-    items: [
       {
         icon: IconCode,
         text: "Use T3 Code when you want GUI-based coding sessions; it also supports splitting.",
@@ -359,96 +340,6 @@ const FIRST_LAUNCH_GUIDE_PAGES: readonly FirstLaunchGuidePage[] = [
         text: "Paste long text into rename and Ghostex will turn it into a cleaner session name.",
         title: "Smart rename",
       },
-    ],
-    kicker: "Agents",
-    page: "agentsSessions",
-    title: "Agents & Sessions",
-  },
-  {
-    icon: IconBolt,
-    items: [
-      {
-        icon: IconBolt,
-        text: "Actions are quick buttons for things like Dev, Build, Test, and Setup.",
-        title: "Quick actions",
-      },
-      {
-        icon: IconTerminal2,
-        text: "Terminal actions open a fresh terminal and run your command there.",
-        title: "Terminal actions",
-      },
-      {
-        icon: IconBrowser,
-        text: "Browser actions open a URL and show it inside the Browsers group.",
-        title: "Browser actions",
-      },
-      {
-        icon: IconTools,
-        text: "Right-click agents and actions to configure, debug, edit, or remove them.",
-        title: "Manage from sidebar",
-      },
-      {
-        icon: IconGitPullRequest,
-        text: "Send GitHub issues and PRs for problems, improvements, agent integrations, and indicator support.",
-        title: "Feedback",
-      },
-    ],
-    kicker: "Workflows",
-    page: "actionsBrowsers",
-    title: "Actions & Browsers",
-  },
-  {
-    action: {
-      description:
-        "Recommended in your <user>/.codex/config.toml so Codex titles stay readable in multi-session workspaces.",
-      eyebrow: "Codex",
-      snippet: [
-        "[tui]",
-        'terminal_title = ["spinner", "thread"]',
-        'status_line = ["thread-title", "model-with-reasoning", "current-dir", "context-usage", "used-tokens", "weekly-limit"]',
-      ],
-    },
-    icon: IconBrandOpenai,
-    items: [
-      {
-        icon: IconBrandOpenai,
-        text: "Keep Codex and Ghostex aligned so session titles stay recognizable.",
-        title: "Codex titles",
-      },
-      {
-        icon: IconKeyboard,
-        text: "Press Ctrl+G in Claude Code, Codex CLI, and similar tools to edit prompts in a focused modal.",
-        title: "Prompt editor",
-      },
-      {
-        icon: IconDeviceFloppy,
-        text: "Press Ctrl+G again from that prompt modal to save, close it, and return to the terminal.",
-        title: "Save and return",
-      },
-      {
-        icon: IconTerminal2,
-        text: "After changing shell config, open a new terminal so CLI tools pick up the updated EDITOR value.",
-        title: "Shell refresh",
-      },
-    ],
-    kicker: "Editor setup",
-    page: "codexEditor",
-    title: "Codex & Editor Setup",
-  },
-  {
-    action: {
-      description:
-        "Restart Ghostex after installing or updating an agent CLI so Ghostex can install the matching lifecycle hooks.",
-      eyebrow: "Reliable resume",
-      snippet: [
-        "~/.codex/hooks.json",
-        "~/.claude/settings.json",
-        "~/.pi/agent/extensions/ghostex.ts",
-        "~/.ghostexterm/<agent>-hook-sessions.json",
-      ],
-    },
-    icon: IconDeviceFloppy,
-    items: [
       {
         icon: IconDeviceFloppy,
         text: "Agent hooks capture the native session id that Claude, Codex, Grok, OpenCode, Pi, Amp, Cursor CLI, Gemini, Antigravity, Rovo Dev, Hermes Agent, Copilot, CodeBuddy, Factory, and Qoder need for exact resume.",
@@ -470,9 +361,8 @@ const FIRST_LAUNCH_GUIDE_PAGES: readonly FirstLaunchGuidePage[] = [
         title: "Title fallback",
       },
     ],
-    kicker: "Resume",
-    page: "sessionResume",
-    title: "Session Resume Hooks",
+    page: "agentsSessions",
+    title: "Agents & Sessions",
   },
   {
     action: {
@@ -911,16 +801,20 @@ export function FirstLaunchSetupModal({
             {activePageIndex === 0 ? (
               null
             ) : (
-              <Button onClick={() => navigateToPage(previousPage)} type="button" variant="outline">
+              <Button onClick={() => navigateToPage(previousPage)} type="button">
                 <IconArrowLeft aria-hidden="true" data-icon="inline-start" />
                 Back
               </Button>
             )}
-            {activePageIndex === 0 ? null : (
-              <Button onClick={onClose} type="button" variant="ghost">
-                Skip for now
+            {activePage === "welcome" ? (
+              <Button
+                onClick={() => openFirstLaunchExternalUrl(vscode, FIRST_LAUNCH_DISCORD_URL)}
+                type="button"
+              >
+                <DiscordLogoIcon />
+                Join our Discord!
               </Button>
-            )}
+            ) : null}
             {isLastPage ? (
               <Button onClick={handleContinue} type="button">
                 Let's start!
@@ -946,13 +840,68 @@ function FirstLaunchWelcomePage({ vscode }: { vscode?: WebviewApi }) {
           Fast Ghostty terminals, Codex inspired Features!
         </h2>
         <p className="first-launch-setup-welcome-lede">
-          Ghostex brings Ghostty-backed terminals into a Codex-app style UX, so you get the
-          reliability and fidelity of real native terminals with the project, agent, browser, and
-          session workflows people expect from a modern agent development environment.
+          Ghostex gives you real Ghostty terminals in a clean, Codex-inspired interface, so your
+          terminals stay fast and reliable while the project, agent, browser, and session workflows
+          you rely on are right there with them.
         </p>
       </div>
 
       <div className="first-launch-setup-welcome-grid">
+        <article className="first-launch-setup-welcome-card first-launch-setup-welcome-card-wide">
+          <div className="first-launch-setup-welcome-card-heading">
+            <span className="first-launch-setup-welcome-card-icon">
+              <IconBellRinging aria-hidden="true" size={18} />
+            </span>
+            <div className="first-launch-setup-welcome-card-heading-text">
+              <h3>Latest Announcement</h3>
+              <span className="first-launch-setup-welcome-card-date">2026-06-13</span>
+            </div>
+          </div>
+          <p>
+            Thanks to everyone trying Ghostex! For the next period we&apos;re focusing entirely on
+            polish, performance, and bug fixes, pausing new features until the app is reliable and
+            enjoyable. Special thanks to <strong>@gsxdsm</strong> who has joined to help us make the
+            app better in no time! He&apos;s the maintainer of Automaker and Fusion (4k+ stars ADEs),
+            and he brings a wealth of experience when it comes to ADE development from his work on
+            numerous Agentic Engineering projects.
+          </p>
+          <p>
+            So please keep the bug reports and UX feedback coming. v4.10.0 completes the move to the
+            gxserver engine, so you can now run Ghostex on another machine and manage your machines
+            from your Mac or phone (iOS/Android), and testing help to harden this is very welcome.
+          </p>
+          <p>
+            To see everything that changed in each release, check out{" "}
+            <a
+              className="first-launch-setup-welcome-link"
+              href={FIRST_LAUNCH_RELEASES_URL}
+              onClick={(event) => {
+                event.preventDefault();
+                openFirstLaunchExternalUrl(vscode, FIRST_LAUNCH_RELEASES_URL);
+              }}
+              rel="noreferrer"
+              target="_blank"
+            >
+              our changelog on GitHub
+            </a>
+            .
+          </p>
+        </article>
+        <article className="first-launch-setup-welcome-card first-launch-setup-welcome-card-wide">
+          <div className="first-launch-setup-welcome-card-heading">
+            <span className="first-launch-setup-welcome-card-icon">
+              <IconUsersGroup aria-hidden="true" size={18} />
+            </span>
+            <h3>A note from the developer</h3>
+          </div>
+          <p>
+            Ghostex is built by one developer. I&apos;d be really grateful if you joined Discord to chit
+            chat, support, ask questions, report rough edges, or contribute.<br />
+            Please cut me a little
+            slack if you hit any issues 😅. I&apos;m doing my very best to make this app super stable for all of us to depend on it. <br />
+            The app is mostly stable as I use nothing but Ghostex to build Ghostex.
+          </p>
+        </article>
         <article className="first-launch-setup-welcome-card">
           <div className="first-launch-setup-welcome-card-heading">
             <span className="first-launch-setup-welcome-card-icon">
@@ -968,7 +917,7 @@ function FirstLaunchWelcomePage({ vscode }: { vscode?: WebviewApi }) {
         <article className="first-launch-setup-welcome-card">
           <div className="first-launch-setup-welcome-card-heading">
             <span className="first-launch-setup-welcome-card-icon">
-              <IconBrowser aria-hidden="true" size={18} />
+              <IconWorld aria-hidden="true" size={18} />
             </span>
             <h3>Why Chromium browser panes?</h3>
           </div>
@@ -978,33 +927,7 @@ function FirstLaunchWelcomePage({ vscode }: { vscode?: WebviewApi }) {
             see in Chrome-family browsers.
           </p>
         </article>
-        <article className="first-launch-setup-welcome-card first-launch-setup-welcome-card-wide">
-          <div className="first-launch-setup-welcome-card-heading">
-            <span className="first-launch-setup-welcome-card-icon">
-              <IconUsersGroup aria-hidden="true" size={18} />
-            </span>
-            <h3>A note from the developer</h3>
-          </div>
-          <p>
-            Ghostex is built by one developer. I&apos;d be really grateful if you joined Discord to chit
-            chat, support, ask questions, report rough edges, or contribute.<br />
-            Please cut me a little
-            slack if you hit any issues 😅. I will try my best to get all issues fixed as soon as I can. <br />
-            The app is mostly stable as I use nothing but Ghostex to build Ghostex.
-          </p>
-        </article>
       </div>
-
-      <Button
-        className="first-launch-setup-discord-link"
-        onClick={() => openFirstLaunchExternalUrl(vscode, FIRST_LAUNCH_DISCORD_URL)}
-        type="button"
-        variant="outline"
-      >
-        <DiscordLogoIcon />
-        Join the Ghostex Discord
-        <IconArrowRight aria-hidden="true" size={16} />
-      </Button>
     </section>
   );
 }
@@ -1060,7 +983,6 @@ function FirstLaunchPreferencesPage({
           <IconSettings aria-hidden="true" className="first-launch-setup-guide-icon" size={26} />
         </span>
         <div className="first-launch-setup-guide-copy">
-          <div className="first-launch-setup-kicker">Defaults</div>
           <h2 className="first-launch-setup-title" id="first-launch-preferences-title">
             Choose the defaults that shape Ghostex.
           </h2>
@@ -1128,6 +1050,14 @@ function FirstLaunchPreferencesPage({
               ))}
             </select>
           </label>
+          <div className="first-launch-setup-preference-usage">
+            <span className="first-launch-setup-preference-usage-title">This agent powers</span>
+            <ul className="first-launch-setup-preference-usage-list">
+              <li>Starting work from a card on the Kanban board</li>
+              <li>Writing commit messages in the Git commit dialog</li>
+              <li>The pre-selected agent when you create a new worktree</li>
+            </ul>
+          </div>
         </article>
 
         <article className="first-launch-setup-preference-card">
@@ -1366,9 +1296,6 @@ function FirstLaunchHooksPage({
               <section className="first-launch-setup-hook-group" key={group.id}>
                 <div className="first-launch-setup-hook-group-title">
                   {group.title}
-                  <span className="first-launch-setup-hook-group-count">
-                    {group.agents.length}
-                  </span>
                 </div>
                 <ul className="first-launch-setup-hook-grid">
                   {group.agents.map((agent) => (
@@ -1534,13 +1461,7 @@ function FirstLaunchCliPage({
     : isInstalled
       ? "available command"
       : "command link needs attention";
-  const commandText = isChecking
-    ? "Checking ghostex / gx..."
-    : isInstalled
-      ? ghostexCliStatus.gxUsable
-        ? "ghostex / gx"
-        : "ghostex"
-      : "ghostex";
+  const commandText = isChecking ? "Checking gx --help..." : "gx --help";
 
   return (
     <div className="first-launch-setup-cli-page">
@@ -1607,10 +1528,6 @@ function FirstLaunchCliPage({
             iPhone TestFlight
           </Button>
         </div>
-        <p className="first-launch-setup-mobile-download-note">
-          Android APK is on GitHub Releases. The iPhone app is in TestFlight; join Discord to get
-          access.
-        </p>
       </section>
 
       <aside className="first-launch-setup-mobile-visual">
@@ -1662,7 +1579,9 @@ function FirstLaunchGuidePageView({
           <PageIcon aria-hidden="true" className="first-launch-setup-guide-icon" size={26} />
         </span>
         <div className="first-launch-setup-guide-copy">
-          <div className="first-launch-setup-kicker">{page.kicker}</div>
+          {page.kicker ? (
+            <div className="first-launch-setup-kicker">{page.kicker}</div>
+          ) : null}
           <h2 className="first-launch-setup-title" id={`first-launch-${page.page}-title`}>
             {page.title}
           </h2>
@@ -1824,11 +1743,11 @@ function getFirstLaunchHookStatusGroups(
   hookStatusByAgentId: ReadonlyMap<string, SidebarAgentHookStatusItem>,
 ): FirstLaunchHookStatusGroup[] {
   const groups: FirstLaunchHookStatusGroup[] = [
-    { agents: [], id: "installed", title: "Installed" },
-    { agents: [], id: "updateRequired", title: "Needs update" },
-    { agents: [], id: "missing", title: "Not installed" },
-    { agents: [], id: "cliMissing", title: "CLI missing" },
-    { agents: [], id: "unknown", title: "Not checked" },
+    { agents: [], id: "installed", title: "Agent Hooks Installed" },
+    { agents: [], id: "updateRequired", title: "Agent Hooks Need Update" },
+    { agents: [], id: "missing", title: "Agent Hooks Not Installed" },
+    { agents: [], id: "cliMissing", title: "Agent CLI Missing" },
+    { agents: [], id: "unknown", title: "Agent Hooks Not Checked" },
   ];
   const groupById = new Map(groups.map((group) => [group.id, group]));
 

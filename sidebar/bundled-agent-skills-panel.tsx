@@ -117,13 +117,6 @@ function BundledAgentSkillRow({
 }) {
   const installed = isBundledGhostexAgentSkillInstalled(skill.id, ghostexCliStatus);
   const Icon = BUNDLED_AGENT_SKILL_ICONS[skill.id];
-  const status = ghostexCliStatusLoading && !ghostexCliStatus
-    ? "Checking"
-    : installed
-      ? "Installed"
-      : cliReady
-        ? "Not installed"
-        : "CLI required";
 
   return (
     <Field className="rounded-none border border-border bg-muted/20 px-4 py-3">
@@ -133,29 +126,23 @@ function BundledAgentSkillRow({
             <Icon aria-hidden="true" size={17} />
           </span>
           <FieldContent>
-            <div className="flex flex-wrap items-center gap-2">
+            <div className="mb-1.5 flex flex-wrap items-center gap-2">
               <FieldTitle className="text-sm">{skill.name}</FieldTitle>
-              <span
-                className={cn(
-                  "inline-flex rounded-none border px-2 py-0.5 text-[11px] font-semibold",
-                  installed
-                    ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-300"
-                    : "border-amber-500/40 bg-amber-500/10 text-amber-200",
-                )}
-              >
-                {status}
-              </span>
             </div>
             <FieldDescription className="text-xs text-muted-foreground">
               {skill.description}
             </FieldDescription>
-            <code className="mt-2 block select-text text-xs text-muted-foreground">
+            <code className="mt-2 block select-text rounded-none border border-border bg-muted/40 px-2.5 py-1.5 text-xs text-muted-foreground">
               {skill.command}
             </code>
           </FieldContent>
         </div>
         <div className="flex shrink-0 flex-wrap gap-2 sm:justify-end">
           <Button
+            className={cn(
+              installed &&
+                "border-emerald-500/40 bg-emerald-500/10 text-emerald-300 hover:bg-emerald-500/15 hover:text-emerald-200",
+            )}
             disabled={ghostexCliStatusLoading || installed || !cliReady || !onInstall}
             onClick={onInstall}
             type="button"

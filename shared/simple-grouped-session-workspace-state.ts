@@ -83,6 +83,7 @@ type EnsureVirtualPaneTabsOptions = {
 };
 
 type MaterializeVirtualPaneTabsOptions = {
+  preserveParkedActiveTabOwners?: boolean;
   preserveSplitTopology?: boolean;
 };
 
@@ -603,6 +604,7 @@ export function removeGroupInSimpleWorkspace(
 export function removeSessionInSimpleWorkspace(
   snapshot: GroupedSessionWorkspaceSnapshot,
   sessionId: string,
+  options: { wakeReplacement?: boolean } = {},
 ): WorkspaceMutationResult {
   const normalizedSnapshot = normalizeSimpleGroupedSessionWorkspaceSnapshot(snapshot);
   const owningGroup = getGroupForSession(normalizedSnapshot, sessionId);
@@ -642,6 +644,12 @@ export function removeSessionInSimpleWorkspace(
        * Closing the active tab in a split pane should select the tab immediately to its right in the same pane before publish-time virtual-tab materialization runs.
        * If that tab was parked, wake it so native sync still has a concrete pane owner and does not collapse the split into the other pane.
        * When the closed tab was the pane's only tab, there is no replacement; remove that split branch and reduce the visible pane count so the remaining pane can show the project's tabs as one stack.
+       *
+       * CDXC:GxserverPresentation 2026-06-13-12:05:
+       * Stale gxserver presentation pruning is not a user close. It removes a
+       * deleted canonical tab from local paneLayout, but must leave the
+       * replacement tab's sleeping state intact so the black placeholder path
+       * remains click-to-wake instead of auto-starting another session.
        */
       focusedSessionId:
         group.snapshot.focusedSessionId === sessionId && shouldPromoteReplacementSession
@@ -653,7 +661,9 @@ export function removeSessionInSimpleWorkspace(
       sessions: group.snapshot.sessions
         .filter((session) => session.sessionId !== sessionId)
         .map((session) =>
-          shouldPromoteReplacementSession && session.sessionId === replacementSessionId
+          shouldPromoteReplacementSession &&
+          options.wakeReplacement !== false &&
+          session.sessionId === replacementSessionId
             ? { ...session, isPoppedOut: undefined, isSleeping: false }
             : session,
         ),
@@ -3110,6 +3120,7 @@ export function ensureAllSessionsInFocusedPaneTabGroupInSimpleWorkspace(
     };
   }
   const nextGroupSnapshot = materializeAllSessionsInFocusedPaneTabGroup(group.snapshot, {
+    preserveParkedActiveTabOwners: options.intent === "passiveSync",
     preserveSplitTopology: options.intent === "passiveSync",
   });
   const nextSnapshot = updateGroup(normalizedSnapshot, groupId, (targetGroup) => ({
@@ -3213,6 +3224,9 @@ function normalizeSessionsIntoFocusedPaneTabGroup(
           allowedSessionIdSet,
           new Set(visiblePaneOwnerSessionIds),
           focusedSessionId,
+          {
+            preserveParkedActiveTabOwners: options.preserveParkedActiveTabOwners === true,
+          },
         )
       : undefined;
   const missingVisibleSessionIds = visiblePaneOwnerSessionIds.filter(
@@ -3410,6 +3424,7 @@ function retainRenderedPaneLayoutSessions(
   allowedSessionIdSet: ReadonlySet<string>,
   visiblePaneOwnerSessionIdSet: ReadonlySet<string>,
   focusedSessionId: string | undefined,
+  options: { preserveParkedActiveTabOwners?: boolean } = {},
 ): SessionPaneLayoutNode | undefined {
   if (node.kind === "leaf") {
     return allowedSessionIdSet.has(node.sessionId) && visiblePaneOwnerSessionIdSet.has(node.sessionId)
@@ -3426,8 +3441,20 @@ function retainRenderedPaneLayoutSessions(
     if (sessionIds.length === 0 || !hasVisiblePaneOwner) {
       return undefined;
     }
+    /*
+     * CDXC:SleepingPanePlaceholders 2026-06-13-16:03:
+     * Publish-time virtual-tab materialization runs after native tab selection.
+     * With click-to-wake, selecting a sleeping tab should keep that parked tab
+     * as the pane owner while runtime focus and visibleSessionIds stay on the
+     * previous awake terminal. Preserve that active id here so publish does not
+     * immediately reselect the live sibling and prevent Swift from rendering
+     * the black placeholder.
+     */
     const activeSessionId =
-      (node.activeSessionId && visiblePaneOwnerSessionIdSet.has(node.activeSessionId)
+      (node.activeSessionId &&
+        sessionIds.includes(node.activeSessionId) &&
+        (visiblePaneOwnerSessionIdSet.has(node.activeSessionId) ||
+          options.preserveParkedActiveTabOwners === true)
         ? node.activeSessionId
         : undefined) ??
       (focusedSessionId && visiblePaneOwnerSessionIdSet.has(focusedSessionId)
@@ -3452,6 +3479,7 @@ function retainRenderedPaneLayoutSessions(
         allowedSessionIdSet,
         visiblePaneOwnerSessionIdSet,
         focusedSessionId,
+        options,
       ),
     )
     .filter((child): child is SessionPaneLayoutNode => child !== undefined);

@@ -1,6 +1,7 @@
 import { IconCheck, IconFilter2, IconX } from "@tabler/icons-react";
 import { createPortal } from "react-dom";
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { Button } from "@/components/ui/button";
 import {
   filterPreviousSessions,
   filterPreviousSessionsModalItems,
@@ -344,14 +345,20 @@ export function PreviousSessionsModal({
           className="confirm-modal previous-sessions-modal scroll-mask-y"
           role="dialog"
         >
-          <button
+          {/*
+           * CDXC:PreviousSessions 2026-06-13-15:59:
+           * The modal X button should use the same shadcn Button chrome as Rename Session. Keep the shared ghost/icon-sm/bg-secondary styling here instead of the legacy confirm-modal close-button treatment.
+           */}
+          <Button
             aria-label="Close previous sessions"
-            className="confirm-modal-close-button previous-sessions-close-button"
+            className="previous-sessions-close-button absolute top-4 right-4 bg-secondary"
             onClick={onClose}
+            size="icon-sm"
             type="button"
+            variant="ghost"
           >
-            <IconX aria-hidden="true" className="toolbar-tabler-icon" stroke={1.8} />
-          </button>
+            <IconX aria-hidden="true" />
+          </Button>
           <div className="confirm-modal-header confirm-modal-header-with-close">
             <div className="confirm-modal-title" id="previous-sessions-modal-title">
               Previous Sessions
@@ -366,36 +373,38 @@ export function PreviousSessionsModal({
               placeholder="Search sessions..."
               query={searchQuery}
               setQuery={setSearchQuery}
+              shellClassName="previous-sessions-search-shell"
               toolbarClassName="previous-sessions-search-control"
-            />
-            <div className="previous-sessions-tag-filter">
-              <button
-                aria-expanded={isTagFilterMenuOpen}
-                aria-haspopup="menu"
-                aria-label={
-                  hasTagFilters
-                    ? `Filter previous sessions by ${selectedSessionTagFilters.length} tags`
-                    : "Filter previous sessions by tag"
-                }
-                className="previous-sessions-favorites-toggle previous-sessions-tag-filter-toggle"
-                data-selected={String(hasTagFilters)}
-                onClick={(event) => {
-                  event.stopPropagation();
-                  if (isTagFilterMenuOpen) {
-                    setIsTagFilterMenuOpen(false);
-                    return;
+              trailingControl={
+                /*
+                 * CDXC:PreviousSessions 2026-06-13-15:59:
+                 * The tag filter belongs inside the search field's right-side icon slot so the search box can span the modal evenly from left to right instead of reserving a separate external action column.
+                 */
+                <button
+                  aria-expanded={isTagFilterMenuOpen}
+                  aria-haspopup="menu"
+                  aria-label={
+                    hasTagFilters
+                      ? `Filter previous sessions by ${selectedSessionTagFilters.length} tags`
+                      : "Filter previous sessions by tag"
                   }
-                  openTagFilterMenu();
-                }}
-                ref={tagFilterButtonRef}
-                type="button"
-              >
-                <IconFilter2
-                  aria-hidden="true"
-                  className="toolbar-tabler-icon"
-                  stroke={1.8}
-                />
-              </button>
+                  className="previous-sessions-favorites-toggle previous-sessions-tag-filter-toggle"
+                  data-selected={String(hasTagFilters)}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    if (isTagFilterMenuOpen) {
+                      setIsTagFilterMenuOpen(false);
+                      return;
+                    }
+                    openTagFilterMenu();
+                  }}
+                  ref={tagFilterButtonRef}
+                  type="button"
+                >
+                  <IconFilter2 aria-hidden="true" className="toolbar-tabler-icon" stroke={1.8} />
+                </button>
+              }
+            />
               {isTagFilterMenuOpen
                 ? createPortal(
                 <div
@@ -450,7 +459,6 @@ export function PreviousSessionsModal({
                   document.body,
                 )
                 : null}
-            </div>
           </div>
           <div className="previous-sessions-modal-body scroll-mask-y">
             {groupedSessions.length > 0 ? (

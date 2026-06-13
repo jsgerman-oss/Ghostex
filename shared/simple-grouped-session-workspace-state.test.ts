@@ -1647,6 +1647,56 @@ describe("removeSessionInSimpleWorkspace", () => {
     });
   });
 
+  test("should preserve sleeping replacement when pruning a stale active tab", () => {
+    const sleepingReplacementSessionId = sessionIdForDisplay(0);
+    const staleSessionId = sessionIdForDisplay(1);
+
+    const result = removeSessionInSimpleWorkspace(
+      createWorkspaceSnapshot({
+        activeGroupId: DEFAULT_MAIN_GROUP_ID,
+        groups: [
+          {
+            groupId: DEFAULT_MAIN_GROUP_ID,
+            snapshot: {
+              focusedSessionId: staleSessionId,
+              fullscreenRestoreVisibleCount: undefined,
+              paneLayout: {
+                activeSessionId: staleSessionId,
+                kind: "tabs",
+                sessionIds: [sleepingReplacementSessionId, staleSessionId],
+              },
+              sessions: [
+                { ...createSessionRecord(1, 0), isSleeping: true },
+                createSessionRecord(2, 1),
+              ],
+              viewMode: "grid",
+              visibleCount: 1,
+              visibleSessionIds: [staleSessionId],
+            },
+            title: "Main",
+          },
+        ],
+        nextGroupNumber: 2,
+        nextSessionDisplayId: 2,
+        nextSessionNumber: 3,
+      }),
+      staleSessionId,
+      { wakeReplacement: false },
+    );
+
+    const groupSnapshot = result.snapshot.groups[0]?.snapshot;
+    expect(groupSnapshot?.paneLayout).toEqual({
+      kind: "leaf",
+      sessionId: sleepingReplacementSessionId,
+    });
+    expect(groupSnapshot?.sessions[0]).toEqual(
+      expect.objectContaining({
+        isSleeping: true,
+        sessionId: sleepingReplacementSessionId,
+      }),
+    );
+  });
+
   test("should collapse the split branch when closing the pane's last tab", () => {
     const closingOnlyTabSessionId = sessionIdForDisplay(0);
     const remainingActiveSessionId = sessionIdForDisplay(1);
@@ -4543,6 +4593,97 @@ describe("setSessionSleepingInSimpleWorkspace", () => {
       activeRightSessionId,
     ]);
     expect(selected.snapshot.groups[0]?.snapshot.paneLayout).toEqual({
+      children: [
+        {
+          activeSessionId: focusedLeftSessionId,
+          kind: "tabs",
+          sessionIds: [leftSessionId, focusedLeftSessionId],
+        },
+        {
+          activeSessionId: sleepingRightSessionId,
+          kind: "tabs",
+          sessionIds: [sleepingRightSessionId, activeRightSessionId],
+        },
+      ],
+      direction: "horizontal",
+      kind: "split",
+    });
+  });
+
+  test("should preserve selected sleeping tab through passive virtual tab materialization", () => {
+    const leftSessionId = sessionIdForDisplay(0);
+    const focusedLeftSessionId = sessionIdForDisplay(1);
+    const sleepingRightSessionId = sessionIdForDisplay(2);
+    const activeRightSessionId = sessionIdForDisplay(3);
+
+    const selected = selectPaneTabInSimpleWorkspace(
+      createWorkspaceSnapshot({
+        activeGroupId: DEFAULT_MAIN_GROUP_ID,
+        groups: [
+          {
+            groupId: DEFAULT_MAIN_GROUP_ID,
+            snapshot: {
+              focusedSessionId: focusedLeftSessionId,
+              fullscreenRestoreVisibleCount: undefined,
+              paneLayout: {
+                children: [
+                  {
+                    activeSessionId: focusedLeftSessionId,
+                    kind: "tabs",
+                    sessionIds: [leftSessionId, focusedLeftSessionId],
+                  },
+                  {
+                    activeSessionId: activeRightSessionId,
+                    kind: "tabs",
+                    sessionIds: [sleepingRightSessionId, activeRightSessionId],
+                  },
+                ],
+                direction: "horizontal",
+                kind: "split",
+              },
+              sessions: [
+                createSessionRecord(1, 0),
+                createSessionRecord(2, 1),
+                { ...createSessionRecord(3, 2), isSleeping: true },
+                createSessionRecord(4, 3),
+              ],
+              viewMode: "grid",
+              visibleCount: 2,
+              visibleSessionIds: [focusedLeftSessionId, activeRightSessionId],
+            },
+            title: "Main",
+          },
+        ],
+        nextGroupNumber: 2,
+        nextSessionDisplayId: 4,
+        nextSessionNumber: 5,
+      }),
+      DEFAULT_MAIN_GROUP_ID,
+      sleepingRightSessionId,
+    );
+
+    const materialized = ensureAllSessionsInFocusedPaneTabGroupInSimpleWorkspace(
+      selected.snapshot,
+      DEFAULT_MAIN_GROUP_ID,
+      { intent: "passiveSync" },
+    );
+
+    /*
+     * CDXC:SleepingPanePlaceholders 2026-06-13-16:03:
+     * The publish pass runs passive virtual-tab materialization after a native
+     * tab click. It must keep a selected sleeping tab as paneLayout's active tab
+     * owner so the native app renders the black click-to-wake placeholder
+     * instead of immediately falling back to the previous awake sibling.
+     */
+    expect(materialized.snapshot.groups[0]?.snapshot.sessions[2]?.isSleeping).toBe(true);
+    expect(materialized.snapshot.groups[0]?.snapshot.focusedSessionId).toBe(
+      focusedLeftSessionId,
+    );
+    expect(materialized.snapshot.groups[0]?.snapshot.visibleSessionIds).toEqual([
+      focusedLeftSessionId,
+      activeRightSessionId,
+    ]);
+    expect(materialized.snapshot.groups[0]?.snapshot.paneLayout).toEqual({
       children: [
         {
           activeSessionId: focusedLeftSessionId,

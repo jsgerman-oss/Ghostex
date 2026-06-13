@@ -1381,6 +1381,13 @@ export type SidebarToExtensionMessage =
       type: "setSessionsSleeping";
       sessionIds: string[];
       sleeping: boolean;
+      /**
+       * CDXC:NativeSidebarBulkActions 2026-06-13-12:59:
+       * Bulk sleep diagnostics need to distinguish Sleep below from other
+       * setSessionsSleeping callers without logging session ids, titles, paths,
+       * commands, or user text. Keep this as an enum-like action source only.
+       */
+      source?: "sleepBelow";
     }
   | {
       favorite: boolean;

@@ -790,18 +790,13 @@ type NativeHostCommand =
   | { type: "toggleSidebarCollapsed" }
   | {
       /**
-       * CDXC:ReactTitlebar 2026-05-09-17:11
-       * React titlebar hosts report DOM hit regions to native so AppKit can
-       * keep blank chrome draggable and let future dropdown surfaces receive
-       * real pointer events inside the workspace overlay.
-       *
-       * CDXC:ReactTitlebar 2026-05-25-10:09:
-       * The workspace shield follows explicit dropdown/menu open state, not
-       * whether any measured hit region happens to extend below the titlebar.
+       * CDXC:ReactTitlebar 2026-06-13-13:33:
+       * React titlebar controls stay inside the exact titlebar WKWebView strip.
+       * Native receives only strip-level overlay lifecycle state; it must not
+       * depend on DOM-measured click rectangles.
        */
       overlayOpen: boolean;
-      regions: Array<{ height: number; width: number; x: number; y: number }>;
-      type: "setReactTitlebarHitRegions";
+      type: "setReactTitlebarStripState";
     }
   | { type: "startGxserverFromTitlebar" }
   | { type: "stopGxserverFromTitlebar" }
@@ -983,11 +978,35 @@ type NativePersistenceSessionStateResult = Extract<
 >;
 type NativeTerminalTextResult = Extract<NativeHostEvent, { type: "terminalTextResult" }>;
 type NativeSidebarBackgroundOperation = () => void;
+type NativeSidebarBulkSleepSource =
+  | "autoSleep"
+  | "closeAllAsSleep"
+  | "groupSleep"
+  | "paneTabSleep"
+  | "projectSleepInactive"
+  | "remoteGroupSleep"
+  | "remoteSetSessionsSleeping"
+  | "remoteSleepInactive"
+  | "resourcesQuit"
+  | "setSessionsSleeping"
+  | "sleepBelow"
+  | "titlebarSleepInactive";
+type NativeSidebarBulkActionDebugOptions = {
+  action: NativeSidebarBulkSleepSource;
+  batchId: string;
+  metadata?: Record<string, unknown>;
+};
 type NativeSidebarBulkActionOptions = {
+  debug?: NativeSidebarBulkActionDebugOptions;
   delayBetweenOperationsMs?: number;
+};
+type NativeSidebarBulkSleepActionOptions = {
+  metadata?: Record<string, unknown>;
+  source: NativeSidebarBulkSleepSource;
 };
 
 const NATIVE_SIDEBAR_BULK_SLEEP_INTERVAL_MS = 350;
+let nativeSidebarBulkSleepBatchSequence = 0;
 
 /**
  * CDXC:NativeSidebarBulkActions 2026-06-07-13:09:
@@ -1000,6 +1019,12 @@ const NATIVE_SIDEBAR_BULK_SLEEP_INTERVAL_MS = 350;
  * so zmx shutdown, native pane teardown, and sidebar publishing do not spike the
  * laptop or make the app lag when users click Sleep Inactive, Sleep below, or a
  * tab-scope sleep command.
+ *
+ * CDXC:NativeSidebarBulkActions 2026-06-13-12:59:
+ * Sleep below lag investigations need Debugging Mode logs that correlate the
+ * sidebar click to each native sleep step. Emit source labels, counts, timer
+ * drift, and operation durations only; never write session ids or user-owned
+ * content from this scheduler.
  */
 function runNativeSidebarBulkActionInBackground(
   operations: readonly NativeSidebarBackgroundOperation[],
@@ -1007,29 +1032,110 @@ function runNativeSidebarBulkActionInBackground(
 ): void {
   const pendingOperations = [...operations];
   const delayBetweenOperationsMs = Math.max(0, options.delayBetweenOperationsMs ?? 0);
+  const debug = options.debug;
+  const operationCount = pendingOperations.length;
+  const batchStartedAtMs = performance.now();
+  let nextOperationExpectedAtMs = batchStartedAtMs;
   const runNext = () => {
+    const callbackStartedAtMs = performance.now();
     const operation = pendingOperations.shift();
     if (!operation) {
       return;
     }
 
-    operation();
+    const operationIndex = operationCount - pendingOperations.length;
+    if (debug) {
+      appendNativeSidebarBulkSleepDebugLog("operation.started", {
+        action: debug.action,
+        batchId: debug.batchId,
+        delayBetweenOperationsMs,
+        elapsedMs: roundNativeSidebarBulkSleepDebugMs(callbackStartedAtMs - batchStartedAtMs),
+        operationCount,
+        operationIndex,
+        remainingCount: pendingOperations.length,
+        timerDriftMs: roundNativeSidebarBulkSleepDebugMs(
+          Math.max(0, callbackStartedAtMs - nextOperationExpectedAtMs),
+        ),
+      });
+    }
+    const operationStartedAtMs = performance.now();
+    let didCompleteOperation = false;
+    try {
+      operation();
+      didCompleteOperation = true;
+    } finally {
+      if (debug) {
+        appendNativeSidebarBulkSleepDebugLog(
+          didCompleteOperation ? "operation.completed" : "operation.threw",
+          {
+            action: debug.action,
+            batchId: debug.batchId,
+            elapsedMs: roundNativeSidebarBulkSleepDebugMs(performance.now() - batchStartedAtMs),
+            operationCount,
+            operationDurationMs: roundNativeSidebarBulkSleepDebugMs(
+              performance.now() - operationStartedAtMs,
+            ),
+            operationIndex,
+            remainingCount: pendingOperations.length,
+          },
+        );
+      }
+    }
     if (pendingOperations.length > 0) {
+      nextOperationExpectedAtMs = performance.now() + delayBetweenOperationsMs;
       window.setTimeout(runNext, delayBetweenOperationsMs);
+    } else if (debug) {
+      appendNativeSidebarBulkSleepDebugLog("completed", {
+        action: debug.action,
+        batchId: debug.batchId,
+        elapsedMs: roundNativeSidebarBulkSleepDebugMs(performance.now() - batchStartedAtMs),
+        operationCount,
+      });
     }
   };
 
   if (pendingOperations.length > 0) {
+    nextOperationExpectedAtMs = performance.now();
     window.setTimeout(runNext, 0);
   }
 }
 
 function runNativeSidebarBulkSleepActionInBackground(
   operations: readonly NativeSidebarBackgroundOperation[],
+  options: NativeSidebarBulkSleepActionOptions,
 ): void {
+  const batchId = createNativeSidebarBulkSleepBatchId();
+  appendNativeSidebarBulkSleepDebugLog("queued", {
+    action: options.source,
+    batchId,
+    delayBetweenOperationsMs: NATIVE_SIDEBAR_BULK_SLEEP_INTERVAL_MS,
+    operationCount: operations.length,
+    ...(options.metadata ?? {}),
+  });
   runNativeSidebarBulkActionInBackground(operations, {
+    debug: {
+      action: options.source,
+      batchId,
+      metadata: options.metadata,
+    },
     delayBetweenOperationsMs: NATIVE_SIDEBAR_BULK_SLEEP_INTERVAL_MS,
   });
+}
+
+function createNativeSidebarBulkSleepBatchId(): string {
+  nativeSidebarBulkSleepBatchSequence += 1;
+  return `bulk-sleep-${Date.now().toString(36)}-${nativeSidebarBulkSleepBatchSequence}`;
+}
+
+function appendNativeSidebarBulkSleepDebugLog(
+  event: string,
+  details: Record<string, unknown>,
+): void {
+  appendSidebarRefreshDebugLog(`nativeSidebar.bulkSleep.${event}`, details);
+}
+
+function roundNativeSidebarBulkSleepDebugMs(value: number): number {
+  return Number.isFinite(value) ? Math.round(value * 10) / 10 : 0;
 }
 
 type NativeBootstrap = {
@@ -2140,6 +2246,11 @@ function clearNativeTerminalSurfaceCreationPending(sessionId: string): void {
   pendingNativeTerminalSurfaceCreationBySessionId.delete(sessionId);
 }
 
+function isNativeTerminalSurfaceCreationPendingForProject(projectId: string, sessionId: string): boolean {
+  const pending = pendingNativeTerminalSurfaceCreationBySessionId.get(sessionId);
+  return pending !== undefined && pending.projectId === projectId;
+}
+
 function markNativeInPlaceReloadClosePending(sessionId: string, nativeSessionId: string): void {
   /*
   CDXC:SessionRestore 2026-06-07-06:50:
@@ -2718,6 +2829,12 @@ async function refreshGxserverStartupSnapshot(reason: string): Promise<boolean> 
       `startupSnapshot:${reason}`,
     );
     const gxserverSharedStateSync = syncSidebarSharedStateFromGxserverSnapshot(snapshot);
+    const stalePrune = snapshot.presentation
+      ? pruneStaleGxserverLocalSessionsFromPresentation(
+          snapshot.presentation,
+          `startupSnapshot:${reason}`,
+        )
+      : undefined;
     if (snapshot.presentation) {
       applyGxserverPresentationSessionsToNativePaneChrome(snapshot.presentation.sessions, "startup-snapshot");
     }
@@ -2732,6 +2849,7 @@ async function refreshGxserverStartupSnapshot(reason: string): Promise<boolean> 
       },
       reason,
       serverId: snapshot.health.serverId,
+      stalePrune,
     });
     startGxserverPresentationSubscription();
     publish();
@@ -2945,6 +3063,158 @@ function pruneLocalFirstPresentationHides(snapshot: GxserverPresentationSnapshot
   }
 }
 
+type StaleGxserverLocalSessionPruneResult = {
+  commandSessionCount: number;
+  projectCount: number;
+  workspaceSessionCount: number;
+};
+
+function pruneStaleGxserverLocalSessionsFromPresentation(
+  presentation: GxserverPresentationSnapshot,
+  reason: string,
+): StaleGxserverLocalSessionPruneResult {
+  const presentationSessionKeys = new Set(
+    presentation.sessions.map((session) =>
+      localFirstPresentationSessionKey(session.projectId, session.sessionId),
+    ),
+  );
+  let commandSessionCount = 0;
+  let projectCount = 0;
+  let workspaceSessionCount = 0;
+  const prunedSessions: Array<{ projectId: string; sessionId: string }> = [];
+  const skippedPendingCreateSessionKeys = new Set<string>();
+  const nextProjects = projects.map((project) => {
+    if (!GXSERVER_CANONICAL_PROJECT_ID_PATTERN.test(project.projectId)) {
+      return project;
+    }
+    const shouldPruneSession = (session: SessionRecord): boolean => {
+      if (
+        session.kind !== "terminal" ||
+        !isCanonicalGxserverProjectSession(project.projectId, session.sessionId) ||
+        presentationSessionKeys.has(
+          localFirstPresentationSessionKey(project.projectId, session.sessionId),
+        )
+      ) {
+        return false;
+      }
+      /*
+      CDXC:GxserverPresentation 2026-06-13-15:44:
+      Local zmx create publishes a canonical sidebar row before gxserver presentation may echo the new session. Presentation snapshots and project deltas must not prune that row while native createTerminal is pending, otherwise Swift creates the surface outside the active layout and later focus updates can bounce between the new pane and the previous tab.
+      */
+      if (isNativeTerminalSurfaceCreationPendingForProject(project.projectId, session.sessionId)) {
+        skippedPendingCreateSessionKeys.add(
+          localFirstPresentationSessionKey(project.projectId, session.sessionId),
+        );
+        return false;
+      }
+      return true;
+    };
+    let nextWorkspace = project.workspace;
+    let nextProject = project;
+    const staleWorkspaceSessionIds = project.workspace.groups.flatMap((group) =>
+      group.snapshot.sessions.filter(shouldPruneSession).map((session) => session.sessionId),
+    );
+    for (const sessionId of staleWorkspaceSessionIds) {
+      nextWorkspace = removeSessionInSimpleWorkspace(nextWorkspace, sessionId, {
+        wakeReplacement: false,
+      }).snapshot;
+      prunedSessions.push({ projectId: project.projectId, sessionId });
+    }
+    if (staleWorkspaceSessionIds.length > 0) {
+      workspaceSessionCount += staleWorkspaceSessionIds.length;
+      nextProject = { ...nextProject, workspace: nextWorkspace };
+    }
+
+    const staleCommandSessionIds = project.commandsPanel.sessions
+      .filter(shouldPruneSession)
+      .map((session) => session.sessionId);
+    if (staleCommandSessionIds.length > 0) {
+      const staleCommandSessionIdSet = new Set(staleCommandSessionIds);
+      commandSessionCount += staleCommandSessionIds.length;
+      for (const sessionId of staleCommandSessionIds) {
+        prunedSessions.push({ projectId: project.projectId, sessionId });
+      }
+      nextProject = {
+        ...nextProject,
+        commandsPanel: normalizeLiveCommandsPanelState(
+          {
+            ...nextProject.commandsPanel,
+            sessions: nextProject.commandsPanel.sessions.filter(
+              (session) => !staleCommandSessionIdSet.has(session.sessionId),
+            ),
+          },
+          { defaultHeightPx: settings.commandsPanelDefaultHeightPx },
+        ),
+      };
+    }
+
+    if (
+      staleWorkspaceSessionIds.length > 0 ||
+      staleCommandSessionIds.length > 0
+    ) {
+      projectCount += 1;
+    }
+    return nextProject;
+  });
+
+  if (skippedPendingCreateSessionKeys.size > 0) {
+    appendSidebarRefreshDebugLog("nativeSidebar.gxserver.staleLocalSessionPruneSkippedPendingCreate", {
+      reason,
+      sessionCount: skippedPendingCreateSessionKeys.size,
+    });
+  }
+
+  if (prunedSessions.length === 0) {
+    return { commandSessionCount: 0, projectCount: 0, workspaceSessionCount: 0 };
+  }
+
+  /*
+  CDXC:GxserverPresentation 2026-06-13-12:05:
+  Native pane tabs are a local placement cache, but canonical P/G terminal
+  identity belongs to gxserver. After every authoritative presentation snapshot
+  or delta, remove local terminal records whose gxserver row is no longer
+  presented so AppKit cannot render a wakeable sleeping tab that would resume a
+  deleted session or visually fall through to another tab.
+  */
+  projects = nextProjects;
+  for (const { projectId, sessionId } of prunedSessions) {
+    clearStaleGxserverLocalSessionRuntime(projectId, sessionId, reason);
+  }
+  writeStoredProjects(`pruneStaleGxserverLocalSessions:${reason}`);
+  appendSidebarRefreshDebugLog("nativeSidebar.gxserver.staleLocalSessionsPruned", {
+    commandSessionCount,
+    projectCount,
+    reason,
+    workspaceSessionCount,
+  });
+  return { commandSessionCount, projectCount, workspaceSessionCount };
+}
+
+function clearStaleGxserverLocalSessionRuntime(
+  projectId: string,
+  sessionId: string,
+  reason: string,
+): void {
+  const nativeSessionId = forgetNativeSessionMappingForProject(projectId, sessionId);
+  clearNativeSidebarCommandSessionBySessionId(sessionId);
+  terminalStateById.delete(sessionId);
+  forgetRemoteAttachLocalSessionForSidebarSession(createCombinedProjectSessionId(projectId, sessionId));
+  clearSettledTerminalTitleSync(sessionId);
+  forgetProviderSessionState(projectId, sessionId);
+  pendingNativeTerminalStartupTextBySessionId.delete(sessionId);
+  nativeActivitySuppressedUntilBySessionId.delete(sessionId);
+  nativeWorkingStartedAtBySessionId.delete(sessionId);
+  clearNativeSessionAttentionTracking(sessionId);
+  nativeAttentionNotificationLastSentAtBySessionId.delete(sessionId);
+  clearDelayedSendTimer(sessionId, projectId);
+  postNative({ sessionId: nativeSessionId, type: "closeTerminal" });
+  appendSidebarRefreshDebugLog("nativeSidebar.gxserver.staleLocalSessionRuntimeCleared", {
+    projectId,
+    reason,
+    sessionId,
+  });
+}
+
 function applyGxserverPresentationSnapshot(snapshot: GxserverPresentationSnapshot, reason: string): void {
   if (!gxserverStartupSnapshot) {
     return;
@@ -2955,6 +3225,10 @@ function applyGxserverPresentationSnapshot(snapshot: GxserverPresentationSnapsho
     ...gxserverStartupSnapshot,
     presentation: nextSnapshot,
   };
+  const stalePrune = pruneStaleGxserverLocalSessionsFromPresentation(
+    nextSnapshot,
+    `snapshot:${reason}`,
+  );
   applyGxserverPresentationSessionsToNativePaneChrome(nextSnapshot.sessions, reason);
   appendSidebarRefreshDebugLog("nativeSidebar.gxserver.presentationSnapshot.applied", {
     groupCount: nextSnapshot.groups.length,
@@ -2962,6 +3236,7 @@ function applyGxserverPresentationSnapshot(snapshot: GxserverPresentationSnapsho
     reason,
     revision: nextSnapshot.revision,
     sessionCount: nextSnapshot.sessions.length,
+    stalePrune,
   });
   publish();
 }
@@ -2991,6 +3266,10 @@ function applyGxserverPresentationDelta(delta: GxserverPresentationDelta, revisi
     presentation: nextPresentation,
     projects: nextProjects,
   };
+  const stalePrune = pruneStaleGxserverLocalSessionsFromPresentation(
+    nextPresentation,
+    `delta:${delta.type}`,
+  );
   const gxserverProjectCacheSync =
     delta.type === "projectAdded" || delta.type === "projectUpdated"
       ? syncSidebarSharedProjectCacheFromGxserverProjects(
@@ -3010,6 +3289,7 @@ function applyGxserverPresentationDelta(delta: GxserverPresentationDelta, revisi
     gxserverProjectCacheSync,
     revision,
     sessionCount: nextPresentation.sessions.length,
+    stalePrune,
   });
   if (!lastPublishedSidebarMessage) {
     publish();
@@ -3918,6 +4198,7 @@ async function postNativeCreateTerminalWithGxserverAttach(
   sidebarSessionId: string,
   startupText: string,
   options: {
+    deferWorkspaceFocusUntilTerminalReady?: boolean;
     focusAfterCreate?: boolean;
     focusIntent?: NativeSidebarFocusIntent;
     focusSurface?: NativeSidebarFocusSurface;
@@ -4058,6 +4339,16 @@ async function postNativeCreateTerminalWithGxserverAttach(
         options.focusIntent,
         "gxserver-attach-focus-after-create-project-editor-companion",
       );
+    } else if (options.deferWorkspaceFocusUntilTerminalReady === true) {
+      /*
+      CDXC:TerminalCreationFocus 2026-06-13-14:00:
+      zmx workspace creates that registered focusAfterReady must not also send the immediate native focus command. terminalReady will publish the authoritative setActiveTerminalSet focus request after Swift has created the surface, avoiding a temporary mismatch between AppKit first responder and native pane ownership.
+      */
+      appendTerminalFocusDebugLog("nativeFocusTrace.gxserverAttachFocusDeferredUntilTerminalReady", {
+        activeProjectId,
+        nativeSessionId: command.sessionId,
+        sessionId: sidebarSessionId,
+      });
     } else {
       postNativeFocusTerminalForCurrentIntent(
         command.sessionId,
@@ -13081,16 +13372,23 @@ function gxserverSearchResultToPreviousSessionItem(
 ): SidebarPreviousSessionItem {
   const title = result.displayTitle || result.primaryTitle || result.title || "Previous Session";
   const closedAt = result.lastActiveAt ?? result.updatedAt ?? result.createdAt;
+  const agentName = result.agentName ?? result.agentId;
+  const agentIcon = resolveNativeSidebarAgentIcon(result.agentIcon ?? agentName);
+  const sessionPersistenceProvider = result.sessionPersistenceProvider ?? "zmx";
+  const sessionPersistenceName = result.sessionPersistenceName ?? result.zmxName;
   const archivedRecord = {
     alias: title,
-    agentName: result.agentId,
+    agentName,
+    agentSessionId: result.agentSessionId,
+    agentSessionPath: result.agentSessionPath,
     displayId: result.sessionId,
     isFavorite: result.isFavorite,
     isPinned: result.isPinned,
     kind: "terminal",
     sessionTag: result.sessionTag,
     sessionId: result.sessionId,
-    sessionPersistenceProvider: "zmx",
+    sessionPersistenceName,
+    sessionPersistenceProvider,
     title: result.title || title,
     titleSource: result.titleSource,
   } satisfies Partial<TerminalSessionRecord>;
@@ -13100,9 +13398,14 @@ function gxserverSearchResultToPreviousSessionItem(
 
   CDXC:PreviousSessions 2026-06-04-20:21:
   Missing last-active metadata must not make stale history look active today. Use gxserver's durable updated/created timestamps as the closed-date fallback and reserve Last Active text for rows that actually have lastActiveAt.
+
+  CDXC:PreviousSessions 2026-06-13-15:36:
+  Gxserver search is now the canonical previous-session archive for P/G rows. Project compact server identity into both the visible SidebarPreviousSessionItem and the archived terminal record so stopped agent sessions keep their logo and restore refs after close without using native history fallback state.
   */
   return {
     activity: result.lifecycleState === "running" ? "idle" : "idle",
+    agentIcon,
+    agentSessionId: result.agentSessionId,
     alias: title,
     closedAt,
     column: 0,
@@ -13127,6 +13430,8 @@ function gxserverSearchResultToPreviousSessionItem(
     row: 0,
     sessionId: result.sessionId,
     sessionKind: "terminal",
+    sessionPersistenceName,
+    sessionPersistenceProvider,
     sessionRecord: archivedRecord as TerminalSessionRecord,
     sidebarOrder: result.sidebarOrder,
     shortcutLabel: "",
@@ -19417,11 +19722,26 @@ function createTerminal(
      */
     queueNativeTerminalStartupText(session.sessionId, initialInput);
   }
+  const shouldFocusAfterCreate = options?.focusAfterCreate !== false;
+  const shouldDeferZmxWorkspaceFocusUntilTerminalReady =
+    sessionPersistenceProvider === "zmx" && shouldFocusAfterCreate;
+  /*
+  CDXC:TerminalCreationFocus 2026-06-13-14:00:
+  zmx New Terminal focus must wait until Swift reports terminalReady, then move through setActiveTerminalSet with a fresh layout focus request. A direct native focus before layout ownership includes the new tab can leave AppKit first responder on the new surface while hit-testing and pane ownership still belong to the previous tab.
+  */
   markNativeTerminalSurfaceCreationPending(
     project.projectId,
     session.sessionId,
     nativeSessionId,
     options?.diagnosticSource ?? "create-terminal",
+    {
+      focusAfterReady: shouldDeferZmxWorkspaceFocusUntilTerminalReady
+        ? {
+            reason: "gxserverAttachCreateTerminalReadyFocus",
+            surface: "workspaceTerminal",
+          }
+        : undefined,
+    },
   );
   void postNativeCreateTerminalWithGxserverAttach({
     /**
@@ -19455,8 +19775,8 @@ function createTerminal(
     CDXC:LocalFirstSidebar 2026-06-01-19:34:
     zmx-backed creates should not publish the new focused layout until gxserver attach metadata has been resolved and Swift has received the createTerminal command. Publishing earlier makes the native workarea briefly show an empty focused slot before the terminal surface exists.
     */
-    focusAfterCreate:
-      sessionPersistenceProvider === "zmx" && options?.focusAfterCreate !== false,
+    deferWorkspaceFocusUntilTerminalReady: shouldDeferZmxWorkspaceFocusUntilTerminalReady,
+    focusAfterCreate: shouldDeferZmxWorkspaceFocusUntilTerminalReady,
   });
   if (sessionPersistenceProvider !== "zmx") {
     publish();
@@ -19468,7 +19788,7 @@ function createTerminal(
     sessionId: session.sessionId,
     title,
   });
-  if (sessionPersistenceProvider !== "zmx" && options?.focusAfterCreate !== false) {
+  if (sessionPersistenceProvider !== "zmx" && shouldFocusAfterCreate) {
     postNative({ sessionId: nativeSessionId, type: "focusTerminal" });
   }
   return session;
@@ -22828,8 +23148,8 @@ function runNativeHotkeyAction(actionId: ghostexHotkeyActionId, source: "dom" | 
       return;
     case "openCommandPalette":
       /**
-       * CDXC:CommandPalette 2026-05-15-20:38:
-       * Native Cmd+K should reveal the full-window app-modal command palette
+       * CDXC:CommandPalette 2026-06-13-10:26:
+       * Native Cmd+Shift+P should reveal the full-window app-modal command palette
        * from terminal focus without opening the Commands panel or depending on
        * a sidebar-local DOM render path.
        */
@@ -24169,6 +24489,7 @@ function isNativeSidebarSessionAlreadySleeping(sessionId: string): boolean {
 function setNativeSessionsSleepingInBackground(
   sessionIds: readonly string[],
   sleeping: boolean,
+  options: { source?: NativeSidebarBulkSleepSource; totalRequestedCount?: number } = {},
 ): void {
   /*
    * CDXC:NativeSidebarBulkActions 2026-06-07-13:34:
@@ -24189,10 +24510,7 @@ function setNativeSessionsSleepingInBackground(
     return;
   }
 
-  const runBulkLifecycleAction = sleeping
-    ? runNativeSidebarBulkSleepActionInBackground
-    : runNativeSidebarBulkActionInBackground;
-  runBulkLifecycleAction([
+  const operations = [
     ...targetSessionIds.map((sessionId) => () =>
       setNativeSessionSleeping(sessionId, sleeping, {
         focusTransition: false,
@@ -24200,7 +24518,19 @@ function setNativeSessionsSleepingInBackground(
       }),
     ),
     () => publish(),
-  ]);
+  ];
+  if (sleeping) {
+    runNativeSidebarBulkSleepActionInBackground(operations, {
+      metadata: {
+        skippedAlreadySleepingCount: Math.max(0, sessionIds.length - targetSessionIds.length),
+        targetCount: targetSessionIds.length,
+        totalRequestedCount: options.totalRequestedCount ?? sessionIds.length,
+      },
+      source: options.source ?? "setSessionsSleeping",
+    });
+    return;
+  }
+  runNativeSidebarBulkActionInBackground(operations);
 }
 
 function closeNativeSessionsInBackground(sessionIds: readonly string[]): void {
@@ -24305,6 +24635,13 @@ function sleepInactiveSessionsFromTitlebar(sessionIds: string[]): void {
   }
   runNativeSidebarBulkSleepActionInBackground(
     sessionIdsToSleep.map((sessionId) => () => setNativeSessionSleeping(sessionId, true)),
+    {
+      metadata: {
+        targetCount: sessionIdsToSleep.length,
+        totalRequestedCount: new Set(sessionIds).size,
+      },
+      source: "titlebarSleepInactive",
+    },
   );
 }
 
@@ -24387,7 +24724,13 @@ function sleepInactiveProjectSessions(projectId: string): void {
       );
       backgroundOperations.push(() => setNativeSessionSleeping(combinedSessionId, true));
     }
-    runNativeSidebarBulkSleepActionInBackground(backgroundOperations);
+    runNativeSidebarBulkSleepActionInBackground(backgroundOperations, {
+      metadata: {
+        presentationMode: "gxserver",
+        targetCount: backgroundOperations.length,
+      },
+      source: "projectSleepInactive",
+    });
     return;
   }
   const projectedSessionsById = new Map(
@@ -24425,7 +24768,13 @@ function sleepInactiveProjectSessions(projectId: string): void {
       }
     }
   }
-  runNativeSidebarBulkSleepActionInBackground(backgroundOperations);
+  runNativeSidebarBulkSleepActionInBackground(backgroundOperations, {
+    metadata: {
+      presentationMode: "native",
+      targetCount: backgroundOperations.length,
+    },
+    source: "projectSleepInactive",
+  });
 }
 
 function hasProjectedDelayedSend(
@@ -24604,7 +24953,15 @@ function runNativeAutoSleepMonitor(source: "interval" | "settings-change" | "sta
       ...browserSessionsToSleep.map((session) => () =>
         setNativeBrowserSessionSleeping(session.projectId, session.sessionId, true),
       ),
-    ]);
+    ], {
+      metadata: {
+        browserCount: browserSessionsToSleep.length,
+        monitorSource: source,
+        presentationMode: "gxserver",
+        terminalCount: terminalSessionIdsToSleep.length,
+      },
+      source: "autoSleep",
+    });
     return;
   }
   for (const project of projects) {
@@ -24665,7 +25022,15 @@ function runNativeAutoSleepMonitor(source: "interval" | "settings-change" | "sta
     ...browserSessionsToSleep.map((session) => () =>
       setNativeBrowserSessionSleeping(session.projectId, session.sessionId, true),
     ),
-  ]);
+  ], {
+    metadata: {
+      browserCount: browserSessionsToSleep.length,
+      monitorSource: source,
+      presentationMode: "native",
+      terminalCount: terminalSessionIdsToSleep.length,
+    },
+    source: "autoSleep",
+  });
 }
 
 function shouldAutoSleepAgentSession({
@@ -25086,11 +25451,15 @@ function quitResourcesFromTitlebar(sessionIds: string[], projectIds: string[]): 
    *
    * CDXC:TitlebarResources 2026-06-02-19:10:
    * Resource rows can be gxserver presentation-only. Terminal quits must still route through setNativeSessionSleeping so gxserver owns lifecycle mutation and macOS only records local-first presentation.
-   */
+  */
   const backgroundOperations: NativeSidebarBackgroundOperation[] = [];
   let includesSleepOperation = false;
+  let closeOperationCount = 0;
+  let projectSurfaceOperationCount = 0;
+  let terminalSleepOperationCount = 0;
   for (const projectId of Array.from(new Set(projectIds))) {
     if (findProject(projectId)) {
+      projectSurfaceOperationCount += 1;
       backgroundOperations.push(() => disposeProjectEditorSurface(projectId));
     }
   }
@@ -25106,16 +25475,27 @@ function quitResourcesFromTitlebar(sessionIds: string[], projectIds: string[]): 
     }
     if (session?.kind === "terminal" || presentationSession?.kind === "terminal") {
       includesSleepOperation = true;
+      terminalSleepOperationCount += 1;
       backgroundOperations.push(() => setNativeSessionSleeping(sessionId, true));
     } else {
+      closeOperationCount += 1;
       backgroundOperations.push(() => closeTerminal(sessionId));
     }
   }
   backgroundOperations.push(() => publish());
-  const runBulkLifecycleAction = includesSleepOperation
-    ? runNativeSidebarBulkSleepActionInBackground
-    : runNativeSidebarBulkActionInBackground;
-  runBulkLifecycleAction(backgroundOperations);
+  if (includesSleepOperation) {
+    runNativeSidebarBulkSleepActionInBackground(backgroundOperations, {
+      metadata: {
+        closeOperationCount,
+        operationCount: backgroundOperations.length,
+        projectSurfaceOperationCount,
+        terminalSleepOperationCount,
+      },
+      source: "resourcesQuit",
+    });
+    return;
+  }
+  runNativeSidebarBulkActionInBackground(backgroundOperations);
 }
 
 function setNativeSessionPoppedOut(sessionId: string, poppedOut: boolean): void {
@@ -25173,7 +25553,12 @@ function setNativeGroupSleeping(groupId: string, sleeping: boolean): void {
       backgroundOperations.push(() => stopNativeSleepingSessionRuntime(session.sessionId, project));
     }
     backgroundOperations.push(() => publish());
-    runNativeSidebarBulkSleepActionInBackground(backgroundOperations);
+    runNativeSidebarBulkSleepActionInBackground(backgroundOperations, {
+      metadata: {
+        targetCount: sessionsToSleep.length,
+      },
+      source: "groupSleep",
+    });
     return;
   }
 
@@ -25575,7 +25960,12 @@ function materializeNativeForkedGxserverSession(
     terminalTitle: session.title,
   });
   scheduleSettledTerminalTitleSync(session.sessionId, "fork-session-created");
-  markNativeTerminalSurfaceCreationPending(project.projectId, session.sessionId, nativeSessionId, "fork-session");
+  markNativeTerminalSurfaceCreationPending(project.projectId, session.sessionId, nativeSessionId, "fork-session", {
+    focusAfterReady: {
+      reason: "gxserverForkCreateTerminalReadyFocus",
+      surface: "workspaceTerminal",
+    },
+  });
   const nativeEnvironment = createNativeAgentSessionEnvironment({
     agentName,
     project,
@@ -25594,6 +25984,7 @@ function materializeNativeForkedGxserverSession(
     title: session.title,
     type: "createTerminal",
   }, project, session.sessionId, "", {
+    deferWorkspaceFocusUntilTerminalReady: true,
     focusAfterCreate: true,
   });
   return session;
@@ -28782,7 +29173,12 @@ function closeAllNativeSessions(): void {
         sidebarCommandCommandIdBySessionId.clear();
         publish();
       },
-    ]);
+    ], {
+      metadata: {
+        targetCount: new Set(sessionIds).size,
+      },
+      source: "closeAllAsSleep",
+    });
     return;
   }
   const sessionIds = projects.flatMap((project) =>
@@ -36769,7 +37165,12 @@ function sleepInactiveRemoteProjectSessions(remoteReference: { machineId: string
       );
     });
   }
-  runNativeSidebarBulkSleepActionInBackground(backgroundOperations);
+  runNativeSidebarBulkSleepActionInBackground(backgroundOperations, {
+    metadata: {
+      targetCount: backgroundOperations.length,
+    },
+    source: "remoteSleepInactive",
+  });
 }
 
 function closeInactiveRemoteProjectSessions(remoteReference: { machineId: string; projectId: string }): void {
@@ -37593,11 +37994,24 @@ function handleSidebarMessage(message: SidebarToExtensionMessage): void {
           localSessionIds.push(sessionId);
         }
       }
-      setNativeSessionsSleepingInBackground(localSessionIds, message.sleeping);
-      const runRemoteBulkLifecycleAction = message.sleeping
-        ? runNativeSidebarBulkSleepActionInBackground
-        : runNativeSidebarBulkActionInBackground;
-      runRemoteBulkLifecycleAction(remoteOperations);
+      const sleepSource: NativeSidebarBulkSleepSource =
+        message.source === "sleepBelow" ? "sleepBelow" : "setSessionsSleeping";
+      setNativeSessionsSleepingInBackground(localSessionIds, message.sleeping, {
+        source: sleepSource,
+        totalRequestedCount: message.sessionIds.length,
+      });
+      if (message.sleeping && remoteOperations.length > 0) {
+        runNativeSidebarBulkSleepActionInBackground(remoteOperations, {
+          metadata: {
+            localCount: localSessionIds.length,
+            remoteCount: remoteOperations.length,
+            totalRequestedCount: message.sessionIds.length,
+          },
+          source: message.source === "sleepBelow" ? "sleepBelow" : "remoteSetSessionsSleeping",
+        });
+      } else if (remoteOperations.length > 0) {
+        runNativeSidebarBulkActionInBackground(remoteOperations);
+      }
       return;
     }
     case "setSessionFavorite":
@@ -37667,10 +38081,16 @@ function handleSidebarMessage(message: SidebarToExtensionMessage): void {
               );
             };
           });
-        const runRemoteGroupLifecycleAction = message.sleeping
-          ? runNativeSidebarBulkSleepActionInBackground
-          : runNativeSidebarBulkActionInBackground;
-        runRemoteGroupLifecycleAction(backgroundOperations);
+        if (message.sleeping) {
+          runNativeSidebarBulkSleepActionInBackground(backgroundOperations, {
+            metadata: {
+              targetCount: backgroundOperations.length,
+            },
+            source: "remoteGroupSleep",
+          });
+        } else {
+          runNativeSidebarBulkActionInBackground(backgroundOperations);
+        }
         return;
       }
       const groupReference = resolveSidebarGroupReference(message.groupId);
@@ -39788,6 +40208,7 @@ window.addEventListener("ghostex-native-host-event", (event) => {
     return;
   }
   let afterPublish: (() => void) | undefined;
+  let publishNativeLayoutBeforeSidebarHydrate = false;
   if (hostEvent.type === "processResult") {
     const pending = pendingProcessResults.get(hostEvent.requestId);
     if (!pending) {
@@ -40467,11 +40888,27 @@ window.addEventListener("ghostex-native-host-event", (event) => {
       }
       if (pendingSurfaceCreate?.needsFocusAfterReady) {
         queueNativeLayoutFocusRequest(sidebarSessionId, "terminalReadyAfterPendingSurfaceCreate");
+        publishNativeLayoutBeforeSidebarHydrate = true;
       }
       if (pendingSurfaceCreate?.focusAfterReady) {
         const focusAfterReady = pendingSurfaceCreate.focusAfterReady;
         if (focusAfterReady.surface === "workspaceTerminal") {
+          /*
+          CDXC:TerminalCreationFocus 2026-06-13-14:00:
+          Deferred zmx workspace focus must publish native layout before sidebar hydrate in the same terminalReady turn. That makes setActiveTerminalSet carry the new pane owner and focusRequestId before any stale sidebar or presentation update can re-focus the previous tab.
+
+          CDXC:TerminalCreationFocus 2026-06-13-15:55:
+          New terminal creation must leave the Ghostty surface ready for immediate typing. After the terminalReady layout publish gives AppKit ownership of the new pane, send the explicit focusTerminal command so the native sidebar-focus path can defer and reinforce first responder after the WebKit click event settles.
+          */
           queueNativeLayoutFocusRequest(sidebarSessionId, focusAfterReady.reason);
+          publishNativeLayoutBeforeSidebarHydrate = true;
+          afterPublish = () => {
+            postNativeFocusTerminalForCurrentIntent(
+              hostEvent.sessionId,
+              focusAfterReady.focusIntent,
+              `${focusAfterReady.reason}:typingFocus`,
+            );
+          };
         } else {
           afterPublish = () => {
             postNativeFocusProjectEditorCompanionForCurrentIntent(
@@ -40484,7 +40921,11 @@ window.addEventListener("ghostex-native-host-event", (event) => {
       }
     }
   }
-  publish();
+  if (publishNativeLayoutBeforeSidebarHydrate) {
+    publish({ nativeLayoutBeforeSidebarHydrate: true });
+  } else {
+    publish();
+  }
   afterPublish?.();
 });
 
@@ -40624,6 +41065,19 @@ function handleNativePaneReorderRequested(
   publish();
 }
 
+function getGxserverPresentationLifecycleForLocalNativePaneSession(
+  projectId: string,
+  session: SessionRecord | undefined,
+): GxserverPresentationSession["lifecycleState"] | undefined {
+  if (
+    session?.kind !== "terminal" ||
+    !isCanonicalGxserverProjectSession(projectId, session.sessionId)
+  ) {
+    return undefined;
+  }
+  return findGxserverPresentationSession(projectId, session.sessionId)?.lifecycleState;
+}
+
 function handleNativePaneTabSelected(sessionId: string): void {
   const acknowledgedAttention = acknowledgeNativeTerminalAttention(sessionId, "native-focus");
   if (activeCommandPanelContainsSession(sessionId)) {
@@ -40675,7 +41129,27 @@ function handleNativePaneTabSelected(sessionId: string): void {
   }
   const group = activeWorkspaceGroup();
   const selectedSessionBefore = findSessionRecord(sessionId);
-  const wasSleeping = selectedSessionBefore?.isSleeping === true;
+  const gxserverPresentationLifecycle =
+    getGxserverPresentationLifecycleForLocalNativePaneSession(
+      activeProject().projectId,
+      selectedSessionBefore,
+    );
+  /*
+   * CDXC:PaneTabs 2026-06-13-16:21:
+   * gxserver presentation is authoritative for canonical P/G terminal lifecycle.
+   * A restored local pane tab can still carry `isSleeping: true` after gxserver
+   * reports the zmx session running; tab selection must reconcile that single
+   * stale bit and attach, otherwise native keeps showing another mounted sibling.
+   * Real `sleeping` presentation rows still respect click-to-wake placeholders.
+   */
+  const shouldReconcileGxserverRunningPaneTab =
+    selectedSessionBefore?.isSleeping === true && gxserverPresentationLifecycle === "running";
+  const wasSleeping =
+    gxserverPresentationLifecycle === "running"
+      ? false
+      : gxserverPresentationLifecycle === "sleeping"
+        ? true
+        : selectedSessionBefore?.isSleeping === true;
   const wasMissingNativeTerminalState =
     selectedSessionBefore?.kind === "terminal" && !terminalStateById.has(sessionId);
   const wasMissingNativeWebSurface =
@@ -40684,18 +41158,24 @@ function handleNativePaneTabSelected(sessionId: string): void {
   const shouldKeepSleepingPlaceholder = settings.clickToWakeSleepingSessions && wasSleeping;
   const shouldRestoreSelectedSurface =
     !shouldKeepSleepingPlaceholder &&
-    (wasSleeping || wasMissingNativeTerminalState || wasMissingNativeWebSurface);
+    (wasSleeping ||
+      shouldReconcileGxserverRunningPaneTab ||
+      wasMissingNativeTerminalState ||
+      wasMissingNativeWebSurface);
   appendPaneLayoutTraceDebugLog("paneTabSelected.received", {
     activeProjectId,
+    gxserverPresentationLifecycle,
     groupId: group.groupId,
+    reconciledGxserverRunningPaneTab: shouldReconcileGxserverRunningPaneTab,
     sessionId,
     targetGroup: summarizeWorkspaceGroupForPaneLayoutTrace(activeProject().workspace, group.groupId),
     wasSleeping,
     wasMissingNativeSurface: wasMissingNativeTerminalState || wasMissingNativeWebSurface,
   });
-  const workspaceWithWake = wasSleeping && !shouldKeepSleepingPlaceholder
-    ? wakePaneTabSessionInSimpleWorkspace(activeProject().workspace, group.groupId, sessionId).snapshot
-    : activeProject().workspace;
+  const workspaceWithWake =
+    shouldReconcileGxserverRunningPaneTab || (wasSleeping && !shouldKeepSleepingPlaceholder)
+      ? wakePaneTabSessionInSimpleWorkspace(activeProject().workspace, group.groupId, sessionId).snapshot
+      : activeProject().workspace;
   const result = selectPaneTabInSimpleWorkspace(workspaceWithWake, group.groupId, sessionId);
   if (!result.changed && !shouldRestoreSelectedSurface) {
     appendPaneLayoutTraceDebugLog("paneTabSelected.unchanged", {
@@ -40733,7 +41213,9 @@ function handleNativePaneTabSelected(sessionId: string): void {
   appendPaneLayoutTraceDebugLog("paneTabSelected.applied", {
     acknowledgedAttention,
     activeProjectId,
+    gxserverPresentationLifecycle,
     groupId: group.groupId,
+    reconciledGxserverRunningPaneTab: shouldReconcileGxserverRunningPaneTab,
     sessionId,
     targetGroup: summarizeWorkspaceGroupForPaneLayoutTrace(
       result.changed ? result.snapshot : workspaceWithWake,
@@ -40744,14 +41226,22 @@ function handleNativePaneTabSelected(sessionId: string): void {
   });
   if (shouldRestoreSelectedSurface) {
     const restoredSession = findSessionRecord(sessionId) ?? selectedSessionBefore;
-    restoreNativeSessionSurfaceForWake(activeProject(), restoredSession, "pane-tab-wake", {
-      forceTerminalRestore: wasSleeping,
+    const restoreReason =
+      gxserverPresentationLifecycle === "running" ? "pane-tab-attach" : "pane-tab-wake";
+    restoreNativeSessionSurfaceForWake(activeProject(), restoredSession, restoreReason, {
+      forceTerminalRestore: wasSleeping || shouldReconcileGxserverRunningPaneTab,
     });
   }
   if (!shouldKeepSleepingPlaceholder) {
+    const focusReason =
+      shouldRestoreSelectedSurface && gxserverPresentationLifecycle === "running"
+        ? "paneTabAttach"
+        : shouldRestoreSelectedSurface
+          ? "paneTabWake"
+          : "paneTabSelected";
     queueNativeLayoutFocusRequest(
       sessionId,
-      shouldRestoreSelectedSurface ? "paneTabWake" : "paneTabSelected",
+      focusReason,
     );
   }
   publish();
@@ -40948,6 +41438,13 @@ function handleNativePaneTabSleepRequested(
     sessionIds.map((tabSessionId) => () =>
       setNativeSessionSleeping(tabSessionId, true, transitionOrigin ? { transitionOrigin } : undefined),
     ),
+    {
+      metadata: {
+        scope,
+        targetCount: sessionIds.length,
+      },
+      source: "paneTabSleep",
+    },
   );
 }
 

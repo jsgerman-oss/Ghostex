@@ -78,6 +78,7 @@ import {
   KEEP_AWAKE_DURATION_OPTIONS,
   normalizeghostexSettings,
   type KeepAwakeDurationMinutes,
+  type SidebarSide,
   type SessionPersistenceProvider,
 } from "../../shared/ghostex-settings";
 import {
@@ -246,6 +247,7 @@ type TitlebarProjectState = {
   petOverlayEnabled: boolean;
   resourceGroups: TitlebarResourceGroup[];
   sidebarCollapsed: boolean;
+  sidebarSide: SidebarSide;
   sidebarActions: TitlebarSidebarActionsSettings;
   showProjectEditorDiffFileCount: boolean;
   sessionPersistenceProvider: SessionPersistenceProvider;
@@ -339,8 +341,7 @@ type NativeTitlebarCommand =
   | { type: "openWorkspaceInFinder"; workspacePath: string }
   | {
       overlayOpen: boolean;
-      regions: Array<{ height: number; width: number; x: number; y: number }>;
-      type: "setReactTitlebarHitRegions";
+      type: "setReactTitlebarStripState";
     };
 
 type ResolvedOpenTarget =
@@ -364,6 +365,7 @@ type ResolvedOpenTarget =
 declare global {
   interface Window {
     __ghostex_PENDING_TITLEBAR_UPDATE_AVAILABLE__?: boolean;
+    __ghostex_PENDING_TITLEBAR_WINDOW_FOCUSED__?: boolean;
     __ghostex_TITLEBAR_PANEL_KIND__?: string;
     __ghostex_PENDING_TITLEBAR_PROJECT_STATE__?: Partial<TitlebarProjectState>;
     __ghostex_TITLEBAR__?: {
@@ -371,6 +373,7 @@ declare global {
       setActiveProjectState: (state: Partial<TitlebarProjectState>) => void;
       setNativeDropdownOpen: (kind: TitlebarDropdownPanelKind | undefined) => void;
       setNativePointerInside: (isInside: boolean) => void;
+      setWindowFocused: (isFocused: boolean) => void;
     };
   }
 }
@@ -553,15 +556,15 @@ const initialTitlebarDropdownPanelKind = readTitlebarDropdownPanelKind();
  * The dropdown should teach users early that the sidebar is highly customizable.
  * Keep this as the second built-in tip so it appears immediately after the command-palette hint for users who have not marked it read.
  *
- * CDXC:TipsAndTricks 2026-06-10-22:15:
- * The first tip should introduce Cmd K as the universal entry point for app actions, not only pane moves.
+ * CDXC:TipsAndTricks 2026-06-13-10:26:
+ * The first tip should introduce Cmd Shift P as the universal entry point for app actions, not only pane moves.
  */
 const TITLEBAR_TIPS: TitlebarTip[] = [
   {
     body: "Search for project actions, pane splits and moves, session controls, settings shortcuts, and other Ghostex actions.",
     icon: "command",
     id: "command-palette-all-actions",
-    title: "Press Cmd K anywhere to open the Command Palette",
+    title: "Press Cmd Shift P anywhere to open the Command Palette",
   },
   {
     body: "Open Settings to customize sidebar presets, visible details, agents, actions, project tools, and workspace open targets.",
@@ -772,10 +775,21 @@ function setTitlebarNativePointerInside(isInside: boolean): void {
    *
    * CDXC:TooltipLifecycle 2026-06-13-02:30:
    * Do not use this flag as a titlebar tooltip or hover gate. AppKit can leave
-   * the flag false until a click enters a measured hit region, so titlebar
+   * the flag false until a titlebar click updates strip ownership, so titlebar
    * tooltips must rely on normal CSS hover and local tooltip state instead.
    */
   document.body.dataset.nativePointerInside = isInside ? "true" : "false";
+}
+
+function setTitlebarWindowFocused(isFocused: boolean): void {
+  /*
+   * CDXC:SidebarCollapse 2026-06-13-10:57:
+   * The traffic-light-side sidebar collapse dot must dim to #313131 whenever
+   * the macOS window is not key. AppKit owns that state; React only stores the
+   * bridge boolean on the document for CSS.
+   */
+  window.__ghostex_PENDING_TITLEBAR_WINDOW_FOCUSED__ = isFocused;
+  document.body.dataset.windowFocused = isFocused ? "true" : "false";
 }
 
 function suppressTitlebarTooltipsFromDom(): void {
@@ -1636,6 +1650,8 @@ function App() {
     () => readStoredKeepAwakeRuntime(),
   );
   const [resourceProcesses, setResourceProcesses] = useState<ResourceProcess[]>([]);
+  const sidebarCollapseChevronPointsRight =
+    projectState.sidebarSide === "right" ? !projectState.sidebarCollapsed : projectState.sidebarCollapsed;
   /*
    * CDXC:TitlebarResources 2026-06-11-18:13:
    * The native Resources child panel should not render zero-memory or missing-session rows while the first `ps` snapshot is still loading.
@@ -1654,7 +1670,6 @@ function App() {
   const [quittingResourceKeys, setQuittingResourceKeys] = useState<Set<string>>(() => new Set());
   const [optimisticMode, setOptimisticMode] = useState<TitlebarMode>();
   const rootRef = useRef<HTMLDivElement | null>(null);
-  const lastCompanionHitRegionSignatureRef = useRef("");
   const resourceRefreshGenerationRef = useRef(0);
   const resourceRefreshInFlightRef = useRef(false);
   const resourcesOpenCollapseSeededRef = useRef(false);
@@ -1885,106 +1900,30 @@ function App() {
     () => buildSidebarGitMenuItems(projectState.git),
     [projectState.git],
   );
-  const publishHitRegions = useCallback(() => {
+  const publishTitlebarStripState = useCallback(() => {
     if (isDropdownPanel) {
       return;
     }
     /**
-     * CDXC:ReactTitlebar 2026-05-11-00:22
-     * Measure titlebar hit-region elements in the document so AppKit lets fixed
-     * titlebar controls receive pointer events while blank titlebar space remains
-     * native draggable chrome.
-     *
-     * CDXC:ReactTitlebar 2026-05-12-18:58
-     * Publish the measured rectangles after layout settles as well as during the
-     * commit so conditional titlebar controls cannot briefly be treated as blank
-     * AppKit titlebar pixels.
-     *
-     * CDXC:ReactTitlebar 2026-06-11-13:22:
-     * Dropdown panels are separate native child windows, so the titlebar document
-     * must publish only strip-contained hit regions and must never publish panel
-     * geometry from the child-window document.
+     * CDXC:ReactTitlebar 2026-06-13-13:33:
+     * Native owns the titlebar as an exact WKWebView strip, while React owns
+     * controls through normal DOM layout. Do not measure DOM hit rectangles for
+     * AppKit; only publish strip-level overlay lifecycle state.
      */
-    const regions = Array.from(
-      document.querySelectorAll<HTMLElement>("[data-titlebar-hit-region]"),
-    ).map((element) => {
-      const rect = element.getBoundingClientRect();
-      return {
-        height: rect.height,
-        width: rect.width,
-        x: rect.x,
-        y: rect.y,
-      };
-    });
-    const companionToggleButton = document.querySelector<HTMLElement>(
-      ".titlebar-companion-toggle-button",
-    );
-    if (companionToggleButton) {
-      /*
-       * CDXC:ProjectEditorCompanion 2026-06-12-03:18:
-       * The titlebar toggle now owns both expanding and collapsing the companion
-       * pane. Log the measured React hit rect when it changes so missed AppKit
-       * clicks can still be compared to the actual DOM geometry without logging
-       * every pointer event.
-       */
-      const rect = companionToggleButton.getBoundingClientRect();
-      const signature = [
-        activeMode,
-        projectState.editorIsOpen ? "open" : "closed",
-        projectState.editorIsSleeping ? "sleeping" : "awake",
-        projectState.projectEditorCompanionPaneHidden ? "hidden" : "visible",
-        projectState.projectId,
-        Math.round(rect.x),
-        Math.round(rect.y),
-        Math.round(rect.width),
-        Math.round(rect.height),
-        titlebarOverlayOpen ? "overlay" : "plain",
-      ].join("|");
-      if (signature !== lastCompanionHitRegionSignatureRef.current) {
-        lastCompanionHitRegionSignatureRef.current = signature;
-        appendTitlebarCodeLagDebugLog(
-          projectState.debuggingMode,
-          "titlebarCompanionToggle.hitRegionMeasured",
-          {
-            activeMode,
-            editorIsOpen: projectState.editorIsOpen,
-            editorIsSleeping: projectState.editorIsSleeping,
-            projectEditorCompanionPaneHidden: projectState.projectEditorCompanionPaneHidden,
-            projectId: projectState.projectId,
-            rect: {
-              height: rect.height,
-              width: rect.width,
-              x: rect.x,
-              y: rect.y,
-            },
-            titlebarOverlayOpen,
-          },
-        );
-      }
-    }
     postNative({
       overlayOpen: titlebarOverlayOpen,
-      regions,
-      type: "setReactTitlebarHitRegions",
+      type: "setReactTitlebarStripState",
     });
-  }, [
-    activeMode,
-    projectState.editorIsOpen,
-    projectState.editorIsSleeping,
-    projectState.projectEditorCompanionPaneHidden,
-    projectState.projectId,
-    titlebarOverlayOpen,
-    isDropdownPanel,
-  ]);
+  }, [titlebarOverlayOpen, isDropdownPanel]);
 
-  const publishSettledHitRegions = useCallback(() => {
-    publishHitRegions();
+  const publishSettledTitlebarStripState = useCallback(() => {
+    publishTitlebarStripState();
     let secondFrame = 0;
     const firstFrame = window.requestAnimationFrame(() => {
-      publishHitRegions();
-      secondFrame = window.requestAnimationFrame(publishHitRegions);
+      publishTitlebarStripState();
+      secondFrame = window.requestAnimationFrame(publishTitlebarStripState);
     });
-    const settledTimeout = window.setTimeout(publishHitRegions, 120);
+    const settledTimeout = window.setTimeout(publishTitlebarStripState, 120);
     return () => {
       window.cancelAnimationFrame(firstFrame);
       if (secondFrame !== 0) {
@@ -1992,7 +1931,7 @@ function App() {
       }
       window.clearTimeout(settledTimeout);
     };
-  }, [publishHitRegions]);
+  }, [publishTitlebarStripState]);
 
   useLayoutEffect(() => {
     if (isDropdownPanel) {
@@ -2000,17 +1939,15 @@ function App() {
     }
     /**
      * CDXC:SessionFocusMode 2026-05-26-22:47:
-     * The Exit focus button is conditional titlebar chrome. Republish native
-     * hit regions whenever focus mode enters or exits so AppKit routes clicks
-     * to the new button instead of treating its frame as draggable titlebar.
+     * The Exit focus button is conditional titlebar chrome. Publish the strip
+     * lifecycle state after titlebar layout settles so native receives a fresh
+     * titlebar document signal without DOM-region measuring.
      *
      * CDXC:AutoUpdate 2026-06-08-18:21:
      * The update button appears after native Sparkle appcast probes, so
-     * updateAvailable must also republish hit regions. Otherwise AppKit can
-     * keep treating the new button's pixels as draggable titlebar instead of a
-     * clickable handoff into Sparkle.
+     * updateAvailable must also republish the strip lifecycle state.
      */
-    return publishSettledHitRegions();
+    return publishSettledTitlebarStripState();
   }, [
     activeTarget?.id,
     activeAction?.commandId,
@@ -2023,7 +1960,7 @@ function App() {
     projectState.projectName,
     projectState.sidebarCollapsed,
     projectState.updateAvailable,
-    publishSettledHitRegions,
+    publishSettledTitlebarStripState,
     isDropdownPanel,
   ]);
 
@@ -2031,9 +1968,9 @@ function App() {
     if (isDropdownPanel) {
       return;
     }
-    window.addEventListener("resize", publishHitRegions);
-    return () => window.removeEventListener("resize", publishHitRegions);
-  }, [publishHitRegions, isDropdownPanel]);
+    window.addEventListener("resize", publishTitlebarStripState);
+    return () => window.removeEventListener("resize", publishTitlebarStripState);
+  }, [publishTitlebarStripState, isDropdownPanel]);
 
   useEffect(() => {
     if (isDropdownPanel) {
@@ -2044,7 +1981,7 @@ function App() {
      * Native titlebar pointer-leave may hide a currently visible tooltip, but
      * DOM pointer movement inside the titlebar must immediately restore hover
      * eligibility. This keeps native tracking as cleanup, not a persistent gate
-     * that waits for a click on a measured hit region.
+     * that waits for a titlebar ownership update.
      */
     const suppressTitlebarTooltips = () => {
       suppressTitlebarTooltipsFromDom();
@@ -2097,12 +2034,11 @@ function App() {
        * CDXC:ReactTitlebar 2026-05-25-10:09:
        * Native workspace shielding must clear when the titlebar host unmounts
        * or reloads. Publish an explicit closed overlay state instead of making
-       * Swift infer it from stale DOM hit-region geometry.
+       * Swift infer it from stale DOM geometry.
        */
       postNative({
         overlayOpen: false,
-        regions: [],
-        type: "setReactTitlebarHitRegions",
+        type: "setReactTitlebarStripState",
       });
     };
   }, [isDropdownPanel]);
@@ -2124,6 +2060,7 @@ function App() {
         closeTitlebarDropdownPanel();
       },
       setNativePointerInside: setTitlebarNativePointerInside,
+      setWindowFocused: setTitlebarWindowFocused,
       setNativeDropdownOpen,
       setActiveProjectState: (state) => {
         setProjectState((current) => mergeTitlebarProjectState(current, state));
@@ -2144,8 +2081,12 @@ function App() {
         updateAvailable: window.__ghostex_PENDING_TITLEBAR_UPDATE_AVAILABLE__,
       });
     }
+    if (typeof window.__ghostex_PENDING_TITLEBAR_WINDOW_FOCUSED__ === "boolean") {
+      setTitlebarWindowFocused(window.__ghostex_PENDING_TITLEBAR_WINDOW_FOCUSED__);
+    }
     return () => {
       delete window.__ghostex_TITLEBAR__;
+      delete document.body.dataset.windowFocused;
     };
   }, [closeTitlebarDropdownPanel]);
 
@@ -2926,7 +2867,6 @@ function App() {
       <Button
         aria-label={projectState.sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}
         className="titlebar-sidebar-collapse-button"
-        data-titlebar-hit-region
         onClick={() => postNative({ type: "toggleSidebarCollapsed" })}
         type="button"
         variant="ghost"
@@ -2935,8 +2875,14 @@ function App() {
          * CDXC:SidebarCollapse 2026-06-12-10:57:
          * Users need a traffic-light-sized titlebar button immediately
          * before the project identity to collapse or expand the entire
-         * native sidebar. The chevron points left while expanded and
-         * right while collapsed so it always indicates the next action.
+         * native sidebar. For the default left sidebar, the chevron points
+         * left while expanded and right while collapsed so it indicates the
+         * next action.
+         *
+         * CDXC:SidebarCollapse 2026-06-13-11:05:
+         * When the sidebar is on the right, invert the chevron direction from
+         * the left-sidebar default. The icon should point toward the actual
+         * collapse or expand motion for the current sidebar side.
          *
          * CDXC:SidebarCollapse 2026-06-12-11:10:
          * The update affordance belongs to the right of this collapse
@@ -2945,25 +2891,29 @@ function App() {
          * use a 10px chevron so the glyph reads clearly inside the 14px dot.
          *
          * CDXC:SidebarCollapse 2026-06-12-21:03:
-         * The visible collapse affordance is now 15x15px, while the actual
-         * titlebar hit target is a 33x33px square that extends 9px around
-         * the small dot without painting that larger area.
+         * The visible collapse affordance is tiny while the actual titlebar
+         * button frame is a stable 33x33px square that keeps the small dot easy
+         * to click without painting that larger area.
          *
          * CDXC:SidebarCollapse 2026-06-13-10:53:
          * The hover tooltip for this button must contain only the assigned Toggle
          * Sidebar hotkey so the tiny titlebar affordance stays terse.
          *
          * CDXC:SidebarCollapse 2026-06-13-01:00:
-         * Move only the visible 15x15 dot 2px lower. The 33x33 hit target stays
-         * fixed so clicking and native hit-region routing remain stable.
+         * Move only the visible dot 2px lower. The 33x33 button frame stays
+         * fixed so clicking and native strip ownership remain stable.
+         *
+         * CDXC:SidebarCollapse 2026-06-13-09:24:
+         * The visible dot should be 14x14px again so it matches the macOS
+         * traffic-light buttons while retaining the stable 33x33 button frame.
          *
          * CDXC:SidebarCollapse 2026-06-13-02:59:
          * Use the same AppTooltip wrapper as sidebar controls for the hotkey
          * label; keep the titlebar-specific wrapper responsible only for right
          * placement beside the traffic-light-side button.
-         */}
+        */}
         <span className="titlebar-sidebar-collapse-button-visual">
-          {projectState.sidebarCollapsed ? (
+          {sidebarCollapseChevronPointsRight ? (
             <IconChevronRight aria-hidden="true" size={10} stroke={2.4} />
           ) : (
             <IconChevronLeft aria-hidden="true" size={10} stroke={2.4} />
@@ -2984,7 +2934,6 @@ function App() {
                 <Button
                   aria-label="Download update"
                   className="titlebar-session-button titlebar-update-button"
-                  data-titlebar-hit-region
                   onClick={showUpdateDialog}
                   type="button"
                   variant="ghost"
@@ -3040,7 +2989,6 @@ function App() {
               <Button
                 aria-label="Exit focus mode"
                 className="titlebar-exit-focus-button"
-                data-titlebar-hit-region
                 onClick={() => postNative({ type: "exitFocusModeFromTitlebar" })}
                 size="sm"
                 type="button"
@@ -3063,7 +3011,6 @@ function App() {
             <ButtonGroup
               className="titlebar-open-group titlebar-tips-group"
               data-titlebar-dropdown-anchor
-              data-titlebar-hit-region
             >
               <TitlebarAppTooltip content="Tips & Tricks">
                 <Button
@@ -3099,7 +3046,6 @@ function App() {
               <ButtonGroup
                 className="titlebar-open-group titlebar-keep-awake-group"
                 data-titlebar-dropdown-anchor
-                data-titlebar-hit-region
               >
                 <TitlebarAppTooltip content="Click to toggle. Right-click for options.">
                   <Button
@@ -3133,7 +3079,6 @@ function App() {
             <ButtonGroup
               className="titlebar-open-group"
               data-titlebar-dropdown-anchor
-              data-titlebar-hit-region
             >
               <TitlebarAppTooltip content="Resources Monitor">
                 <Button
@@ -3168,7 +3113,6 @@ function App() {
             <ButtonGroup
               className="titlebar-open-group titlebar-git-group"
               data-titlebar-dropdown-anchor
-              data-titlebar-hit-region
             >
               <TitlebarAppTooltip content="Commit. Right-click for more actions">
                 <Button
@@ -3222,7 +3166,6 @@ function App() {
             <ButtonGroup
               className="titlebar-open-group titlebar-actions-group"
               data-titlebar-dropdown-anchor
-              data-titlebar-hit-region
             >
               <TitlebarAppTooltip content="Click to run. Right-click for actions.">
                 <Button
@@ -3254,7 +3197,6 @@ function App() {
             <ButtonGroup
               className="titlebar-open-group"
               data-titlebar-dropdown-anchor
-              data-titlebar-hit-region
             >
               <TitlebarAppTooltip content="Click to open. Right-click for targets.">
                 <Button
@@ -3643,6 +3585,7 @@ function mergeTitlebarProjectState(
     petOverlayEnabled: state.petOverlayEnabled ?? current.petOverlayEnabled,
     resourceGroups: state.resourceGroups ?? current.resourceGroups,
     sidebarActions: state.sidebarActions ?? current.sidebarActions,
+    sidebarSide: state.sidebarSide ?? current.sidebarSide,
     sessionPersistenceProvider:
       state.sessionPersistenceProvider ?? current.sessionPersistenceProvider,
     toggleSidebarHotkeyLabel:
@@ -3686,6 +3629,7 @@ function createInitialProjectState(bootstrap: Record<string, unknown>): Titlebar
     petOverlayEnabled: settings.petOverlayEnabled,
     resourceGroups: [],
     sidebarCollapsed: bootstrap.sidebarCollapsed === true,
+    sidebarSide: bootstrap.sidebarSide === "right" ? "right" : settings.sidebarSide,
     sidebarActions: {
       commands: [],
     },
@@ -4847,7 +4791,6 @@ function TitlebarModeDropdown({
       className="titlebar-session-button titlebar-mode-picker-trigger"
       data-state={nativeDropdownOpen === "mode" ? "open" : undefined}
       data-titlebar-dropdown-anchor
-      data-titlebar-hit-region
       onClick={(event) => onOpenPanel("mode", event.currentTarget)}
       onContextMenu={(event) => {
         event.preventDefault();
@@ -4897,7 +4840,6 @@ function TitlebarModeSwitcher({
     <div
       aria-label="Mode switcher"
       className="titlebar-mode-switcher"
-      data-titlebar-hit-region
       role="tablist"
     >
       {/*
@@ -4935,15 +4877,13 @@ function TitlebarModeSwitcher({
         CDXC:ProjectEditorCompanion 2026-06-12-04:02:
         The toggle is anchor-positioned off the switcher's left edge so the
         Agents/Source/Browser/Kanban group keeps its original centered titlebar
-        geometry. Publish the toggle as its own hit region because it sits
-        outside the switcher's flex-flow bounds.
+        geometry while staying normal DOM inside the titlebar WKWebView.
       */}
       {showCompanionToggle ? (
         <TitlebarAppTooltip content={companionToggleLabel}>
           <button
             aria-label={companionToggleLabel}
             className="titlebar-mode-tab titlebar-companion-toggle-button"
-            data-titlebar-hit-region
             onClick={onToggleCompanion}
             type="button"
           >
@@ -5292,9 +5232,9 @@ styleElement.textContent = `
   }
   /*
    * CDXC:ReactTitlebar 2026-06-10-23:44:
-   * Native AppKit reports whether the pointer is inside a measured titlebar
-   * hit region. Keep the DOM interactive and only neutralize stale hover styling
-   * below; AppKit already owns the real titlebar hit boundary.
+   * Native AppKit reports whether the pointer is inside the titlebar strip.
+   * Keep the DOM interactive and only neutralize stale hover styling below;
+   * AppKit already owns the real titlebar boundary.
    */
   /**
    * CDXC:ReactTitlebar 2026-05-11-09:00
@@ -5394,24 +5334,41 @@ styleElement.textContent = `
      * but the gray fill must not have an outline around it.
      *
      * CDXC:SidebarCollapse 2026-06-12-21:03:
-     * The visible dot should be 15x15px, but pointer hit testing should use a
-     * 33x33px square that includes 9px of invisible space on every side.
+     * The visible dot is intentionally smaller than its pointer hit target. Use
+     * a 33x33px hit square that includes invisible space around the dot.
      *
      * CDXC:SidebarCollapse 2026-06-13-10:53:
      * Keep the 33x33px hit target inside the 35px titlebar vertically. Only
-     * offset the target left so the 15px dot stays in its traffic-light-side
+     * offset the target left so the dot stays in its traffic-light-side
      * visual slot while clicks still work across the expanded target.
      *
      * CDXC:SidebarCollapse 2026-06-13-02:59:
      * The assigned hotkey renders through AppTooltip, matching sidebar controls
      * instead of a titlebar-only data-tooltip pseudo-element.
+     *
+     * CDXC:SidebarCollapse 2026-06-13-09:18:
+     * The visible collapse dot should be white with an almost-black chevron
+     * inside it, while the invisible 33px hit target and no-outline treatment
+     * stay unchanged.
+     *
+     * CDXC:SidebarCollapse 2026-06-13-09:22:
+     * Visual review changed the dot from white to #4699d9 and the chevron from
+     * almost black to white.
+     *
+     * CDXC:SidebarCollapse 2026-06-13-09:24:
+     * The visible dot should be 14x14px so it matches the other macOS traffic
+     * light buttons. Keep the 33px hit target, blue fill, and white chevron.
+     *
+     * CDXC:SidebarCollapse 2026-06-13-10:57:
+     * When AppKit says the window is not focused, keep the same visible 14px
+     * dot and 33px hit target but paint the dot #313131.
      */
     align-items: center;
     background: transparent !important;
     border: 0 !important;
     border-radius: 0;
     box-shadow: none;
-    color: rgba(255,255,255,0.86) !important;
+    color: #ffffff !important;
     display: inline-flex;
     flex: 0 0 33px;
     height: 33px !important;
@@ -5426,22 +5383,27 @@ styleElement.textContent = `
   .titlebar-sidebar-collapse-button:hover,
   .titlebar-sidebar-collapse-button:focus-visible {
     background: transparent !important;
-    color: rgba(255,255,255,0.96) !important;
+    color: #ffffff !important;
     outline: none;
   }
   .titlebar-sidebar-collapse-button-visual {
     align-items: center;
-    background: rgba(255,255,255,0.16);
+    background: #4699d9;
     border-radius: 999px;
     display: inline-flex;
-    height: 15px;
+    height: 14px;
     justify-content: center;
     transform: translateY(2px);
-    width: 15px;
+    width: 14px;
   }
   .titlebar-sidebar-collapse-button:hover .titlebar-sidebar-collapse-button-visual,
   .titlebar-sidebar-collapse-button:focus-visible .titlebar-sidebar-collapse-button-visual {
-    background: rgba(255,255,255,0.24);
+    background: #5aa7e1;
+  }
+  body[data-window-focused="false"] .titlebar-sidebar-collapse-button-visual,
+  body[data-window-focused="false"] .titlebar-sidebar-collapse-button:hover .titlebar-sidebar-collapse-button-visual,
+  body[data-window-focused="false"] .titlebar-sidebar-collapse-button:focus-visible .titlebar-sidebar-collapse-button-visual {
+    background: #313131;
   }
   .titlebar-sidebar-collapse-button svg {
     height: 10px;
@@ -5480,8 +5442,8 @@ styleElement.textContent = `
      * CDXC:ReactTitlebar 2026-06-04-18:55:
      * The React titlebar project title in the macOS app should sit 2px lower
      * without changing the shared titlebar height or moving neighboring
-     * controls. Use a visual transform so layout and hit-region math stay
-     * anchored to the existing titlebar row.
+     * controls. Use a visual transform so layout stays anchored to the existing
+     * titlebar row.
      */
     align-items: center;
     color: rgba(255,255,255,0.9);

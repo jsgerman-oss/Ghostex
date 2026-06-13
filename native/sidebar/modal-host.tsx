@@ -179,12 +179,6 @@ type AppModalHostMessage =
   | { details?: string; event: string; type: "debugLog" }
   | { requestId: string; type: "floatingPromptEditorCloseAndSave" }
   | {
-      frame: FloatingPromptEditorFrame;
-      imagePreviewOpen?: boolean;
-      requestId: string;
-      type: "floatingPromptEditorHitRegion";
-    }
-  | {
       error?: string;
       imagePath?: string;
       pasteRequestId: string;
@@ -351,6 +345,8 @@ declare global {
         };
       };
     };
+    __ghostex_APP_MODAL_HOST_ID__?: string;
+    __ghostex_APP_MODAL_HOST_SURFACE__?: "main" | "nativeWindow";
   }
 }
 
@@ -441,8 +437,8 @@ function isAppModalDebugLoggingEnabled(): boolean {
  * CDXC:PromptEditor 2026-05-19-11:20:
  * Prompt-editor repro logs must land in ~/.ghostex/logs/native-prompt-editor-debug.log
  * only while Settings debugging mode is enabled. Native owns the file; React posts
- * structured events across the modal-host bridge so Monaco, hit regions, and focus
- * can be correlated on one timeline.
+ * structured events across the modal-host bridge so Monaco state, native
+ * child-window frame changes, and focus can be correlated on one timeline.
  */
 function appendPromptEditorDebugLog(
   event: string,
@@ -721,7 +717,28 @@ function FloatingPromptEditorModal({
   const pendingImagePreviewRequestIdsRef = useRef<Map<string, string>>(new Map());
   const pendingImagePasteRequestIdsRef = useRef<Set<string>>(new Set());
   const savedCloseAndSaveRequestIdRef = useRef<string | undefined>(undefined);
+  /**
+   * CDXC:PromptEditor 2026-06-13-13:48:
+   * The floating prompt editor is a native child window, so React must not
+   * publish root-window input regions. AppKit owns the child-window frame,
+   * move, resize, focus, and event delivery.
+   */
   const isNativeWindowSurface = window.__ghostex_APP_MODAL_HOST_SURFACE__ === "nativeWindow";
+
+  useEffect(() => {
+    return () => {
+      if (!editorRef.current && !editorContentListenerRef.current) {
+        return;
+      }
+      appendPromptEditorDebugLog("react.monaco.unmountCleanup", {
+        hadEditorRef: editorRef.current !== null,
+      });
+      editorContentListenerRef.current?.dispose();
+      editorContentListenerRef.current = undefined;
+      editorRef.current?.dispose();
+      editorRef.current = null;
+    };
+  }, []);
 
   useEffect(() => {
     if (!isOpen || !editor) {
@@ -784,6 +801,7 @@ function FloatingPromptEditorModal({
      */
     const loadStartedAt = performance.now();
     appendPromptEditorDebugLog("react.monaco.loadStart", {
+      hasExistingEditor: editorRef.current !== null,
       hasExistingMonaco: Boolean(window.monaco),
       requestId: editor.requestId,
     });
@@ -791,6 +809,7 @@ function FloatingPromptEditorModal({
       .then(() => {
         const loadDurationMs = Math.round(performance.now() - loadStartedAt);
         appendPromptEditorDebugLog("react.monaco.loadReady", {
+          hasExistingEditor: editorRef.current !== null,
           hasExistingMonaco: Boolean(window.monaco),
           loadDurationMs,
           requestId: editor.requestId,
@@ -804,9 +823,57 @@ function FloatingPromptEditorModal({
           });
           return;
         }
+        /*
+         * CDXC:PromptEditor 2026-06-13-11:09:
+         * Ctrl+G should reuse the Monaco editor created during native prewarm.
+         * When the hidden prewarm request becomes a real user request, update
+         * the existing model and focus it instead of disposing the editor and
+         * rebuilding Monaco's DOM/input stack.
+         */
+        const existingEditor = editorRef.current;
+        if (existingEditor) {
+          const updateStartedAt = performance.now();
+          existingEditor.setValue(editor.initialText);
+          moveMonacoCaretToEnd(existingEditor, editor.initialText);
+          existingEditor.layout();
+          const caretPosition = existingEditor.getPosition();
+          setImagePreviews(parsePromptEditorImagePreviews(existingEditor.getValue()));
+          editorContentListenerRef.current?.dispose();
+          editorContentListenerRef.current = existingEditor.onDidChangeModelContent(() => {
+            setImagePreviews(parsePromptEditorImagePreviews(existingEditor.getValue()));
+          });
+          const updateDurationMs = Math.round(performance.now() - updateStartedAt);
+          if (editor.isPrewarm) {
+            appendPromptEditorDebugLog("react.monaco.prewarmReady", {
+              loadDurationMs,
+              requestId: editor.requestId,
+              reusedEditor: true,
+              textLength: existingEditor.getValue().length,
+              updateDurationMs,
+            });
+            postAppModalHostMessage(
+              {
+                requestId: editor.requestId,
+                type: "floatingPromptEditorPrewarmReady",
+              },
+              "PromptEditor:prewarm",
+            );
+            return;
+          }
+          existingEditor.focus?.();
+          appendPromptEditorDebugLog("react.monaco.reusedAndFocused", {
+            caretColumn: caretPosition?.column ?? null,
+            caretLine: caretPosition?.lineNumber ?? null,
+            documentHasFocus: document.hasFocus(),
+            loadDurationMs,
+            requestId: editor.requestId,
+            textLength: existingEditor.getValue().length,
+            updateDurationMs,
+          });
+          return;
+        }
         editorContentListenerRef.current?.dispose();
         editorContentListenerRef.current = undefined;
-        editorRef.current?.dispose();
         const createStartedAt = performance.now();
         /**
          * CDXC:PromptEditor 2026-05-13-09:48
@@ -913,12 +980,9 @@ function FloatingPromptEditorModal({
       disposed = true;
       appendPromptEditorDebugLog("react.monaco.effectCleanup", {
         hadEditorRef: editorRef.current !== null,
+        retainedEditor: true,
         requestId: editor?.requestId ?? null,
       });
-      editorContentListenerRef.current?.dispose();
-      editorContentListenerRef.current = undefined;
-      editorRef.current?.dispose();
-      editorRef.current = null;
     };
   }, [editor?.requestId, isOpen]);
 
@@ -1115,65 +1179,6 @@ function FloatingPromptEditorModal({
       window.removeEventListener("ghostex-app-modal-host-message", handleNativeMessage);
     };
   }, [editor?.requestId, isOpen]);
-
-  useLayoutEffect(() => {
-    if (!isOpen || !editor) {
-      return;
-    }
-    /**
-     * CDXC:PromptEditor 2026-05-15-12:42:
-     * The floating prompt editor should only intercept native AppKit events
-     * over the visible editor panel. Publish the live panel rectangle after
-     * each move or resize so terminal panes and pins behind the transparent
-     * modal WKWebView remain clickable and scrollable outside that rectangle.
-     * Image preview is the exception: its backdrop and close button are outside
-     * the panel, so native must block the full modal-host surface while it is
-     * open.
-     *
-     * CDXC:PromptEditor 2026-06-11-22:51:
-     * In the native prompt-editor child window, AppKit owns the exact window
-     * hit area, movement, and resizing. Do not publish full-window overlay hit
-     * regions from React when the editor is already inside its own native
-     * window.
-     */
-    if (isNativeWindowSurface) {
-      appendPromptEditorDebugLog("react.hitRegion.nativeWindowSkipped", {
-        hasEditorRef: editorRef.current !== null,
-        requestId: editor.requestId,
-      });
-      return;
-    }
-    const imagePreviewOpen = openImagePreview !== undefined;
-    appendPromptEditorDebugLog("react.hitRegion.publish", {
-      frameHeight: frame.height,
-      frameLeft: frame.left,
-      frameTop: frame.top,
-      frameWidth: frame.width,
-      hasEditorRef: editorRef.current !== null,
-      imagePreviewOpen,
-      innerHeight: window.innerHeight,
-      innerWidth: window.innerWidth,
-      requestId: editor.requestId,
-    });
-    postAppModalHostMessage(
-      {
-        frame,
-        imagePreviewOpen,
-        requestId: editor.requestId,
-        type: "floatingPromptEditorHitRegion",
-      },
-      "PromptEditor:hitRegion",
-    );
-  }, [
-    editor?.requestId,
-    frame.height,
-    frame.left,
-    frame.top,
-    frame.width,
-    isNativeWindowSurface,
-    isOpen,
-    openImagePreview,
-  ]);
 
   useEffect(() => {
     return () => {
@@ -1800,6 +1805,7 @@ function isT3FilesystemBrowseResult(value: unknown): value is T3FilesystemBrowse
 function AppModalHost() {
   const {
     activeModal,
+    activeModalRequestId,
     addRepository,
     agentsHubCatalog,
     agentsHubFileContent,
@@ -1944,11 +1950,14 @@ function AppModalHost() {
       modal: activeModal,
       type: "presented",
     };
+    if (activeModalRequestId) {
+      presentedMessage.requestId = activeModalRequestId;
+    }
     if (activeModal === "floatingPromptEditor" && floatingPromptEditor) {
       presentedMessage.requestId = floatingPromptEditor.requestId;
     }
     postAppModalHostMessage(presentedMessage, "AppModals:presented");
-  }, [activeModal, floatingPromptEditor?.requestId, isActiveModalRenderable]);
+  }, [activeModal, activeModalRequestId, floatingPromptEditor?.requestId, isActiveModalRenderable]);
 
   useEffect(() => {
     if (activeModal !== "settings") {
@@ -2137,11 +2146,12 @@ function AppModalHost() {
         vscode={vscode}
       />
       {/*
-       * CDXC:CommandPalette 2026-05-16-20:51:
-       * Cmd+K must render in the same full-window app-modal host as Settings,
-       * not inside the sidebar webview. The palette reads mirrored sidebar
-       * state here so its command list remains current while the dialog is
-       * centered over the whole Ghostex window.
+       * CDXC:CommandPalette 2026-06-13-10:26:
+       * The configured command-palette hotkey must render in the same
+       * full-window app-modal host as Settings, not inside the sidebar webview.
+       * The palette reads mirrored sidebar state here so its command list
+       * remains current while the dialog is centered over the whole Ghostex
+       * window.
        */}
       <CommandPalette
         commands={commands}
@@ -2684,6 +2694,13 @@ function AppModalHost() {
  */
 function useModalStateFromNative() {
   const [activeModal, setActiveModal] = useState<AppModalKind | undefined>();
+  /*
+   * CDXC:CommandPalette 2026-06-13-09:53:
+   * Native command-palette prewarm opens the real modal host while hidden.
+   * Preserve the request id through React state so the presented event lets
+   * AppKit hide the warmed host instead of showing it to the user.
+   */
+  const [activeModalRequestId, setActiveModalRequestId] = useState<string>();
   const [addRepository, setAddRepository] = useState<AddRepositoryModalState>({});
   const [agentsHubCatalog, setAgentsHubCatalog] = useState<AgentsHubCatalogMessage>();
   const [agentsHubFileContent, setAgentsHubFileContent] =
@@ -2718,6 +2735,7 @@ function useModalStateFromNative() {
 
   const clearActiveModalState = useCallback(() => {
     setActiveModal(undefined);
+    setActiveModalRequestId(undefined);
     setAddRepository({});
     setConfig({});
     setDelayedSend(undefined);
@@ -3162,6 +3180,9 @@ function useModalStateFromNative() {
           } else {
             setAddRepository({});
           }
+          setActiveModalRequestId(
+            typeof message.requestId === "string" ? message.requestId : undefined,
+          );
           setActiveModal(message.modal);
           return;
         }
@@ -3314,7 +3335,10 @@ function useModalStateFromNative() {
     appendPromptEditorDebugLog("react.modalHost.ready", {
       nativeWindowSurface: window.__ghostex_APP_MODAL_HOST_SURFACE__ === "nativeWindow",
     });
-    postAppModalHostMessage({ type: "ready" }, "AppModals:ready");
+    postAppModalHostMessage(
+      { nativeWindowHostId: window.__ghostex_APP_MODAL_HOST_ID__, type: "ready" },
+      "AppModals:ready",
+    );
     /*
      * CDXC:AppModals 2026-06-11-19:46:
      * Native child windows reuse modal-host.html for the app modal family.
@@ -3336,6 +3360,7 @@ function useModalStateFromNative() {
 
   return {
     activeModal,
+    activeModalRequestId,
     addRepository,
     agentsHubCatalog,
     agentsHubFileContent,

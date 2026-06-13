@@ -2,6 +2,7 @@ import { describe, expect, test } from "vitest";
 import type { SidebarSessionItem } from "../shared/session-grid-contract";
 import {
   canSleepSidebarSession,
+  createSleepBelowDebugDetails,
   getSessionCardAccessibleLabel,
   resolveSessionCardSessionIdsBelow,
   runSidebarBulkContextMenuActionInBackground,
@@ -103,6 +104,53 @@ describe("resolveSessionCardSessionIdsBelow", () => {
         sessionIdsBelow: ["rerendered-session"],
       }),
     ).toEqual(["snapshot-session"]);
+  });
+});
+
+describe("createSleepBelowDebugDetails", () => {
+  test("keeps Sleep below lag diagnostics free of user-owned content", () => {
+    const details = createSleepBelowDebugDetails({
+      clickedSessionKind: "terminal",
+      debugInstanceId: 42,
+      elapsedSinceRequestMs: 12.34,
+      event: "posted",
+      flushDurationMs: 4.44,
+      frameDelayMs: 17.19,
+      postMessageDurationMs: 3.91,
+      resolveDurationMs: 2.24,
+      skippedCount: 1,
+      sourceIndex: 3,
+      targetCount: 5,
+      visibleBelowCount: 6,
+    });
+
+    expect(details).toEqual({
+      action: "sleepBelow",
+      clickedSessionKind: "terminal",
+      debugInstanceId: 42,
+      elapsedSinceRequestMs: 12.3,
+      event: "posted",
+      flushDurationMs: 4.4,
+      frameDelayMs: 17.2,
+      postMessageDurationMs: 3.9,
+      resolveDurationMs: 2.2,
+      skippedCount: 1,
+      sourceIndex: 3,
+      targetCount: 5,
+      visibleBelowCount: 6,
+    });
+    expect(Object.keys(details).sort()).not.toEqual(
+      expect.arrayContaining([
+        "command",
+        "message",
+        "path",
+        "sessionId",
+        "sessionIds",
+        "text",
+        "title",
+        "url",
+      ]),
+    );
   });
 });
 

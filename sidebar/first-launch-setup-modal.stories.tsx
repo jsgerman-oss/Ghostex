@@ -284,38 +284,10 @@ export const GuideDesktopCua: Story = {
   },
 };
 
-export const GuideWorkspace: Story = {
-  args: {
-    cliInstalled: true,
-    initialPage: "workspace",
-  },
-};
-
 export const GuideAgentsSessions: Story = {
   args: {
     cliInstalled: true,
     initialPage: "agentsSessions",
-  },
-};
-
-export const GuideActionsBrowsers: Story = {
-  args: {
-    cliInstalled: true,
-    initialPage: "actionsBrowsers",
-  },
-};
-
-export const GuideCodexEditor: Story = {
-  args: {
-    cliInstalled: true,
-    initialPage: "codexEditor",
-  },
-};
-
-export const GuideSessionResume: Story = {
-  args: {
-    cliInstalled: true,
-    initialPage: "sessionResume",
   },
 };
 

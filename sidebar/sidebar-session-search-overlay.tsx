@@ -1,5 +1,5 @@
 import { IconSearch, IconX } from "@tabler/icons-react";
-import { useEffect, type KeyboardEventHandler, type RefObject } from "react";
+import { useEffect, type KeyboardEventHandler, type ReactNode, type RefObject } from "react";
 import type { SidebarPreviousSessionItem } from "../shared/session-grid-contract";
 import { SessionHistoryCard } from "./session-history-card";
 
@@ -16,6 +16,7 @@ export type SidebarSessionSearchFieldProps = {
   shellClassName?: string;
   setQuery: (query: string) => void;
   toolbarClassName?: string;
+  trailingControl?: ReactNode;
 };
 
 export function SidebarSessionSearchField({
@@ -31,8 +32,10 @@ export function SidebarSessionSearchField({
   shellClassName,
   setQuery,
   toolbarClassName,
+  trailingControl,
 }: SidebarSessionSearchFieldProps) {
   const hasQuery = query.length > 0;
+  const hasTrailingControl = trailingControl != null;
   const clearQueryAndFocus = () => {
     setQuery("");
     inputRef.current?.focus();
@@ -60,8 +63,15 @@ export function SidebarSessionSearchField({
        *
        * CDXC:SearchInputs 2026-06-04-03:11:
        * Recent Projects and daemon search use this same field now, and Escape on a focused non-empty field must clear the query the same way as the X button instead of moving focus or closing the surrounding surface.
+       *
+       * CDXC:SearchInputs 2026-06-13-15:59:
+       * Some modal search rows own a real filter action at the right edge. Let callers replace the decorative idle Search icon with that button while preserving the shared clear-X behavior and input focus handling.
        */}
-      <div className={["session-search-input-shell", shellClassName].filter(Boolean).join(" ")}>
+      <div
+        className={["session-search-input-shell", shellClassName].filter(Boolean).join(" ")}
+        data-has-query={String(hasQuery)}
+        data-has-trailing-control={String(hasTrailingControl)}
+      >
         <input
           aria-label={ariaLabel}
           autoComplete={autoComplete}
@@ -111,14 +121,17 @@ export function SidebarSessionSearchField({
               stroke={1.9}
             />
           </button>
-        ) : (
+        ) : null}
+        {hasTrailingControl ? (
+          <span className="session-search-trailing-control">{trailingControl}</span>
+        ) : !hasQuery ? (
           <IconSearch
             aria-hidden="true"
             className="session-search-input-icon"
             size={16}
             stroke={1.9}
           />
-        )}
+        ) : null}
       </div>
     </div>
   );

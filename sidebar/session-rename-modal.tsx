@@ -1,4 +1,5 @@
 import {
+  useCallback,
   useEffect,
   useId,
   useMemo,
@@ -87,19 +88,36 @@ export function SessionRenameModal({
     setTitle(initialTitle);
   }, [initialTitle, isOpen]);
 
+  /**
+   * CDXC:SidebarRename 2026-06-13-12:00
+   * Opening Rename Session should drop the caret into the name field with the
+   * existing title fully selected so the user can immediately type a
+   * replacement. Own the initial focus through the dialog's initialFocus hook
+   * (returning false so base-ui does not re-focus and collapse the selection
+   * afterward), and keep a requestAnimationFrame pass as a fallback for hosts
+   * where initialFocus runs before the textarea has its value.
+   */
+  const focusAndSelectInput = useCallback(() => {
+    const input = inputRef.current;
+    if (input) {
+      input.focus();
+      input.select();
+    }
+    return false as const;
+  }, []);
+
   useEffect(() => {
     if (!isOpen) {
       return;
     }
 
     const animationFrame = window.requestAnimationFrame(() => {
-      inputRef.current?.focus();
-      inputRef.current?.select();
+      focusAndSelectInput();
     });
     return () => {
       window.cancelAnimationFrame(animationFrame);
     };
-  }, [isOpen]);
+  }, [focusAndSelectInput, isOpen]);
 
   if (!isOpen) {
     return null;
@@ -181,7 +199,8 @@ export function SessionRenameModal({
     >
       <DialogContent
         className="command-config-modal-shadcn session-rename-modal-shadcn font-sans"
-        showCloseButton={false}
+        initialFocus={focusAndSelectInput}
+        showCloseButton
       >
         <form className="session-rename-form" onSubmit={submitRename}>
           <DialogHeader>
@@ -195,7 +214,6 @@ export function SessionRenameModal({
               <FieldLabel htmlFor={inputId}>Session name</FieldLabel>
               <Textarea
                 aria-label="Session Name"
-                autoFocus
                 className="session-rename-textarea"
                 id={inputId}
                 onChange={(event) => setTitle(event.currentTarget.value)}
@@ -232,9 +250,6 @@ export function SessionRenameModal({
             ) : null}
           </FieldGroup>
           <DialogFooter>
-            <Button onClick={onCancel} type="button" variant="outline">
-              Cancel
-            </Button>
             <Button
               disabled={!directRenameTitle}
               onClick={() => confirmTitle(title, false)}

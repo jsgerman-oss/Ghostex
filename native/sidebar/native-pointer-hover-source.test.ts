@@ -59,20 +59,23 @@ describe("native pointer hover boundary source", () => {
     expect(appDelegateSource).toContain("isPointInFixedTitlebarStrip(convert(event.locationInWindow, from: nil))");
     expect(appDelegateSource).toContain("final class TitlebarChromeWebView: WKWebView");
     expect(appDelegateSource).toContain("override var mouseDownCanMoveWindow: Bool");
-    expect(appDelegateSource).toContain("var onTitlebarMouseEvent: ((NSEvent) -> Bool)?");
-    expect(appDelegateSource).toContain("func routeTitlebarMouseEventFromWindow(_ event: NSEvent) -> Bool");
-    expect(appDelegateSource).toContain("func routeWindowMouseEvent(_ event: NSEvent) -> Bool");
-    expect(appDelegateSource).toContain("dispatchWindowMouseEventToWebView(event, point: point)");
-    expect(appDelegateSource).toContain("shouldConsumeTitlebarWindowMouseEvent");
-    expect(appDelegateSource).toContain("AppKit's titled-window chrome can swallow real clicks");
-    expect(appDelegateSource).toContain("return webView");
-    expect(appDelegateSource).toContain("return self");
+    expect(appDelegateSource).not.toContain("var onTitlebarMouseEvent: ((NSEvent) -> Bool)?");
+    expect(appDelegateSource).not.toContain("func routeTitlebarMouseEventFromWindow(_ event: NSEvent) -> Bool");
+    expect(appDelegateSource).not.toContain("func routeWindowMouseEvent(_ event: NSEvent) -> Bool");
+    expect(appDelegateSource).not.toContain("dispatchWindowMouseEventToWebView");
+    expect(appDelegateSource).not.toContain("shouldConsumeTitlebarWindowMouseEvent");
+    expect(appDelegateSource).not.toContain("windowSendEvent.titlebarRerouted");
+    expect(appDelegateSource).not.toContain("override func hitTest(_ point: NSPoint) -> NSView?");
     expect(appDelegateSource).toContain("divider.onPointerEntered = { [weak self] in");
     expect(appDelegateSource).toContain("self?.sidebarView.forceNativePointerInside(false)");
     expect(appDelegateSource).toContain("func forceNativePointerInside(_ isInside: Bool)");
     expect(appDelegateSource).toContain("shouldLetTitlebarHandleOutsideMouseEvent");
     expect(appDelegateSource).toContain("pre-close titlebar");
-    expect(appDelegateSource).toContain("containsInteractiveHitRegion(titlebarPoint)");
+    expect(appDelegateSource).toContain("containsTitlebarStripPoint(titlebarPoint)");
+    expect(appDelegateSource).not.toContain("containsInteractiveHitRegion");
+    expect(appDelegateSource).not.toContain("ReactTitlebarHitRegion");
+    expect(appDelegateSource).not.toContain("setReactTitlebarHitRegions");
+    expect(appDelegateSource).toContain("setReactTitlebarStripState");
 
     expect(nativeSidebarSource).toContain("function setNativeSidebarPointerInside(isInside: boolean): void");
     expect(nativeSidebarSource).toContain("function setSidebarNativePointerState(isInside: boolean): void");
@@ -91,6 +94,11 @@ describe("native pointer hover boundary source", () => {
     expect(titlebarHostSource).toContain('document.addEventListener("pointermove", enableTitlebarTooltips');
     expect(titlebarHostSource).toContain("nativeDropdownOpen === kind");
     expect(titlebarHostSource).toContain("requesting the already-open panel closes it");
+    expect(titlebarHostSource).toContain('type: "setReactTitlebarStripState"');
+    expect(titlebarHostSource).toContain("publishTitlebarStripState");
+    expect(titlebarHostSource).not.toContain("data-titlebar-hit-region");
+    expect(titlebarHostSource).not.toContain("querySelectorAll<HTMLElement>(\"[data-titlebar-hit-region]\")");
+    expect(titlebarHostSource).not.toContain("setReactTitlebarHitRegions");
     expect(titlebarHostSource).not.toContain('body[data-native-pointer-inside="false"] #root');
     /*
      * CDXC:TitlebarTooltips 2026-06-13-02:59:

@@ -93,11 +93,28 @@ describe("chromium browser source", () => {
     expect(browserFindBarSource).toContain("textField.isSelectable = true");
     expect(browserFindBarSource).toContain("window?.fieldEditor(true, for: textField)");
     expect(browserFindBarSource).toContain("window?.makeFirstResponder(editor)");
-    expect(browserFindBarSource).toContain("override func hitTest(_ point: NSPoint) -> NSView?");
+    expect(browserFindBarSource).not.toContain("override func hitTest(_ point: NSPoint) -> NSView?");
+    expect(browserFindBarSource).toContain("focusSearchField(reason: \"barMouseDown\", selectAll: false)");
     expect(browserFindLayoutSource).toContain("let horizontalMargin: CGFloat = 26");
     expect(browserFindLayoutSource).toContain("let verticalMargin: CGFloat = 8");
     expect(browserFindLayoutSource).toContain("x: webFrame.maxX - width - horizontalMargin");
     expect(browserFindLayoutSource).toContain("y: webFrame.maxY - height - verticalMargin");
+  });
+
+  test("keeps CEF browser input on normal AppKit child dispatch", () => {
+    /*
+     * CDXC:ChromiumBrowserPanes 2026-06-13-13:40:
+     * CEF browser panes should use exact parent/child native frames. The wrapper
+     * must not manually replay mouse events into Chromium because that recreates
+     * coordinate-routing bugs.
+     */
+    expect(cefBridgeSource).toContain("The CEF wrapper is a normal container");
+    expect(cefBridgeSource).not.toContain("ghostexCEFDispatchMouseEventToHostedView");
+    expect(cefBridgeSource).not.toContain("ghostexCEFEventIsInsideHostedView");
+    expect(cefBridgeSource).not.toContain("[cefView_ mouseDown:event]");
+    expect(cefBridgeSource).not.toContain("[cefView_ mouseDragged:event]");
+    expect(cefBridgeSource).not.toContain("[cefView_ rightMouseDown:event]");
+    expect(cefBridgeSource).not.toContain("[cefView_ scrollWheel:event]");
   });
 
   test("converts CEF new-window intents into current-surface Ghostex tabs", () => {
