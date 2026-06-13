@@ -209,6 +209,72 @@ test("passive Cursor hooks cannot rewrite a gxserver-launched Codex session", ()
   assert.equal(result.session.runtimeSettings.agentSessionPath, undefined);
 });
 
+test("startup text locks gxserver-started agent sessions against passive cross-agent metadata", () => {
+  const project = projectFixture({});
+  const session = sessionFixture({
+    agentId: "codex",
+    kind: "agent",
+    launchSettings: {
+      startupText: "codex --yolo\r",
+    },
+    runtimeSettings: {
+      agentName: "codex",
+      titleSource: "terminal-auto",
+    },
+    title: "Codex Hotkey Comparison",
+  });
+  const repository = new MockPresentationRepository(project, [session]);
+
+  const result = applySessionStateEvent(repository, {
+    agentName: "claude",
+    identityUpdateSource: "passive",
+    projectId: session.projectId,
+    sessionId: session.sessionId,
+  });
+
+  /*
+  CDXC:GxserverSessionIdentity 2026-06-13-09:08:
+  Some restored rows only preserve raw startup text such as `codex --yolo`. That launch text must still reject passive cross-agent hooks so stale Claude metadata cannot override a Codex session for sidebar, search, resume, or status consumers.
+  */
+  assert.equal(result.changed, false);
+  assert.equal(result.reason, "launch-agent-mismatch");
+  assert.equal(result.session.agentId, "codex");
+  assert.equal(result.session.runtimeSettings.agentName, "codex");
+});
+
+test("live process identity can switch a startup-locked session after the user changes agents", () => {
+  const claudeSessionId = "9970b270-b39f-4d63-a764-fa8d88083995";
+  const project = projectFixture({});
+  const session = sessionFixture({
+    agentId: "codex",
+    kind: "agent",
+    launchSettings: {
+      startupText: "codex --yolo\r",
+    },
+    runtimeSettings: {
+      agentName: "codex",
+      launchAgentId: "codex",
+      titleSource: "terminal-auto",
+    },
+    title: "Manual Agent Switch",
+  });
+  const repository = new MockPresentationRepository(project, [session]);
+
+  const result = applySessionStateEvent(repository, {
+    agentName: "claude",
+    agentSessionId: claudeSessionId,
+    identityUpdateSource: "live-process",
+    projectId: session.projectId,
+    sessionId: session.sessionId,
+  });
+
+  assert.equal(result.changed, true);
+  assert.equal(result.session.agentId, "claude");
+  assert.equal(result.session.runtimeSettings.agentName, "claude");
+  assert.equal(result.session.runtimeSettings.agentSessionId, claudeSessionId);
+  assert.equal(result.session.runtimeSettings.launchAgentId, "claude");
+});
+
 test("passive Cursor transcript paths correct stale Codex identity without agent name", () => {
   const cursorSessionId = "866a452b-3a52-4f27-9b26-fd717a2f1c16";
   const cursorSessionPath =
@@ -1246,10 +1312,23 @@ test("previous sessions search hides placeholder inactive rows but keeps restora
     agentId: "codex",
     createdAt: "2026-06-01T10:00:00.000Z",
     lifecycleState: "stopped",
-    runtimeSettings: { titleSource: "terminal-auto" },
+    providerState: {
+      lifecycleState: "missing",
+      provider: "zmx",
+      zmxName: "S90-P3lv0-G1trust",
+    },
+    runtimeSettings: {
+      agentName: "codex",
+      agentSessionId: "019e7af5-c610-7f62-a129-db7bb510b48d",
+      agentSessionPath: "/Users/person/.codex/sessions/private-thread.jsonl",
+      firstUserMessage: "Private user prompt must stay out of listPreviousSessions",
+      sessionPersistenceProvider: "zmx",
+      titleSource: "terminal-auto",
+    },
     sessionId: "G1trust",
     title: "Fix previous session list",
     updatedAt: "2026-06-01T10:08:00.000Z",
+    zmxName: "S90-P3lv0-G1trust",
   });
   const placeholder = sessionFixture({
     lifecycleState: "stopped",
@@ -1294,18 +1373,31 @@ test("previous sessions search hides placeholder inactive rows but keeps restora
 
   CDXC:PreviousSessions 2026-06-07-05:28:
   Command-pane sessions are not previous workspace sessions. Keep `surface: "commands"` rows out of listPreviousSessions even when they have trusted terminal titles or pinned state, because clients should not show command runs like `bun run start` in the Previous Sessions modal.
+
+  CDXC:PreviousSessions 2026-06-13-15:36:
+  Stopped agent rows returned by listPreviousSessions must still include compact render and restore identity. The modal adapter should not need the old native previous-session cache to show the agent logo or seed sessionRecord agent refs after close, but the list response must not expose raw first prompts.
   */
   const search = searchGxserverPreviousSessions(
     { projects: [project], sessions: [trusted, placeholder, unknown, favoritePlaceholder, commandPane, pinnedCommandPane] },
     { includeActive: false, includePrevious: true },
   );
+  const trustedResult = search.results.find((result) => result.sessionId === "G1trust");
 
   assert.deepEqual(
     search.results.map((result) => result.sessionId),
     ["G1trust", "G4fav"],
   );
-  assert.equal(search.results.find((result) => result.sessionId === "G1trust")?.createdAt, trusted.createdAt);
-  assert.equal(search.results.find((result) => result.sessionId === "G1trust")?.updatedAt, trusted.updatedAt);
+  assert.equal(trustedResult?.agentIcon, "codex");
+  assert.equal(trustedResult?.agentId, "codex");
+  assert.equal(trustedResult?.agentName, "codex");
+  assert.equal(trustedResult?.agentSessionId, "019e7af5-c610-7f62-a129-db7bb510b48d");
+  assert.equal(trustedResult?.agentSessionPath, "/Users/person/.codex/sessions/private-thread.jsonl");
+  assert.equal(trustedResult?.createdAt, trusted.createdAt);
+  assert.equal(trustedResult?.sessionPersistenceName, "S90-P3lv0-G1trust");
+  assert.equal(trustedResult?.sessionPersistenceProvider, "zmx");
+  assert.equal(trustedResult?.updatedAt, trusted.updatedAt);
+  assert.equal(trustedResult?.zmxName, "S90-P3lv0-G1trust");
+  assert.equal(JSON.stringify(trustedResult).includes("Private user prompt"), false);
 });
 
 test("presentation projects sanitized zmx title-observer health", () => {

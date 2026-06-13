@@ -78,15 +78,27 @@ function toSearchResult(
   match: NonNullable<GxserverPresentationSearchResult["match"]>,
 ): GxserverPresentationSearchResult {
   const titleProjection = projectSessionTitle(session);
+  const agentName = readText(session.runtimeSettings.agentName) ?? session.agentId;
+  const agentSessionId = readText(session.runtimeSettings.agentSessionId);
+  const agentSessionPath = readText(session.runtimeSettings.agentSessionPath);
+  const sessionPersistenceProvider = readSearchSessionPersistenceProvider(session);
+  const sessionPersistenceName = readSearchSessionPersistenceName(session, sessionPersistenceProvider);
   /*
   CDXC:GxserverPresentationSearch 2026-06-01-22:06:
   Previous Sessions uses the same session-card renderer as the live sidebar. Search results must carry gxserver's full title projection, not only `title`, so every client can suppress the unsynced `∗` marker for terminal-synced persisted titles and keep placeholders marked.
 
   CDXC:GxserverPresentationActivity 2026-06-07-05:17:
   Search rows also feed client sidebar/history cards. Return the same resolved lastActiveAt as the live presentation snapshot so clients do not reinterpret metadata updatedAt as recent user activity.
+
+  CDXC:PreviousSessions 2026-06-13-15:36:
+  Stopped gxserver sessions are the canonical Previous Sessions source after close. Carry compact agent identity and provider routing metadata in search results so clients can render the assigned agent and seed restore records without reviving native archived-session caches or exposing raw first prompts.
   */
   return {
+    ...(session.agentId ? { agentIcon: session.agentId } : {}),
     ...(session.agentId ? { agentId: session.agentId } : {}),
+    ...(agentName ? { agentName } : {}),
+    ...(agentSessionId ? { agentSessionId } : {}),
+    ...(agentSessionPath ? { agentSessionPath } : {}),
     createdAt: session.createdAt,
     ...(session.cwd ? { cwd: session.cwd } : {}),
     displayTitle: titleProjection.displayTitle,
@@ -102,6 +114,8 @@ function toSearchResult(
     projectTitle: project?.name ?? session.projectId,
     ...(titleProjection.primaryTitle !== undefined ? { primaryTitle: titleProjection.primaryTitle } : {}),
     sessionId: session.sessionId,
+    ...(sessionPersistenceName ? { sessionPersistenceName } : {}),
+    ...(sessionPersistenceProvider ? { sessionPersistenceProvider } : {}),
     ...(session.sessionTag ? { sessionTag: session.sessionTag } : {}),
     ...(session.sidebarOrder !== undefined ? { sidebarOrder: session.sidebarOrder } : {}),
     subtitle: session.cwd ?? project?.path,
@@ -111,7 +125,28 @@ function toSearchResult(
     titleSource: titleProjection.titleSource,
     ...(titleProjection.trustedResumeTitle !== undefined ? { trustedResumeTitle: titleProjection.trustedResumeTitle } : {}),
     updatedAt: session.updatedAt,
+    zmxName: session.zmxName,
   };
+}
+
+function readSearchSessionPersistenceProvider(
+  session: GxserverSessionDomainState,
+): GxserverPresentationSearchResult["sessionPersistenceProvider"] | undefined {
+  const value = readText(session.runtimeSettings.sessionPersistenceProvider) ?? readText(session.providerState.provider);
+  return value === "tmux" || value === "zmx" || value === "zellij" ? value : undefined;
+}
+
+function readSearchSessionPersistenceName(
+  session: GxserverSessionDomainState,
+  provider: GxserverPresentationSearchResult["sessionPersistenceProvider"] | undefined,
+): string | undefined {
+  if (!provider) {
+    return undefined;
+  }
+  if (provider === "zmx") {
+    return readText(session.providerState.zmxName) ?? session.zmxName;
+  }
+  return readText(session.providerState.providerName) ?? readText(session.runtimeSettings.sessionPersistenceName);
 }
 
 function isPreviousSessionHistoryCandidate(session: GxserverSessionDomainState): boolean {

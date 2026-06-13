@@ -1186,7 +1186,11 @@ export interface GxserverPresentationSearchParams {
 }
 
 export interface GxserverPresentationSearchResult {
+  agentIcon?: string;
   agentId?: string;
+  agentName?: string;
+  agentSessionId?: string;
+  agentSessionPath?: string;
   createdAt: string;
   cwd?: string;
   displayTitle?: string;
@@ -1205,6 +1209,12 @@ export interface GxserverPresentationSearchResult {
   projectTitle: string;
   primaryTitle?: string;
   sessionId: GxserverSessionId;
+  /**
+   * CDXC:PreviousSessions 2026-06-13-15:36:
+   * Previous Sessions search results must carry the same identity and provider metadata needed to render and restore stopped agent rows without rehydrating native sidebar history. Keep raw prompt/user text out of list/search responses; restore-specific command construction stays behind readAgentResumePlan for the selected session.
+   */
+  sessionPersistenceName?: string;
+  sessionPersistenceProvider?: "tmux" | "zmx" | "zellij";
   sessionTag?: GxserverSessionTag;
   sidebarOrder?: number;
   subtitle?: string;
@@ -1214,6 +1224,7 @@ export interface GxserverPresentationSearchResult {
   titleSource: GxserverSessionTitleSource;
   trustedResumeTitle?: string;
   updatedAt: string;
+  zmxName?: GxserverZmxSessionName;
 }
 
 export interface GxserverPresentationSearchResponse {
