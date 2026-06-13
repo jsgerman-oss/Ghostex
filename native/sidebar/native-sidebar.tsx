@@ -1531,6 +1531,11 @@ type NativeProject = {
    * Bead-to-agent conversation links are gxserver-owned projectBoardConfig. Native keeps this field as a current-window render/local-first cache only, then replaces it from gxserver snapshots and update responses so stale WK project storage cannot become the durable board owner.
    */
   beadsDisplayKey?: string;
+  /**
+   * CDXC:ProjectBoard 2026-06-13:
+   * Optional absolute directory the Project board launches its Beads workspace from. Empty means the project root. Stored in gxserver projectBoardConfig; native keeps this as a local-first render cache replaced from gxserver snapshots, like beadsDisplayKey.
+   */
+  beadsDirectory?: string;
   beadConversationLinks?: BeadConversationLink[];
   automations?: AutomationDefinition[];
   automationRuns?: AutomationRun[];
@@ -7868,6 +7873,7 @@ function restoreProjectMetadataFromGxserver(
   const identityIcon = gxserverProject.identityIcon ?? {};
   const beadsDisplayKey =
     textValue(projectBoardConfig.beadsDisplayKey) ?? textValue(gitConfig.beadsDisplayKey);
+  const beadsDirectory = textValue(projectBoardConfig.beadsDirectory);
   const worktreeCommand = textValue(gitConfig.worktreeCommand);
   const beadConversationLinks = normalizeBeadConversationLinks(
     projectBoardConfig.beadConversationLinks,
@@ -7895,6 +7901,9 @@ function restoreProjectMetadataFromGxserver(
   }
   if (nextProject.beadsDisplayKey !== beadsDisplayKey) {
     nextProject = { ...nextProject, beadsDisplayKey };
+  }
+  if (nextProject.beadsDirectory !== beadsDirectory) {
+    nextProject = { ...nextProject, beadsDirectory };
   }
   if (nextProject.worktreeCommand !== worktreeCommand) {
     /*
@@ -8306,6 +8315,7 @@ function persistProjectSharedMetadataToGxserver(
     params.projectBoardConfig = {
       ...gxserverProject.projectBoardConfig,
       beadConversationLinks: project.beadConversationLinks ?? [],
+      beadsDirectory: project.beadsDirectory ?? null,
       beadsDisplayKey: project.beadsDisplayKey ?? null,
     };
   }
@@ -9127,6 +9137,7 @@ function createLocalPersistableProjectRecord(project: NativeProject): NativeProj
   */
   const {
     beadConversationLinks: _beadConversationLinks,
+    beadsDirectory: _beadsDirectory,
     beadsDisplayKey: _beadsDisplayKey,
     icon: _icon,
     iconDataUrl: _iconDataUrl,
@@ -9314,6 +9325,8 @@ function normalizeStoredNativeProject(candidate: unknown): NativeProject[] {
         typeof project.worktreeCommand === "string" ? project.worktreeCommand : undefined,
       beadsDisplayKey:
         typeof project.beadsDisplayKey === "string" ? project.beadsDisplayKey : undefined,
+      beadsDirectory:
+        typeof project.beadsDirectory === "string" ? project.beadsDirectory : undefined,
       beadConversationLinks: normalizeBeadConversationLinks(
         project.beadConversationLinks,
         projectId,
@@ -15345,6 +15358,7 @@ function createSidebarProjectSettingsProjects() {
         }
         return [
           {
+            beadsDirectory: textValue(project.projectBoardConfig.beadsDirectory),
             beadsDisplayKey:
               textValue(project.projectBoardConfig.beadsDisplayKey) ??
               textValue(project.gitConfig.beadsDisplayKey),
@@ -15367,6 +15381,7 @@ function createSidebarProjectSettingsProjects() {
   return orderNativeProjectsForSidebar(projects)
     .filter((project) => !shouldHideProjectFromSettingsProjectList(project))
     .map((project) => ({
+      beadsDirectory: project.beadsDirectory,
       beadsDisplayKey: project.beadsDisplayKey,
       name: project.name,
       path: project.path,
@@ -32229,6 +32244,43 @@ function setProjectBeadsDisplayKey(projectId: string, displayKey: string): void 
   );
 }
 
+/*
+ * CDXC:ProjectBoard 2026-06-13:
+ * The Beads launch directory is gxserver-owned project board metadata. Persist it only into projectBoardConfig (not gitConfig, unlike the legacy beadsDisplayKey dual-write) and let gxserver validate the absolute path when the board reads `.beads`.
+ */
+function setProjectBeadsDirectory(projectId: string, directory: string): void {
+  const normalizedDirectory = directory.trim();
+  projects = projects.map((project) =>
+    project.projectId === projectId
+      ? { ...project, beadsDirectory: normalizedDirectory || undefined }
+      : project,
+  );
+  writeStoredProjects("setProjectBeadsDirectory");
+  updateGxserverProjectDomainMetadataLocally(
+    projectId,
+    (project) => ({
+      ...project,
+      projectBoardConfig: {
+        ...project.projectBoardConfig,
+        beadsDirectory: normalizedDirectory || null,
+      },
+      updatedAt: new Date().toISOString(),
+    }),
+    "setProjectBeadsDirectory",
+  );
+  const project = findProject(projectId);
+  if (project) {
+    persistProjectSharedMetadataToGxserver(project, {
+      projectBoardConfig: true,
+    });
+  }
+  publish();
+  showAppToast(
+    "success",
+    normalizedDirectory ? "Beads directory saved" : "Beads directory cleared",
+  );
+}
+
 function updateProjectBeadConversationLinks(
   projectId: string,
   update: (links: BeadConversationLink[]) => BeadConversationLink[],
@@ -37957,6 +38009,9 @@ function handleSidebarMessage(message: SidebarToExtensionMessage): void {
       return;
     case "setProjectBeadsDisplayKey":
       setProjectBeadsDisplayKey(message.projectId, message.displayKey);
+      return;
+    case "setProjectBeadsDirectory":
+      setProjectBeadsDirectory(message.projectId, message.directory);
       return;
     case "saveSidebarAgent":
       saveSidebarAgent(message);
