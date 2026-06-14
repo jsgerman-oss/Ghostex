@@ -17,6 +17,7 @@ import {
   computerUseUsage,
   createCliSshForwardPlan,
   fetchGxserverSessionList,
+  fetchProjectList,
   formatCompactSessionLine,
   generateTitleUsage,
   groupSessionsPreservingSidebarOrder,
@@ -1654,6 +1655,77 @@ printf '%s\\n' "$@" > ${JSON.stringify(markerFile)}
     } finally {
       await new Promise((resolve) => server.close(resolve));
     }
+  });
+
+  test("lists gxserver projects for the gx projects command", async () => {
+    /**
+     * CDXC:GxserverCliProjects 2026-06-13-18:35:
+     * `gx projects --json` is the GasCity Cockpit CLI transport's parity with the
+     * gxserver `/api/listProjects` RPC. The command must reach the same daemon
+     * inventory the session list uses for its project map, send the shared auth +
+     * protocol headers, and surface a `projects` array the Cockpit parser reads.
+     */
+    const server = http.createServer(async (request, response) => {
+      expect(request.headers.authorization).toBe("Bearer test-token");
+      expect(request.headers["x-gxserver-protocol-version"]).toBe("1");
+      expect(request.url).toBe("/api/listProjects");
+      const chunks = [];
+      for await (const chunk of request) {
+        chunks.push(chunk);
+      }
+      JSON.parse(Buffer.concat(chunks).toString("utf8"));
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({
+        ok: true,
+        product: "gxserver",
+        protocolVersion: 1,
+        requestId: "projects-fixture",
+        result: {
+          projects: [
+            {
+              createdAt: "2026-05-31T03:59:00.000Z",
+              isFavorite: true,
+              isPinned: false,
+              name: "Ghostex",
+              path: "/Users/madda/zmux",
+              projectId: "P1a",
+              updatedAt: "2026-05-31T04:00:00.000Z",
+            },
+          ],
+        },
+      }));
+    });
+    await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    try {
+      const flags = {
+        server: `http://127.0.0.1:${address.port}`,
+        timeoutMs: 1_000,
+        token: "test-token",
+      };
+      const result = await fetchProjectList(flags);
+
+      expect(result.ok).toBe(true);
+      expect(result.requestId).toBe("projects-fixture");
+      expect(Array.isArray(result.projects)).toBe(true);
+      expect(result.projects).toEqual([
+        {
+          createdAt: "2026-05-31T03:59:00.000Z",
+          isFavorite: true,
+          isPinned: false,
+          name: "Ghostex",
+          path: "/Users/madda/zmux",
+          projectId: "P1a",
+          updatedAt: "2026-05-31T04:00:00.000Z",
+        },
+      ]);
+    } finally {
+      await new Promise((resolve) => server.close(resolve));
+    }
+  });
+
+  test("documents the gx projects command in top-level help", () => {
+    expect(usage()).toContain("projects | list-projects [--json]");
   });
 
   test("resolves bare gxserver session ids before lifecycle RPCs", async () => {
