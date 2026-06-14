@@ -326,6 +326,46 @@ button,
 }
 
 /*
+ CDXC:CommandPalette 2026-06-13-22:18:
+ Session-search mode reuses Previous Sessions row chrome inside shadcn Command
+ items. Remove command-row padding and the invisible check slot so current and
+ previous session cards align like the Previous Sessions modal while keeping
+ cmdk keyboard selection on the outer item.
+
+ CDXC:CommandPalette 2026-06-13-22:22:
+ The command palette must show only one highlighted session row: the item
+ selected by cmdk through mouse hover or Arrow-key navigation. Suppress the
+ reused session card's own hover/focus/visible surface so it cannot paint a
+ second highlighted row while data-selected belongs to another CommandItem.
+*/
+.ghostex-command-palette-session-item[data-slot="command-item"] {
+  padding: 0;
+}
+
+.ghostex-command-palette-session-item[data-slot="command-item"] > svg:last-child {
+  display: none;
+}
+
+.ghostex-command-palette-session-frame {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.ghostex-command-palette-session-row {
+  border-color: transparent;
+  box-shadow: none;
+  outline-color: transparent;
+  width: 100%;
+}
+
+.ghostex-command-palette-session-item[data-slot="command-item"]
+  .ghostex-command-palette-session-row::before,
+.ghostex-command-palette-session-item[data-slot="command-item"]
+  .ghostex-command-palette-session-row::after {
+  opacity: 0;
+}
+
+/*
  CDXC:SettingsNavigation 2026-05-13-08:05: The Settings dialog needs enough horizontal room for a main-tab section sidebar and terminal settings.
  Use scoped CSS so the native modal host and Storybook share the same width without relying on newly generated utilities.
 

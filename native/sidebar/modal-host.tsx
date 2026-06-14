@@ -101,6 +101,7 @@ type AppModalHostMessage =
   | {
       agentDraft?: AgentConfigDraft;
       access?: T3BrowserAccessMessage;
+      collapsedGroupsById?: Record<string, true>;
       commandDraft?: CommandConfigDraft;
       delayedSendDeadlineAt?: string;
       delayedSendRemainingLabel?: string;
@@ -1685,6 +1686,20 @@ function isSettingsModalTab(value: unknown): value is SettingsModalTab {
   );
 }
 
+function normalizeCommandPaletteCollapsedGroupsById(candidate: unknown): Record<string, true> {
+  const normalized: Record<string, true> = {};
+  if (candidate === null || typeof candidate !== "object" || Array.isArray(candidate)) {
+    return normalized;
+  }
+
+  for (const [groupId, isCollapsed] of Object.entries(candidate)) {
+    if (groupId.trim().length > 0 && isCollapsed === true) {
+      normalized[groupId] = true;
+    }
+  }
+  return normalized;
+}
+
 function readPromptAgentModalOverride(modal: PromptAgentModalKey): string | undefined {
   const value = localStorage.getItem(PROMPT_AGENT_MODAL_STORAGE_KEYS[modal])?.trim();
   return value || undefined;
@@ -1815,6 +1830,9 @@ function AppModalHost() {
     gitCommit,
     gitFileDiff,
     worktreeDelete,
+    commandPaletteCollapsedGroupsById,
+    commandPaletteInitialQuery,
+    isCommandPalettePrewarm,
     floatingPromptEditor,
     floatingPromptEditorCloseAndSaveRequestId,
     closeGitFileDiff,
@@ -2152,11 +2170,14 @@ function AppModalHost() {
        * The palette reads mirrored sidebar state here so its command list
        * remains current while the dialog is centered over the whole Ghostex
        * window.
-       */}
+      */}
       <CommandPalette
+        collapsedGroupsById={commandPaletteCollapsedGroupsById}
         commands={commands}
         hotkeys={settings?.hotkeys}
+        initialQuery={commandPaletteInitialQuery}
         isOpen={activeModal === "commandPalette"}
+        isPrewarm={isCommandPalettePrewarm}
         onOpenChange={(isOpen) => {
           if (!isOpen) {
             closeModal();
@@ -2722,6 +2743,11 @@ function useModalStateFromNative() {
   const [t3ThreadId, setT3ThreadId] = useState<T3ThreadIdModalState>();
   const [worktree, setWorktree] = useState<WorktreeModalState>();
   const [agentHookStatus, setAgentHookStatus] = useState<AgentHookStatusMessage>();
+  const [commandPaletteCollapsedGroupsById, setCommandPaletteCollapsedGroupsById] = useState<
+    Record<string, true>
+  >({});
+  const [commandPaletteInitialQuery, setCommandPaletteInitialQuery] = useState("");
+  const [isCommandPalettePrewarm, setIsCommandPalettePrewarm] = useState(false);
   const [ghostexCliStatus, setGhostexCliStatus] = useState<GhostexCliStatusMessage>();
   const [ghostexFolderStats, setGhostexFolderStats] = useState<SidebarGhostexFolderStatsMessage>();
   const [osIntegrationStatus, setOSIntegrationStatus] = useState<OSIntegrationStatusMessage>();
@@ -2754,6 +2780,9 @@ function useModalStateFromNative() {
     setOSIntegrationStatus(undefined);
     setAgentsHubCatalog(undefined);
     setAgentsHubFileContent(undefined);
+    setCommandPaletteCollapsedGroupsById({});
+    setCommandPaletteInitialQuery("");
+    setIsCommandPalettePrewarm(false);
     setSettingsInitialSection(undefined);
     setSettingsInitialRemoteMachineId(undefined);
     setSettingsInitialSearchQuery(undefined);
@@ -3162,6 +3191,31 @@ function useModalStateFromNative() {
             setSettingsInitialSearchQuery(undefined);
             setSettingsInitialTabOverride(undefined);
           }
+          if (message.modal === "commandPalette") {
+            /*
+             * CDXC:CommandPalette 2026-06-13-22:18:
+             * One modal kind owns both session search and command fuzzy finding.
+             * Preserve the caller's initial input so Cmd+Shift+P can prefill
+             * `>` while Cmd+P opens the same window with an empty query.
+             *
+             * CDXC:CommandPalette 2026-06-13-22:48:
+             * The command palette lives in the native modal host, but project
+             * collapse is sidebar-local UI state. Normalize the caller's map at
+             * the host boundary so Collapsed Projects can be rendered without
+             * querying DOM state from the separate modal window.
+             */
+            setCommandPaletteCollapsedGroupsById(
+              normalizeCommandPaletteCollapsedGroupsById(message.collapsedGroupsById),
+            );
+            setCommandPaletteInitialQuery(
+              typeof message.initialQuery === "string" ? message.initialQuery : "",
+            );
+            setIsCommandPalettePrewarm(message.prewarm === true);
+          } else {
+            setCommandPaletteCollapsedGroupsById({});
+            setCommandPaletteInitialQuery("");
+            setIsCommandPalettePrewarm(false);
+          }
           if (message.modal !== "agentsHub") {
             setAgentsHubCatalog(undefined);
             setAgentsHubFileContent(undefined);
@@ -3370,6 +3424,9 @@ function useModalStateFromNative() {
     gitCommit,
     gitFileDiff,
     worktreeDelete,
+    commandPaletteCollapsedGroupsById,
+    commandPaletteInitialQuery,
+    isCommandPalettePrewarm,
     floatingPromptEditor,
     floatingPromptEditorCloseAndSaveRequestId,
     closeGitFileDiff,

@@ -45,6 +45,18 @@ type CreateSessionResult = {
 
 type SessionPaneTabInsertPosition = "after" | "append" | "before";
 
+type PaneCloseFocusRect = {
+  bottom: number;
+  centerX: number;
+  centerY: number;
+  left: number;
+  path: number[];
+  right: number;
+  sessionId: string;
+  sessionIds: string[];
+  top: number;
+};
+
 export type VisibleSessionPlacement =
   | {
       kind: "appendFullWidth";
@@ -311,6 +323,65 @@ export function focusVisibleDirectionInSimpleWorkspace(
     changed: !areSnapshotsEqual(normalizedSnapshot, nextSnapshot),
     snapshot: nextSnapshot,
   };
+}
+
+export function focusAdjacentPaneTabInSimpleWorkspace(
+  snapshot: GroupedSessionWorkspaceSnapshot,
+  direction: -1 | 1,
+): WorkspaceMutationResult {
+  const normalizedSnapshot = normalizeSimpleGroupedSessionWorkspaceSnapshot(snapshot);
+  const activeGroup = getActiveGroup(normalizedSnapshot);
+  if (!activeGroup) {
+    return { changed: false, snapshot: normalizedSnapshot };
+  }
+
+  const nextSessionId = getAdjacentPaneTabSessionIdInSimpleWorkspace(normalizedSnapshot, direction);
+  if (!nextSessionId) {
+    return { changed: false, snapshot: normalizedSnapshot };
+  }
+
+  return selectPaneTabInSimpleWorkspace(normalizedSnapshot, activeGroup.groupId, nextSessionId);
+}
+
+export function getAdjacentPaneTabSessionIdInSimpleWorkspace(
+  snapshot: GroupedSessionWorkspaceSnapshot,
+  direction: -1 | 1,
+): string | undefined {
+  const normalizedSnapshot = normalizeSimpleGroupedSessionWorkspaceSnapshot(snapshot);
+  const activeGroup = getActiveGroup(normalizedSnapshot);
+  const focusedSessionId = activeGroup?.snapshot.focusedSessionId;
+  if (!activeGroup || !focusedSessionId) {
+    return undefined;
+  }
+
+  const tabGroup = findPaneTabGroupForSession(activeGroup.snapshot.paneLayout, focusedSessionId);
+  const tabSessionIds = tabGroup?.sessionIds ?? [focusedSessionId];
+  if (tabSessionIds.length <= 1) {
+    return undefined;
+  }
+
+  const activeTabSessionId =
+    tabGroup?.activeSessionId && tabSessionIds.includes(tabGroup.activeSessionId)
+      ? tabGroup.activeSessionId
+      : focusedSessionId;
+  const activeTabIndex = tabSessionIds.indexOf(activeTabSessionId);
+  const nextIndex =
+    activeTabIndex < 0
+      ? direction > 0
+        ? 0
+        : tabSessionIds.length - 1
+      : (activeTabIndex + direction + tabSessionIds.length) % tabSessionIds.length;
+  const nextSessionId = tabSessionIds[nextIndex];
+  if (!nextSessionId || nextSessionId === activeTabSessionId) {
+    return undefined;
+  }
+
+  /*
+   * CDXC:Hotkeys 2026-06-13-20:08:
+   * Cmd+Tab and Cmd+Shift+Tab must target every tab visible in the focused split-pane tab bar, including sleeping placeholders and tabs whose native surface needs attach/restore.
+   * Resolve only the pane-local next tab id here; native dispatch then runs the same pane-tab selection path as a real click so wake, attach, placeholder, and focus-request behavior stays identical.
+   */
+  return nextSessionId;
 }
 
 export function focusSessionInSimpleWorkspace(
@@ -620,6 +691,16 @@ export function removeSessionInSimpleWorkspace(
     replacementSessionId !== undefined &&
     owningGroup.snapshot.sessions.some((session) => session.sessionId === replacementSessionId) &&
     isActivePaneLayoutSession(owningGroup.snapshot.paneLayout, sessionId);
+  const shouldRetargetClosedFocus = owningGroup.snapshot.focusedSessionId === sessionId;
+  const spatialReplacementSessionId =
+    shouldRetargetClosedFocus && !shouldPromoteReplacementSession
+      ? getClosingPaneSpatialReplacementSessionId(owningGroup.snapshot, sessionId)
+      : undefined;
+  const postCloseFocusedSessionId = shouldRetargetClosedFocus
+    ? shouldPromoteReplacementSession
+      ? replacementSessionId
+      : spatialReplacementSessionId
+    : owningGroup.snapshot.focusedSessionId;
   const paneLayoutWithoutSession = owningGroup.snapshot.paneLayout
     ? removeSessionFromPaneLayout(
         owningGroup.snapshot.paneLayout,
@@ -627,6 +708,10 @@ export function removeSessionInSimpleWorkspace(
         shouldPromoteReplacementSession ? replacementSessionId : undefined,
       )
     : undefined;
+  const postClosePaneLayout =
+    postCloseFocusedSessionId && paneLayoutWithoutSession
+      ? setActiveSessionInPaneLayout(paneLayoutWithoutSession, postCloseFocusedSessionId)
+      : paneLayoutWithoutSession;
   const visibleSessionIdsWithoutSession = getVisibleSessionIdsAfterSessionClose(
     owningGroup.snapshot.visibleSessionIds,
     sessionId,
@@ -652,12 +737,13 @@ export function removeSessionInSimpleWorkspace(
        * remains click-to-wake instead of auto-starting another session.
        */
       focusedSessionId:
-        group.snapshot.focusedSessionId === sessionId && shouldPromoteReplacementSession
-          ? replacementSessionId
-          : group.snapshot.focusedSessionId === sessionId
-            ? undefined
-            : group.snapshot.focusedSessionId,
-      paneLayout: paneLayoutWithoutSession,
+        /*
+         * CDXC:PaneFocus 2026-06-13-17:57:
+         * Closing the focused pane's final tab must choose the next keyboard target from split geometry before normalization runs.
+         * Match CMAX/Bonsplit close UX: keep same-pane right-then-left tab selection when possible; otherwise focus the closest surviving pane in the collapsed sibling branch so four-way bottom-right closes land on the pane above instead of leaving AppKit without a terminal cursor.
+         */
+        postCloseFocusedSessionId,
+      paneLayout: postClosePaneLayout,
       sessions: group.snapshot.sessions
         .filter((session) => session.sessionId !== sessionId)
         .map((session) =>
@@ -765,6 +851,49 @@ export function wakePaneTabSessionInSimpleWorkspace(
   const group = getGroupById(normalizedSnapshot, groupId);
   if (!group) {
     return { changed: false, snapshot: normalizedSnapshot };
+  }
+  const existingPaneLayoutSession = group.snapshot.sessions.find(
+    (session) => session.sessionId === sessionId,
+  );
+  if (
+    group.snapshot.fullscreenRestoreVisibleCount === undefined &&
+    existingPaneLayoutSession?.isSleeping === true &&
+    paneLayoutContainsSession(group.snapshot.paneLayout, sessionId)
+  ) {
+    const nextVisibleSessionIds = group.snapshot.visibleSessionIds.includes(sessionId)
+      ? group.snapshot.visibleSessionIds
+      : [...group.snapshot.visibleSessionIds, sessionId];
+    const nextPaneLayout =
+      setActiveSessionInPaneLayout(group.snapshot.paneLayout, sessionId) ??
+      group.snapshot.paneLayout;
+    const nextSnapshot = updateGroup(normalizedSnapshot, groupId, (targetGroup) => ({
+      ...targetGroup,
+      snapshot: normalizeGroupSnapshot({
+        ...group.snapshot,
+        focusedSessionId: sessionId,
+        /**
+         * CDXC:SleepingPanePlaceholders 2026-06-13-18:56:
+         * Placeholder body wake is a renderer attach for the pane the user clicked,
+         * not virtual-tab inventory reconciliation. If the session already exists
+         * in paneLayout, preserve the split tree exactly and only mark that pane
+         * tab awake/active so click-to-wake cannot merge sibling split slots.
+         */
+        ...(nextPaneLayout ? { paneLayout: nextPaneLayout } : {}),
+        sessions: group.snapshot.sessions.map((session) =>
+          session.sessionId === sessionId
+            ? { ...session, isPoppedOut: undefined, isSleeping: false }
+            : session,
+        ),
+        visibleCount: clampSupportedVisibleCount(
+          Math.max(group.snapshot.visibleCount, nextVisibleSessionIds.length),
+        ),
+        visibleSessionIds: nextVisibleSessionIds,
+      }),
+    }));
+    return {
+      changed: !areSnapshotsEqual(normalizedSnapshot, nextSnapshot),
+      snapshot: nextSnapshot,
+    };
   }
   const groupSnapshotWithVirtualTabs = materializeAllSessionsInFocusedPaneTabGroup(group.snapshot);
   const currentSession = groupSnapshotWithVirtualTabs?.sessions.find(
@@ -1529,6 +1658,48 @@ export function selectPaneTabInSimpleWorkspace(
   const group = getGroupById(snapshot, groupId);
   if (!group) {
     return { changed: false, snapshot };
+  }
+  if (
+    group.snapshot.fullscreenRestoreVisibleCount === undefined &&
+    paneLayoutContainsSession(group.snapshot.paneLayout, sessionId)
+  ) {
+    const selectedSession = group.snapshot.sessions.find(
+      (session) => session.sessionId === sessionId,
+    );
+    const nextFocusedSessionId =
+      selectedSession?.isSleeping === true ? group.snapshot.focusedSessionId : sessionId;
+    const nextLayout = setActiveSessionInPaneLayout(group.snapshot.paneLayout, sessionId);
+    const nextVisibleSessionIds =
+      selectedSession?.isSleeping === true || group.snapshot.visibleSessionIds.includes(sessionId)
+        ? group.snapshot.visibleSessionIds
+        : [...group.snapshot.visibleSessionIds, sessionId];
+    /*
+     * CDXC:SleepingPanePlaceholders 2026-06-13-18:56:
+     * Native tab selection can immediately follow placeholder wake. Existing
+     * paneLayout members must be selected in place before virtual-tab
+     * materialization, otherwise a wake click can flatten sleeping sibling panes
+     * into the focused tab group even though the split tree already knows where
+     * the clicked tab belongs.
+     */
+    const nextSnapshot = updateGroup(snapshot, groupId, (targetGroup) => ({
+      ...targetGroup,
+      snapshot: normalizeGroupSnapshot({
+        ...group.snapshot,
+        focusedSessionId: nextFocusedSessionId,
+        ...(nextLayout ? { paneLayout: nextLayout } : {}),
+        visibleCount:
+          selectedSession?.isSleeping === true
+            ? group.snapshot.visibleCount
+            : clampSupportedVisibleCount(
+                Math.max(group.snapshot.visibleCount, nextVisibleSessionIds.length),
+              ),
+        visibleSessionIds: nextVisibleSessionIds,
+      }),
+    }));
+    return {
+      changed: !areSnapshotsEqual(snapshot, nextSnapshot),
+      snapshot: nextSnapshot,
+    };
   }
   const groupSnapshotWithVirtualTabs = materializeAllSessionsInFocusedPaneTabGroup(group.snapshot);
   const isPaneTabSession = paneLayoutContainsSession(
@@ -2763,6 +2934,222 @@ function getClosingPaneTabReplacementSessionId(
   return undefined;
 }
 
+function getClosingPaneSpatialReplacementSessionId(
+  snapshot: SessionGroupRecord["snapshot"],
+  sessionId: string,
+): string | undefined {
+  const layout = snapshot.paneLayout;
+  if (!layout) {
+    return undefined;
+  }
+
+  const awakeSessionIds = new Set(
+    getAwakeSessions(snapshot.sessions)
+      .map((session) => session.sessionId)
+      .filter((awakeSessionId) => awakeSessionId !== sessionId),
+  );
+  if (awakeSessionIds.size === 0) {
+    return undefined;
+  }
+
+  const paneRects = collectPaneCloseFocusRects(layout, {
+    bottom: 1,
+    left: 0,
+    right: 1,
+    top: 0,
+  });
+  const closingPane = paneRects.find((pane) => pane.sessionIds.includes(sessionId));
+  if (!closingPane) {
+    return undefined;
+  }
+
+  const candidatePanes = paneRects
+    .filter((pane) => !pane.sessionIds.includes(sessionId))
+    .map((pane) => {
+      const candidateSessionId = getPaneCloseCandidateSessionId(pane, awakeSessionIds);
+      return candidateSessionId ? { ...pane, sessionId: candidateSessionId } : undefined;
+    })
+    .filter((pane): pane is PaneCloseFocusRect => pane !== undefined);
+  if (candidatePanes.length === 0) {
+    return undefined;
+  }
+
+  /*
+   * CDXC:PaneFocus 2026-06-13-17:57:
+   * Split-pane close focus follows the collapsing branch first, then falls back to nearest geometry.
+   * This encodes the CMAX behavior where destroying the bottom-right pane in a four-way split focuses the top-right sibling instead of a same-row pane from another branch.
+   */
+  const siblingBranchCandidates = getClosingPaneSiblingBranchCandidates(
+    candidatePanes,
+    closingPane.path,
+  );
+  return getClosestPostClosePaneFocusRect(
+    siblingBranchCandidates.length > 0 ? siblingBranchCandidates : candidatePanes,
+    closingPane,
+  )?.sessionId;
+}
+
+function collectPaneCloseFocusRects(
+  layout: SessionPaneLayoutNode,
+  rect: Pick<PaneCloseFocusRect, "bottom" | "left" | "right" | "top">,
+  path: number[] = [],
+): PaneCloseFocusRect[] {
+  if (layout.kind === "leaf") {
+    return [createPaneCloseFocusRect(layout.sessionId, [layout.sessionId], rect, path)];
+  }
+
+  if (layout.kind === "tabs") {
+    const activeSessionId =
+      layout.activeSessionId && layout.sessionIds.includes(layout.activeSessionId)
+        ? layout.activeSessionId
+        : layout.sessionIds[0];
+    return activeSessionId
+      ? [createPaneCloseFocusRect(activeSessionId, layout.sessionIds.slice(), rect, path)]
+      : [];
+  }
+
+  const childRects = getPaneCloseSplitChildRects(
+    layout.children.length,
+    layout.direction,
+    layout.ratio,
+    rect,
+  );
+  return layout.children.flatMap((child, index) =>
+    collectPaneCloseFocusRects(child, childRects[index] ?? rect, [...path, index]),
+  );
+}
+
+function createPaneCloseFocusRect(
+  sessionId: string,
+  sessionIds: string[],
+  rect: Pick<PaneCloseFocusRect, "bottom" | "left" | "right" | "top">,
+  path: number[],
+): PaneCloseFocusRect {
+  return {
+    ...rect,
+    centerX: (rect.left + rect.right) / 2,
+    centerY: (rect.top + rect.bottom) / 2,
+    path,
+    sessionId,
+    sessionIds,
+  };
+}
+
+function getPaneCloseCandidateSessionId(
+  pane: PaneCloseFocusRect,
+  awakeSessionIds: ReadonlySet<string>,
+): string | undefined {
+  if (awakeSessionIds.has(pane.sessionId)) {
+    return pane.sessionId;
+  }
+  return pane.sessionIds.find((candidateSessionId) => awakeSessionIds.has(candidateSessionId));
+}
+
+function getClosingPaneSiblingBranchCandidates(
+  candidates: PaneCloseFocusRect[],
+  closingPanePath: readonly number[],
+): PaneCloseFocusRect[] {
+  if (closingPanePath.length === 0) {
+    return [];
+  }
+  const parentPath = closingPanePath.slice(0, -1);
+  const closingChildIndex = closingPanePath[closingPanePath.length - 1];
+  return candidates.filter(
+    (candidate) =>
+      candidate.path.length > parentPath.length &&
+      candidate.path
+        .slice(0, parentPath.length)
+        .every((pathPart, index) => pathPart === parentPath[index]) &&
+      candidate.path[parentPath.length] !== closingChildIndex,
+  );
+}
+
+function getClosestPostClosePaneFocusRect(
+  candidates: readonly PaneCloseFocusRect[],
+  closingPane: PaneCloseFocusRect,
+): PaneCloseFocusRect | undefined {
+  return candidates
+    .map((pane, index) => ({
+      index,
+      pane,
+      score: getPostClosePaneFocusScore(closingPane, pane),
+    }))
+    .sort((left, right) => left.score - right.score || left.index - right.index)[0]?.pane;
+}
+
+function getPostClosePaneFocusScore(
+  closingPane: PaneCloseFocusRect,
+  candidatePane: PaneCloseFocusRect,
+): number {
+  const horizontalGap = getRangeGap(
+    closingPane.left,
+    closingPane.right,
+    candidatePane.left,
+    candidatePane.right,
+  );
+  const verticalGap = getRangeGap(
+    closingPane.top,
+    closingPane.bottom,
+    candidatePane.top,
+    candidatePane.bottom,
+  );
+  const sharesAxis =
+    rangesIntersect(closingPane.left, closingPane.right, candidatePane.left, candidatePane.right) ||
+    rangesIntersect(closingPane.top, closingPane.bottom, candidatePane.top, candidatePane.bottom);
+  const centerDistance =
+    Math.abs(candidatePane.centerX - closingPane.centerX) +
+    Math.abs(candidatePane.centerY - closingPane.centerY);
+  return (sharesAxis ? 0 : 1000) + (horizontalGap + verticalGap) * 100 + centerDistance;
+}
+
+function getRangeGap(startA: number, endA: number, startB: number, endB: number): number {
+  if (endA < startB) {
+    return startB - endA;
+  }
+  if (endB < startA) {
+    return startA - endB;
+  }
+  return 0;
+}
+
+function rangesIntersect(startA: number, endA: number, startB: number, endB: number): boolean {
+  return Math.max(startA, startB) < Math.min(endA, endB);
+}
+
+function getPaneCloseSplitChildRects(
+  childCount: number,
+  direction: Extract<SessionPaneLayoutNode, { kind: "split" }>["direction"],
+  ratio: number | undefined,
+  rect: Pick<PaneCloseFocusRect, "bottom" | "left" | "right" | "top">,
+): Pick<PaneCloseFocusRect, "bottom" | "left" | "right" | "top">[] {
+  if (childCount === 0) {
+    return [];
+  }
+
+  const ratios = getPaneCloseSplitChildRatios(childCount, ratio);
+  let cursor = direction === "horizontal" ? rect.left : rect.top;
+  return ratios.map((childRatio) => {
+    if (direction === "horizontal") {
+      const width = (rect.right - rect.left) * childRatio;
+      const childRect = { ...rect, left: cursor, right: cursor + width };
+      cursor += width;
+      return childRect;
+    }
+
+    const height = (rect.bottom - rect.top) * childRatio;
+    const childRect = { ...rect, bottom: cursor + height, top: cursor };
+    cursor += height;
+    return childRect;
+  });
+}
+
+function getPaneCloseSplitChildRatios(childCount: number, ratio: number | undefined): number[] {
+  if (childCount === 2 && typeof ratio === "number" && ratio > 0 && ratio < 1) {
+    return [ratio, 1 - ratio];
+  }
+  return Array.from({ length: childCount }, () => 1 / childCount);
+}
+
 function getAdjacentPaneTabSessionId(
   sessionIds: readonly string[],
   sessionId: string,
@@ -3773,19 +4160,30 @@ function findPaneTabGroupSessionIds(
   node: SessionPaneLayoutNode | undefined,
   sessionId: string,
 ): string[] | undefined {
+  return findPaneTabGroupForSession(node, sessionId)?.sessionIds;
+}
+
+function findPaneTabGroupForSession(
+  node: SessionPaneLayoutNode | undefined,
+  sessionId: string,
+): { activeSessionId?: string; sessionIds: string[] } | undefined {
   if (!node) {
     return undefined;
   }
   if (node.kind === "leaf") {
-    return node.sessionId === sessionId ? [sessionId] : undefined;
+    return node.sessionId === sessionId
+      ? { activeSessionId: sessionId, sessionIds: [sessionId] }
+      : undefined;
   }
   if (node.kind === "tabs") {
-    return node.sessionIds.includes(sessionId) ? node.sessionIds : undefined;
+    return node.sessionIds.includes(sessionId)
+      ? { activeSessionId: node.activeSessionId, sessionIds: node.sessionIds }
+      : undefined;
   }
   for (const child of node.children) {
-    const tabSessionIds = findPaneTabGroupSessionIds(child, sessionId);
-    if (tabSessionIds) {
-      return tabSessionIds;
+    const tabGroup = findPaneTabGroupForSession(child, sessionId);
+    if (tabGroup) {
+      return tabGroup;
     }
   }
   return undefined;

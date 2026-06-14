@@ -42,6 +42,7 @@ export type OpenAppModalMessage =
         AppModalKind,
         | "addRepository"
         | "agentConfig"
+        | "commandPalette"
         | "commandConfig"
         | "delayedSend"
         | "firstUserMessage"
@@ -55,6 +56,24 @@ export type OpenAppModalMessage =
         | "t3ThreadId"
         | "worktree"
       >;
+      type: "open";
+    }
+  | {
+      /**
+       * CDXC:CommandPalette 2026-06-13-22:18:
+       * Cmd+Shift+P opens the shared palette with `>` prefilled for command
+       * fuzzy finding, while Cmd+P opens it with an empty query for session
+       * search. Carry the desired initial input through the native modal bridge
+       * instead of teaching the modal host separate palette kinds.
+       *
+       * CDXC:CommandPalette 2026-06-13-22:48:
+       * Session-search sections need the sidebar's current project collapse
+       * state so rows from collapsed projects can move into the Collapsed
+       * Projects area while expanded project rows stay in Active Projects.
+       */
+      collapsedGroupsById?: Record<string, true>;
+      initialQuery?: string;
+      modal: "commandPalette";
       type: "open";
     }
   | {

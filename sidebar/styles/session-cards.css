@@ -7,6 +7,21 @@
   z-index: 1;
 }
 
+/*
+ * CDXC:ProjectSessionLists 2026-06-13-20:17:
+ * The collapsed-list "Show N more" reveal row should be the regular
+ * session-card component, with session-only chrome disabled in React. Dim the
+ * whole row by 20% at rest, then ease off that dimming on hover or keyboard
+ * focus while preserving normal session button geometry and background states.
+ */
+.session-frame[data-project-session-list-more-row="true"] {
+  opacity: 0.8;
+}
+
+.session-frame[data-project-session-list-more-row="true"]:is(:hover, :focus-within) {
+  opacity: 0.92;
+}
+
 .session-drop-target-surface {
   inset-inline: 0;
   pointer-events: none;

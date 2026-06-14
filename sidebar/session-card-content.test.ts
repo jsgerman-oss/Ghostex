@@ -150,6 +150,90 @@ describe("getSessionCardTitleTooltip", () => {
     });
   });
 
+  test("should describe a live loaded session as active in app", () => {
+    expect(
+      getSessionCardTitleTooltip({
+        session: {
+          activityLabel: undefined,
+          agentIcon: "codex",
+          alias: "Session 1",
+          detail: "OpenAI Codex",
+          isLive: true,
+          isPrimaryTitleTerminalTitle: true,
+          isRunning: true,
+          lifecycleState: "running",
+          nativePaneState: "mounted",
+          primaryTitle: "Fix restore",
+          providerSessionState: "exists",
+          sessionNumber: undefined,
+          terminalTitle: undefined,
+        },
+        showDebugSessionNumbers: false,
+      }),
+    ).toEqual({
+      headingText: "Fix restore",
+      tooltip: "Fix restore\n\nState: Active in app",
+      tooltipWhen: "always",
+    });
+  });
+
+  test("should describe a live unloaded provider session as active not loaded", () => {
+    expect(
+      getSessionCardTitleTooltip({
+        session: {
+          activityLabel: undefined,
+          agentIcon: "codex",
+          alias: "Session 1",
+          detail: "OpenAI Codex",
+          isLive: true,
+          isPrimaryTitleTerminalTitle: true,
+          isRunning: true,
+          lifecycleState: "running",
+          nativePaneState: "unmounted",
+          primaryTitle: "Fix restore",
+          providerSessionState: "exists",
+          sessionNumber: undefined,
+          sessionPersistenceProvider: "zmx",
+          terminalTitle: undefined,
+        },
+        showDebugSessionNumbers: false,
+      }),
+    ).toEqual({
+      headingText: "Fix restore",
+      tooltip: "Fix restore\n\nState: Active, not loaded",
+      tooltipWhen: "always",
+    });
+  });
+
+  test("should describe intentionally unloaded sessions as sleeping", () => {
+    expect(
+      getSessionCardTitleTooltip({
+        session: {
+          activityLabel: undefined,
+          agentIcon: "codex",
+          alias: "Session 1",
+          detail: "OpenAI Codex",
+          isLive: false,
+          isPrimaryTitleTerminalTitle: true,
+          isRunning: false,
+          isSleeping: true,
+          lifecycleState: "sleeping",
+          nativePaneState: "unmounted",
+          primaryTitle: "Fix restore",
+          providerSessionState: "missing",
+          sessionNumber: undefined,
+          sessionPersistenceProvider: "zmx",
+          terminalTitle: undefined,
+        },
+        showDebugSessionNumbers: false,
+      }),
+    ).toEqual({
+      headingText: "Fix restore",
+      tooltip: "Fix restore\n\nState: Sleeping",
+      tooltipWhen: "always",
+    });
+  });
+
   test("should expand ellipsized first-prompt titles in the tooltip heading", () => {
     expect(
       getSessionCardTitleTooltip({

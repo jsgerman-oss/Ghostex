@@ -28,6 +28,10 @@ import {
   SIDEBAR_THEME_SETTING_OPTIONS,
 } from "./ghostex-settings";
 import { DEFAULT_PET_ID } from "./pets";
+import {
+  DEFAULT_SIDEBAR_SESSION_TAG_LIST_ITEMS,
+  getEnabledVisibleSidebarSessionTags,
+} from "./session-tags";
 
 describe("normalizeghostexSettings", () => {
   test("normalizes browser actions to browser panes", () => {
@@ -80,10 +84,10 @@ describe("normalizeghostexSettings", () => {
   });
 
   test("normalizes App Shots settings", () => {
-    expect(DEFAULT_ghostex_SETTINGS.appShotsEnabled).toBe(true);
+    expect(DEFAULT_ghostex_SETTINGS.appShotsEnabled).toBe(false);
     expect(DEFAULT_ghostex_SETTINGS.appShotsHotkey).toBe("both-command");
     expect(normalizeghostexSettings({})).toMatchObject({
-      appShotsEnabled: true,
+      appShotsEnabled: false,
       appShotsHotkey: "both-command",
     });
     expect(
@@ -203,6 +207,38 @@ describe("normalizeghostexSettings", () => {
     expect(normalizeghostexSettings({ projectSessionListCollapsedCount: 999 })).toMatchObject({
       projectSessionListCollapsedCount: MAX_PROJECT_SESSION_LIST_COLLAPSED_COUNT,
     });
+  });
+
+  test("normalizes sidebar tag filter list presentation", () => {
+    /*
+    CDXC:SessionTagFilters 2026-06-13-17:50:
+    The sidebar tag filter list is configurable presentation chrome. Defaults
+    keep every tag and separator enabled, while persisted custom order,
+    hidden-state, and disabled-state normalize without changing tag values.
+    */
+    expect(DEFAULT_ghostex_SETTINGS.sidebarSessionTagListItems).toEqual(
+      DEFAULT_SIDEBAR_SESSION_TAG_LIST_ITEMS,
+    );
+    expect(
+      DEFAULT_ghostex_SETTINGS.sidebarSessionTagListItems.every((item) => item.enabled),
+    ).toBe(true);
+    expect(normalizeghostexSettings({}).sidebarSessionTagListItems).toEqual(
+      DEFAULT_SIDEBAR_SESSION_TAG_LIST_ITEMS,
+    );
+    const normalizedCustomTags = normalizeghostexSettings({
+      sidebarSessionTagListItems: [
+        { enabled: false, id: "separator-progress-type", type: "separator", visible: true },
+        { enabled: false, id: "testing", tag: "testing", type: "tag", visible: false },
+        { enabled: true, id: "unknown", type: "tag", visible: true },
+        { enabled: true, id: "testing", tag: "testing", type: "tag", visible: true },
+      ],
+    }).sidebarSessionTagListItems;
+    expect(normalizedCustomTags.slice(0, 3)).toEqual([
+      { enabled: false, id: "separator-progress-type", type: "separator", visible: true },
+      { enabled: false, id: "testing", tag: "testing", type: "tag", visible: false },
+      DEFAULT_SIDEBAR_SESSION_TAG_LIST_ITEMS[0],
+    ]);
+    expect(getEnabledVisibleSidebarSessionTags(normalizedCustomTags)).not.toContain("testing");
   });
 
   test("keeps untracked project diff lines off unless explicitly enabled", () => {

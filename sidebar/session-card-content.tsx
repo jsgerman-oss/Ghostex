@@ -78,6 +78,20 @@ let activeOverflowTooltipClose: (() => void) | undefined;
 const TERMINAL_TITLE_MARKER = "∗";
 const UNSYNCED_TITLE_LABEL = "(Unsynced title)";
 const GHOST_PLACEHOLDER_TITLE_PATTERN = /^👻(?:\s+Terminal Session)?$/u;
+const SESSION_TOOLTIP_META_COLOR_COUNT = 6;
+
+type SessionTooltipStateInput = Partial<
+  Pick<
+    SidebarSessionItem,
+    | "isLive"
+    | "isRunning"
+    | "isSleeping"
+    | "lifecycleState"
+    | "nativePaneState"
+    | "providerSessionState"
+    | "sessionPersistenceProvider"
+  >
+>;
 
 export type SessionCardContentProps = {
   aliasHeadingRef?: RefObject<HTMLDivElement | null>;
@@ -303,7 +317,8 @@ export function getSessionCardTitleTooltip({
     | "sessionPersistenceProvider"
     | "sessionNumber"
     | "terminalTitle"
-  > & {
+  > &
+    SessionTooltipStateInput & {
     projectName?: string;
     projectPath?: string;
   };
@@ -375,6 +390,7 @@ export function getSessionCardTitleTooltip({
     session.delayedSendRemainingLabel
       ? `Delayed Send in ${session.delayedSendRemainingLabel}`
       : undefined,
+    getSessionStateTooltipText(session),
     getSessionTooltipSecondaryText(session),
     ...(showSessionDetails ? getSessionDetailsTooltipLines(session) : []),
     agentSessionIdTooltip,
@@ -627,6 +643,67 @@ export function getSessionTooltipSecondaryText(
   }
 
   return session.activityLabel?.trim() || undefined;
+}
+
+function getSessionStateTooltipText(session: SessionTooltipStateInput): string | undefined {
+  const label = getSessionStateTooltipLabel(session);
+  return label ? `State: ${label}` : undefined;
+}
+
+function getSessionStateTooltipLabel(session: SessionTooltipStateInput): string | undefined {
+  /*
+   * CDXC:SessionTooltips 2026-06-13-23:24:
+   * Session hover tooltips need one short lifecycle line that combines zmx
+   * provider liveness with the app's loaded surface state. "Active, not loaded"
+   * is the user-facing wording for a live provider session whose native pane is
+   * not mounted yet.
+   */
+  const hasStateSignal =
+    session.isLive !== undefined ||
+    session.isRunning !== undefined ||
+    session.isSleeping !== undefined ||
+    session.lifecycleState !== undefined ||
+    session.nativePaneState !== undefined ||
+    session.providerSessionState !== undefined;
+  if (!hasStateSignal) {
+    return undefined;
+  }
+
+  const hasLoadedSurface =
+    session.nativePaneState === "mounted" || session.nativePaneState === "mounting";
+  if (hasLoadedSurface) {
+    return "Active in app";
+  }
+
+  if (session.providerSessionState === "exists") {
+    return "Active, not loaded";
+  }
+
+  if (session.isSleeping === true || session.lifecycleState === "sleeping") {
+    return "Sleeping";
+  }
+
+  if (session.providerSessionState === "unknown" || session.lifecycleState === "error") {
+    return "Unknown";
+  }
+
+  if (
+    session.isLive === true ||
+    session.isRunning === true ||
+    session.lifecycleState === "running"
+  ) {
+    return "Active in app";
+  }
+
+  if (session.providerSessionState === "missing" && session.sessionPersistenceProvider) {
+    return "Not started";
+  }
+
+  if (session.lifecycleState === "done" || session.isRunning === false || session.isLive === false) {
+    return "Done";
+  }
+
+  return undefined;
 }
 
 export function getSessionTitleTooltipOptions({
@@ -1327,14 +1404,19 @@ function renderSessionLocalTooltipContent(content: string): ReactNode {
     return content;
   }
 
-  return lines.map((line, index) => (
-    <span
-      className={index === 0 ? "session-local-tooltip-title" : "session-local-tooltip-meta"}
-      key={`${index}-${line}`}
-    >
-      {line}
-    </span>
-  ));
+  return lines.map((line, index) => {
+    const isTitle = index === 0;
+    const metaColorIndex = ((index - 1) % SESSION_TOOLTIP_META_COLOR_COUNT) + 1;
+    return (
+      <span
+        className={isTitle ? "session-local-tooltip-title" : "session-local-tooltip-meta"}
+        data-tooltip-meta-color={isTitle ? undefined : metaColorIndex}
+        key={`${index}-${line}`}
+      >
+        {line}
+      </span>
+    );
+  });
 }
 
 function chainEventHandlers<Event>(

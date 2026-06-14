@@ -98,10 +98,14 @@ describe("getProjectSessionListCollapsedHeight", () => {
     } as DOMRect;
   }
 
-  function createSessionElement(sessionId: string, top: number, bottom: number): HTMLElement {
-    const frame = {
+  function createMeasuredElement(top: number, bottom: number): HTMLElement {
+    return {
       getBoundingClientRect: () => createRect(top, bottom),
     } as HTMLElement;
+  }
+
+  function createSessionElement(sessionId: string, top: number, bottom: number): HTMLElement {
+    const frame = createMeasuredElement(top, bottom);
     return {
       closest: (selector: string) => (selector === ".session-frame" ? frame : null),
       dataset: {
@@ -112,15 +116,18 @@ describe("getProjectSessionListCollapsedHeight", () => {
 
   function createSessionListElement({
     bottom,
+    moreToggleElement,
     sessions,
     top,
   }: {
     bottom: number;
+    moreToggleElement?: HTMLElement;
     sessions: HTMLElement[];
     top: number;
   }): HTMLElement {
     return {
       getBoundingClientRect: () => createRect(top, bottom),
+      querySelector: () => moreToggleElement ?? null,
       querySelectorAll: () => sessions,
     } as unknown as HTMLElement;
   }
@@ -142,6 +149,26 @@ describe("getProjectSessionListCollapsedHeight", () => {
         sessionListElement,
       }),
     ).toBe(57);
+  });
+
+  test("measures through the bottom collapsed-list more row", () => {
+    const sessionListElement = createSessionListElement({
+      bottom: 140,
+      moreToggleElement: createMeasuredElement(68, 90),
+      sessions: [
+        createSessionElement("session-1", 10, 38),
+        createSessionElement("session-2", 39, 67),
+        createSessionElement("session-3", 91, 119),
+      ],
+      top: 10,
+    });
+
+    expect(
+      getProjectSessionListCollapsedHeight({
+        lastVisibleSessionId: "session-2",
+        sessionListElement,
+      }),
+    ).toBe(80);
   });
 
   test("uses zero height for an empty collapsed list", () => {

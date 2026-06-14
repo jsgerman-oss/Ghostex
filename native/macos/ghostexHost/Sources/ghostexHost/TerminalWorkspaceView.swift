@@ -2404,6 +2404,12 @@ final class TerminalWorkspaceView: NSView {
    */
   private static let paneResizeRailWidth: CGFloat = 5
   /**
+   CDXC:CommandsPanel 2026-06-13-20:57:
+   The command pane's top resize affordance should visually attach to the command tab bar while the concrete AppKit rail stays above the panel and out of the tab hit region.
+   Keep the hover line at the shared 3pt affordance thickness and move only that line inside the rail, not the drag frame.
+   */
+  private static let commandPanelResizeHoverLineHeight: CGFloat = 3
+  /**
    CDXC:ZmxPersistence 2026-05-18-07:20:
    zmx-backed Ghostty panes can keep stale visual state after session switches
    and split-pane resize settles. Ask zmx to repaint the attached terminal
@@ -2516,6 +2522,16 @@ final class TerminalWorkspaceView: NSView {
   private var activeProjectEditorId: String?
   private var focusedSessionId: String?
   private var lastEmittedFocusedSessionId: String?
+  /*
+   CDXC:NativePaneChrome 2026-06-13-23:19:
+   The focused pane border must appear only after AppKit focus and native layout
+   have both settled on the same pane. Keep a separate settled gate so early
+   focus-selection repaints clear stale borders, then a deferred pass revalidates
+   "typing will go here" before drawing the outline.
+   */
+  private var focusedPaneBorderSettledSessionIds = Set<String>()
+  private var scheduledFocusedPaneBorderSettlementSessionIds = Set<String>()
+  private var focusedPaneBorderSettlementGeneration: UInt64 = 0
   /**
   CDXC:NativeTerminalFocus 2026-06-09-23:14:
   Passive sidebar first-responder recovery must return to the terminal that actually owned keyboard focus before sidebar WKWebView churn. Track that responder separately because focusTerminal intentionally suppresses AppKit first-responder callbacks during programmatic native focus changes.
@@ -2553,6 +2569,11 @@ final class TerminalWorkspaceView: NSView {
   private let commandsPanelTopSeparatorLayer = CALayer()
   private let commandsPanelResizeHandleView = TerminalWorkspacePaneResizeHandleView()
   private var projectEditorCompanionSessionId: String?
+  /*
+   CDXC:ProjectEditorCompanion 2026-06-13-22:39:
+   Sidebar session clicks in Source, Browser, and Kanban must surface the clicked terminal in the companion pane. Track the session whose AppKit surface is actually rendered there so sidebar layout sync cannot rewrite desired selection before native moves the old rendered surface offscreen.
+   */
+  private var projectEditorCompanionRenderedSessionId: String?
   private var projectEditorCompanionIsVisible = false
   private var projectEditorCompanionPaneHidden = false
   private var projectEditorCompanionWidthRatio = TerminalWorkspaceView.defaultProjectEditorCompanionWidthRatio
@@ -3838,7 +3859,7 @@ final class TerminalWorkspaceView: NSView {
       moveOffscreen(containerView)
       searchBarView.isHidden = true
       titleBarView.isHidden = true
-      borderView.isHidden = true
+      setHidden(true, for: borderView)
     }
     needsLayout = true
     if activateOnCreate {
@@ -4476,6 +4497,15 @@ final class TerminalWorkspaceView: NSView {
       ))
   }
 
+  private func shouldRevealActivePaneTabOnFocus(reason: String) -> Bool {
+    /*
+     CDXC:PaneTabs 2026-06-13-21:09:
+     Keyboard and sidebar tab selection reach native AppKit focus as setActiveTerminalSet or sidebarFocusCommand.
+     Reveal the selected native tab for those explicit navigation paths, but do not make terminal-content clicks force-scroll a manually scrolled tab strip away from the tabs the user is inspecting.
+     */
+    return reason == "setActiveTerminalSet" || reason == "sidebarFocusCommand"
+  }
+
   func focusWebPane(sessionId rawSessionId: String, reason: String = "explicitFocusWebPaneCommand") {
     let sessionId = ghostexNativeFocusSessionId(from: rawSessionId) ?? rawSessionId
     guard let session = webPaneSessions[sessionId] else {
@@ -4517,7 +4547,11 @@ final class TerminalWorkspaceView: NSView {
     }
     focusedSessionId = sessionId
     orderWebPaneViewsToFront(session)
+    invalidateFocusedPaneBorderSettlement(reason: "focusWebPane.\(reason)")
     updateAllTerminalBorders()
+    if shouldRevealActivePaneTabOnFocus(reason: reason) {
+      revealActivePaneTab(for: sessionId, reason: "focusWebPane.\(reason)")
+    }
     let didFocusWebPane: Bool
     if let controller = poppedOutPaneControllers[sessionId] {
       controller.window?.makeKeyAndOrderFront(nil)
@@ -4527,6 +4561,13 @@ final class TerminalWorkspaceView: NSView {
     }
     if didFocusWebPane || view.window?.firstResponder === view {
       clearProjectEditorFocusOwner(reason: "focusWebPane.\(reason)")
+      /*
+       CDXC:NativePaneChrome 2026-06-13-22:17:
+       Browser and T3 web pane borders are keyed to the live AppKit first
+       responder. Repaint after focus succeeds so the focused outline appears
+       only once keyboard input really routes to the web pane.
+       */
+      updateAllTerminalBorders()
     }
     NativeT3CodePaneReproLog.append("nativeWorkspace.t3WebPane.focus.applied", [
       "currentUrl": session.currentURLString ?? NSNull(),
@@ -4541,6 +4582,56 @@ final class TerminalWorkspaceView: NSView {
       "reason": reason,
       "requestedSessionId": sessionId,
     ])
+    sendEvent(.terminalFocused(sessionId: sessionId))
+  }
+
+  private func focusSleepingPanePlaceholder(sessionId: String, reason: String) {
+    guard sleepingSessionIds.contains(sessionId),
+      let session = sleepingPanePlaceholderSessions[sessionId]
+    else {
+      TerminalFocusDebugLog.append(
+        event: "nativeWorkspace.focusSleepingPanePlaceholder.missingSession",
+        details: [
+          "knownSleepingPlaceholderIds": Array(sleepingPanePlaceholderSessions.keys).sorted(),
+          "reason": reason,
+          "requestedSessionId": sessionId,
+          "sleepingSessionIds": Array(sleepingSessionIds).sorted(),
+        ])
+      return
+    }
+    /*
+     CDXC:SleepingPanePlaceholders 2026-06-13-21:26:
+     A selected sleeping pane must be a real AppKit keyboard target so the visible "Press Any Key to Wake" affordance can wake on alphanumeric input.
+     Focus the concrete placeholder content view instead of treating the sleeping pane as a missing Ghostty/Web surface.
+     */
+    if commandsPanelIsVisible && orderedVisibleCommandPaneOwnerSessionIds().contains(sessionId) {
+      commandsPanelFocusedSessionId = sessionId
+    } else {
+      focusedSessionId = sessionId
+    }
+    invalidateFocusedPaneBorderSettlement(reason: "focusSleepingPanePlaceholder.\(reason)")
+    updateAllTerminalBorders()
+    if shouldRevealActivePaneTabOnFocus(reason: reason) {
+      revealActivePaneTab(for: sessionId, reason: "focusSleepingPanePlaceholder.\(reason)")
+    }
+    let didFocus = session.contentView.window?.makeFirstResponder(session.contentView) ?? false
+    if didFocus || session.contentView.window?.firstResponder === session.contentView {
+      /*
+       CDXC:NativePaneChrome 2026-06-13-22:17:
+       Sleeping placeholders can own keyboard focus for the "Press Any Key to
+       Wake" path. Repaint after AppKit accepts that responder so the border
+       marks the placeholder only while key input will wake that pane.
+       */
+      updateAllTerminalBorders()
+    }
+    TerminalFocusDebugLog.append(
+      event: "nativeWorkspace.focusSleepingPanePlaceholder.applied",
+      details: [
+        "didFocus": didFocus,
+        "reason": reason,
+        "requestedSessionId": sessionId,
+        "responderAfter": responderSnapshot(),
+      ])
     sendEvent(.terminalFocused(sessionId: sessionId))
   }
 
@@ -4957,12 +5048,22 @@ final class TerminalWorkspaceView: NSView {
         projectEditorId: projectId,
         event: "firstResponder",
         reason: reason)
+      invalidateFocusedPaneBorderSettlement(reason: "focusProjectEditorPane.settled.\(reason)")
+      /*
+       CDXC:NativePaneChrome 2026-06-13-22:17:
+       Focusing an already-settled Source/Browser/Kanban surface can leave the
+       companion pane's selected session unchanged while keyboard input belongs
+       to the project editor. Repaint pane borders after recording editor focus
+       ownership so no terminal stays outlined when typing will not go there.
+       */
+      updateAllTerminalBorders()
       return
     }
     markProjectEditorFocusOwner(
       projectEditorId: projectId,
       event: "firstResponder",
       reason: reason)
+    invalidateFocusedPaneBorderSettlement(reason: "focusProjectEditorPane.\(reason)")
     activeProjectEditorId = projectId
     if projectEditorCompanionPaneHidden {
       projectEditorCompanionIsVisible = false
@@ -5004,7 +5105,17 @@ final class TerminalWorkspaceView: NSView {
     */
     syncCEFNativeDragSourceReleaseMonitor(reason: "focusProjectEditorPane")
     syncSourceCEFDragDiagnosticsMonitor(reason: "focusProjectEditorPane")
-    _ = window?.makeFirstResponder(projectEditorFocusTargetResponder(for: session))
+    let didFocusProjectEditor =
+      window?.makeFirstResponder(projectEditorFocusTargetResponder(for: session)) ?? false
+    if didFocusProjectEditor || window?.firstResponder.flatMap({ projectEditorId(containing: $0) }) == projectId {
+      /*
+       CDXC:NativePaneChrome 2026-06-13-22:17:
+       Project editor focus takes keyboard input away from the companion pane.
+       Repaint immediately after AppKit accepts the editor responder so the
+       focused border continues to mean "typing will go here."
+       */
+      updateAllTerminalBorders()
+    }
     needsLayout = true
     NativeT3CodePaneReproLog.append("nativeWorkspace.projectEditor.focus.applied", [
       "projectId": projectId,
@@ -5697,7 +5808,11 @@ final class TerminalWorkspaceView: NSView {
       focusedSessionId = sessionId
     }
     orderTerminalPaneViewsToFront(sessions[sessionId])
+    invalidateFocusedPaneBorderSettlement(reason: "focusTerminal.\(reason)")
     updateAllTerminalBorders()
+    if shouldRevealActivePaneTabOnFocus(reason: reason) {
+      revealActivePaneTab(for: sessionId, reason: "focusTerminal.\(reason)")
+    }
     let targetWindow = poppedOutPaneControllers[sessionId]?.window ?? window
     poppedOutPaneControllers[sessionId]?.window?.makeKeyAndOrderFront(nil)
     let didChangeFocus = targetWindow?.firstResponder !== view
@@ -5705,9 +5820,21 @@ final class TerminalWorkspaceView: NSView {
     programmaticFocusDepth += 1
     let makeFirstResponderResult = targetWindow?.makeFirstResponder(view) ?? false
     programmaticFocusDepth -= 1
-    if makeFirstResponderResult || targetWindow?.firstResponder === view {
+    let didApplyFirstResponder = makeFirstResponderResult || targetWindow?.firstResponder === view
+    if didApplyFirstResponder {
       rememberTerminalFirstResponderSessionId(sessionId)
       clearProjectEditorFocusOwner(reason: "focusTerminal.\(reason)")
+      /**
+       CDXC:CommandsPanel 2026-06-13-21:06:
+       Pressing F12 twice can route typing focus into an already-visible command pane through programmatic AppKit focus. Command-pane active borders depend on the live first responder, and programmatic responder callbacks are intentionally ignored, so repaint pane chrome after makeFirstResponder accepts the command terminal.
+
+       CDXC:NativePaneChrome 2026-06-13-22:17:
+       Workspace focused borders also depend on the live first responder now,
+       including single-pane Agents layouts. Repaint after terminal focus
+       succeeds so the border appears only when typing really reaches this
+       terminal.
+       */
+      updateAllTerminalBorders()
     }
     let responderAfter = responderSnapshot()
     logFocusSurfaceState(
@@ -6126,6 +6253,14 @@ final class TerminalWorkspaceView: NSView {
           "lastEmittedFocusedSessionId": nullableString(lastEmittedFocusedSessionId),
           "reason": reason,
         ])
+      /*
+       CDXC:NativePaneChrome 2026-06-13-22:17:
+       A nil first responder means no pane can truthfully claim keyboard input.
+       Repaint immediately so the focused border does not remain on a terminal
+       while AppKit has dropped typing focus to the window shell.
+       */
+      invalidateFocusedPaneBorderSettlement(reason: "windowFirstResponderChanged.nil.\(reason)")
+      updateAllTerminalBorders()
       return
     }
     /**
@@ -6145,6 +6280,15 @@ final class TerminalWorkspaceView: NSView {
     } else if responderSessionId != nil {
       clearProjectEditorFocusOwner(reason: "windowFirstResponderChanged.\(reason)")
     }
+    /*
+     CDXC:NativePaneChrome 2026-06-13-22:17:
+     The focused border follows the live first responder, not just stored
+     sidebar selection. Repaint on every non-programmatic responder transition
+     so project editor, sidebar, titlebar, modal, terminal, web-pane, and
+     sleeping-placeholder focus all clear or set pane chrome immediately.
+     */
+    invalidateFocusedPaneBorderSettlement(reason: "windowFirstResponderChanged.\(reason)")
+    updateAllTerminalBorders()
     TerminalFocusDebugLog.append(
       event: "nativeFocusTrace.windowFirstResponderChanged",
       details: [
@@ -6462,7 +6606,7 @@ final class TerminalWorkspaceView: NSView {
     session.scrollView.isHidden = false
     session.searchBarView.isHidden = !visible || session.view.searchState == nil
     session.titleBarView.isHidden = !visible
-    session.borderView.isHidden = !visible
+    setHidden(!visible, for: session.borderView)
     needsLayout = true
     updateTerminalBorder(for: sessionId)
   }
@@ -6501,6 +6645,7 @@ final class TerminalWorkspaceView: NSView {
         "commandActiveProjectEditorId": command.activeProjectEditorId ?? NSNull(),
         "commandFocusedSessionId": command.focusedSessionId ?? NSNull(),
         "focusRequestId": command.focusRequestId ?? 0,
+        "focusRequestSessionId": command.focusRequestSessionId ?? NSNull(),
         "layoutChanged": shouldRelayout,
         "nextActiveSessionIds": Array(nextActiveSessionIds).sorted(),
         "nextLayoutSignature": nativeLayoutNodeSignature(nextLayout),
@@ -6547,6 +6692,7 @@ final class TerminalWorkspaceView: NSView {
           "activeSessionIdsBefore": Array(activeSessionIds).sorted(),
           "commandFocusedSessionId": nullableString(command.focusedSessionId),
           "focusRequestId": command.focusRequestId ?? 0,
+          "focusRequestSessionId": nullableString(command.focusRequestSessionId),
           "previousFocusedSessionId": nullableString(previousFocusedSessionId),
           "responderBefore": responderSnapshot(),
           "responderSessionIdBefore": nullableString(responderSessionIdBefore),
@@ -6607,6 +6753,13 @@ final class TerminalWorkspaceView: NSView {
     focusedSessionId = passiveResponderFocusedSessionId ?? command.focusedSessionId
     terminalLayout = nextLayout
     paneGap = nextPaneGap
+    if shouldRelayout
+      || previousFocusedSessionId != focusedSessionId
+      || previousCommandsPanelFocusedSessionId != commandsPanelFocusedSessionId
+      || previousActiveProjectEditorId != activeProjectEditorId
+    {
+      invalidateFocusedPaneBorderSettlement(reason: "setActiveTerminalSet")
+    }
     if shouldRefreshPaneTabMetadata && !shouldRelayout {
       syncPaneTabChromeFromCurrentLayout()
     }
@@ -6614,6 +6767,12 @@ final class TerminalWorkspaceView: NSView {
       command.activeProjectEditorCompanionPaneHidden,
       reason: "setActiveTerminalSet")
     syncProjectEditorCompanionSelectionFromSidebar(reason: "setActiveTerminalSet")
+    if previousProjectEditorCompanionIsVisible != projectEditorCompanionIsVisible
+      || previousProjectEditorCompanionPaneHidden != projectEditorCompanionPaneHidden
+      || previousProjectEditorCompanionSessionId != projectEditorCompanionSessionId
+    {
+      invalidateFocusedPaneBorderSettlement(reason: "setActiveTerminalSet.projectEditorCompanion")
+    }
     /**
      CDXC:WorkspaceLayout 2026-04-28-06:08
      The terminal workspace background is user-configurable from Settings.
@@ -6653,7 +6812,7 @@ final class TerminalWorkspaceView: NSView {
         session.scrollView.isHidden = false
         session.searchBarView.isHidden = !isActive || session.view.searchState == nil
         session.titleBarView.isHidden = !isActive && !isPoppedOut
-        session.borderView.isHidden = !isActive
+        setHidden(!isActive, for: session.borderView)
         if !isActive && !isPoppedOut {
           moveOffscreen(session.containerView)
         }
@@ -6677,7 +6836,7 @@ final class TerminalWorkspaceView: NSView {
         session.containerView.isHidden = !isActive || isPoppedOut
         session.hostView.isHidden = !isActive && !isPoppedOut
         session.titleBarView.isHidden = !isActive && !isPoppedOut
-        session.borderView.isHidden = !isActive
+        setHidden(!isActive, for: session.borderView)
         if !isActive && !isPoppedOut {
           moveOffscreen(session.containerView)
         }
@@ -6768,6 +6927,7 @@ final class TerminalWorkspaceView: NSView {
         details: [
           "commandFocusedSessionId": nullableString(command.focusedSessionId),
           "focusRequestId": command.focusRequestId ?? 0,
+          "focusRequestSessionId": nullableString(command.focusRequestSessionId),
           "focusedSurfaceSessionIdsAfterActiveSet": focusedSurfaceSessionIdsAfterActiveSet,
           "layoutChanged": shouldRelayout,
           "paneOwnerSelectionApplied": didApplyPaneOwnerSelection,
@@ -6786,6 +6946,7 @@ final class TerminalWorkspaceView: NSView {
         "attentionSessionIds": Array(attentionSessionIds).sorted(),
         "backgroundColor": command.backgroundColor ?? "default",
         "focusRequestId": command.focusRequestId ?? 0,
+        "focusRequestSessionId": nullableString(command.focusRequestSessionId),
         "focusedSessionId": nullableString(command.focusedSessionId),
         "layoutChanged": shouldRelayout,
         "paneOwnerSelectionApplied": didApplyPaneOwnerSelection,
@@ -6802,6 +6963,7 @@ final class TerminalWorkspaceView: NSView {
         "commandActiveProjectEditorId": command.activeProjectEditorId ?? NSNull(),
         "commandFocusedSessionId": command.focusedSessionId ?? NSNull(),
         "focusRequestId": command.focusRequestId ?? 0,
+        "focusRequestSessionId": command.focusRequestSessionId ?? NSNull(),
         "isProjectEditorInteractionSurfaceActiveAfter": isProjectEditorInteractionSurfaceActive,
         "layoutChanged": shouldRelayout,
         "previousActiveProjectEditorId": previousActiveProjectEditorId ?? NSNull(),
@@ -6880,6 +7042,7 @@ final class TerminalWorkspaceView: NSView {
         details: [
           "focusedSessionId": nullableString(command.focusedSessionId),
           "focusRequestId": command.focusRequestId ?? 0,
+          "focusRequestSessionId": nullableString(command.focusRequestSessionId),
           "reason": suppressExplicitFocus ? "suppressedExplicitFocus" : "missingFocusRequestId",
           "responder": responderSnapshot(),
         ])
@@ -6890,16 +7053,24 @@ final class TerminalWorkspaceView: NSView {
         event: "nativeWorkspace.setActiveTerminalSet.focusSkipped",
         details: [
           "focusRequestId": focusRequestId,
+          "focusRequestSessionId": nullableString(command.focusRequestSessionId),
           "focusedSessionId": nullableString(command.focusedSessionId),
           "reason": "duplicateFocusRequestId",
         ])
       return
     }
     lastAppliedLayoutFocusRequestId = focusRequestId
+    /*
+     CDXC:PaneFocus 2026-06-13-23:13:
+     Cmd+Opt+Arrow treats the expanded Commands panel as part of the visible main layout. When the explicit focus target is a command pane, the workspace focusedSessionId remains the terminal above it; honor focusRequestSessionId first so the request moves AppKit first responder to the command terminal instead of refocusing the workspace pane.
+     */
     let requestedFocusSessionId =
-      command.focusedSessionId.flatMap { activeSessionIds.contains($0) ? $0 : nil }
+      command.focusRequestSessionId.flatMap {
+        isPaneSessionLayoutVisible($0) || isCommandPaneSessionLayoutVisible($0) ? $0 : nil
+      }
+      ?? command.focusedSessionId.flatMap { isPaneSessionLayoutVisible($0) ? $0 : nil }
       ?? command.commandsPanelFocusedSessionId.flatMap {
-        commandsPanelActiveSessionIds.contains($0) ? $0 : nil
+        isCommandPaneSessionLayoutVisible($0) ? $0 : nil
       }
     if let focusedSessionId = requestedFocusSessionId
     {
@@ -6943,6 +7114,8 @@ final class TerminalWorkspaceView: NSView {
         }
       } else if webPaneSessions[focusedSessionId] != nil {
         focusWebPane(sessionId: focusedSessionId, reason: "setActiveTerminalSet")
+      } else if sleepingSessionIds.contains(focusedSessionId) {
+        focusSleepingPanePlaceholder(sessionId: focusedSessionId, reason: "setActiveTerminalSet")
       } else {
         /*
          CDXC:SessionSurfaceRecovery 2026-05-23-09:05:
@@ -6956,6 +7129,7 @@ final class TerminalWorkspaceView: NSView {
           details: [
             "activeSessionIds": Array(activeSessionIds).sorted(),
             "focusRequestId": focusRequestId,
+            "focusRequestSessionId": nullableString(command.focusRequestSessionId),
             "focusedSessionId": focusedSessionId,
             "reason": "focusedSessionSurfaceMissing",
           ])
@@ -6968,6 +7142,7 @@ final class TerminalWorkspaceView: NSView {
           "activeSessionIds": Array(activeSessionIds).sorted(),
           "commandsPanelActiveSessionIds": Array(commandsPanelActiveSessionIds).sorted(),
           "focusRequestId": focusRequestId,
+          "focusRequestSessionId": nullableString(command.focusRequestSessionId),
           "focusedSessionId": nullableString(command.focusedSessionId),
           "commandsPanelFocusedSessionId": nullableString(command.commandsPanelFocusedSessionId),
           "reason": "focusedSessionNotActive",
@@ -7446,7 +7621,16 @@ final class TerminalWorkspaceView: NSView {
       width: commandPanelBounds.width,
       height: min(railHeight, bounds.height)
     )
-    commandsPanelResizeHandleView.configure(direction: .vertical, cursor: .resizeUpDown)
+    let commandPanelResizeHoverLineFrame = CGRect(
+      x: commandsPanelResizeHandleView.bounds.minX,
+      y: commandsPanelResizeHandleView.bounds.minY,
+      width: commandsPanelResizeHandleView.bounds.width,
+      height: Self.commandPanelResizeHoverLineHeight
+    )
+    commandsPanelResizeHandleView.configure(
+      direction: .vertical,
+      cursor: .resizeUpDown,
+      explicitHoverLineFrame: commandPanelResizeHoverLineFrame)
     commandsPanelResizeHandleView.isHidden = false
     commandsPanelResizeHandleView.layer?.zPosition = 10_500
     addSubview(commandsPanelResizeHandleView, positioned: .above, relativeTo: nil)
@@ -7703,8 +7887,10 @@ final class TerminalWorkspaceView: NSView {
     guard borderLayer.superlayer !== rootLayer else {
       return
     }
-    borderLayer.removeFromSuperlayer()
-    rootLayer.addSublayer(borderLayer)
+    performWithoutLayerActions {
+      borderLayer.removeFromSuperlayer()
+      rootLayer.addSublayer(borderLayer)
+    }
   }
 
   private func installPaneOverlayLayer(
@@ -7736,8 +7922,10 @@ final class TerminalWorkspaceView: NSView {
     guard borderLayer.superlayer !== rootLayer else {
       return
     }
-    borderLayer.removeFromSuperlayer()
-    rootLayer.addSublayer(borderLayer)
+    performWithoutLayerActions {
+      borderLayer.removeFromSuperlayer()
+      rootLayer.addSublayer(borderLayer)
+    }
   }
 
   private func paneBorderFrameInWorkspace(
@@ -8055,6 +8243,7 @@ final class TerminalWorkspaceView: NSView {
     projectEditorCompanionSessionId = sessionId
     projectEditorCompanionIsVisible = true
     focusedSessionId = sessionId
+    invalidateFocusedPaneBorderSettlement(reason: "projectEditorCompanion.\(reason)")
     let didRetargetWithoutEditorLayout = syncProjectEditorCompanionRetargetIfEditorStable(
       previousSessionId: previousCompanionSessionId,
       wasCompanionVisible: wasCompanionVisible,
@@ -8085,6 +8274,13 @@ final class TerminalWorkspaceView: NSView {
     }
     if makeFirstResponderResult || targetResponder.map({ window?.firstResponder === $0 }) == true {
       clearProjectEditorFocusOwner(reason: "projectEditorCompanion.\(reason)")
+      /*
+       CDXC:NativePaneChrome 2026-06-13-22:17:
+       Source/Browser/Kanban companion pane focus must light the border only
+       after AppKit accepts the companion responder. This keeps the outline off
+       stale selected terminals while the editor itself owns typing.
+       */
+      updateAllTerminalBorders()
     }
     let responderAfterFocus = responderSnapshot()
     TerminalFocusDebugLog.append(
@@ -8182,9 +8378,9 @@ final class TerminalWorkspaceView: NSView {
      If the editor host is already mounted at the expected frame, update only
      the old/new companion containers, titlebar controls, and resize rail.
      */
-    if let previousSessionId, previousSessionId != companionLayout.sessionId {
-      movePaneSessionOffscreen(previousSessionId)
-    }
+    moveRenderedProjectEditorCompanionSurfaceOffscreen(
+      except: companionLayout.sessionId,
+      previousSessionId: previousSessionId)
     projectEditorCompanionResizeWorkspaceBounds = workspaceBounds
     syncProjectEditorCompanionPane(layout: companionLayout)
     NativeT3CodePaneReproLog.append("nativeWorkspace.projectEditor.companion.retargetStable", [
@@ -8264,6 +8460,42 @@ final class TerminalWorkspaceView: NSView {
       to: nil)
     let responderBeforeClick = responderSnapshot()
     let makeFirstResponderResult = targetWindow.makeFirstResponder(targetView)
+    guard projectEditorCompanionRenderedSessionId == sessionId else {
+      TerminalFocusDebugLog.append(
+        event: "nativeFocusTrace.projectEditorCompanionDelayedClickSkipped",
+        details: [
+          "companionRenderedSessionId": nullableString(projectEditorCompanionRenderedSessionId),
+          "companionSessionId": nullableString(projectEditorCompanionSessionId),
+          "makeFirstResponderResult": makeFirstResponderResult,
+          "requestedSessionId": sessionId,
+          "responderAfterFocus": responderSnapshot(),
+          "responderBeforeClick": responderBeforeClick,
+          "skipReason": "renderedSessionMismatch",
+        ])
+      return
+    }
+    guard projectEditorCompanionHitTargetMatches(
+      targetView: targetView,
+      windowPoint: windowPoint,
+      targetWindow: targetWindow)
+    else {
+      TerminalFocusDebugLog.append(
+        event: "nativeFocusTrace.projectEditorCompanionDelayedClickSkipped",
+        details: [
+          "companionRenderedSessionId": nullableString(projectEditorCompanionRenderedSessionId),
+          "companionSessionId": nullableString(projectEditorCompanionSessionId),
+          "makeFirstResponderResult": makeFirstResponderResult,
+          "requestedSessionId": sessionId,
+          "responderAfterFocus": responderSnapshot(),
+          "responderBeforeClick": responderBeforeClick,
+          "skipReason": "hitTargetMismatch",
+          "targetFrame": describeFrame(targetView.frame),
+          "targetViewClass": String(describing: type(of: targetView)),
+          "windowPointX": Double(windowPoint.x),
+          "windowPointY": Double(windowPoint.y),
+        ])
+      return
+    }
     if let mouseDown = syntheticCompanionMouseEvent(
       type: .leftMouseDown,
       location: windowPoint,
@@ -8280,13 +8512,32 @@ final class TerminalWorkspaceView: NSView {
     {
       targetWindow.sendEvent(mouseUp)
     }
+    let responderAfterClick = responderSnapshot()
+    if let responderSessionId = currentResponderSessionId(),
+      responderSessionId != sessionId
+    {
+      let refocusResult = targetWindow.makeFirstResponder(targetView)
+      TerminalFocusDebugLog.append(
+        event: "nativeFocusTrace.projectEditorCompanionDelayedClickMismatchCorrected",
+        details: [
+          "focusedSessionId": nullableString(focusedSessionId),
+          "makeFirstResponderResult": makeFirstResponderResult,
+          "refocusResult": refocusResult,
+          "requestedSessionId": sessionId,
+          "responderAfterClick": responderAfterClick,
+          "responderAfterRefocus": responderSnapshot(),
+          "responderBeforeClick": responderBeforeClick,
+          "responderSessionIdAfterClick": responderSessionId,
+        ])
+      return
+    }
     TerminalFocusDebugLog.append(
       event: "nativeFocusTrace.projectEditorCompanionDelayedClickApplied",
       details: [
         "focusedSessionId": nullableString(focusedSessionId),
         "makeFirstResponderResult": makeFirstResponderResult,
         "requestedSessionId": sessionId,
-        "responderAfterClick": responderSnapshot(),
+        "responderAfterClick": responderAfterClick,
         "responderBeforeClick": responderBeforeClick,
         "targetFrame": describeFrame(targetView.frame),
         "targetViewClass": String(describing: type(of: targetView)),
@@ -8304,6 +8555,25 @@ final class TerminalWorkspaceView: NSView {
       return session.browserContentView
     }
     return nil
+  }
+
+  private func projectEditorCompanionHitTargetMatches(
+    targetView: NSView,
+    windowPoint: CGPoint,
+    targetWindow: NSWindow
+  ) -> Bool {
+    /*
+     CDXC:ProjectEditorCompanion 2026-06-13-22:39:
+     Delayed synthetic clicks exist only to restore typing focus after sidebar WebKit activation. They must not run through window hit-testing when the click point resolves to an old companion surface, because that can focus a different session than the sidebar card requested.
+     */
+    guard let contentView = targetWindow.contentView else {
+      return false
+    }
+    let contentPoint = contentView.convert(windowPoint, from: nil)
+    guard let hitView = contentView.hitTest(contentPoint) else {
+      return false
+    }
+    return hitView === targetView || hitView.isDescendant(of: targetView)
   }
 
   private func syntheticCompanionMouseEvent(
@@ -8404,9 +8674,11 @@ final class TerminalWorkspaceView: NSView {
       hideProjectEditorCompanionChrome()
       return
     }
+    moveRenderedProjectEditorCompanionSurfaceOffscreen(except: layout.sessionId)
     syncProjectEditorCompanionTitleBarControls(activeSessionId: layout.sessionId)
     setPaneTabs([], activeSessionId: layout.sessionId, on: layout.sessionId)
     setFrame(layout.contentFrame, for: layout.sessionId, webPaneMode: .projectEditorCompanion)
+    projectEditorCompanionRenderedSessionId = layout.sessionId
 
     syncProjectEditorCompanionRightSeparator(frame: layout.rightSeparatorFrame)
 
@@ -8417,6 +8689,26 @@ final class TerminalWorkspaceView: NSView {
     addSubview(projectEditorCompanionResizeHandleView, positioned: .above, relativeTo: nil)
     window?.invalidateCursorRects(for: projectEditorCompanionResizeHandleView)
     orderResizeHandlesToFront(reason: "syncProjectEditorCompanionPane")
+  }
+
+  private func moveRenderedProjectEditorCompanionSurfaceOffscreen(
+    except retainedSessionId: String?,
+    previousSessionId: String? = nil
+  ) {
+    let candidateSessionIds = [
+      projectEditorCompanionRenderedSessionId,
+      previousSessionId,
+    ].compactMap { $0 }
+    var movedSessionIds = Set<String>()
+    for candidateSessionId in candidateSessionIds
+      where candidateSessionId != retainedSessionId && !movedSessionIds.contains(candidateSessionId)
+    {
+      movePaneSessionOffscreen(candidateSessionId)
+      movedSessionIds.insert(candidateSessionId)
+    }
+    if projectEditorCompanionRenderedSessionId != retainedSessionId {
+      projectEditorCompanionRenderedSessionId = nil
+    }
   }
 
   private func syncProjectEditorCompanionRightSeparator(frame: CGRect) {
@@ -8480,6 +8772,7 @@ final class TerminalWorkspaceView: NSView {
   }
 
   private func hideProjectEditorCompanionChrome() {
+    moveRenderedProjectEditorCompanionSurfaceOffscreen(except: nil)
     projectEditorCompanionResizeDrag = nil
     let shouldRefreshCursor = projectEditorCompanionResizeHandleView.needsCursorRefreshBeforeRemoval()
     syncProjectEditorCompanionTitleBarControls(activeSessionId: nil)
@@ -9988,18 +10281,20 @@ final class TerminalWorkspaceView: NSView {
       setPaneTabs([sessionId], activeSessionId: sessionId, on: sessionId)
     case .tabs(let activeSessionId, let sessionIds):
       let tabSessionIds = sessionIds.filter {
-        isPaneSessionVisible($0, role: role) || sleepingSessionIds.contains($0)
+        isPaneSessionLayoutVisible($0, role: role)
       }
-      let activeTabSessionIds = tabSessionIds.filter { isPaneSessionVisible($0, role: role) }
-      guard !activeTabSessionIds.isEmpty else {
+      let mountedTabSessionIds = tabSessionIds.filter { isPaneSessionVisible($0, role: role) }
+      guard !tabSessionIds.isEmpty else {
         return
       }
       let selectedSessionId =
-        activeSessionId.flatMap { activeTabSessionIds.contains($0) ? $0 : nil } ?? activeTabSessionIds[0]
+        activeSessionId.flatMap { tabSessionIds.contains($0) ? $0 : nil }
+          ?? mountedTabSessionIds.first
+          ?? tabSessionIds[0]
       guard let region = paneContentLayoutRegion(
         forTabPath: path,
         role: role,
-        sessionIds: Set(activeTabSessionIds))
+        sessionIds: Set(tabSessionIds))
       else {
         appendLayoutLayeringDebugLog(
           "nativePaneLayoutTrace.paneOwnerSelectionMissingRegion",
@@ -10015,40 +10310,60 @@ final class TerminalWorkspaceView: NSView {
           force: true)
         return
       }
-      setPaneTabs(tabSessionIds, activeSessionId: selectedSessionId, on: selectedSessionId)
-      if region.sessionId != selectedSessionId {
-        let paneRect = paneRect(fromContentLayoutRegion: region, for: selectedSessionId)
-        for sessionId in activeTabSessionIds where sessionId != selectedSessionId {
-          movePaneSessionOffscreen(sessionId)
-        }
+      /*
+       CDXC:SleepingPanePlaceholders 2026-06-13-20:27:
+       Native tab clicks often use this optimized owner-selection path instead
+       of a full layout pass. A selected sleeping tab is still the pane owner:
+       create/select its black placeholder in the existing pane rect and move
+       the prior awake renderer offscreen so sleeping native tabs are not inert.
+      */
+      if region.sessionId == selectedSessionId {
+        setPaneTabs(tabSessionIds, activeSessionId: selectedSessionId, on: selectedSessionId)
+        revealActivePaneTab(for: selectedSessionId, reason: "paneOwnerSelection.\(reason)")
+        return
+      }
+      let paneRect = paneRect(fromContentLayoutRegion: region, for: selectedSessionId)
+      for sessionId in tabSessionIds where sessionId != selectedSessionId {
+        movePaneSessionOffscreen(sessionId)
+      }
+      if isPaneSessionVisible(selectedSessionId, role: role) {
+        setPaneTabs(tabSessionIds, activeSessionId: selectedSessionId, on: selectedSessionId)
         setFrame(paneRect, for: selectedSessionId)
         if sessions[selectedSessionId] != nil {
           orderTerminalPaneViewsToFront(sessions[selectedSessionId])
         } else {
           orderWebPaneViewsToFront(webPaneSessions[selectedSessionId])
         }
-        replacePaneContentLayoutRegion(
-          path: path,
-          role: role,
-          sessionIds: Set(activeTabSessionIds),
-          selectedSessionId: selectedSessionId,
-          paneRect: paneRect)
-        appendLayoutLayeringDebugLog(
-          "nativePaneLayoutTrace.paneOwnerSelectionApplied",
-          details: [
-            "fromSessionId": region.sessionId,
-            "paneRect": describeFrame(paneRect),
-            "path": path,
-            "reason": reason,
-            "role": role == .commands ? "commands" : "workspace",
-            "toSessionId": selectedSessionId,
-          ],
-          force: true)
-        didApply = true
+      } else {
+        setSleepingPanePlaceholderFrame(
+          paneRect,
+          activeSessionId: selectedSessionId,
+          sessionIds: tabSessionIds,
+          for: selectedSessionId,
+          role: role)
       }
+      replacePaneContentLayoutRegion(
+        path: path,
+        role: role,
+        sessionIds: Set(tabSessionIds),
+        selectedSessionId: selectedSessionId,
+        paneRect: paneRect)
+      appendLayoutLayeringDebugLog(
+        "nativePaneLayoutTrace.paneOwnerSelectionApplied",
+        details: [
+          "fromSessionId": region.sessionId,
+          "paneRect": describeFrame(paneRect),
+          "path": path,
+          "reason": reason,
+          "role": role == .commands ? "commands" : "workspace",
+          "toSessionId": selectedSessionId,
+        ],
+        force: true)
+      revealActivePaneTab(for: selectedSessionId, reason: "paneOwnerSelection.\(reason)")
+      didApply = true
     case .split(_, _, let children):
       let visibleChildren = children.filter {
-        !leafSessionIds($0).allSatisfy { !isPaneSessionVisible($0, role: role) }
+        !leafSessionIds($0).allSatisfy { !isPaneSessionLayoutVisible($0, role: role) }
       }
       guard !visibleChildren.isEmpty else {
         return
@@ -12764,8 +13079,8 @@ final class TerminalWorkspaceView: NSView {
       session.titleBarView.removeFromSuperview()
       addSubview(session.titleBarView)
       installWorkspacePaneBorderLayer(session.borderView)
-      session.borderView.frame = rect
-      session.borderView.isHidden = false
+      setPaneBorderFrame(rect, for: session.borderView)
+      setHidden(false, for: session.borderView)
     } else if let session = webPaneSessions[sessionId] {
       session.containerView.isHidden = true
       session.titleBarView.frame = titleBarRect
@@ -12773,8 +13088,8 @@ final class TerminalWorkspaceView: NSView {
       session.titleBarView.removeFromSuperview()
       addSubview(session.titleBarView)
       installWorkspacePaneBorderLayer(session.borderView)
-      session.borderView.frame = rect
-      session.borderView.isHidden = false
+      setPaneBorderFrame(rect, for: session.borderView)
+      setHidden(false, for: session.borderView)
     }
     updateTerminalBorder(for: sessionId)
   }
@@ -12873,8 +13188,9 @@ final class TerminalWorkspaceView: NSView {
      CDXC:SleepingPanePlaceholders 2026-06-13-01:44:
      Persisted split panes are visual slots even when their selected tab is
      sleeping and has no Ghostty renderer. Layout a black AppKit placeholder in
-     the final pane rect, keep tabs in their original group, and route only body
-     clicks to wake so tab selection does not create terminal pop-in.
+     the final pane rect, keep tabs in their original group, and route body
+     clicks plus alphanumeric placeholder key presses to wake so tab selection
+     does not create terminal pop-in.
      */
     let session = ensureSleepingPanePlaceholderSession(sessionId: ownerSessionId)
     laidOutSleepingPlaceholderSessionIds.insert(ownerSessionId)
@@ -12909,9 +13225,9 @@ final class TerminalWorkspaceView: NSView {
       y: 0,
       width: rect.width,
       height: max(rect.height - titleBarHeight, 1))
-    session.borderView.frame = session.containerView.bounds
+    setPaneBorderFrame(session.containerView.bounds, for: session.borderView)
     session.borderView.setState(
-      isFocused: focusedSessionId == ownerSessionId && orderedVisiblePaneOwnerSessionIds().count > 1,
+      isFocused: shouldShowFocusedPaneBorder(for: ownerSessionId),
       isAttention: attentionSessionIds.contains(ownerSessionId))
   }
 
@@ -12958,7 +13274,7 @@ final class TerminalWorkspaceView: NSView {
       commandsPanelActiveSessionIds.contains(sessionId) ? .commands : .workspace
     session.titleBarView.setChromeRole(chromeRole)
     session.borderView.setChromeRole(chromeRole)
-    session.borderView.setSuppressesFocusedBorder(webPaneMode == .projectEditorCompanion)
+    session.borderView.setSuppressesFocusedBorder(false)
     if chromeRole == .commands {
       session.titleBarView.setActions(
         sessionTitleBarActions[sessionId] ?? commandPanelTitleBarActions())
@@ -12998,7 +13314,7 @@ final class TerminalWorkspaceView: NSView {
       session.persistenceLabelView.frame = .zero
       session.delayedSendLabelView.frame = .zero
       session.firstPromptTitleOverlayView.frame = .zero
-      session.borderView.frame = session.containerView.bounds
+      setPaneBorderFrame(session.containerView.bounds, for: session.borderView)
       updateTerminalBorder(for: sessionId)
       return
     }
@@ -13025,7 +13341,7 @@ final class TerminalWorkspaceView: NSView {
       in: terminalRect,
       labelView: session.delayedSendLabelView)
     session.firstPromptTitleOverlayView.frame = firstPromptTitleOverlayFrame(in: terminalRect)
-    session.borderView.frame = session.containerView.bounds
+    setPaneBorderFrame(session.containerView.bounds, for: session.borderView)
     logTerminalResizeIfNeeded(
       session: session,
       paneRect: rect,
@@ -13177,6 +13493,18 @@ final class TerminalWorkspaceView: NSView {
     }
   }
 
+  private func revealActivePaneTab(for sessionId: String, reason: String) {
+    if let session = sessions[sessionId] {
+      session.titleBarView.revealActiveTabIfNeeded(reason: reason)
+    }
+    if let session = webPaneSessions[sessionId] {
+      session.titleBarView.revealActiveTabIfNeeded(reason: reason)
+    }
+    if let session = sleepingPanePlaceholderSessions[sessionId] {
+      session.titleBarView.revealActiveTabIfNeeded(reason: reason)
+    }
+  }
+
   /**
    CDXC:PaneTabs 2026-05-21-02:27:
    Session rename sync can change only `sessionTitles` while the split/tab tree
@@ -13216,13 +13544,22 @@ final class TerminalWorkspaceView: NSView {
       }
       setPaneTabs([sessionId], activeSessionId: sessionId, on: sessionId)
     case .tabs(let activeSessionId, let sessionIds):
-      let tabSessionIds = sessionIds.filter { isPaneSessionVisible($0) || sleepingSessionIds.contains($0) }
-      let activeTabSessionIds = tabSessionIds.filter { isPaneSessionVisible($0) }
-      guard !activeTabSessionIds.isEmpty else {
+      let tabSessionIds = sessionIds.filter { isPaneSessionLayoutVisible($0) }
+      let mountedTabSessionIds = tabSessionIds.filter { isPaneSessionVisible($0) }
+      guard !tabSessionIds.isEmpty else {
         return
       }
+      /*
+       CDXC:SleepingPanePlaceholders 2026-06-13-20:27:
+       Chrome-only sync must preserve a selected sleeping placeholder owner.
+       Filtering activeSessionId through mounted sessions would repaint the old
+       awake renderer's titlebar as active and make sleeping tab clicks look
+       like they did nothing.
+       */
       let selectedSessionId =
-        activeSessionId.flatMap { activeTabSessionIds.contains($0) ? $0 : nil } ?? activeTabSessionIds[0]
+        activeSessionId.flatMap { tabSessionIds.contains($0) ? $0 : nil }
+          ?? mountedTabSessionIds.first
+          ?? tabSessionIds[0]
       setPaneTabs(tabSessionIds, activeSessionId: selectedSessionId, on: selectedSessionId)
     case .split(_, _, let children):
       for child in children {
@@ -13259,7 +13596,7 @@ final class TerminalWorkspaceView: NSView {
       commandsPanelActiveSessionIds.contains(session.sessionId) ? .commands : .workspace
     session.titleBarView.setChromeRole(chromeRole)
     session.borderView.setChromeRole(chromeRole)
-    session.borderView.setSuppressesFocusedBorder(mode == .projectEditorCompanion)
+    session.borderView.setSuppressesFocusedBorder(false)
     let titleBarHeight = min(titleBarHeight(for: session.sessionId), max(paneRect.height, 0))
     mountWebPaneContainer(for: session)
     session.containerView.frame = paneRect
@@ -13288,7 +13625,7 @@ final class TerminalWorkspaceView: NSView {
     if mode == .normal {
       session.hostView.refreshHostedWebView(reason: "setWebPaneFrame")
     }
-    session.borderView.frame = session.containerView.bounds
+    setPaneBorderFrame(session.containerView.bounds, for: session.borderView)
     if mode == .normal, focusedSessionId == session.sessionId {
       orderWebPaneViewsToFront(session)
     }
@@ -15176,7 +15513,9 @@ final class TerminalWorkspaceView: NSView {
       height: max(size.height, 1)
     )
     if !rectsMatch(layer.frame, nextFrame) {
-      layer.frame = nextFrame
+      performWithoutLayerActions {
+        layer.frame = nextFrame
+      }
     }
   }
 
@@ -15206,10 +15545,38 @@ final class TerminalWorkspaceView: NSView {
     guard layer.isHidden != hidden else {
       return
     }
-    layer.isHidden = hidden
+    performWithoutLayerActions {
+      layer.isHidden = hidden
+    }
+  }
+
+  private func setPaneBorderFrame(
+    _ frame: CGRect,
+    for borderLayer: TerminalPaneBorderLayer
+  ) {
+    guard !rectsMatch(borderLayer.frame, frame) else {
+      return
+    }
+    /*
+     CDXC:NativePaneChrome 2026-06-13-23:19:
+     Focused border geometry is a status indicator, not motion. Assign border
+     frames with implicit Core Animation actions disabled so reused pane border
+     layers cannot visibly travel from stale or offscreen positions.
+     */
+    performWithoutLayerActions {
+      borderLayer.frame = frame
+    }
+  }
+
+  private func performWithoutLayerActions(_ updates: () -> Void) {
+    CATransaction.begin()
+    CATransaction.setDisableActions(true)
+    updates()
+    CATransaction.commit()
   }
 
   private func updateAllTerminalBorders() {
+    cancelIneligibleFocusedPaneBorderSettlements()
     for sessionId in sessions.keys {
       updateTerminalBorder(for: sessionId)
     }
@@ -15235,8 +15602,9 @@ final class TerminalWorkspaceView: NSView {
       agentIconColors: sessionAgentIconColors)
     session.titleBarView.setFocusedPane(focusedSessionId == sessionId)
     session.borderView.setState(
-      isFocused: focusedSessionId == sessionId && orderedVisiblePaneOwnerSessionIds().count > 1,
+      isFocused: shouldShowFocusedPaneBorder(for: sessionId),
       isAttention: attentionSessionIds.contains(sessionId))
+    scheduleFocusedPaneBorderSettlementIfNeeded(for: sessionId, reason: "updateSleepingPanePlaceholderBorder")
   }
 
   private func updateTerminalBorder(for sessionId: String) {
@@ -15258,6 +15626,7 @@ final class TerminalWorkspaceView: NSView {
         isFocused: shouldShowFocusedPaneBorder(for: sessionId),
         isAttention: attentionSessionIds.contains(sessionId)
       )
+      scheduleFocusedPaneBorderSettlementIfNeeded(for: sessionId, reason: "updateTerminalBorder.web")
       return
     }
 
@@ -15285,6 +15654,7 @@ final class TerminalWorkspaceView: NSView {
       isFocused: shouldShowFocusedPaneBorder(for: sessionId),
       isAttention: attentionSessionIds.contains(sessionId)
     )
+    scheduleFocusedPaneBorderSettlementIfNeeded(for: sessionId, reason: "updateTerminalBorder.terminal")
   }
 
   private func shouldShowFocusedPaneBorder(for sessionId: String) -> Bool {
@@ -15296,19 +15666,146 @@ final class TerminalWorkspaceView: NSView {
      ownership instead of hiding focus chrome.
 
      CDXC:NativePaneChrome 2026-05-15-08:08:
-     Single-pane workspaces should not draw an active pane border, even when
-     that pane is a tab group with multiple active sessions. Gate workspace
-     focus chrome on visible pane owners so the border appears only for real
-     split layouts where focus needs spatial disambiguation.
+     Earlier single-pane workspaces suppressed active pane borders because focus
+     chrome was used only for split disambiguation. That constraint is retained
+     here as historical context because the 2026-06-13 typing-target rule below
+     intentionally supersedes it.
+
+     CDXC:NativePaneChrome 2026-06-13-22:17:
+     The focused border must literally mean keyboard input routes to this pane.
+     Show it for single-pane Agents layouts and Source/Browser/Kanban companion
+     panes only when AppKit's live first responder maps to the same selected
+     pane; hide it when typing belongs to project-editor, sidebar, titlebar, or
+     modal chrome even if sidebar selection still points at a terminal.
+
+     CDXC:NativePaneChrome 2026-06-13-23:19:
+     The outline must not animate in from stale pane geometry. Require a
+     deferred settled pass after focus/layout changes so the border appears only
+     once the pane frame is valid and still matches the live typing target.
      */
+    guard focusedPaneBorderSettledSessionIds.contains(sessionId) else {
+      return false
+    }
+    return isFocusedPaneBorderEligible(for: sessionId)
+  }
+
+  private func isFocusedPaneBorderEligible(for sessionId: String) -> Bool {
     let isCommandPanelSession = commandsPanelActiveSessionIds.contains(sessionId)
     if isCommandPanelSession {
       return commandsPanelFocusedSessionId == sessionId
         && commandPanelFocusedResponderSessionId() == sessionId
     }
-    return !commandPanelOwnsResponder()
-      && focusedSessionId == sessionId
-      && orderedVisiblePaneOwnerSessionIds().count > 1
+    guard !commandPanelOwnsResponder(),
+      focusedSessionId == sessionId,
+      currentResponderSessionId() == sessionId
+    else {
+      return false
+    }
+    if activeProjectEditorId != nil,
+      projectEditorCompanionIsVisible,
+      projectEditorCompanionSessionId == sessionId
+    {
+      return true
+    }
+    return activeSessionIds.contains(sessionId) || sleepingSessionIds.contains(sessionId)
+  }
+
+  private func invalidateFocusedPaneBorderSettlement(reason _: String) {
+    guard !focusedPaneBorderSettledSessionIds.isEmpty
+      || !scheduledFocusedPaneBorderSettlementSessionIds.isEmpty
+    else {
+      return
+    }
+    focusedPaneBorderSettledSessionIds.removeAll()
+    scheduledFocusedPaneBorderSettlementSessionIds.removeAll()
+    focusedPaneBorderSettlementGeneration &+= 1
+  }
+
+  private func cancelIneligibleFocusedPaneBorderSettlements() {
+    let nextSettledSessionIds = focusedPaneBorderSettledSessionIds.filter {
+      isFocusedPaneBorderEligible(for: $0)
+    }
+    let nextScheduledSessionIds = scheduledFocusedPaneBorderSettlementSessionIds.filter {
+      isFocusedPaneBorderEligible(for: $0)
+    }
+    guard nextSettledSessionIds.count != focusedPaneBorderSettledSessionIds.count
+      || nextScheduledSessionIds.count != scheduledFocusedPaneBorderSettlementSessionIds.count
+    else {
+      return
+    }
+    focusedPaneBorderSettledSessionIds = Set(nextSettledSessionIds)
+    scheduledFocusedPaneBorderSettlementSessionIds = Set(nextScheduledSessionIds)
+    focusedPaneBorderSettlementGeneration &+= 1
+  }
+
+  private func scheduleFocusedPaneBorderSettlementIfNeeded(for sessionId: String, reason _: String) {
+    guard isFocusedPaneBorderEligible(for: sessionId),
+      !focusedPaneBorderSettledSessionIds.contains(sessionId),
+      !scheduledFocusedPaneBorderSettlementSessionIds.contains(sessionId)
+    else {
+      return
+    }
+    scheduledFocusedPaneBorderSettlementSessionIds.insert(sessionId)
+    let generation = focusedPaneBorderSettlementGeneration
+    DispatchQueue.main.async { [weak self] in
+      guard let self else {
+        return
+      }
+      guard self.focusedPaneBorderSettlementGeneration == generation,
+        self.scheduledFocusedPaneBorderSettlementSessionIds.contains(sessionId)
+      else {
+        return
+      }
+      self.superview?.layoutSubtreeIfNeeded()
+      self.layoutSubtreeIfNeeded()
+      self.scheduledFocusedPaneBorderSettlementSessionIds.remove(sessionId)
+      guard self.isFocusedPaneBorderEligible(for: sessionId),
+        self.isFocusedPaneBorderGeometrySettled(for: sessionId)
+      else {
+        return
+      }
+      self.focusedPaneBorderSettledSessionIds = [sessionId]
+      self.updateAllTerminalBorders()
+    }
+  }
+
+  private func isFocusedPaneBorderGeometrySettled(for sessionId: String) -> Bool {
+    if let session = sessions[sessionId] {
+      return isPaneBorderGeometrySettled(
+        borderLayer: session.borderView,
+        containerView: session.containerView)
+    }
+    if let session = webPaneSessions[sessionId] {
+      return isPaneBorderGeometrySettled(
+        borderLayer: session.borderView,
+        containerView: session.containerView)
+    }
+    if let session = sleepingPanePlaceholderSessions[sessionId] {
+      return isPaneBorderGeometrySettled(
+        borderLayer: session.borderView,
+        containerView: session.containerView)
+    }
+    return false
+  }
+
+  private func isPaneBorderGeometrySettled(
+    borderLayer: TerminalPaneBorderLayer,
+    containerView: TerminalPaneLeafContainerView
+  ) -> Bool {
+    if borderLayer.superlayer === layer {
+      return !borderLayer.isHidden && borderLayer.frame.width > 1 && borderLayer.frame.height > 1
+    }
+    guard let containerLayer = containerView.layer,
+      borderLayer.superlayer === containerLayer,
+      containerView.window != nil,
+      !isViewHiddenFromWindow(containerView),
+      containerView.bounds.width > 1,
+      containerView.bounds.height > 1,
+      !borderLayer.isHidden
+    else {
+      return false
+    }
+    return rectsMatch(borderLayer.frame, containerView.bounds)
   }
 
   private func commandPanelOwnsResponder() -> Bool {
@@ -15409,7 +15906,6 @@ final class TerminalWorkspaceView: NSView {
       logEventPrefix: "nativeFocusTrace.passiveLayoutFirstResponderRestore")
     if didRestore {
       rememberTerminalFirstResponderSessionId(previousResponderSessionId)
-      updateAllTerminalBorders()
     }
     return didRestore
   }
@@ -15527,6 +16023,8 @@ final class TerminalWorkspaceView: NSView {
           "responder": responderSnapshot(),
           "role": focusTarget.role,
         ])
+      invalidateFocusedPaneBorderSettlement(reason: "\(logEventPrefix).alreadyFocused")
+      updateAllTerminalBorders()
       return true
     }
 
@@ -15545,6 +16043,10 @@ final class TerminalWorkspaceView: NSView {
         "windowIsKey": targetWindow.isKeyWindow,
         "windowNumber": targetWindow.windowNumber,
       ])
+    if didFocus || responder(targetWindow.firstResponder, isInside: targetView) {
+      invalidateFocusedPaneBorderSettlement(reason: "\(logEventPrefix).applied")
+      updateAllTerminalBorders()
+    }
     return didFocus
   }
 
@@ -15583,6 +16085,20 @@ final class TerminalWorkspaceView: NSView {
         "webPane",
         isExpected,
         isExpected ? nil : "workspaceFocusMismatch")
+    }
+    if let session = sleepingPanePlaceholderSessions[sessionId],
+      sleepingSessionIds.contains(sessionId)
+    {
+      let isCommandPlaceholder =
+        commandsPanelIsVisible && orderedVisibleCommandPaneOwnerSessionIds().contains(sessionId)
+      let isExpected = isCommandPlaceholder
+        ? commandsPanelFocusedSessionId == sessionId
+        : focusedSessionId == sessionId
+      return (
+        session.contentView,
+        isCommandPlaceholder ? "sleepingCommandPlaceholder" : "sleepingPlaceholder",
+        isExpected,
+        isExpected ? nil : "sleepingFocusMismatch")
     }
     return (nil, "missing", false, "missingSession")
   }
@@ -15740,6 +16256,31 @@ final class TerminalWorkspaceView: NSView {
       return nil
     }
     return sessionId(containing: responder)
+  }
+
+  func nativeHotkeySourceSessionId() -> String? {
+    /**
+     CDXC:PaneFocus 2026-06-13-21:47:
+     Directional native hotkeys should use the pane that owns AppKit first
+     responder as their source. This keeps Cmd+Opt+Arrow aligned with the
+     terminal the user can type into when the Commands pane and workspace panes
+     both have remembered focus state.
+     */
+    let candidates = [
+      currentResponderSessionId(),
+      recentTerminalUserInputSessionId(),
+      focusedSessionId,
+      commandsPanelFocusedSessionId,
+      lastEmittedFocusedSessionId,
+    ].compactMap { $0 }
+    return candidates.first { sessionId in
+      let isKnownPane =
+        sessions[sessionId] != nil
+        || webPaneSessions[sessionId] != nil
+        || sleepingPanePlaceholderSessions[sessionId] != nil
+      return isKnownPane
+        && (activeSessionIds.contains(sessionId) || commandsPanelActiveSessionIds.contains(sessionId))
+    }
   }
 
   @discardableResult
@@ -16023,6 +16564,14 @@ final class TerminalWorkspaceView: NSView {
         return sessionId
       }
     }
+    for (sessionId, session) in sleepingPanePlaceholderSessions {
+      if responderView === session.containerView || responderView.isDescendant(of: session.containerView)
+        || responderView === session.contentView || responderView.isDescendant(of: session.contentView)
+        || responderView === session.titleBarView || responderView.isDescendant(of: session.titleBarView)
+      {
+        return sessionId
+      }
+    }
     return nil
   }
 
@@ -16112,6 +16661,7 @@ final class TerminalWorkspaceView: NSView {
     } else {
       self.focusedSessionId = focusedSessionId
     }
+    invalidateFocusedPaneBorderSettlement(reason: "emitFocusedSessionSelection.\(reason)")
     updateAllTerminalBorders()
     TerminalFocusDebugLog.append(
       event: "nativeWorkspace.terminalFocused.emitted",
@@ -22193,6 +22743,20 @@ private final class TerminalSessionTitleBarView: NSView {
     window?.invalidateCursorRects(for: self)
   }
 
+  func revealActiveTabIfNeeded(reason _: String) {
+    guard activeTabSessionId != nil, !tabItems.isEmpty else {
+      return
+    }
+    /*
+     CDXC:PaneTabs 2026-06-13-21:09:
+     Cmd+Tab and Cmd+Shift+Tab select pane tabs through native focus or owner-selection paths that can leave this titlebar's active tab id unchanged during setTabs.
+     Explicit focus and pane-owner selection must still reveal the selected tab when the scroll strip has it clipped or offscreen, while passive chrome sync keeps the user's manual tab-strip scroll position.
+     */
+    shouldScrollActiveTabIntoViewAfterLayout = true
+    needsLayout = true
+    layoutSubtreeIfNeeded()
+  }
+
   private static func tabScrollGroupSignature(for tabs: [TabItem]) -> String {
     tabs.map(\.sessionId).joined(separator: "|")
   }
@@ -26365,9 +26929,13 @@ private final class TerminalPaneLeafContainerView: NSView {
 
 private final class SleepingPanePlaceholderContentView: NSView {
   var onWakeRequested: (() -> Void)?
-  private let wakeLabel = NSTextField(labelWithString: "Click to wake")
+  private let wakeLabel = NSTextField(wrappingLabelWithString: "Press Any Key to Wake")
 
   override var isOpaque: Bool {
+    true
+  }
+
+  override var acceptsFirstResponder: Bool {
     true
   }
 
@@ -26375,11 +26943,19 @@ private final class SleepingPanePlaceholderContentView: NSView {
     super.init(frame: frameRect)
     wantsLayer = true
     layer?.backgroundColor = NSColor.black.cgColor
-    wakeLabel.font = NSFont.systemFont(ofSize: 11, weight: .medium)
+    /*
+     CDXC:SleepingPanePlaceholders 2026-06-13-21:26:
+     The sleeping-pane affordance should say "Press Any Key to Wake" while waking only for letter and number key presses.
+     Keep it centered, use a larger primary-action size, and include draw padding around the measured text instead of relying on a tight text-cell width.
+     */
+    wakeLabel.font = NSFont.systemFont(ofSize: 13, weight: .medium)
     wakeLabel.textColor = NSColor(calibratedWhite: 0.55, alpha: 1)
-    wakeLabel.alignment = .right
+    wakeLabel.alignment = .center
     wakeLabel.isSelectable = false
-    wakeLabel.lineBreakMode = .byTruncatingTail
+    wakeLabel.lineBreakMode = .byCharWrapping
+    wakeLabel.maximumNumberOfLines = 0
+    wakeLabel.cell?.wraps = true
+    wakeLabel.cell?.isScrollable = false
     addSubview(wakeLabel)
   }
 
@@ -26389,22 +26965,67 @@ private final class SleepingPanePlaceholderContentView: NSView {
 
   override func layout() {
     super.layout()
-    let labelSize = wakeLabel.intrinsicContentSize
-    let labelWidth = min(ceil(labelSize.width), max(bounds.width - 24, 0))
-    let labelHeight = min(max(ceil(labelSize.height), 14), max(bounds.height - 16, 0))
+    let maxLabelWidth = max(bounds.width - 8, 0)
+    let maxLabelHeight = max(bounds.height - 16, 0)
+    guard maxLabelWidth > 0, maxLabelHeight > 0 else {
+      wakeLabel.frame = .zero
+      return
+    }
+    let paragraphStyle = NSMutableParagraphStyle()
+    paragraphStyle.alignment = .center
+    paragraphStyle.lineBreakMode = .byCharWrapping
+    let wakeFont = wakeLabel.font ?? NSFont.systemFont(ofSize: 13, weight: .medium)
+    let labelSize = (wakeLabel.stringValue as NSString).boundingRect(
+      with: NSSize(width: maxLabelWidth, height: CGFloat.greatestFiniteMagnitude),
+      options: [.usesLineFragmentOrigin, .usesFontLeading],
+      attributes: [.font: wakeFont, .paragraphStyle: paragraphStyle]
+    ).size
+    let labelWidth = min(max(ceil(labelSize.width) + 8, 1), maxLabelWidth)
+    let labelHeight = min(max(ceil(labelSize.height), 18), maxLabelHeight)
     wakeLabel.frame = CGRect(
-      x: max(12, bounds.maxX - labelWidth - 12),
-      y: max(8, bounds.minY + 8),
+      x: bounds.midX - (labelWidth / 2),
+      y: bounds.midY - (labelHeight / 2),
       width: labelWidth,
       height: labelHeight)
   }
 
   override func mouseDown(with event: NSEvent) {
+    window?.makeFirstResponder(self)
+    onWakeRequested?()
+  }
+
+  override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
+    true
+  }
+
+  override func keyDown(with event: NSEvent) {
+    guard Self.isAlphanumericWakeKey(event) else {
+      super.keyDown(with: event)
+      return
+    }
     onWakeRequested?()
   }
 
   func setShowsClickToWake(_ shows: Bool) {
     wakeLabel.isHidden = !shows
+  }
+
+  private static func isAlphanumericWakeKey(_ event: NSEvent) -> Bool {
+    guard event.type == .keyDown else {
+      return false
+    }
+    let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+    guard flags.isDisjoint(with: [.command, .control, .option, .function, .help]) else {
+      return false
+    }
+    guard let key = event.charactersIgnoringModifiers?.lowercased(),
+      key.count == 1,
+      let scalar = key.unicodeScalars.first
+    else {
+      return false
+    }
+    return (UInt32(97)...UInt32(122)).contains(scalar.value)
+      || (UInt32(48)...UInt32(57)).contains(scalar.value)
   }
 }
 
@@ -26825,7 +27446,8 @@ private final class TerminalWorkspacePaneResizeHandleView: NSView {
 
   func configure(
     direction: NativeTerminalLayout.SplitDirection,
-    cursor: NSCursor
+    cursor: NSCursor,
+    explicitHoverLineFrame: CGRect? = nil
   ) {
     /**
      CDXC:NativePaneResize 2026-05-11-09:39
@@ -26863,6 +27485,11 @@ private final class TerminalWorkspacePaneResizeHandleView: NSView {
      The split rail is an exact native view and does not need a local hitTest
      override. Normal AppKit traversal should select it from its frame; parent
      prepass cleanup is handled separately after rail z-order is verified.
+
+     CDXC:CommandsPanel 2026-06-13-20:57:
+     Command-panel resize rails keep the same non-overlapping AppKit frame, but
+     their hover line can be bottom-aligned inside that frame so the drag affordance
+     sits flush with the command tab bar without moving the hit target into tab chrome.
      */
     splitDirection = direction.rawValue
     layer?.backgroundColor = NSColor.clear.cgColor
@@ -26871,6 +27498,7 @@ private final class TerminalWorkspacePaneResizeHandleView: NSView {
     }
     resizeHoverIndicator.configure(
       lineAxis: direction == .horizontal ? .vertical : .horizontal,
+      explicitLineFrame: explicitHoverLineFrame,
       in: self)
   }
 
@@ -27129,7 +27757,14 @@ final class TerminalPaneBorderLayer: CAShapeLayer {
   fileprivate func setSuppressesFocusedBorder(_ suppresses: Bool) {
     /*
      CDXC:ProjectEditorCompanion 2026-06-09-17:46:
-     Source, Browser, and Kanban companion panes keep real focus for keyboard routing, but should not show the focused pane outline. Suppress only the focused border/shadow on the companion border view so attention borders and normal pane focus chrome continue to work elsewhere.
+     Source, Browser, and Kanban companion panes keep real focus for keyboard
+     routing. Earlier builds suppressed their focused border, but the current
+     typing-target requirement below supersedes that mode-based suppression.
+
+     CDXC:NativePaneChrome 2026-06-13-22:17:
+     Companion panes now show focused chrome when they are the live keyboard
+     target. Keep this setter only as a narrow escape hatch for future pane
+     chrome; project mode alone must not suppress focused borders.
      */
     guard suppressesFocusedBorder != suppresses else {
       return

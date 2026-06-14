@@ -34,6 +34,11 @@ import {
   type WorkspaceOpenTargetAvailability,
 } from "./workspace-open-targets";
 import { DEFAULT_PET_ID, normalizePetId, type PetId } from "./pets";
+import {
+  DEFAULT_SIDEBAR_SESSION_TAG_LIST_ITEMS,
+  normalizeSidebarSessionTagListItems,
+  type SidebarSessionTagListItem,
+} from "./session-tags";
 
 export type GhosttyConfirmCloseSurface = "false" | "true" | "always";
 export type GhosttyCopyOnSelect = "false" | "true" | "clipboard";
@@ -212,6 +217,13 @@ export type ghostexSettings = {
    * provider ids, into the system clipboard.
    */
   showSessionDetailsCopyAction: boolean;
+  /**
+   * CDXC:SessionTagFilters 2026-06-13-17:50:
+   * Settings owns the sidebar tag-filter presentation list: users can reorder
+   * tags, move separators, hide rows, or disable selectable tag filters without
+   * changing the durable session tag values stored on sessions.
+   */
+  sidebarSessionTagListItems: readonly SidebarSessionTagListItem[];
   /**
    * CDXC:AutoSleep 2026-05-28-08:06:
    * Auto Sleep is a settings-owned policy for retiring idle VS Code, Git,
@@ -418,7 +430,13 @@ export const DEFAULT_ghostex_SETTINGS: ghostexSettings = {
    * shamisen reverb remains available from Settings for users who prefer it.
    */
   actionCompletionSound: "shamisen",
-  appShotsEnabled: true,
+  /**
+   * CDXC:AppShots 2026-06-13-19:51:
+   * App Shots are a beta workflow and should be opt-in for first-run Settings
+   * defaults and missing persisted settings. Keep the hotkey configured so
+   * enabling the beta feature is a single explicit toggle.
+   */
+  appShotsEnabled: false,
   appShotsHotkey: "both-command",
   /**
    * CDXC:GxserverAgentSettings 2026-06-02-22:23:
@@ -545,6 +563,13 @@ export const DEFAULT_ghostex_SETTINGS: ghostexSettings = {
   showSessionCloseContextMenuAction: false,
   showSessionCommandCopyActions: false,
   showSessionDetailsCopyAction: false,
+  /**
+   * CDXC:SessionTagFilters 2026-06-13-17:50:
+   * First-run sidebar tag filter settings should show every supported tag and
+   * both default separators. Users opt out by hiding or disabling individual
+   * rows from the collapsed Sidebar Tags settings area.
+   */
+  sidebarSessionTagListItems: DEFAULT_SIDEBAR_SESSION_TAG_LIST_ITEMS,
   /**
    * CDXC:AutoSleep 2026-05-28-08:06:
    * Background VS Code, Project, and Git panes auto-sleep after fifteen minutes
@@ -1131,6 +1156,9 @@ export function normalizeghostexSettings(candidate: unknown): ghostexSettings {
       source,
       "showSessionDetailsCopyAction",
       DEFAULT_ghostex_SETTINGS.showSessionDetailsCopyAction,
+    ),
+    sidebarSessionTagListItems: normalizeSidebarSessionTagListItems(
+      source.sidebarSessionTagListItems,
     ),
     /**
      * CDXC:AutoSleep 2026-05-28-08:06:

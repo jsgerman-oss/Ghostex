@@ -97,7 +97,20 @@ export function getProjectSessionListCollapsedHeight({
 
   const listBounds = sessionListElement.getBoundingClientRect();
   const rowBounds = rowElement.getBoundingClientRect();
-  return Math.max(0, Math.ceil(rowBounds.bottom - listBounds.top));
+  /**
+   * CDXC:ProjectSessionLists 2026-06-13-19:49:
+   * A collapsed project list now shows a regular session-card reveal row after
+   * the last visible session. Include that row in the measured clipped height
+   * so it stays visible as the bottom of the collapsed list.
+   */
+  const moreToggleElement = sessionListElement.querySelector<HTMLElement>(
+    "[data-project-session-list-more-toggle='true']",
+  );
+  const clippedBottom = Math.max(
+    rowBounds.bottom,
+    moreToggleElement?.getBoundingClientRect().bottom ?? rowBounds.bottom,
+  );
+  return Math.max(0, Math.ceil(clippedBottom - listBounds.top));
 }
 
 export function readProjectSessionListCollapsedState(

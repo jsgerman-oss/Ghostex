@@ -70,9 +70,12 @@ import {
   IconCodeDots,
   IconDeviceDesktop,
   IconDownload,
+  IconEye,
+  IconEyeOff,
   IconFolderOpen,
   IconGripVertical,
   IconInfoCircle,
+  IconMinus,
   IconPencil,
   IconPlayerPlay,
   IconPlus,
@@ -187,6 +190,12 @@ import {
   type ghostexHotkeySettings,
 } from "../shared/ghostex-hotkeys";
 import { PET_OPTIONS, type PetId } from "../shared/pets";
+import {
+  areSidebarSessionTagListItemsEqual,
+  DEFAULT_SIDEBAR_SESSION_TAG_LIST_ITEMS,
+  normalizeSidebarSessionTagListItems,
+  type SidebarSessionTagListItem,
+} from "../shared/session-tags";
 import { AGENT_LOGO_COLORS, AGENT_LOGOS } from "./agent-logos";
 import { EditorBrandIcon, getEditorBrandIconId } from "./brand-icons";
 import { BundledAgentSkillsPanel } from "./bundled-agent-skills-panel";
@@ -194,6 +203,7 @@ import { HotkeyRecorderField } from "./hotkey-recorder-field";
 import { PetAvatar } from "./pet-avatar";
 import { CommandIconPicker } from "./command-icon-picker";
 import { SidebarCommandIconGlyph } from "./sidebar-command-icon";
+import { getSidebarSessionTagLabel, SessionTagIcon } from "./session-tag-ui";
 import { useSidebarStore } from "./sidebar-store";
 import type { AgentConfigDraft } from "./agent-config-modal";
 import type { CommandConfigDraft } from "./command-config-modal";
@@ -210,6 +220,7 @@ const HOTKEY_SETTINGS_SECTIONS: readonly HotkeySettingsSectionDefinition[] = [
     ids: [
       "createSession",
       "openCommandPalette",
+      "openSessionSearchPalette",
       "openSettings",
       "toggleSidebarCollapsed",
       "moveSidebar",
@@ -311,6 +322,7 @@ export type SettingsModalTab =
 type MainSettingsSectionId =
   | "agents"
   | "sidebar"
+  | "sidebarTags"
   | "statusIndicators"
   | "sessionCards"
   | "workspace"
@@ -342,6 +354,7 @@ const MAIN_SETTINGS_SECTION_SETTING_KEYS: Record<
     "createSessionOnSidebarDoubleClick",
     "renameSessionOnDoubleClick",
   ],
+  sidebarTags: ["sidebarSessionTagListItems"],
   /*
    * CDXC:BrowserSettings 2026-05-22-09:18:
    * Browser-related controls belong in one Browser section on the main
@@ -633,6 +646,7 @@ export function SettingsModal({
   const sessionCardsSectionRef = useRef<HTMLDivElement>(null);
   const agentsOnboardingSectionRef = useRef<HTMLDivElement>(null);
   const sidebarSectionRef = useRef<HTMLDivElement>(null);
+  const sidebarTagsSectionRef = useRef<HTMLDivElement>(null);
   const soundsSectionRef = useRef<HTMLDivElement>(null);
   const storageSectionRef = useRef<HTMLDivElement>(null);
   const workspaceSectionRef = useRef<HTMLDivElement>(null);
@@ -1134,6 +1148,26 @@ export function SettingsModal({
         title: "Double-click session cards to rename",
       },
     ]),
+    sidebarTags: getSettingsSectionSearch(settingsSearchQuery, "Sidebar Tags", [
+      {
+        key: "sidebarSessionTagListItems",
+        options: [
+          ...DEFAULT_SIDEBAR_SESSION_TAG_LIST_ITEMS.map((item) => ({
+            label:
+              item.type === "tag"
+                ? getSidebarSessionTagLabel(item.tag) ?? item.tag
+                : "Separator",
+            value: item.id,
+          })),
+          { label: "Hide tag", value: "hide" },
+          { label: "Disable tag", value: "disable" },
+          { label: "Reorder tags", value: "reorder" },
+        ],
+        subtitle:
+          "Reorder, hide, or disable sidebar tag filters and their separators.",
+        title: "Tag Filter List",
+      },
+    ]),
     sounds: getSettingsSectionSearch(settingsSearchQuery, "Sounds", [
       {
         key: "completionBellEnabled",
@@ -1414,6 +1448,12 @@ export function SettingsModal({
     { id: "power", ref: powerSectionRef, searchResult: settingsSearch.power, title: "Power" },
     { id: "sounds", ref: soundsSectionRef, searchResult: settingsSearch.sounds, title: "Sounds" },
     { id: "storage", ref: storageSectionRef, searchResult: settingsSearch.storage, title: "Storage" },
+    {
+      id: "sidebarTags",
+      ref: sidebarTagsSectionRef,
+      searchResult: settingsSearch.sidebarTags,
+      title: "Sidebar Tags",
+    },
   ];
   const hasVisibleMainSettings = mainSettingsSectionNavigation.some((section) =>
     hasVisibleSettingsSearchResult(section.searchResult),
@@ -1464,6 +1504,7 @@ export function SettingsModal({
       sounds: soundsSectionRef,
 	      statusIndicators: statusIndicatorsSectionRef,
 	      storage: storageSectionRef,
+	      sidebarTags: sidebarTagsSectionRef,
 	      terminal: ghosttyTerminalSectionRef,
 	      terminalBehavior: ghosttyBehaviorSectionRef,
 	      terminalScrolling: ghosttyScrollingSectionRef,
@@ -3038,6 +3079,29 @@ export function SettingsModal({
               </div>
             ) : null}
 
+            {mainSectionVisible("sidebarTags", settingsSearch.sidebarTags) ? (
+              <SettingsSection sectionRef={sidebarTagsSectionRef} title="Sidebar Tags">
+                {mainSettingVisible(settingsSearch.sidebarTags, "sidebarSessionTagListItems") ? (
+                  <SidebarTagListSettingsField
+                    isModified={
+                      !areSidebarSessionTagListItemsEqual(
+                        draft.sidebarSessionTagListItems,
+                        DEFAULT_ghostex_SETTINGS.sidebarSessionTagListItems,
+                      )
+                    }
+                    items={draft.sidebarSessionTagListItems}
+                    onChange={(items) => updateDraft("sidebarSessionTagListItems", items)}
+                    onResetToDefault={() =>
+                      updateDraft(
+                        "sidebarSessionTagListItems",
+                        DEFAULT_ghostex_SETTINGS.sidebarSessionTagListItems,
+                      )
+                    }
+                  />
+                ) : null}
+              </SettingsSection>
+            ) : null}
+
             {!isFirstLaunchSetup && !hasVisibleMainSettings ? (
               <div className="rounded-none border border-border bg-muted/30 px-4 py-6 text-center text-sm text-muted-foreground">
                 No settings match your search.
@@ -3862,6 +3926,11 @@ type SettingsCommandDragData = {
   kind: "settings-command";
 };
 
+type SettingsSidebarTagListItemDragData = {
+  itemId: string;
+  kind: "settings-sidebar-tag-list-item";
+};
+
 function OpenTargetsSettingsTab({
   onChange,
   settings,
@@ -4497,6 +4566,7 @@ function IntegrationsSettingsTab({
            * Settings copy must describe App Shots as an agent-session feature because captured context now targets the focused or recent agent instead of Codex only.
            */}
           <IntegrationSettingsRow
+            badge="Beta"
             description="Capture the frontmost app window and available Accessibility text, then stage it in the focused or recent agent session as local image context."
             icon={IconDeviceDesktop}
             status={appShotsEnabled ? "Enabled" : "Disabled"}
@@ -4599,6 +4669,7 @@ function IntegrationsSettingsTab({
 }
 
 function IntegrationSettingsRow({
+  badge,
   children,
   description,
   icon: Icon,
@@ -4606,6 +4677,7 @@ function IntegrationSettingsRow({
   title,
   tone,
 }: {
+  badge?: string;
   children: ReactNode;
   description: string;
   icon: typeof IconInfoCircle;
@@ -4623,6 +4695,17 @@ function IntegrationSettingsRow({
           <FieldContent>
             <div className="flex flex-wrap items-center gap-2">
               <FieldTitle className="text-sm">{title}</FieldTitle>
+              {badge ? (
+                /*
+                 * CDXC:AppShots 2026-06-13-19:51:
+                 * Settings must visibly mark App Shots as Beta while keeping
+                 * the separate Enabled/Disabled status badge for its toggle
+                 * state.
+                 */
+                <span className="inline-flex rounded-none border border-sky-500/40 bg-sky-500/10 px-2 py-0.5 text-[11px] font-semibold text-sky-200">
+                  {badge}
+                </span>
+              ) : null}
               <span
                 className={cn(
                   "inline-flex rounded-none border px-2 py-0.5 text-[11px] font-semibold",
@@ -6184,6 +6267,37 @@ function getSettingsCommandDragData(candidate: unknown): SettingsCommandDragData
   };
 }
 
+function createSettingsSidebarTagListItemDragData(
+  itemId: string,
+): SettingsSidebarTagListItemDragData {
+  return {
+    itemId,
+    kind: "settings-sidebar-tag-list-item",
+  };
+}
+
+function getSettingsSidebarTagListItemDragData(
+  candidate: unknown,
+): SettingsSidebarTagListItemDragData | undefined {
+  if (!hasData(candidate)) {
+    return undefined;
+  }
+
+  const data = candidate.data;
+  if (
+    !isObjectRecord(data) ||
+    data.kind !== "settings-sidebar-tag-list-item" ||
+    typeof data.itemId !== "string"
+  ) {
+    return undefined;
+  }
+
+  return {
+    itemId: data.itemId,
+    kind: "settings-sidebar-tag-list-item",
+  };
+}
+
 function moveId(ids: readonly string[], initialIndex: number, index: number): string[] {
   const nextIds = [...ids];
   const [id] = nextIds.splice(initialIndex, 1);
@@ -7101,6 +7215,223 @@ function ToggleField({
     >
       <Switch checked={checked} disabled={disabled} id={id} onCheckedChange={onChange} />
     </SettingRow>
+  );
+}
+
+function SidebarTagListSettingsField({
+  isModified,
+  items,
+  onChange,
+  onResetToDefault,
+}: {
+  isModified: boolean;
+  items: readonly SidebarSessionTagListItem[];
+  onChange: (items: readonly SidebarSessionTagListItem[]) => void;
+  onResetToDefault: () => void;
+}) {
+  const normalizedItems = normalizeSidebarSessionTagListItems(items);
+  const handleDragEnd = ((event) => {
+    if (event.canceled || !isSortableOperation(event.operation)) {
+      return;
+    }
+
+    const { source, target } = event.operation;
+    const sourceData = source ? getSettingsSidebarTagListItemDragData(source) : undefined;
+    if (!source || !sourceData) {
+      return;
+    }
+
+    const targetIndex =
+      "index" in source && typeof source.index === "number" ? source.index : target?.index;
+    if (targetIndex == null || source.initialIndex === targetIndex) {
+      return;
+    }
+
+    const itemsById = new Map<string, SidebarSessionTagListItem>(
+      normalizedItems.map((item) => [item.id, item]),
+    );
+    onChange(
+      moveId(
+        normalizedItems.map((item) => item.id),
+        source.initialIndex,
+        targetIndex,
+      ).flatMap((itemId) => itemsById.get(itemId) ?? []),
+    );
+  }) satisfies DragDropEventHandlers["onDragEnd"];
+
+  const updateItem = (
+    itemId: string,
+    patch: Partial<Pick<SidebarSessionTagListItem, "enabled" | "visible">>,
+  ) => {
+    onChange(
+      normalizedItems.map((item) =>
+        item.id === itemId
+          ? ({
+              ...item,
+              ...patch,
+            } as SidebarSessionTagListItem)
+          : item,
+      ),
+    );
+  };
+
+  return (
+    <details className="group w-full">
+      {/*
+       * CDXC:SessionTagFilters 2026-06-13-17:50:
+       * The bottom main Settings area starts collapsed and mirrors the
+       * configurable-list chrome used by tab context menu item settings:
+       * full-width rows, drag handles, enabled switches, and visibility icons.
+       * Separators are real rows so users can move or hide them with tags.
+       */}
+      <summary className="settings-management-row flex cursor-pointer list-none items-center justify-between gap-3 border border-border bg-muted/20 px-3 py-3 marker:hidden [&::-webkit-details-marker]:hidden">
+        <div className="flex min-w-0 flex-1 items-center gap-2.5">
+          <IconChevronRight
+            aria-hidden="true"
+            className="size-4 shrink-0 text-muted-foreground transition-transform duration-150 group-open:rotate-90"
+          />
+          <FieldContent className="min-w-0 gap-1">
+            <FieldLabel className="text-sm">Tag filter list</FieldLabel>
+            <FieldDescription className="text-xs text-muted-foreground">
+              Reorder, hide, or disable sidebar tag filters and separators.
+            </FieldDescription>
+          </FieldContent>
+        </div>
+        <Button
+          disabled={!isModified}
+          onClick={(event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            onResetToDefault();
+          }}
+          type="button"
+          variant="outline"
+        >
+          Reset to Default
+        </Button>
+      </summary>
+      <div className="mt-3 border border-border/80 bg-muted/10 p-3">
+        <DragDropProvider onDragEnd={handleDragEnd}>
+          <div className="flex w-full flex-col gap-2">
+            {normalizedItems.map((item, index) => (
+              <SidebarTagListSettingsRow
+                index={index}
+                item={item}
+                key={item.id}
+                onEnabledChange={(enabled) => updateItem(item.id, { enabled })}
+                onVisibleChange={(visible) => updateItem(item.id, { visible })}
+              />
+            ))}
+          </div>
+        </DragDropProvider>
+      </div>
+    </details>
+  );
+}
+
+function SidebarTagListSettingsRow({
+  index,
+  item,
+  onEnabledChange,
+  onVisibleChange,
+}: {
+  index: number;
+  item: SidebarSessionTagListItem;
+  onEnabledChange: (enabled: boolean) => void;
+  onVisibleChange: (visible: boolean) => void;
+}) {
+  const sortable = useSortable({
+    accept: "settings-sidebar-tag-list-item",
+    data: createSettingsSidebarTagListItemDragData(item.id),
+    group: "settings-sidebar-tag-list-items",
+    id: item.id,
+    index,
+    type: "settings-sidebar-tag-list-item",
+  });
+  const isDimmed = !item.enabled || !item.visible;
+  const label =
+    item.type === "tag" ? getSidebarSessionTagLabel(item.tag) ?? item.tag : "Separator";
+
+  const setRowRef = (element: HTMLDivElement | null) => {
+    sortable.ref(element);
+    sortable.sourceRef(element);
+  };
+
+  return (
+    <div
+      className={cn(
+        "settings-management-row flex w-full items-center gap-2 border border-border bg-muted/20 p-2",
+        isDimmed && "text-muted-foreground",
+      )}
+      data-dragging={String(Boolean(sortable.isDragging))}
+      data-enabled={String(item.enabled)}
+      data-visible={String(item.visible)}
+      ref={setRowRef}
+    >
+      <Button
+        aria-label={`Reorder ${label}`}
+        ref={sortable.handleRef}
+        size="icon-sm"
+        type="button"
+        variant="ghost"
+      >
+        <IconGripVertical aria-hidden="true" />
+      </Button>
+      <div className="flex min-w-0 flex-1 items-center gap-3 px-2 py-2">
+        <span
+          aria-hidden="true"
+          className="settings-management-icon flex size-8 shrink-0 items-center justify-center bg-muted"
+        >
+          {item.type === "tag" ? (
+            <SessionTagIcon
+              className="session-tag-colored-icon"
+              fillFavorite
+              size={15}
+              stroke={1.8}
+              tag={item.tag}
+            />
+          ) : (
+            <IconMinus className="text-muted-foreground" size={16} stroke={2} />
+          )}
+        </span>
+        <span className="min-w-0 flex-1">
+          <span
+            className={cn(
+              "block truncate text-sm font-medium",
+              item.type === "separator" && "italic text-muted-foreground",
+            )}
+          >
+            {label}
+          </span>
+        </span>
+      </div>
+      <Switch
+        aria-label={`${item.enabled ? "Disable" : "Enable"} ${label}`}
+        checked={item.enabled}
+        onCheckedChange={onEnabledChange}
+      />
+      <Tooltip>
+        <TooltipTrigger
+          render={
+            <Button
+              aria-label={`${item.visible ? "Hide" : "Show"} ${label}`}
+              className="shrink-0"
+              onClick={() => onVisibleChange(!item.visible)}
+              size="icon-sm"
+              type="button"
+              variant="ghost"
+            >
+              {item.visible ? (
+                <IconEye aria-hidden="true" size={16} stroke={1.9} />
+              ) : (
+                <IconEyeOff aria-hidden="true" size={16} stroke={1.9} />
+              )}
+            </Button>
+          }
+        />
+        <TooltipContent sideOffset={6}>{item.visible ? "Hide" : "Show"}</TooltipContent>
+      </Tooltip>
+    </div>
   );
 }
 

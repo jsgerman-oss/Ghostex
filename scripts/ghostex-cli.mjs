@@ -108,6 +108,8 @@ const COMMANDS = new Map([
   ["s", sessionsCommand],
   ["list-sessions", sessionsCommand],
   ["ls", sessionsCommand],
+  ["projects", projectsCommand],
+  ["list-projects", projectsCommand],
   ["find", zehnSearchCommand],
   ["f", zehnSearchCommand],
   ["android-check", androidCheckCommand],
@@ -3500,6 +3502,53 @@ async function sessionsCommand(args) {
   });
 }
 
+async function projectsCommand(args) {
+  /**
+   * CDXC:GxserverCliProjects 2026-06-13-18:35:
+   * `gx projects --json` mirrors `gx sessions --json` so the GasCity Cockpit's
+   * CLI transport reaches parity with the gxserver `/api/listProjects` RPC it
+   * already drives over HTTP. Reuse the same gxserver inventory call the session
+   * list uses for its project map (callGxserverRpc) instead of a second source,
+   * and emit `{ ok, projects, requestId }` so the JSON shape matches the RPC
+   * envelope's result.
+   */
+  const { flags } = parseArgs(args);
+  const result = await fetchProjectList(flags);
+  if (flags.json) {
+    printJson(result);
+    return;
+  }
+  printProjectList(result.projects ?? []);
+}
+
+async function fetchProjectList(flags = {}) {
+  const result = await callGxserverRpc("/api/listProjects", {}, flags);
+  const projects = Array.isArray(result.projects) ? result.projects : [];
+  return { ...result, projects };
+}
+
+function printProjectList(projects) {
+  if (projects.length === 0) {
+    console.log("No Ghostex projects.");
+    return;
+  }
+  /**
+   * CDXC:GxserverCliProjects 2026-06-13-18:35:
+   * The human project list stays compact like the session list: the project
+   * name as the heading, with the project path underneath when known. Preserve
+   * the gxserver inventory order instead of re-sorting in the CLI.
+   */
+  projects.forEach((project, index) => {
+    if (index > 0) {
+      console.log("");
+    }
+    console.log(project.name || project.projectId);
+    if (project.path) {
+      console.log(project.path);
+    }
+  });
+}
+
 async function androidCheckCommand(args) {
   const { flags } = parseArgs(args);
   const result = await runAndroidReadinessCheck(flags);
@@ -5298,6 +5347,7 @@ function usage() {
    */
   const sessionCommands = [
     formatHelpCommand("sessions | s | ls [--ungrouped|-u] [--json]", "List running terminal sessions"),
+    formatHelpCommand("projects | list-projects [--json]", "List Ghostex projects"),
     formatHelpCommand("find | f [zehn args...]", "Search agent prompt history with bundled zehn"),
     formatHelpCommand("android-check [--json]", "Verify this Mac is ready for Ghostex Android"),
     formatHelpCommand("attach | a [selector]", "Attach to a provider session, or open the picker without a selector"),
@@ -5715,6 +5765,7 @@ export {
   computerUseUsage,
   createCliSshForwardPlan,
   fetchGxserverSessionList,
+  fetchProjectList,
   formatCompactSessionLine,
   generateTitleUsage,
   groupSessionsPreservingSidebarOrder,

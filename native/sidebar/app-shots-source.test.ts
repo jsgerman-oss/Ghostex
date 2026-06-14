@@ -2,6 +2,10 @@ import { readFileSync } from "node:fs";
 import { describe, expect, test } from "vitest";
 
 const nativeSidebarSource = readFileSync(new URL("./native-sidebar.tsx", import.meta.url), "utf8");
+const appDelegateSource = readFileSync(
+  new URL("../macos/ghostexHost/Sources/ghostexHost/AppDelegate.swift", import.meta.url),
+  "utf8",
+);
 const settingsModalSource = readFileSync(
   new URL("../../sidebar/settings-modal.tsx", import.meta.url),
   "utf8",
@@ -64,6 +68,21 @@ describe("native sidebar App Shots source", () => {
     );
 
     expect(settingsSource).toContain("focused or recent agent session");
+    expect(settingsSource).toContain('badge="Beta"');
     expect(settingsSource).not.toContain("recent Codex session");
+  });
+
+  test("keeps native App Shots disabled unless explicitly enabled", () => {
+    const settingsSource = sourceBetween(
+      appDelegateSource,
+      "func readAppShotsSettings() -> NativeAppShotsSettings",
+      "func readHotkeys() -> [String: String]",
+    );
+
+    expect(settingsSource).toContain("CDXC:AppShots 2026-06-13-19:51:");
+    expect(settingsSource).toContain("NativeAppShotsSettings(enabled: false");
+    expect(settingsSource).toContain('settings["appShotsEnabled"] as? Bool ?? false');
+    expect(settingsSource).not.toContain("enabled: true");
+    expect(settingsSource).not.toContain("?? true");
   });
 });

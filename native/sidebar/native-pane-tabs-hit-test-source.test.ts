@@ -254,6 +254,56 @@ describe("native pane tab titlebar hit testing", () => {
     expect(terminalWorkspaceSource).not.toContain("private func reroutedTitleBarTarget");
   });
 
+  test("reveals the selected native pane tab after keyboard-driven focus", () => {
+    /*
+     * CDXC:PaneTabs 2026-06-13-21:09:
+     * Cmd+Tab and Cmd+Shift+Tab use the pane-tab selection path, but the
+     * selected tab can already be the titlebar's active id by the time native
+     * focus runs. Explicit focus and pane-owner swaps must request a native
+     * reveal so an offscreen active tab scrolls into view like clicked tabs do.
+     */
+    const revealActiveTabSource = sourceSection(
+      terminalWorkspaceSource,
+      "func revealActiveTabIfNeeded(reason _: String)",
+      "private static func tabScrollGroupSignature",
+    );
+    const revealFocusPolicySource = sourceSection(
+      terminalWorkspaceSource,
+      "private func shouldRevealActivePaneTabOnFocus(reason: String)",
+      "func focusWebPane(sessionId rawSessionId: String",
+    );
+    const focusTerminalSource = sourceSection(
+      terminalWorkspaceSource,
+      "func focusTerminal(sessionId rawSessionId: String",
+      "private func refreshZmxPersistenceTerminalIfFocusOrSurfaceChanged",
+    );
+    const focusWebPaneSource = sourceSection(
+      terminalWorkspaceSource,
+      "func focusWebPane(sessionId rawSessionId: String",
+      "func createProjectEditorPane",
+    );
+    const paneOwnerSelectionSource = sourceSection(
+      terminalWorkspaceSource,
+      "private func applyPaneOwnerSelection(",
+      "private func isPaneSessionVisible",
+    );
+
+    expect(revealActiveTabSource).toContain("shouldScrollActiveTabIntoViewAfterLayout = true");
+    expect(revealActiveTabSource).toContain("layoutSubtreeIfNeeded()");
+    expect(revealFocusPolicySource).toContain('reason == "setActiveTerminalSet"');
+    expect(revealFocusPolicySource).toContain('reason == "sidebarFocusCommand"');
+    expect(revealFocusPolicySource).not.toContain("nativeTerminalContentMouseDown");
+    expect(focusTerminalSource).toContain(
+      'revealActivePaneTab(for: sessionId, reason: "focusTerminal.\\(reason)")',
+    );
+    expect(focusWebPaneSource).toContain(
+      'revealActivePaneTab(for: sessionId, reason: "focusWebPane.\\(reason)")',
+    );
+    expect(paneOwnerSelectionSource).toContain(
+      'revealActivePaneTab(for: selectedSessionId, reason: "paneOwnerSelection.\\(reason)")',
+    );
+  });
+
   test("keeps passive pane titlebar chrome out of the AppKit view tree", () => {
     /*
      * CDXC:NativePaneTabClicks 2026-06-13-13:21:
@@ -429,6 +479,11 @@ describe("native pane tab titlebar hit testing", () => {
      * CDXC:NativePaneTabClicks 2026-06-12-04:08:
      * The command-panel resize rail is allowed to sit on the panel boundary, but
      * not across the native command tab bar where it can steal clicks from tabs.
+     *
+     * CDXC:CommandsPanel 2026-06-13-20:57:
+     * The visible resize affordance should sit flush with the command tab bar by
+     * moving only the hover line inside the existing rail, not by overlapping
+     * the rail frame with command-tab chrome.
      */
     const resizeHandleIndex = terminalWorkspaceSource.indexOf("private func syncCommandsPanelResizeHandle");
     const frameIndex = terminalWorkspaceSource.indexOf("commandsPanelResizeHandleView.frame = CGRect(", resizeHandleIndex);
@@ -440,6 +495,9 @@ describe("native pane tab titlebar hit testing", () => {
     expect(functionSource).toContain("let railY = min(");
     expect(functionSource).toContain("max(commandPanelBounds.maxY, bounds.minY)");
     expect(functionSource).toContain("y: railY");
+    expect(functionSource).toContain("let commandPanelResizeHoverLineFrame = CGRect(");
+    expect(functionSource).toContain("y: commandsPanelResizeHandleView.bounds.minY");
+    expect(functionSource).toContain("explicitHoverLineFrame: commandPanelResizeHoverLineFrame");
     expect(functionSource).toContain("addSubview(commandsPanelResizeHandleView, positioned: .above, relativeTo: nil)");
     expect(functionSource).toContain("orderResizeHandlesToFront(reason: \"syncCommandsPanelResizeHandle\")");
     expect(functionSource).not.toContain("commandPanelBounds.maxY - railHeight / 2");

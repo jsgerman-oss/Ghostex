@@ -4,6 +4,7 @@ import {
   type SessionGridSnapshot,
   type SessionPaneLayoutNode,
   type SessionRecord,
+  clampVisibleSessionCount,
   createSessionRecord,
   getOrderedSessions,
 } from "./session-grid-contract";
@@ -80,7 +81,10 @@ export function focusVisibleDirectionInSnapshot(
   direction: SessionGridDirection,
 ): { changed: boolean; snapshot: SessionGridSnapshot } {
   const normalizedSnapshot = normalizeSessionGridSnapshot(snapshot);
-  const focusVisibleSessionIds = getExactVisibleSessionIdsForFocus(snapshot, normalizedSnapshot);
+  const focusVisibleSessionIds = getPaneFocusSessionIdsForDirection(
+    snapshot,
+    normalizedSnapshot,
+  );
   const visibleSessionIds = new Set(focusVisibleSessionIds);
   const paneFocusTarget = getDirectionalVisiblePaneFocusTarget(
     normalizedSnapshot.paneLayout,
@@ -186,6 +190,9 @@ function focusVisibleSessionIdInSnapshot(
       ...normalizedSnapshot,
       focusedSessionId: sessionId,
       paneLayout: setActiveSessionInPaneLayout(normalizedSnapshot.paneLayout, sessionId),
+      visibleCount: clampVisibleSessionCount(
+        Math.max(normalizedSnapshot.visibleCount, visibleSessionIds.length),
+      ),
       visibleSessionIds,
     },
   };
@@ -208,6 +215,45 @@ function getExactVisibleSessionIdsForFocus(
     return exactVisibleSessionIds;
   }
   return normalizedSnapshot.visibleSessionIds;
+}
+
+function getPaneFocusSessionIdsForDirection(
+  snapshot: SessionGridSnapshot,
+  normalizedSnapshot: SessionGridSnapshot,
+): string[] {
+  const exactVisibleSessionIds = getExactVisibleSessionIdsForFocus(snapshot, normalizedSnapshot);
+  const paneLayout = normalizedSnapshot.paneLayout;
+  if (!paneLayout) {
+    return exactVisibleSessionIds;
+  }
+  if (
+    normalizedSnapshot.visibleCount === 1 &&
+    normalizedSnapshot.fullscreenRestoreVisibleCount !== undefined
+  ) {
+    return exactVisibleSessionIds;
+  }
+
+  const exactVisibleSessionIdSet = new Set(exactVisibleSessionIds);
+  const awakeSessionIds = new Set(
+    normalizedSnapshot.sessions
+      .filter((session) => session.isSleeping !== true)
+      .map((session) => session.sessionId),
+  );
+  const paneOwnerSessionIds = collectPaneLayoutFocusOwnerSessionIds(
+    paneLayout,
+    exactVisibleSessionIdSet,
+    awakeSessionIds,
+  );
+  if (paneOwnerSessionIds.length <= exactVisibleSessionIds.length) {
+    return exactVisibleSessionIds;
+  }
+
+  /*
+   * CDXC:PaneFocus 2026-06-13-18:35:
+   * Cmd+Alt+Arrow must use the paneLayout the user can see, even when legacy visibleSessionIds is stale.
+   * Repair the focus candidate set from active pane owners in visual order so a1 b1 c1 and a1 b1 c1/c2 layouts navigate through the middle panes instead of bouncing only between stale endpoint ids.
+   */
+  return dedupeSessionIds([...paneOwnerSessionIds, ...exactVisibleSessionIds]);
 }
 
 type VisiblePaneFocusRect = {
@@ -302,6 +348,43 @@ function paneLayoutNodeHasVisibleSession(
     return layout.sessionIds.some((sessionId) => visibleSessionIds.has(sessionId));
   }
   return layout.children.some((child) => paneLayoutNodeHasVisibleSession(child, visibleSessionIds));
+}
+
+function collectPaneLayoutFocusOwnerSessionIds(
+  layout: SessionPaneLayoutNode,
+  exactVisibleSessionIds: ReadonlySet<string>,
+  awakeSessionIds: ReadonlySet<string>,
+): string[] {
+  if (layout.kind === "leaf") {
+    return awakeSessionIds.has(layout.sessionId) ? [layout.sessionId] : [];
+  }
+
+  if (layout.kind === "tabs") {
+    const visibleTabSessionIds = layout.sessionIds.filter(
+      (sessionId) => exactVisibleSessionIds.has(sessionId) && awakeSessionIds.has(sessionId),
+    );
+    if (
+      layout.activeSessionId &&
+      exactVisibleSessionIds.has(layout.activeSessionId) &&
+      awakeSessionIds.has(layout.activeSessionId)
+    ) {
+      return [layout.activeSessionId];
+    }
+    if (visibleTabSessionIds[0]) {
+      return [visibleTabSessionIds[0]];
+    }
+    if (layout.activeSessionId && awakeSessionIds.has(layout.activeSessionId)) {
+      return [layout.activeSessionId];
+    }
+    const awakeTabSessionId = layout.sessionIds.find((sessionId) =>
+      awakeSessionIds.has(sessionId),
+    );
+    return awakeTabSessionId ? [awakeTabSessionId] : [];
+  }
+
+  return layout.children.flatMap((child) =>
+    collectPaneLayoutFocusOwnerSessionIds(child, exactVisibleSessionIds, awakeSessionIds),
+  );
 }
 
 function createVisiblePaneFocusRect(

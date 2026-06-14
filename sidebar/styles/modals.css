@@ -3393,11 +3393,16 @@ html:has(body.app-modal-host-native-window-body) {
 .worktree-create-modal-shadcn {
   /*
    * CDXC:WorktreeModal 2026-06-12-11:10:
-   * Add Worktree in the macOS native child window must have exactly 18px total
+   * Add Worktree in the macOS native child window must have exactly 17px total
    * edge padding. The native WKWebView has no separate content inset, so the
    * native-window override below fills the WebView and makes this React dialog
-   * the single owner of the 18px padding instead of stacking it with the shared
+   * the single owner of the 17px padding instead of stacking it with the shared
    * shadcn p-6 and 100vw - 2rem width cap.
+   *
+   * CDXC:WorktreeModal 2026-06-13-18:39:
+   * Add Worktree now uses Rename Session's top-right close X instead of a
+   * footer Cancel button. Keep the native-window top and bottom insets at 17px
+   * so the title row and footer read as one fitted child-window surface.
    */
   max-width: min(560px, calc(100vw - 2rem));
 }
@@ -3407,8 +3412,13 @@ html:has(body.app-modal-host-native-window-body) {
   height: 100vh;
   max-height: 100vh;
   max-width: 100vw;
-  padding: 18px;
+  padding: 17px;
   width: 100vw;
+}
+
+.app-modal-host-native-window-body .worktree-create-modal-shadcn [data-slot="dialog-close"] {
+  right: 17px;
+  top: 17px;
 }
 
 .delayed-send-modal-shadcn {

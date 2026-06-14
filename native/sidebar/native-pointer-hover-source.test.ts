@@ -76,6 +76,9 @@ describe("native pointer hover boundary source", () => {
     expect(appDelegateSource).not.toContain("ReactTitlebarHitRegion");
     expect(appDelegateSource).not.toContain("setReactTitlebarHitRegions");
     expect(appDelegateSource).toContain("setReactTitlebarStripState");
+    expect(appDelegateSource).toContain("performBlankTitlebarMouseDownFromWebContent");
+    expect(appDelegateSource).toContain("handleBlankTitlebarMouseDown");
+    expect(appDelegateSource).toContain("activeMouseDownEvent");
 
     expect(nativeSidebarSource).toContain("function setNativeSidebarPointerInside(isInside: boolean): void");
     expect(nativeSidebarSource).toContain("function setSidebarNativePointerState(isInside: boolean): void");
@@ -96,6 +99,9 @@ describe("native pointer hover boundary source", () => {
     expect(titlebarHostSource).toContain("requesting the already-open panel closes it");
     expect(titlebarHostSource).toContain('type: "setReactTitlebarStripState"');
     expect(titlebarHostSource).toContain("publishTitlebarStripState");
+    expect(titlebarHostSource).toContain('type: "titlebarBlankMouseDown"');
+    expect(titlebarHostSource).toContain("requestTitlebarBlankMouseDown");
+    expect(titlebarHostSource).toContain("Blank titlebar drag should use normal DOM event ownership");
     expect(titlebarHostSource).not.toContain("data-titlebar-hit-region");
     expect(titlebarHostSource).not.toContain("querySelectorAll<HTMLElement>(\"[data-titlebar-hit-region]\")");
     expect(titlebarHostSource).not.toContain("setReactTitlebarHitRegions");
